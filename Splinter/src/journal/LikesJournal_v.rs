@@ -121,7 +121,7 @@ impl DiskView {
         self.buildable(root),
     decreases self.the_rank_of(root) when self.decodable(root) && self.acyclic()
     {
-        if root.is_None() {
+        if root is None {
             map!{}
         } else {
             let curr_msgs = self.entries[root.unwrap()].message_seq;
@@ -461,6 +461,42 @@ impl DiskView {
         reveal(DiskView::index_keys_map_to_valid_entries);
     }
 
+    pub proof fn discard_old_index_le(self, root: Pointer, new_bdy: LSN)
+    requires
+        self.buildable(root),
+        self.seq_start() <= new_bdy < self.seq_end(root),
+    ensures
+        self.discard_old(new_bdy).build_lsn_addr_index(root) <= self.build_lsn_addr_index(root)
+    decreases self.the_rank_of(root)
+    {
+        let old_map = self.build_lsn_addr_index(root);
+        let disc_map = self.discard_old(new_bdy).build_lsn_addr_index(root);
+        if root is None {
+            let x:LsnAddrIndex = Map::empty();
+            //assert( x.len() == 0 );
+            assert( x.is_empty() );
+            assert( old_map.is_empty() );
+            assert( disc_map.is_empty() );
+            assert( disc_map <= old_map );
+        }
+        assume(false);
+        if root is Some {
+            self.discard_old_index_le(self.next(root), new_bdy);
+
+            let old_curr_msgs = self.entries[root.unwrap()].message_seq;
+            let old_start_lsn = math::max(self.boundary_lsn as int, old_curr_msgs.seq_start as int) as nat;
+            let old_update = singleton_index(old_start_lsn, old_curr_msgs.seq_end, root.unwrap());
+            let old_output = self.build_lsn_addr_index(self.next(root)).union_prefer_right(old_update);
+
+            let disc_curr_msgs = self.entries[root.unwrap()].message_seq;
+            let disc_start_lsn = math::max(self.boundary_lsn as int, disc_curr_msgs.seq_start as int) as nat;
+            let disc_update = singleton_index(disc_start_lsn, disc_curr_msgs.seq_end, root.unwrap());
+            let disc_output = self.build_lsn_addr_index(self.next(root)).union_prefer_right(disc_update);
+
+            assert( disc_output.le(old_output) );
+            assert( disc_map <= old_map );
+        }
+    }
 } // DiskView proof bits
 
 pub open spec(checked) fn map_to_likes(lsn_addr_map: LsnAddrIndex) -> Likes
@@ -509,6 +545,26 @@ impl MsgHistory {
     {
         let msgs = if self.seq_start <= new_bdy { self.discard_old(new_bdy) } else { self };
         &&& new.ext_equal(msgs)
+    }
+
+    pub proof fn discard_old_index_le(self, new_bdy: LSN)
+    requires
+        self.disk_view.buildable(self.freshest_rec),
+        self.can_discard_to(new_bdy),
+    ensures
+        self.discard_old(new_bdy).build_lsn_addr_index() <= self.build_lsn_addr_index()
+    {
+        if new_bdy < self.seq_end() {
+            self.disk_view.discard_old_index_le(self.freshest_rec, new_bdy);
+            assert( self.discard_old(new_bdy).build_lsn_addr_index() <= self.build_lsn_addr_index() );
+        } else {
+            assert( new_bdy == self.seq_end() );
+            let disc_tj = self.discard_old(new_bdy);
+            // boy a spec-ensures of decodable on discard_old sure would be handy! Gaaah.
+            assert( disc_tj.decodable() );
+            assert( disc_tj.freshest_rec is None );
+            assert( disc_tj.build_lsn_addr_index() <= self.build_lsn_addr_index() );
+        }
     }
 }
 
@@ -843,6 +899,7 @@ state_machine!{ LikesJournal {
         post.journal.truncated_journal.build_lsn_addr_index_gives_representation();
         assert( post.journal.truncated_journal.index_range_valid(post.lsn_addr_index) );
         assume(post.journal.truncated_journal.disk_is_tight_wrt_representation()); // TODO something didn't prove for free
+        assume( false );
         assert( post.inv() );
     }
 

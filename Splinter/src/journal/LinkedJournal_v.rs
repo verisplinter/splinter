@@ -516,7 +516,7 @@ impl DiskView {
         if root.is_Some() {
             self.build_tight_builds_sub_disks(self.next(root));
         }
-//         assert( self.build_tight(root).is_sub_disk(self) ); // This line shouldn't be necessary
+        assert( self.build_tight(root).is_sub_disk(self) ); // This line shouldn't be necessary
     }
 
     // Dafny didn't need this proof
