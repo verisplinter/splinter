@@ -16,8 +16,15 @@ verus! {
 // Sequence marshalling
 //////////////////////////////////////////////////////////////////////////////
 
-pub trait SeqMarshalling<U, EltMarshalling: Marshalling<U>> : Marshalling<Vec<U>> {
-    spec fn spec_elt_marshalling(&self) -> EltMarshalling
+pub trait SeqMarshalling : Marshalling {
+    type ExecElt : View;
+    type EltMarshalling : Marshalling;
+
+    // Too bad "error[E0658]: associated type defaults are unstable"
+    // Guess all instances will have to repeat this definition. :v(
+    //type ExecType = Vec<U>;
+
+    spec fn spec_elt_marshalling(&self) -> Self::EltMarshalling
     ;
 
     // sure can't stand those spec ensures. Such a hassle!
@@ -28,7 +35,7 @@ pub trait SeqMarshalling<U, EltMarshalling: Marshalling<U>> : Marshalling<Vec<U>
         self.spec_elt_marshalling().valid()
     ;
 
-    exec fn exec_elt_marshalling(&self) -> (elt: EltMarshalling)
+    exec fn exec_elt_marshalling(&self) -> (elt: Self::EltMarshalling)
     ensures
         elt == self.spec_elt_marshalling(),
     ;
@@ -104,7 +111,7 @@ pub trait SeqMarshalling<U, EltMarshalling: Marshalling<U>> : Marshalling<Vec<U>
         self.spec_elt_marshalling().parsable(self.get_data(data, idx))
     }
 
-    spec fn get_elt(&self, data: Seq<u8>, idx: int) -> (elt: U)
+    spec fn get_elt(&self, data: Seq<u8>, idx: int) -> (elt: Self::ExecElt::V)
     recommends
         self.valid(),
         self.gettable(data, idx),
@@ -125,7 +132,7 @@ pub trait SeqMarshalling<U, EltMarshalling: Marshalling<U>> : Marshalling<Vec<U>
     // jonh skipped over the `exec fn get` that requires gettable, perhaps a useful optimization
     // for some other day..
 
-    exec fn try_get_elt(&self, slice: Slice, data: &Vec<u8>, idx: int) -> (oelt: Option<U>)
+    exec fn try_get_elt(&self, slice: Slice, data: &Vec<u8>, idx: int) -> (oelt: Option<Self::ExecElt>)
     requires
         self.valid(),
         slice.valid(data@),
@@ -162,7 +169,7 @@ pub trait SeqMarshalling<U, EltMarshalling: Marshalling<U>> : Marshalling<Vec<U>
     /////////////////////////////////////////////////////////////////////////
     // setting individual elements
     /////////////////////////////////////////////////////////////////////////
-    spec fn settable(&self, data: Seq<u8>, idx: int, value: U) -> bool
+    spec fn settable(&self, data: Seq<u8>, idx: int, value: Self::ExecElt) -> bool
     recommends
         self.valid(),
         self.spec_elt_marshalling().marshallable(&value)
@@ -182,7 +189,7 @@ pub trait SeqMarshalling<U, EltMarshalling: Marshalling<U>> : Marshalling<Vec<U>
     // if preserves_entry(data, middle) && preserves_entry(middle, new_data), then preserves_entry(data, new_data)
 //  proof fn preserves_entry_transitive(&self, data: Seq<u8>, idx: int, middle: Seq<u8>, new_data: Seq<u8>) -> bool
 
-    spec fn sets(&self, data: Seq<u8>, idx: int, value: U, new_data: Seq<u8>) -> bool
+    spec fn sets(&self, data: Seq<u8>, idx: int, value: Self::ExecElt::V, new_data: Seq<u8>) -> bool
     recommends
         self.valid(),
         self.spec_elt_marshalling().marshallable(&value),
@@ -199,7 +206,7 @@ pub trait SeqMarshalling<U, EltMarshalling: Marshalling<U>> : Marshalling<Vec<U>
         &&& self.get_elt(new_data, idx) == value
     }
     
-    fn is_settable(&self, slice: Slice, data: &Vec<u8>, idx: int, value: U) -> (s: bool)
+    exec fn is_settable(&self, slice: Slice, data: &Vec<u8>, idx: int, value: Self::ExecElt) -> (s: bool)
     requires
         self.valid(),
         self.spec_elt_marshalling().marshallable(&value)
@@ -207,7 +214,7 @@ pub trait SeqMarshalling<U, EltMarshalling: Marshalling<U>> : Marshalling<Vec<U>
         s == self.settable(slice.i(data@), idx, value)
     ;
     
-    fn exec_set(&self, slice: Slice, data: &mut Vec<u8>, idx: u64, value: U)
+    exec fn exec_set(&self, slice: Slice, data: &mut Vec<u8>, idx: u64, value: Self::ExecElt)
     requires
         self.valid(),
         slice.valid(old(data)@),
@@ -278,7 +285,7 @@ pub trait SeqMarshalling<U, EltMarshalling: Marshalling<U>> : Marshalling<Vec<U>
         &&& Self::elt_parsable_to_len(self, data, len as int)
     }
 
-    open spec fn parse_to_len(&self, data: Seq<u8>, len: u64) -> Seq<U>
+    open spec fn parse_to_len(&self, data: Seq<u8>, len: u64) -> Seq<Self::ExecElt::V>
     {
         Seq::new(len as nat, |i| self.get_elt(data, i))
     }
@@ -337,7 +344,9 @@ impl<C: ResizableUniformSizedElementSeqMarshallingConfig> ResizableUniformSizedE
     }
 }
 
-impl<C: ResizableUniformSizedElementSeqMarshallingConfig> Premarshalling<Vec<C::Elt>> for ResizableUniformSizedElementSeqMarshalling<C> {
+impl<C: ResizableUniformSizedElementSeqMarshallingConfig> Premarshalling for ResizableUniformSizedElementSeqMarshalling<C> {
+    type ExecType = Vec<C::Elt>;
+
     spec fn valid(&self) -> bool {
         &&& Self::size_of_length_field() <= self.total_size
         &&& self.length_marshalling.valid()
@@ -383,7 +392,7 @@ impl<C: ResizableUniformSizedElementSeqMarshallingConfig> Premarshalling<Vec<C::
     }
 }
 
-impl<C: ResizableUniformSizedElementSeqMarshallingConfig> Marshalling<Vec<C::Elt>> for ResizableUniformSizedElementSeqMarshalling<C> {
+impl<C: ResizableUniformSizedElementSeqMarshallingConfig> Marshalling for ResizableUniformSizedElementSeqMarshalling<C> {
     // TODO this is common to all implementations of SeqMarshalling; refactor out?
     spec fn parse(&self, data: Seq<u8>) -> Vec<C::Elt>
     recommends 
@@ -442,7 +451,9 @@ impl<C: ResizableUniformSizedElementSeqMarshallingConfig> Marshalling<Vec<C::Elt
     }
 }
 
-impl<C: ResizableUniformSizedElementSeqMarshallingConfig> SeqMarshalling<C::Elt, C::EltMarshalling> for ResizableUniformSizedElementSeqMarshalling<C> {
+impl<C: ResizableUniformSizedElementSeqMarshallingConfig> SeqMarshalling for ResizableUniformSizedElementSeqMarshalling<C> {
+    type ExecElt = C::Elt;
+    type EltMarshalling = C::EltMarshalling;
 
     spec fn spec_elt_marshalling(&self) -> C::EltMarshalling
     {

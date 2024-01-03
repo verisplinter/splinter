@@ -16,7 +16,7 @@ verus! {
 //////////////////////////////////////////////////////////////////////////////
 
 pub trait NativePackedInt {
-    type IntType;
+    type IntType : View;
 
     spec fn spec_size() -> u64
     ;
@@ -84,7 +84,9 @@ impl<U> PackedIntMarshalling<U> where U: NativePackedInt {
     }
 }
 
-impl<U> Premarshalling<U::IntType> for PackedIntMarshalling<U> where U: NativePackedInt {
+impl<U> Premarshalling for PackedIntMarshalling<U> where U: NativePackedInt {
+    type ExecType = U::IntType;
+
     open spec fn valid(&self) -> bool
     {
         true
@@ -102,7 +104,8 @@ impl<U> Premarshalling<U::IntType> for PackedIntMarshalling<U> where U: NativePa
     fn exec_parsable(&self, slice: Slice, data: &Vec<u8>) -> (p: bool)
     {
         assume( false );// TODO mitigate crash #952
-        U::exec_size() <= data.len() as u64
+//        U::exec_size() <= data.len() as u64
+        true
     }
 
     open spec fn marshallable(&self, value: &U::IntType) -> bool
@@ -114,13 +117,15 @@ impl<U> Premarshalling<U::IntType> for PackedIntMarshalling<U> where U: NativePa
     closed spec fn spec_size(&self, value: &U::IntType) -> u64
     {
 //        assume( false );// TODO mitigate crash #952
-        U::spec_size()
+//        U::spec_size()
+       0
     }
 
     fn exec_size(&self, value: &U::IntType) -> (sz: u64)
     {
         assume( false );// TODO mitigate crash #952
-        U::exec_size()
+//        U::exec_size()
+       0
     }
 }
 
@@ -140,7 +145,7 @@ impl NativePackedInt for u32 {
     open spec fn as_u64(&self) -> u64 { *self as u64 }
 }
 
-impl Marshalling<u32> for PackedIntMarshalling<u32> {
+impl Marshalling for PackedIntMarshalling<u32> {
     open spec fn parse(&self, data: Seq<u8>) -> u32
     {
         spec_u32_from_le_bytes(data.subrange(0, 4))
@@ -183,7 +188,7 @@ impl NativePackedInt for u64 {
     open spec fn as_u64(&self) -> u64 { *self }
 }
 
-impl Marshalling<u64> for PackedIntMarshalling<u64> {
+impl Marshalling for PackedIntMarshalling<u64> {
     open spec fn parse(&self, data: Seq<u8>) -> u64
     {
         spec_u64_from_le_bytes(data.subrange(0, 8))
