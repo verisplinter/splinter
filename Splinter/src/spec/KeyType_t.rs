@@ -1,3 +1,5 @@
+// Copyright 2018-2023 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
+// SPDX-License-Identifier: BSD-2-Clause
 #![allow(unused_imports)]
 
 use builtin_macros::*;
@@ -62,6 +64,13 @@ impl Key {
         } else {
             1 + Key::largest_lt(run.subrange(1, run.len() as int), needle)
         }
+    }
+
+    pub open spec(checked) fn map_pivoted_union<V>(left: Map<Key, V>, pivot: Key, right: Map<Key, V>) -> Map<Key, V>
+    {
+        let restricted_left = left.restrict(Set::new(|key| Self::lt(key, pivot)));
+        let restricted_right = right.restrict(Set::new(|key| Self::lte(pivot, key)));
+        restricted_left.union_prefer_right(restricted_right)
     }
 }
 

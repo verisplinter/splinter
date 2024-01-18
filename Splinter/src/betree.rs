@@ -1,3 +1,5 @@
+// Copyright 2018-2023 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
+// SPDX-License-Identifier: BSD-2-Clause
 pub mod Buffer_v;
 pub mod BufferSeq_v;
 pub mod OffsetMap_v;
@@ -16,3 +18,5 @@ pub mod LinkedBetree_v;
 pub mod LinkedBufferSeq_v;
 pub mod LinkedBetreeRefinement_v;
 pub mod PivotBranch_v;
+pub mod PivotBranchRefinement_v;
+pub mod LinkedBranch_v;

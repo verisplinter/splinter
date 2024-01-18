@@ -1,4 +1,4 @@
-// Copyright 2018-2021 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, and University of Washington
+// Copyright 2018-2023 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
 
 #![allow(unused_imports)]
@@ -519,7 +519,7 @@ impl PagedJournal::State {
             PagedJournal::Step::internal_journal_marshal(cut) => {
                 self.marshall_refines(post, lbl, cut);
             }
-            PagedJournal::Step::internal_journal_no_op() => {
+            PagedJournal::Step::internal_no_op() => {
                 //assert_maps_equal!( post.i().journal.msgs, self.i().journal.msgs );    // newly required extensionality; this branch used to be a freebie.
                 assert(AbstractJournal::State::next_by(self.i(), post.i(), lbl.i(), AbstractJournal::Step::internal())); // new witness
             }

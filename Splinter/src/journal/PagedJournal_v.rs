@@ -1,4 +1,4 @@
-// Copyright 2018-2021 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, and University of Washington
+// Copyright 2018-2023 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
 
 #[allow(unused_imports)]
@@ -507,7 +507,7 @@ state_machine!{ PagedJournal {
         update unmarshalled_tail = pre.unmarshalled_tail.discard_old(cut);
     }}
 
-    transition!{ internal_journal_no_op(lbl: Label) {
+    transition!{ internal_no_op(lbl: Label) {
         require lbl.is_Internal();
     }}
 
