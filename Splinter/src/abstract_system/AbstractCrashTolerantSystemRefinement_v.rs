@@ -14,7 +14,7 @@ use crate::spec::FloatingSeq_t::*;
 use crate::spec::MapSpec_t;
 use crate::spec::MapSpec_t::*;
 use crate::spec::Messages_t::*;
-use crate::spec::Option_t;
+// use crate::spec::Option_t;
 use crate::spec::TotalKMMap_t;
 
 use crate::abstract_system::AbstractCrashAwareJournal_v;
@@ -64,7 +64,7 @@ verus! {
                     _ => true,
                 }
             &&& match self.in_flight {
-                    Option_t::Option::Some(v) => v.value.wf(),
+                    Some(v) => v.value.wf(),
                     _ => true
                 }
         }
@@ -626,7 +626,7 @@ verus! {
             v.inv(),
             CoordinationSystem::State::next(v, vp, label),
             CoordinationSystem::State::next_by(v, vp, label, step),
-            matches!(step, CoordinationSystem::Step::commit_start(_, _, _)),
+            matches!(step, CoordinationSystem::Step::commit_start(_)),
         ensures
             vp.inv()
     {

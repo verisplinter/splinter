@@ -1,32 +1,24 @@
 // Copyright 2018-2023 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
 
-#![allow(unused_imports)]
-use builtin::*;
-
 use builtin_macros::*;
-use state_machines_macros::state_machine;
-
 use vstd::prelude::*;
 use crate::abstract_system::StampedMap_v::LSN;
-use crate::abstract_system::MsgHistory_v::*;
 use crate::disk::GenericDisk_v::*;
-use crate::journal::LinkedJournal_v;
 use crate::journal::LinkedJournal_v::{LinkedJournal, DiskView, TruncatedJournal};
 use crate::journal::LikesJournal_v;
 use crate::journal::LikesJournal_v::{LikesJournal};
-use crate::allocation_layer::AllocationJournal_v;
 use crate::allocation_layer::AllocationJournal_v::*;
 
 verus!{
 
 impl AllocationJournal::Step {
-    proof fn i(self) -> LikesJournal::Step {
+    pub open spec fn i(self) -> LikesJournal::Step {
         match self {
             Self::read_for_recovery() =>
                 LikesJournal::Step::read_for_recovery(),
-            Self::freeze_for_commit() =>
-                LikesJournal::Step::freeze_for_commit(),
+            Self::freeze_for_commit(depth) =>
+                LikesJournal::Step::freeze_for_commit(depth),
             Self::query_end_lsn() =>
                 LikesJournal::Step::query_end_lsn(),
             Self::put(new_journal) =>
@@ -66,67 +58,23 @@ impl AllocationJournal::Label {
     }
 }
 
-// impl DiskView{
-
-//     // can crop
-//     // if next is present, then next is the same
-
-//     // representation
-
-
-//     // pub proof fn build_tight_preserves_crop(self, root: Pointer, depth: nat)
-//     // requires 
-//     //     self.decodable(root),
-//     //     self.acyclic(),
-//     //     self.block_in_bounds(root),
-//     // ensures 
-//     //     self.build_tight(root).decodable(root),
-//     //     self.build_tight(root).block_in_bounds(root),
-//     //     self.build_tight(root).can_crop(root, depth) == self.can_crop(root, depth),
-//     //     // self.build_tight(root).pointer_after_crop(root, depth) == self.pointer_after_crop(root, depth)
-//     // decreases depth
-//     // {
-//     //     DiskView::tight_interp(self, root, self.build_tight(root));
-//     //     if depth > 0 {
-//     //         if root is Some {
-//     //             self.build_tight_preserves_crop(self.next(root), (depth-1) as nat);
-
-//     //             assert(self.build_tight(self.next(root)).can_crop(self.next(root), (depth-1) as nat) 
-//     //                 == self.can_crop(self.next(root), (depth-1) as nat));
-
-//     //             self.build_tight_shape(root);
-
-//     //             if self.can_crop(root, depth) {
-//     //                 assume(false);
-//     //             } else if self.build_tight(root).can_crop(root, depth) {
-//     //                 assert(root.is_Some());
-//     //                 assert(self.build_tight(root).can_crop(self.next(root), (depth-1) as nat));
-//     //                 assert(self.next(root) != root);
-
-
-//     //                 // self.build_tight(self.next(root)) == Self{entries: self.build_tight(root).entries.remove(root.unwrap()), ..self})
-
-//     //                 // self.build_tight(self.next(root)).can_crop(self.next(root), (depth-1) as nat) is false
-
-
-//     //                 // assert(self.build_tight(root).next(root) == self.next(root));
-
-//     //                 // assert(self.build_tight(self.next(root)).can_crop(self.next(root), (depth-1) as nat));
-
-//     //                 // assert(self.build_tight(root).can_crop(self.next(root), (depth-1) as nat) == 
-//     //                 //     self.can_crop(self.next(root), (depth-1) as nat)
-//     //                 // );
-//     //                 assert(false);
-//     //             }
-//     //     //         self.build_tight_shape(root);
-//     //     //     }
-//     //     //     // if self.next(root) is Some {
-//     //     //     //     // we are saying this isn't decodable
-//     //     //     //     self.build_tight_ranks(self.next(root));
-//     //         } 
-//     //     }
-//     // }
-// }
+impl DiskView{
+    // TODO(jonh): this lemma should just be an ensures on build_lsn_au_index_page_walk.
+    pub proof fn build_lsn_au_index_page_walk_consistency(self, root: Pointer)
+    requires
+        self.decodable(root),
+        self.acyclic(),
+    ensures
+        self.build_lsn_addr_index(root).dom() =~= self.build_lsn_au_index_page_walk(root).dom(),
+        forall |lsn| self.build_lsn_addr_index(root).contains_key(lsn) ==>
+            #[trigger] self.build_lsn_addr_index(root)[lsn].au == self.build_lsn_au_index_page_walk(root)[lsn]
+    decreases self.the_rank_of(root)
+    {
+        if root.is_Some() {
+            self.build_lsn_au_index_page_walk_consistency(self.next(root));
+        }
+    }
+}
 
 // The thrilling climax, the actual proof goal we want to use in lower
 // refinement layers.
@@ -138,6 +86,68 @@ impl AllocationJournal::State {
             journal: self.journal,
             lsn_addr_index: self.tj().build_lsn_addr_index()
         }
+    }
+
+    pub proof fn freeze_for_commit_refines(self, post: Self, lbl: AllocationJournal::Label, depth: nat)
+        requires self.inv(), post.inv(), Self::freeze_for_commit(self, post, lbl, depth)
+        ensures LikesJournal::State::next_by(self.i(), post.i(), lbl.i(), LikesJournal::Step::freeze_for_commit(depth))
+    {
+        reveal(AllocationJournal::State::next);
+        reveal(AllocationJournal::State::next_by);
+        reveal(LikesJournal::State::next_by);
+
+        let frozen_journal = lbl.get_FreezeForCommit_frozen_journal();
+        let frozen_root = frozen_journal.tj.freshest_rec;
+        let new_bdy = frozen_journal.tj.seq_start();
+
+        assert(Self::next_by(self, post, lbl, AllocationJournal::Step::freeze_for_commit(depth)));
+        Self::frozen_journal_is_valid_image(self, post, lbl);
+        assert(frozen_journal.tj.decodable());
+
+        self.tj().crop_ensures(depth);
+        self.tj().disk_view.pointer_after_crop_seq_end(self.tj().freshest_rec, depth);
+        assert(frozen_journal.tj.seq_end() <= self.tj().seq_end());
+
+        let post_discard = self.tj().crop(depth).discard_old(new_bdy);
+        let frozen_lsns = Set::new(|lsn: LSN| new_bdy <= lsn && lsn < post_discard.seq_end());
+        let frozen_index = self.lsn_au_index.restrict(frozen_lsns);
+        let i_frozen_index = self.i().lsn_addr_index.restrict(frozen_lsns);
+
+        let addrs_past_new_end = Set::new(|addr: Address| frozen_root.unwrap().after_page(addr));
+        let frozen_addrs = Set::new(|addr: Address| addr.wf() && frozen_index.values().contains(addr.au)) - addrs_past_new_end;
+
+        self.tj().build_lsn_au_index_ensures(self.first);
+        self.tj().disk_view.build_lsn_au_index_equiv_page_walk(self.tj().freshest_rec, self.first);
+        self.tj().disk_view.build_lsn_au_index_page_walk_consistency(self.tj().freshest_rec);
+        self.tj().disk_view.build_lsn_addr_index_reflects_disk_view(self.tj().freshest_rec);
+
+        if frozen_root is Some {
+            assert forall |lsn| #[trigger] i_frozen_index.contains_key(lsn)
+            implies !addrs_past_new_end.contains(i_frozen_index[lsn])
+            by {
+                let addr = i_frozen_index[lsn];
+    
+                self.tj().build_lsn_addr_index_ensures();
+                assert(self.tj().disk_view.index_keys_map_to_valid_entries(self.i().lsn_addr_index));
+                self.tj().disk_view.instantiate_index_keys_map_to_valid_entries(self.i().lsn_addr_index, lsn);
+    
+                assert(self.i().lsn_addr_index[lsn] == addr);
+                assert(self.tj().disk_view.addr_supports_lsn(addr, lsn));
+    
+                if addrs_past_new_end.contains(addr) {
+                    assert(frozen_root.unwrap().after_page(addr));
+
+                    let last_frozen_lsn = (frozen_journal.tj.seq_end()-1) as nat;
+                    assert(self.lsn_au_index.contains_key(last_frozen_lsn)); // trigger
+                    assert(self.tj().disk_view.addr_supports_lsn(frozen_root.unwrap(), last_frozen_lsn));
+                    assert(self.tj().disk_view.addr_supports_lsn(addr, lsn));
+                    reveal(DiskView::pages_allocated_in_lsn_order);
+                    assert(false);
+                }
+            }
+        }
+
+        assert(i_frozen_index.values() <= frozen_addrs);
     }
 
     pub proof fn discard_old_refines(self, post: Self, lbl: AllocationJournal::Label, new_journal: LinkedJournal::State)
@@ -169,9 +179,9 @@ impl AllocationJournal::State {
         if post.tj().freshest_rec is Some {
             post.tj().disk_view.build_lsn_addr_index_domain_valid(self.tj().freshest_rec);
         }
+
         assert(post.i().lsn_addr_index =~= lsn_addr_index_post);
         assert(self.lsn_au_index == self.tj().build_lsn_au_index(self.first));
-        assert(lsn_addr_index_post.dom() =~= post.lsn_au_index.dom());
 
         self.tj().disk_view.build_lsn_au_index_equiv_page_walk(self.tj().freshest_rec, self.first);
         self.tj().disk_view.build_lsn_au_index_page_walk_consistency(self.tj().freshest_rec);
@@ -181,45 +191,53 @@ impl AllocationJournal::State {
         assert(self.tj().discard_old_cond(start_lsn, i_keep_addrs, new_journal.truncated_journal));
     }
 
-//     pub proof fn next_refines(self, post: Self, lbl: AllocationJournal::Label)
-//     requires
-//         self.inv(),
-//         post.inv(),
-//         AllocationJournal::State::next(self, post, lbl),
-//     ensures
-//         LikesJournal::State::next(self.i(), post.i(), lbl.i()),
-//     {
-//         reveal(LikesJournal::State::next_by);  // unfortunate defaults
-//         reveal(LikesJournal::State::next);
-//         reveal(AllocationJournal::State::next_by);
-//         reveal(AllocationJournal::State::next);
+    pub proof fn internal_journal_marshal_refines(self, post: Self, lbl: AllocationJournal::Label, 
+        cut: LSN, addr: Address, new_journal: LinkedJournal::State)
+        requires self.inv(), post.inv(), Self::internal_journal_marshal(self, post, lbl, cut, addr, new_journal)
+        ensures LikesJournal::State::next_by(self.i(), post.i(), lbl.i(), LikesJournal::Step::internal_journal_marshal(cut, addr, new_journal))
+    {
+        reveal(LikesJournal::State::next_by);
+        reveal(LinkedJournal::State::next_by);
+        self.tj().disk_view.sub_disk_repr_index(post.tj().disk_view, self.tj().freshest_rec);
+    }
 
-//         let step = choose |step| AllocationJournal::State::next_by(self, post, lbl, step);
-//         match step {
-//             AllocationJournal::Step::read_for_recovery() => {
-//                 self.read_for_recovery_refines(post, lbl);
-//             },
-//             AllocationJournal::Step::freeze_for_commit() => {
-//                 assume( LikesJournal::State::next_by(self.i(), post.i(), lbl.i(), LikesJournal::Step::freeze_for_commit()) );
-//             },
-//             AllocationJournal::Step::query_end_lsn() => {
-//                 assume( LikesJournal::State::next_by(self.i(), post.i(), lbl.i(), LikesJournal::Step::query_end_lsn()) );
-//             },
-//             AllocationJournal::Step::put(new_journal) => {
-//                 assume( LikesJournal::State::next_by(self.i(), post.i(), lbl.i(), LikesJournal::Step::put(new_journal)) );
-//             },
-//             AllocationJournal::Step::discard_old(new_journal) => {
-//                 self.discard_old_refines(post, lbl, new_journal);
-//             },
-//             AllocationJournal::Step::internal_journal_marshal(cut, addr, new_journal) => {
-//                 assume( LikesJournal::State::next_by(self.i(), post.i(), lbl.i(), LikesJournal::Step::internal_journal_marshal(cut, addr, new_journal)) );
-//             },
-//             _ => {
-//                 assert( LikesJournal::State::next_by(self.i(), post.i(), lbl.i(), LikesJournal::Step::internal_no_op()) );
-//             },
-//         }
-//     }
+    pub proof fn next_refines(self, post: Self, lbl: AllocationJournal::Label)
+    requires
+        self.inv(),
+        post.inv(),
+        AllocationJournal::State::next(self, post, lbl),
+    ensures
+        LikesJournal::State::next(self.i(), post.i(), lbl.i()),
+    {
+        reveal(LikesJournal::State::next_by);  // unfortunate defaults
+        reveal(LikesJournal::State::next);
+        reveal(AllocationJournal::State::next_by);
+        reveal(AllocationJournal::State::next);
 
+        let step = choose |step| AllocationJournal::State::next_by(self, post, lbl, step);
+        match step {
+            AllocationJournal::Step::freeze_for_commit(depth) => {
+                self.freeze_for_commit_refines(post, lbl, depth);
+            },
+            AllocationJournal::Step::discard_old(new_journal) => {
+                self.discard_old_refines(post, lbl, new_journal);
+            },
+            AllocationJournal::Step::internal_journal_marshal(cut, addr, new_journal) => {
+                self.internal_journal_marshal_refines(post, lbl, cut, addr, new_journal);
+            },
+            _ => {
+                reveal(LinkedJournal::State::next);
+                reveal(LinkedJournal::State::next_by);
+                assert( LikesJournal::State::next_by(self.i(), post.i(), lbl.i(), step.i()) );
+            },
+        }
+    }
+
+    pub proof fn init_refines(self, journal: LinkedJournal::State, image: JournalImage) 
+    requires AllocationJournal::State::initialize(self, journal, image)
+    ensures LikesJournal::State::initialize(self.i(), image.tj)
+    {
+    }
 }
 
 

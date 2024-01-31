@@ -8,7 +8,7 @@ use state_machines_macros::state_machine;
 #[allow(unused_imports)]
 use vstd::{map::*};
 
-use crate::spec::Option_t::*;
+// use crate::spec::Option_t::*;
 use crate::abstract_system::StampedMap_v::*;
 use crate::abstract_system::MsgHistory_v::*;
 use crate::abstract_system::AbstractJournal_v::*;
@@ -74,11 +74,10 @@ state_machine!{ CrashTolerantJournal {
         // Should only transition from a state where the ephemeral
         // state is unknown.
         // (Transition name is pretty comprehensive on this one)
-        load_ephemeral_from_persistent(lbl: Label, new_journal: AbstractJournal::State, journal_config: AbstractJournal::Config) {
+        load_ephemeral_from_persistent(lbl: Label, new_journal: AbstractJournal::State) {
             require lbl.is_LoadEphemeralFromPersistentLabel();
             require pre.ephemeral.is_Unknown();
-            require journal_config === AbstractJournal::Config::initialize(pre.persistent);
-            require AbstractJournal::State::init_by(new_journal, journal_config);
+            require AbstractJournal::State::init_by(new_journal, AbstractJournal::Config::initialize(pre.persistent));
             update ephemeral = Ephemeral::Known{ v: new_journal };
         }
     }
@@ -145,12 +144,12 @@ state_machine!{ CrashTolerantJournal {
     }
 
     transition!{
-        commit_start(lbl: Label, frozen_journal: StoreImage, new_journal: AbstractJournal::State) {
+        commit_start(lbl: Label, frozen_journal: StoreImage) {
             require lbl.is_CommitStartLabel();
             require pre.ephemeral.is_Known();
             // Can't start a commit if one is in-flight, or we'd forget to maintain the
             // invariants for the in-flight one.
-            require pre.in_flight.is_None();
+            require pre.in_flight is None;
             
             // The frozen_journal should be well formed
             require frozen_journal.wf();
@@ -165,10 +164,9 @@ state_machine!{ CrashTolerantJournal {
             require frozen_journal.seq_start <= lbl.get_CommitStartLabel_max_lsn();
             require AbstractJournal::State::next(
                 pre.ephemeral.get_Known_v(), 
-                new_journal, 
+                pre.ephemeral.get_Known_v(), 
                 AbstractJournal::Label::FreezeForCommitLabel{ frozen_journal: frozen_journal},
             );
-            update ephemeral = Ephemeral::Known{ v: new_journal };
             update in_flight = Option::Some(frozen_journal);
         }
     }
@@ -177,19 +175,19 @@ state_machine!{ CrashTolerantJournal {
         commit_complete(lbl: Label, new_journal: AbstractJournal::State) {
             require lbl.is_CommitCompleteLabel();
             require pre.ephemeral.is_Known();
-            require pre.in_flight.is_Some();
+            require pre.in_flight is Some;
 
             require AbstractJournal::State::next(
                 pre.ephemeral.get_Known_v(), 
                 new_journal, 
                 AbstractJournal::Label::DiscardOldLabel{ 
-                    start_lsn: pre.in_flight.get_Some_0().seq_start, 
+                    start_lsn: pre.in_flight.unwrap().seq_start, 
                     require_end: lbl.get_CommitCompleteLabel_require_end()
                 },
             );
             
             // Watch the `update` keyword!
-            update persistent = pre.in_flight.get_Some_0();
+            update persistent = pre.in_flight.unwrap();
             update ephemeral = Ephemeral::Known{ v: new_journal };
             update in_flight = Option::None;
         }
