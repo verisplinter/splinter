@@ -341,36 +341,36 @@ pub trait ResizableUniformSizedElementSeqMarshallingConfig {
 // Is there such a thing as a trait alias?
 //type RUSESMC = ResizableUniformSizedElementSeqMarshallingConfig;
 
-pub struct ResizableUniformSizedElementSeqMarshalling<C: ResizableUniformSizedElementSeqMarshallingConfig> {
+pub struct ResizableUniformSizedElementSeqMarshalling/*<C: ResizableUniformSizedElementSeqMarshallingConfig>*/ {
     pub total_size: usize,  // capacity in bytes
-    pub length_marshalling: C::LengthMarshalling,
+//    pub length_marshalling: C::LengthMarshalling,
 //x    pub elt_marshalling: C::EltMarshalling,
-    pub config: C,
+//    pub config: C,
 }
 
-impl<C: ResizableUniformSizedElementSeqMarshallingConfig> ResizableUniformSizedElementSeqMarshalling<C> {
+impl/*<C: ResizableUniformSizedElementSeqMarshallingConfig>*/ ResizableUniformSizedElementSeqMarshalling/*<C>*/ {
     pub open spec fn spec_size_of_length_field() -> usize
     {
-        C::LengthInt::spec_size()
+        7 //C::LengthInt::spec_size()
     }
 
     pub exec fn exec_size_of_length_field() -> (out: usize)
     ensures out == Self::spec_size_of_length_field(),
     {
-        C::LengthInt::exec_size()
+        7 // C::LengthInt::exec_size()
     }
 
     pub open spec fn spec_max_length(self) -> usize
     {
-        ((self.total_size - Self::spec_size_of_length_field()) / (self.config.spec_uniform_size() as int)) as usize
+        ((self.total_size - Self::spec_size_of_length_field()) / (7 /*self.config.spec_uniform_size()*/ as int)) as usize
     }
 
     exec fn exec_max_length(&self) -> usize
     requires
         self.valid(),
     {
-        proof { self.config.spec_uniform_size_ensures() };
-        (self.total_size - Self::exec_size_of_length_field()) / self.config.exec_uniform_size()
+        //proof { self.config.spec_uniform_size_ensures() };
+        (self.total_size - Self::exec_size_of_length_field()) / 7 /*self.config.exec_uniform_size()*/
     }
 }
 
@@ -380,10 +380,10 @@ Deepview<C::Elt> is not implementd for Vec<C::Elt>
 impl<VSE> Deepview<Seq<VSE>> for Vec<VSE> {
 */
 
-impl<C: ResizableUniformSizedElementSeqMarshallingConfig> Premarshalling<Seq<int>, Vec<u64>> /*<Seq<C::EltDV>, Vec<C::Elt>>*/ for ResizableUniformSizedElementSeqMarshalling<C> {
+impl Premarshalling<Seq<int>, Vec<u64>> for ResizableUniformSizedElementSeqMarshalling {
     open spec fn valid(&self) -> bool {
         &&& Self::spec_size_of_length_field() <= self.total_size
-        &&& self.length_marshalling.valid()
+        //&&& self.length_marshalling.valid()
 //x        &&& self.elt_marshalling.valid()
     }
 
@@ -403,8 +403,8 @@ impl<C: ResizableUniformSizedElementSeqMarshallingConfig> Premarshalling<Seq<int
     {
 //x        &&& forall |i| #![auto] 0 <= i < value.len() ==> self.elt_marshalling.marshallable(value[i])
 //x        &&& forall |i| #![auto] 0 <= i < value.len() ==> self.elt_marshalling.spec_size(value[i]) == self.config.spec_uniform_size()
-        &&& C::LengthInt::spec_this_fits_in_usize(value.len() as int)
-        &&& Self::spec_size_of_length_field() as int + value.len() * self.config.spec_uniform_size() as int <= self.total_size
+        //&&& C::LengthInt::spec_this_fits_in_usize(value.len() as int)
+        &&& Self::spec_size_of_length_field() as int + value.len() * 7 /*self.config.spec_uniform_size()*/ as int <= self.total_size
     }
 
     open spec fn spec_size(&self, value: Seq<int>) -> usize
@@ -418,7 +418,7 @@ impl<C: ResizableUniformSizedElementSeqMarshallingConfig> Premarshalling<Seq<int
     }
 }
 
-impl<C: ResizableUniformSizedElementSeqMarshallingConfig> Marshalling<Seq<int>, Vec<u64>> for ResizableUniformSizedElementSeqMarshalling<C>
+impl/*<C: ResizableUniformSizedElementSeqMarshallingConfig>*/ Marshalling<Seq<int>, Vec<u64>> for ResizableUniformSizedElementSeqMarshalling/*<C>*/
 {
     // TODO this is common to all implementations of SeqMarshalling; refactor out?
     open spec fn parse(&self, data: Seq<u8>) -> Seq<int>
@@ -501,11 +501,7 @@ impl<C: ResizableUniformSizedElementSeqMarshallingConfig> Marshalling<Seq<int>, 
     }
 }
 
-impl<C: ResizableUniformSizedElementSeqMarshallingConfig> SeqMarshalling/*<C::EltDV, C::Elt, C::EltMarshalling>*/ for ResizableUniformSizedElementSeqMarshalling<C>
-    //where <C::LengthMarshalling as Marshalling<int, <C::LengthInt as NativePackedInt<builtin::int>>::IntType>> :
-//     where C::LengthMarshalling :
-//         PackedIntMarshalling<int, <C::LengthInt as NativePackedInt<builtin::int>>>
-    //where <C::LengthInt as NativePackedInt<builtin::int>>::IntType : NativePackedInt<builtin::int>
+impl SeqMarshalling for ResizableUniformSizedElementSeqMarshalling
 {
 
 //x    open spec fn spec_elt_marshalling(&self) -> C::EltMarshalling
@@ -541,54 +537,57 @@ impl<C: ResizableUniformSizedElementSeqMarshallingConfig> SeqMarshalling/*<C::El
     open spec fn lengthable(&self, data: Seq<u8>) -> bool
     {
         &&& self.total_size as int <= data.len()
-        &&& self.length_marshalling.parsable(data.subrange(0, Self::spec_size_of_length_field() as int))
-        &&& C::LengthInt::spec_this_fits_in_usize(
-            self.length_marshalling.parse(data.subrange(0, Self::spec_size_of_length_field() as int)))
+//        &&& self.length_marshalling.parsable(data.subrange(0, Self::spec_size_of_length_field() as int))
+//         &&& C::LengthInt::spec_this_fits_in_usize(
+//             self.length_marshalling.parse(data.subrange(0, Self::spec_size_of_length_field() as int)))
     }
 
     open spec fn length(&self, data: Seq<u8>) -> int
     {
-        self.length_marshalling.parse(data.subrange(0, Self::spec_size_of_length_field() as int))
+//        self.length_marshalling.parse(data.subrange(0, Self::spec_size_of_length_field() as int))
+      7
     }
 
     exec fn try_length(&self, slice: &Slice, data: &Vec<u8>) -> (out: Option<usize>)
     {
-        // TODO(verus): Why are these trait requires not auto-triggering, but then asserting them works?
-        assert(slice.valid(data@));
-        assert(self.valid());
-        if slice.exec_len() < self.total_size {
-            assert( !self.lengthable(slice.i(data@)) );
-            None
-        } else {
-            // TODO(jonh): here's a place where we know it's parsable,
-            // but we're calling a try_parse method and wasting a conditional.
-            assert( self.length_marshalling.valid() );
-            let len_slice = slice.exec_sub(0, Self::exec_size_of_length_field());
-            proof {
-                self.length_marshalling.parsable_property(slice.i(data@));
-                // TODO(verus): line above should have been sufficient. https://github.com/verus-lang/verus/issues/964
-                let lm = self.length_marshalling;
-                let ld = len_slice.i(data@);
-                lm.parsable_property(ld);
-                assert( self.length_marshalling.parsable(len_slice.i(data@)) );
-            }
-            let o_parsed_len = self.length_marshalling.try_parse(&len_slice, data);
-            if o_parsed_len.is_none() {
-                assert( !self.lengthable(slice.i(data@)) );
-                None
-            } else {
-                assert( slice.i(data@).subrange(0, Self::spec_size_of_length_field() as int) == len_slice.i(data@) );   //subrange trigger
-                let parsed_len: <C::LengthInt as NativePackedInt>::IntType = o_parsed_len.unwrap();
-                if !C::LengthInt::exec_this_fits_in_usize(&parsed_len) {
-                    //assert( !self.lengthable(slice.i(data@)) );
-                    None
-                } else {
-                    let out = Some(C::LengthInt::to_usize(parsed_len));
-                    assert( out.unwrap() as int == self.length(slice.i(data@)) );   // trigger
-                    out
-                }
-            }
-        }
+        None
+//         // TODO(verus): Why are these trait requires not auto-triggering, but then asserting them works?
+//         assert(slice.valid(data@));
+//         assert(self.valid());
+//         if slice.exec_len() < self.total_size {
+//             assert( !self.lengthable(slice.i(data@)) );
+//             None
+//         } else {
+//             // TODO(jonh): here's a place where we know it's parsable,
+//             // but we're calling a try_parse method and wasting a conditional.
+//             //assert( self.length_marshalling.valid() );
+//             let len_slice = slice.exec_sub(0, Self::exec_size_of_length_field());
+// //             proof {
+// //                 self.length_marshalling.parsable_property(slice.i(data@));
+// //                 // TODO(verus): line above should have been sufficient. https://github.com/verus-lang/verus/issues/964
+// //                 let lm = self.length_marshalling;
+// //                 let ld = len_slice.i(data@);
+// //                 lm.parsable_property(ld);
+// //                 assert( self.length_marshalling.parsable(len_slice.i(data@)) );
+// //             }
+//             let o_parsed_len = self.length_marshalling.try_parse(&len_slice, data);
+//             if o_parsed_len.is_none() {
+//                 assert( !self.lengthable(slice.i(data@)) );
+//                 None
+//             } else {
+//                 assert( slice.i(data@).subrange(0, Self::spec_size_of_length_field() as int) == len_slice.i(data@) );   //subrange trigger
+//                 //let parsed_len: <C::LengthInt as NativePackedInt>::IntType = o_parsed_len.unwrap();
+//                 if true { // !C::LengthInt::exec_this_fits_in_usize(&parsed_len) {
+//                     //assert( !self.lengthable(slice.i(data@)) );
+//                     None
+//                 } else {
+//                     //let out = Some(C::LengthInt::to_usize(parsed_len));
+//                     //assert( out.unwrap() as int == self.length(slice.i(data@)) );   // trigger
+//                     //out
+//                     None
+//                 }
+//             }
+//         }
     }
 
     open spec fn gettable(&self, data: Seq<u8>, idx: int) -> bool
@@ -600,8 +599,8 @@ impl<C: ResizableUniformSizedElementSeqMarshallingConfig> SeqMarshalling/*<C::El
     open spec fn get(&self, slice: &Slice, data: Seq<u8>, idx: int) -> (eslice: Slice)
     {
         slice.spec_sub(
-            (Self::spec_size_of_length_field() + idx * self.config.spec_uniform_size()) as usize,
-            (Self::spec_size_of_length_field() + idx * self.config.spec_uniform_size() + self.config.spec_uniform_size()) as usize)
+            (Self::spec_size_of_length_field() + idx * 7 /*self.config.spec_uniform_size()*/) as usize,
+            (Self::spec_size_of_length_field() + idx * 7 /*self.config.spec_uniform_size()*/ + 7) as usize)
     }
 
     proof fn get_ensures(&self, slice: &Slice, data: Seq<u8>, idx: int)
@@ -609,8 +608,8 @@ impl<C: ResizableUniformSizedElementSeqMarshallingConfig> SeqMarshalling/*<C::El
         assert( self.valid() );
         assert( slice.valid(data) );
         assert( self.gettable(slice.i(data), idx) );
-        let i_start = (Self::spec_size_of_length_field() + idx * self.config.spec_uniform_size());
-        let i_end = (Self::spec_size_of_length_field() + idx * self.config.spec_uniform_size() + self.config.spec_uniform_size());
+        let i_start = (Self::spec_size_of_length_field() + idx * 7 /*self.config.spec_uniform_size()*/);
+        let i_end = (Self::spec_size_of_length_field() + idx * 7 /*self.config.spec_uniform_size()*/ + 7);
         assert( i_start <= i_end );
 
         assert( self.gettable(slice.i(data), idx) );
@@ -618,12 +617,12 @@ impl<C: ResizableUniformSizedElementSeqMarshallingConfig> SeqMarshalling/*<C::El
         assert(
             self.spec_max_length()
             <=
-            ((self.total_size - Self::spec_size_of_length_field()) / (self.config.spec_uniform_size() as int)) as usize
+            ((self.total_size - Self::spec_size_of_length_field()) / (7 as int)) as usize
             );
         assert(
-            ((self.total_size - Self::spec_size_of_length_field()) / (self.config.spec_uniform_size() as int)) as usize as int
+            ((self.total_size - Self::spec_size_of_length_field()) / (7 as int)) as usize as int
             ==
-            ((self.total_size - Self::spec_size_of_length_field()) / (self.config.spec_uniform_size() as int))
+            ((self.total_size - Self::spec_size_of_length_field()) / (7 as int))
         );
         assert( i_end <= self.spec_max_length() );
         assert( idx < self.spec_max_length() );
@@ -631,8 +630,8 @@ impl<C: ResizableUniformSizedElementSeqMarshallingConfig> SeqMarshalling/*<C::El
         assert( slice.start + i_end <= slice.end );
         assume(false);
 
-        let sub_start = (Self::spec_size_of_length_field() + idx * self.config.spec_uniform_size()) as usize;
-        let sub_end = (Self::spec_size_of_length_field() + idx * self.config.spec_uniform_size() + self.config.spec_uniform_size()) as usize;
+        let sub_start = (Self::spec_size_of_length_field() + idx * 7) as usize;
+        let sub_end = (Self::spec_size_of_length_field() + idx * 7 + 7) as usize;
         assert( i_end <= slice.end );
 //        assert( C::LengthInt::spec_fits_in_int_type(slice.end as int) ); // key
 //        assert( C::LengthInt::spec_fits_in_int_type(i_end) );
@@ -663,8 +662,8 @@ impl<C: ResizableUniformSizedElementSeqMarshallingConfig> SeqMarshalling/*<C::El
         let mlen = self.exec_max_length();
         if idx < mlen {
             Some(
-                slice.exec_sub(Self::exec_size_of_length_field() + idx * self.config.exec_uniform_size(),
-                Self::exec_size_of_length_field() + idx * self.config.exec_uniform_size() + self.config.exec_uniform_size()))
+                slice.exec_sub(Self::exec_size_of_length_field() + idx * 7,
+                Self::exec_size_of_length_field() + idx * 7 + 7))
         } else {
             None
         }
@@ -674,7 +673,7 @@ impl<C: ResizableUniformSizedElementSeqMarshallingConfig> SeqMarshalling/*<C::El
     {
         &&& self.lengthable(data)
         &&& idx < self.spec_max_length() as int
-//x        &&& self.elt_marshalling.spec_size(value) == self.config.spec_uniform_size()
+//x        &&& self.elt_marshalling.spec_size(value) == 7
     }
     
     exec fn is_settable(&self, slice: &Slice, data: &Vec<u8>, idx: usize, value: &u64) -> (s: bool)
@@ -685,7 +684,7 @@ impl<C: ResizableUniformSizedElementSeqMarshallingConfig> SeqMarshalling/*<C::El
 
         &&& !olen.is_none()
         &&& idx < self.exec_max_length()
-        &&& sz == self.config.exec_uniform_size()
+        &&& sz == 7
     }
     
     exec fn exec_set(&self, slice: &Slice, data: &mut Vec<u8>, idx: usize, value: &u64)
@@ -696,7 +695,7 @@ impl<C: ResizableUniformSizedElementSeqMarshallingConfig> SeqMarshalling/*<C::El
     {
         &&& self.lengthable(data)
         &&& newlen <= self.spec_max_length() as int
-        &&& C::LengthInt::spec_usize_fits_in_this(newlen)
+        //&&& C::LengthInt::spec_usize_fits_in_this(newlen)
     }
     
     exec fn is_resizable(&self, slice: &Slice, data: &Vec<u8>, newlen: usize) -> (r: bool)
@@ -704,7 +703,7 @@ impl<C: ResizableUniformSizedElementSeqMarshallingConfig> SeqMarshalling/*<C::El
         let olen = self.try_length(slice, data);
         &&& olen.is_some()
         &&& newlen <= self.exec_max_length()
-        &&& C::LengthInt::exec_usize_fits_in_this(&newlen)
+        //&&& C::LengthInt::exec_usize_fits_in_this(&newlen)
     }
 
     exec fn exec_resize(&self, slice: &Slice, data: &mut Vec<u8>, newlen: usize)
