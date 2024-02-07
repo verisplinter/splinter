@@ -20,8 +20,8 @@ verus! {
 // shall also implement Marshalling? Adding a subtype ":" is too strong, because
 // it forces them to implement it *first*, but their Marshalling implementation
 // should exploit this SeqMarshalling stuff.
-pub trait SeqMarshalling<DVE, U: Deepview<DVE>/*, EltMarshalling: Marshalling<DVE, U>*/>
-    : Premarshalling<Seq<DVE>, Vec<U>>
+pub trait SeqMarshalling/*<DVE, U: Deepview<DVE>, EltMarshalling: Marshalling<DVE, U>>*/
+    : Premarshalling<Seq<int>, Vec<u64>>
 {
 //x    spec fn spec_elt_marshalling(&self) -> EltMarshalling
 //x    ;
@@ -125,13 +125,13 @@ pub trait SeqMarshalling<DVE, U: Deepview<DVE>/*, EltMarshalling: Marshalling<DV
 //x        self.spec_elt_marshalling().parsable(self.get_data(data, idx))
     }
 
-    spec fn get_elt(&self, data: Seq<u8>, idx: int) -> (elt: DVE)
+    spec fn get_elt(&self, data: Seq<u8>, idx: int) -> (elt: int)
     recommends
         self.valid(),
         self.gettable(data, idx),
         self.elt_parsable(data, idx)
     {
-        arbitrary() //x
+        456 //x
 //x       self.spec_elt_marshalling().parse(self.get_data(data, idx))
     }
 
@@ -147,7 +147,7 @@ pub trait SeqMarshalling<DVE, U: Deepview<DVE>/*, EltMarshalling: Marshalling<DV
     // jonh skipped over the `exec fn get` that requires gettable, perhaps a useful optimization
     // for some other day..
 
-    exec fn try_get_elt(&self, slice: &Slice, data: &Vec<u8>, idx: usize) -> (oelt: Option<U>)
+    exec fn try_get_elt(&self, slice: &Slice, data: &Vec<u8>, idx: usize) -> (oelt: Option<u64>)
     requires
         self.valid(),
         slice.valid(data@),
@@ -162,7 +162,7 @@ pub trait SeqMarshalling<DVE, U: Deepview<DVE>/*, EltMarshalling: Marshalling<DV
         assert( slice.valid(data@) );
 //x        proof { self.spec_elt_marshalling(); }
         assert( slice.valid(data@) );
-        let oelt:Option<U> = 
+        let oelt:Option<u64> = 
             match self.try_get(slice, data, idx) {
                 None => None,
                 Some(slice) => {
@@ -185,7 +185,7 @@ pub trait SeqMarshalling<DVE, U: Deepview<DVE>/*, EltMarshalling: Marshalling<DV
     /////////////////////////////////////////////////////////////////////////
     // setting individual elements
     /////////////////////////////////////////////////////////////////////////
-    spec fn settable(&self, data: Seq<u8>, idx: int, value: DVE) -> bool
+    spec fn settable(&self, data: Seq<u8>, idx: int, value: int) -> bool
     recommends
         self.valid(),
 //x        self.spec_elt_marshalling().marshallable(value)
@@ -205,7 +205,7 @@ pub trait SeqMarshalling<DVE, U: Deepview<DVE>/*, EltMarshalling: Marshalling<DV
     // if preserves_entry(data, middle) && preserves_entry(middle, new_data), then preserves_entry(data, new_data)
 //  proof fn preserves_entry_transitive(&self, data: Seq<u8>, idx: int, middle: Seq<u8>, new_data: Seq<u8>) -> bool
 
-    spec fn sets(&self, data: Seq<u8>, idx: int, value: DVE, new_data: Seq<u8>) -> bool
+    spec fn sets(&self, data: Seq<u8>, idx: int, value: int, new_data: Seq<u8>) -> bool
     recommends
         self.valid(),
 //x        self.spec_elt_marshalling().marshallable(value),
@@ -222,7 +222,7 @@ pub trait SeqMarshalling<DVE, U: Deepview<DVE>/*, EltMarshalling: Marshalling<DV
         &&& self.get_elt(new_data, idx) == value
     }
     
-    exec fn is_settable(&self, slice: &Slice, data: &Vec<u8>, idx: usize, value: &U) -> (s: bool)
+    exec fn is_settable(&self, slice: &Slice, data: &Vec<u8>, idx: usize, value: &u64) -> (s: bool)
     requires
         self.valid(),
 //x        self.spec_elt_marshalling().marshallable(value.deepv())
@@ -230,7 +230,7 @@ pub trait SeqMarshalling<DVE, U: Deepview<DVE>/*, EltMarshalling: Marshalling<DV
         s == self.settable(slice.i(data@), idx as int, value.deepv())
     ;
     
-    exec fn exec_set(&self, slice: &Slice, data: &mut Vec<u8>, idx: usize, value: &U)
+    exec fn exec_set(&self, slice: &Slice, data: &mut Vec<u8>, idx: usize, value: &u64)
     requires
         self.valid(),
         slice.valid(old(data)@),
@@ -301,7 +301,7 @@ pub trait SeqMarshalling<DVE, U: Deepview<DVE>/*, EltMarshalling: Marshalling<DV
         &&& Self::elt_parsable_to_len(self, data, len as int)
     }
 
-    open spec fn parse_to_len(&self, data: Seq<u8>, len: int) -> Seq<DVE>
+    open spec fn parse_to_len(&self, data: Seq<u8>, len: int) -> Seq<int>
     {
         Seq::new(len as nat, |i| self.get_elt(data, i))
     }
@@ -380,7 +380,7 @@ Deepview<C::Elt> is not implementd for Vec<C::Elt>
 impl<VSE> Deepview<Seq<VSE>> for Vec<VSE> {
 */
 
-impl<C: ResizableUniformSizedElementSeqMarshallingConfig> Premarshalling<Seq<C::EltDV>, Vec<C::Elt>> for ResizableUniformSizedElementSeqMarshalling<C> {
+impl<C: ResizableUniformSizedElementSeqMarshallingConfig> Premarshalling<Seq<int>, Vec<u64>> /*<Seq<C::EltDV>, Vec<C::Elt>>*/ for ResizableUniformSizedElementSeqMarshalling<C> {
     open spec fn valid(&self) -> bool {
         &&& Self::spec_size_of_length_field() <= self.total_size
         &&& self.length_marshalling.valid()
@@ -399,7 +399,7 @@ impl<C: ResizableUniformSizedElementSeqMarshallingConfig> Premarshalling<Seq<C::
         return olen.is_some() && olen.unwrap() <= self.exec_max_length()
     }
 
-    open spec fn marshallable(&self, value: Seq<C::EltDV>) -> bool
+    open spec fn marshallable(&self, value: Seq<int>) -> bool
     {
 //x        &&& forall |i| #![auto] 0 <= i < value.len() ==> self.elt_marshalling.marshallable(value[i])
 //x        &&& forall |i| #![auto] 0 <= i < value.len() ==> self.elt_marshalling.spec_size(value[i]) == self.config.spec_uniform_size()
@@ -407,27 +407,27 @@ impl<C: ResizableUniformSizedElementSeqMarshallingConfig> Premarshalling<Seq<C::
         &&& Self::spec_size_of_length_field() as int + value.len() * self.config.spec_uniform_size() as int <= self.total_size
     }
 
-    open spec fn spec_size(&self, value: Seq<C::EltDV>) -> usize
+    open spec fn spec_size(&self, value: Seq<int>) -> usize
     {
         self.total_size
     }
 
-    exec fn exec_size(&self, value: &Vec<C::Elt>) -> (sz: usize)
+    exec fn exec_size(&self, value: &Vec<u64>) -> (sz: usize)
     {
         self.total_size
     }
 }
 
-impl<C: ResizableUniformSizedElementSeqMarshallingConfig> Marshalling<Seq<C::EltDV>, Vec<C::Elt>> for ResizableUniformSizedElementSeqMarshalling<C>
+impl<C: ResizableUniformSizedElementSeqMarshallingConfig> Marshalling<Seq<int>, Vec<u64>> for ResizableUniformSizedElementSeqMarshalling<C>
 {
     // TODO this is common to all implementations of SeqMarshalling; refactor out?
-    open spec fn parse(&self, data: Seq<u8>) -> Seq<C::EltDV>
+    open spec fn parse(&self, data: Seq<u8>) -> Seq<int>
     {
         self.parse_to_len(data, self.length(data))
     }
 
     // TODO this is common to all implementations of SeqMarshalling; refactor out?
-    exec fn try_parse(&self, slice: &Slice, data: &Vec<u8>) -> (ov: Option<Vec<C::Elt>>)
+    exec fn try_parse(&self, slice: &Slice, data: &Vec<u8>) -> (ov: Option<Vec<u64>>)
     {
         let olen = self.try_length(slice, data);
         let olen:Option<usize> = None;
@@ -438,7 +438,7 @@ impl<C: ResizableUniformSizedElementSeqMarshallingConfig> Marshalling<Seq<C::Elt
         }
         let len = olen.unwrap() as usize;
 
-        let mut vec = Vec::with_capacity(len as usize);
+        let mut vec:Vec<u64> = Vec::with_capacity(len as usize);
         let mut idx: usize = 0;
         while idx < len
         invariant
@@ -448,7 +448,7 @@ impl<C: ResizableUniformSizedElementSeqMarshallingConfig> Marshalling<Seq<C::Elt
                 forall |j| #![auto] 0 <= j < idx ==> vec.deepv()[j] == self.get_elt(data@, j),
         {
             let oelt = self.try_get_elt(slice, data, idx as usize);
-            let oelt:Option<C::Elt> = None;
+            let oelt:Option<u64> = None;
 
             if oelt.is_none() {
                 assert( !self.parsable(slice.i(data@)) );
@@ -463,7 +463,7 @@ impl<C: ResizableUniformSizedElementSeqMarshallingConfig> Marshalling<Seq<C::Elt
     }
 
     // TODO this is common to all implementations of SeqMarshalling; refactor out?
-    exec fn marshall(&self, value: &Vec<C::Elt>, data: &mut Vec<u8>, start: usize) -> (end: usize)
+    exec fn marshall(&self, value: &Vec<u64>, data: &mut Vec<u8>, start: usize) -> (end: usize)
 //     requires 
 //         self.valid(),
 //         self.marshallable(value.deepv()),
@@ -501,7 +501,7 @@ impl<C: ResizableUniformSizedElementSeqMarshallingConfig> Marshalling<Seq<C::Elt
     }
 }
 
-impl<C: ResizableUniformSizedElementSeqMarshallingConfig> SeqMarshalling<C::EltDV, C::Elt /*, C::EltMarshalling*/> for ResizableUniformSizedElementSeqMarshalling<C>
+impl<C: ResizableUniformSizedElementSeqMarshallingConfig> SeqMarshalling/*<C::EltDV, C::Elt, C::EltMarshalling>*/ for ResizableUniformSizedElementSeqMarshalling<C>
     //where <C::LengthMarshalling as Marshalling<int, <C::LengthInt as NativePackedInt<builtin::int>>::IntType>> :
 //     where C::LengthMarshalling :
 //         PackedIntMarshalling<int, <C::LengthInt as NativePackedInt<builtin::int>>>
@@ -670,14 +670,14 @@ impl<C: ResizableUniformSizedElementSeqMarshallingConfig> SeqMarshalling<C::EltD
         }
     }
 
-    open spec fn settable(&self, data: Seq<u8>, idx: int, value: C::EltDV) -> bool
+    open spec fn settable(&self, data: Seq<u8>, idx: int, value: int) -> bool
     {
         &&& self.lengthable(data)
         &&& idx < self.spec_max_length() as int
 //x        &&& self.elt_marshalling.spec_size(value) == self.config.spec_uniform_size()
     }
     
-    exec fn is_settable(&self, slice: &Slice, data: &Vec<u8>, idx: usize, value: &C::Elt) -> (s: bool)
+    exec fn is_settable(&self, slice: &Slice, data: &Vec<u8>, idx: usize, value: &u64) -> (s: bool)
     {
         let olen = self.try_length(slice, data);
         let sz:usize = 0; //x
@@ -688,7 +688,7 @@ impl<C: ResizableUniformSizedElementSeqMarshallingConfig> SeqMarshalling<C::EltD
         &&& sz == self.config.exec_uniform_size()
     }
     
-    exec fn exec_set(&self, slice: &Slice, data: &mut Vec<u8>, idx: usize, value: &C::Elt)
+    exec fn exec_set(&self, slice: &Slice, data: &mut Vec<u8>, idx: usize, value: &u64)
     {
     }
 
