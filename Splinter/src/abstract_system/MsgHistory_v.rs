@@ -109,11 +109,11 @@ impl MsgHistory {
     let result = self.concat(other);
     &&& result.wf()
     &&& (forall |x| result.contains(x) <==> (self.contains(x) || other.contains(x)))
-    &&& (other.is_empty() ==> result == self)
+    &&& (other is empty ==> result == self)
   }),
   {
     let result = self.concat(other);
-    if other.is_empty() {
+    if other is empty {
       assert_maps_equal!(result.msgs, self.msgs);
     }
   }
@@ -129,7 +129,7 @@ impl MsgHistory {
       let result = #[trigger] _self.concat(other);
       &&& result.wf()
       &&& (forall |x| result.contains(x) <==> (_self.contains(x) || other.contains(x)))
-      &&& (other.is_empty() ==> result == _self)
+      &&& (other is empty ==> result == _self)
     }
   {
     assert forall |_self: MsgHistory, other: MsgHistory|
@@ -141,7 +141,7 @@ impl MsgHistory {
       let result = #[trigger] _self.concat(other);
       &&& result.wf()
       &&& (forall |x| result.contains(x) <==> (_self.contains(x) || other.contains(x)))
-      &&& (other.is_empty() ==> result == _self)
+      &&& (other is empty ==> result == _self)
     }
     by
     {
@@ -178,7 +178,7 @@ impl MsgHistory {
         self.can_follow(orig.seq_end),
     decreases self.len() when self.wf()
   {
-    if self.is_empty() {
+    if self is empty {
       orig
     } else {
       // We define the application of a MsgHistory to a StampedMap recursively.
@@ -210,7 +210,7 @@ impl MsgHistory {
       self.apply_to_stamped_map(orig).value.wf(),
     decreases self.len()
   {
-    if !self.is_empty() {
+    if !self is empty {
       let last_lsn = (self.seq_end - 1) as nat;
       let sub_map = self.discard_recent(last_lsn).apply_to_stamped_map(orig);
       self.discard_recent(last_lsn).apply_to_stamped_map_wf_lemma(orig);
@@ -235,7 +235,7 @@ impl MsgHistory {
     decreases
       self.len()
   {
-    if !self.is_empty() {
+    if !self is empty {
       let last_lsn = (self.seq_end - 1) as nat;
       self.discard_recent(last_lsn).apply_to_stamped_map_length_lemma(orig);
     }

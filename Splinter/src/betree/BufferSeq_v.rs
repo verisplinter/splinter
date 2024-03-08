@@ -99,27 +99,27 @@ impl BufferSeq {
     }
 
     pub open spec /*XXX (checked)*/ fn i_filtered_from(self, offset_map: OffsetMap, idx: int) -> Buffer
-        recommends offset_map.is_total(), 0 <= idx <= self.len() 
+        recommends offset_map is total, 0 <= idx <= self.len() 
         decreases self.len() - idx when 0 <= idx <= self.len()
     {
         if self.len() == idx {
             Buffer::empty()
         } else {
             let bottom_buffer = self[idx].apply_filter(offset_map.active_keys(idx as nat));
-//            let _ = assert(new_offset_map.is_total());   // XXX: aargh what was the way to add proof text?
+//            let _ = assert(new_offset_map is total);   // XXX: aargh what was the way to add proof text?
             bottom_buffer.merge(self.i_filtered_from(offset_map, idx+1))
         }
     }
 
     pub open spec(checked) fn i_filtered(self, offset_map: OffsetMap) -> Buffer 
-      recommends offset_map.is_total()
+      recommends offset_map is total
     {
         self.i_filtered_from(offset_map, 0)
     }
 
     pub open spec(checked) fn key_in_buffer_filtered(self, offset_map: OffsetMap, from_idx: int, k: Key, buffer_idx: int) -> bool
     recommends
-        offset_map.is_total(),
+        offset_map is total,
         0 <= from_idx,
     {
         &&& self.key_in_buffer(from_idx, k, buffer_idx)
@@ -171,7 +171,7 @@ impl BufferSeq {
     }
 
     pub proof fn i_filtered_from_domain(self, offset_map: OffsetMap, idx: int)
-        requires offset_map.is_total(), 0 <= idx <= self.len()
+        requires offset_map is total, 0 <= idx <= self.len()
         ensures forall |k| self.i_filtered_from(offset_map, idx).map.contains_key(k)
             <==> exists |buffer_idx| self.key_in_buffer_filtered(offset_map, idx, k, buffer_idx)
         decreases self.len() - idx
@@ -208,7 +208,7 @@ impl BufferSeq {
 
     pub proof fn query_from_same_as_i_filtered(self, k: Key, buffer_idx: int, offset_map: OffsetMap)
         requires
-            offset_map.is_total(),
+            offset_map is total,
             0 <= buffer_idx <= self.len(),
             offset_map.offsets[k] <= self.len(),
         ensures ({

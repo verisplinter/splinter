@@ -32,7 +32,7 @@ verus! {
     {
         pub open spec(checked) fn i(self) -> MsgHistory
             recommends
-                self.ephemeral.is_Known()
+                self.ephemeral is Known
         {
             self.ephemeral.get_Known_v().journal
         }
@@ -41,7 +41,7 @@ verus! {
         {
             &&& self.persistent.wf()
             &&& self.ephemeral.wf()
-            &&& (self.in_flight.is_Some() ==> self.in_flight.get_Some_0().wf())
+            &&& (self.in_flight is Some ==> self.in_flight.get_Some_0().wf())
         }
     }
 
@@ -49,7 +49,7 @@ verus! {
     {
         pub open spec(checked) fn i(self) -> StampedMap
             recommends
-                self.ephemeral.is_Known()
+                self.ephemeral is Known
         {
             self.ephemeral.get_Known_v().stamped_map
         }
@@ -78,8 +78,8 @@ verus! {
         /// state.
         pub open spec(checked) fn ephemeral_seq_end(self) -> LSN
             recommends
-                self.ephemeral.is_Some(),
-                self.journal.ephemeral.is_Known(),
+                self.ephemeral is Some,
+                self.journal.ephemeral is Known,
         {
             self.journal.i().seq_end
         }
@@ -181,9 +181,9 @@ verus! {
         {
             &&& self.journal.wf()
             &&& self.mapadt.wf()
-            &&& self.ephemeral.is_Some() == self.journal.ephemeral.is_Known()
-            &&& self.journal.ephemeral.is_Known() == self.mapadt.ephemeral.is_Known()
-            &&& self.journal.in_flight.is_Some() ==> self.mapadt.in_flight.is_Some()
+            &&& self.ephemeral is Some == self.journal.ephemeral is Known
+            &&& self.journal.ephemeral is Known == self.mapadt.ephemeral is Known
+            &&& self.journal.in_flight is Some ==> self.mapadt.in_flight is Some
         }
 
         // Geometry refers to the boundaries between the journal and
@@ -196,7 +196,7 @@ verus! {
         pub open spec(checked) fn inv_ephemeral_geometry(self) -> bool
             recommends
                 self.wf(),
-                self.ephemeral.is_Some(),
+                self.ephemeral is Some,
         {
             // Ephemeral journal begins at persistent map
             &&& self.journal.i().can_follow(self.mapadt.persistent.seq_end)
@@ -215,7 +215,7 @@ verus! {
         pub open spec(checked) fn inv_ephemeral_value_agreement(self) -> bool
             recommends
                 self.wf(),
-                self.ephemeral.is_Some(),
+                self.ephemeral is Some,
                 self.inv_ephemeral_geometry()
         {
             // Ephemeral journal agrees with persistent journal
@@ -230,18 +230,18 @@ verus! {
 
         pub open spec(checked) fn map_is_frozen(self) -> bool
         {
-            self.mapadt.in_flight.is_Some()
+            self.mapadt.in_flight is Some
         }
 
         pub open spec(checked) fn commit_started(self) -> bool
         {
-            self.journal.in_flight.is_Some()
+            self.journal.in_flight is Some
         }
 
         pub open spec(checked) fn inv_frozen_map_geometry(self) -> bool
             recommends
                 self.wf(),
-                self.ephemeral.is_Some(),
+                self.ephemeral is Some,
                 self.map_is_frozen()
         {
             // frozen map hasn't passed ephemeral journal
@@ -253,7 +253,7 @@ verus! {
         pub open spec(checked) fn inv_frozen_map_value_agreement(self) -> bool
             recommends
                 self.wf(),
-                self.ephemeral.is_Some(),
+                self.ephemeral is Some,
                 self.inv_ephemeral_geometry(),
                 self.map_is_frozen(),
                 self.inv_frozen_map_geometry(),
@@ -279,7 +279,7 @@ verus! {
 
             // We need a well-behaved journal to relate in-flight state to.
             &&& self.wf()
-            &&& self.ephemeral.is_Some()
+            &&& self.ephemeral is Some
             &&& self.inv_ephemeral_geometry()
 
             // Geometry properties
@@ -321,8 +321,8 @@ verus! {
         {
             &&& self.wf()
             &&& self.inv_persistent_journal_geometry()
-            &&& self.ephemeral.is_None() ==> {!self.map_is_frozen() && !self.commit_started()}
-            &&& self.ephemeral.is_Some() ==>
+            &&& self.ephemeral is None ==> {!self.map_is_frozen() && !self.commit_started()}
+            &&& self.ephemeral is Some ==>
             {
                 &&& self.inv_ephemeral_geometry()
                 &&& self.inv_ephemeral_value_agreement()
@@ -413,14 +413,14 @@ verus! {
             // Dafny's able to figure this out without this line, idk
             // why Verus isn't, because of opaque `next_by` etc.? (But idk how
             // to reveal those for the requires list)
-            // v.ephemeral.is_Some(),
+            // v.ephemeral is Some,
             // // Same with this,
-            // v.journal.ephemeral.is_Known(),
+            // v.journal.ephemeral is Known,
             CoordinationSystem::State::next(v, vp, label),
             CoordinationSystem::State::next_by(v, vp, label, step),
             matches!(step, CoordinationSystem::Step::commit_complete(_, _)),
             // What we'd like to do ideally:
-            // step.is_commit_complete(),
+            // step is commit_complete,
             v.mapadt.persistent.seq_end <= lsn <= v.ephemeral_seq_end(),
             v.mapadt.in_flight.get_Some_0().seq_end <= lsn,
         ensures
@@ -438,8 +438,8 @@ verus! {
         reveal(AbstractJournal::State::next_by);
 
         // Passes with the reveal statements, fails without
-        assert(v.ephemeral.is_Some());
-        assert(v.journal.ephemeral.is_Known());
+        assert(v.ephemeral is Some);
+        assert(v.journal.ephemeral is Known);
 
         assert(CrashTolerantJournal::State::next(v.journal, vp.journal, CrashTolerantJournal::Label::CommitCompleteLabel {
             require_end: v.ephemeral.get_Some_0().map_lsn,
@@ -511,7 +511,7 @@ verus! {
         let left = MsgHistory::map_plus_history(MsgHistory::map_plus_history(x, y), z);
         let right = MsgHistory::map_plus_history(x, y.concat(z));
 
-        if !z.is_empty() {
+        if !z is empty {
             let ztrim = z.discard_recent((z.seq_end - 1) as nat);
             let yz = y.concat(z);
 
@@ -1084,7 +1084,7 @@ verus! {
         reveal(journal_overlaps_agree);
         
         let stable_lsn = vp.journal.persistent.seq_end;
-        if (v.ephemeral.is_Some())
+        if (v.ephemeral is Some)
         {
             // ACCEPTED (necessary): Discarding all indices >= seq_end should
             // result in the same MsgHistory (it wasn't seeing this originally
@@ -1163,7 +1163,7 @@ verus! {
 
         if (matches!(step, CoordinationSystem::Step::load_ephemeral_from_persistent(..)))
         {
-            assert(matches!(label.get_Label_ctam_label(), CrashTolerantAsyncMap::Label::Noop{..}));
+            assert(matches!(label.arrow_Label_ctam_label(), CrashTolerantAsyncMap::Label::Noop{..}));
         }
 
         // GOAL

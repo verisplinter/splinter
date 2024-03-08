@@ -27,7 +27,7 @@ impl Ephemeral
 {
     pub open spec(checked) fn wf(self) -> bool
     {
-      self.is_Known() ==> self.get_Known_v().wf()
+      self is Known ==> self.get_Known_v().wf()
     }
 }
 
@@ -73,8 +73,8 @@ state_machine!{ CrashTolerantJournal {
         // state is unknown.
         // (Transition name is pretty comprehensive on this one)
         load_ephemeral_from_persistent(lbl: Label, new_journal: AbstractJournal::State) {
-            require lbl.is_LoadEphemeralFromPersistentLabel();
-            require pre.ephemeral.is_Unknown();
+            require lbl is LoadEphemeralFromPersistentLabel;
+            require pre.ephemeral is Unknown;
             require AbstractJournal::State::init_by(new_journal, AbstractJournal::Config::initialize(pre.persistent));
             update ephemeral = Ephemeral::Known{ v: new_journal };
         }
@@ -85,8 +85,8 @@ state_machine!{ CrashTolerantJournal {
         // records in the label correspond to a real and valid slice
         // of the journal (rather than made up or random values).
         read_for_recovery(lbl: Label) {
-            require lbl.is_ReadForRecoveryLabel();
-            require pre.ephemeral.is_Known();
+            require lbl is ReadForRecoveryLabel;
+            require pre.ephemeral is Known;
 
             require AbstractJournal::State::next(
                 pre.ephemeral.get_Known_v(), 
@@ -98,8 +98,8 @@ state_machine!{ CrashTolerantJournal {
 
     transition!{
         query_end_lsn(lbl: Label) {
-            require lbl.is_QueryEndLsnLabel();
-            require pre.ephemeral.is_Known();
+            require lbl is QueryEndLsnLabel;
+            require pre.ephemeral is Known;
             require AbstractJournal::State::next(
                 pre.ephemeral.get_Known_v(), 
                 pre.ephemeral.get_Known_v(), 
@@ -110,8 +110,8 @@ state_machine!{ CrashTolerantJournal {
 
     transition!{
         put(lbl: Label, new_journal: AbstractJournal::State) {
-            require lbl.is_PutLabel();
-            require pre.ephemeral.is_Known();
+            require lbl is PutLabel;
+            require pre.ephemeral is Known;
             require AbstractJournal::State::next(
                 pre.ephemeral.get_Known_v(), 
                 new_journal, 
@@ -123,8 +123,8 @@ state_machine!{ CrashTolerantJournal {
 
     transition!{
         internal(lbl: Label, new_journal: AbstractJournal::State) {
-            require lbl.is_InternalLabel();
-            require pre.ephemeral.is_Known();
+            require lbl is InternalLabel;
+            require pre.ephemeral is Known;
             require AbstractJournal::State::next(
                 pre.ephemeral.get_Known_v(), 
                 new_journal,
@@ -136,15 +136,15 @@ state_machine!{ CrashTolerantJournal {
 
     transition!{
         query_lsn_persistence(lbl: Label) {
-            require lbl.is_QueryLsnPersistenceLabel();
+            require lbl is QueryLsnPersistenceLabel;
             require lbl.get_QueryLsnPersistenceLabel_sync_lsn() <= pre.persistent.seq_end;
         }
     }
 
     transition!{
         commit_start(lbl: Label, frozen_journal: StoreImage) {
-            require lbl.is_CommitStartLabel();
-            require pre.ephemeral.is_Known();
+            require lbl is CommitStartLabel;
+            require pre.ephemeral is Known;
             // Can't start a commit if one is in-flight, or we'd forget to maintain the
             // invariants for the in-flight one.
             require pre.in_flight is None;
@@ -171,8 +171,8 @@ state_machine!{ CrashTolerantJournal {
 
     transition!{
         commit_complete(lbl: Label, new_journal: AbstractJournal::State) {
-            require lbl.is_CommitCompleteLabel();
-            require pre.ephemeral.is_Known();
+            require lbl is CommitCompleteLabel;
+            require pre.ephemeral is Known;
             require pre.in_flight is Some;
 
             require AbstractJournal::State::next(
@@ -193,7 +193,7 @@ state_machine!{ CrashTolerantJournal {
 
     transition!{
         crash(lbl: Label) {
-            require lbl.is_CrashLabel();
+            require lbl is CrashLabel;
             update ephemeral = Ephemeral::Unknown;
             update in_flight = Option::None;
         }

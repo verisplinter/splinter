@@ -22,20 +22,20 @@ impl OffsetMap {
 
     pub open spec(checked) fn get(self, k: Key) -> nat
     recommends
-        self.is_total(),
+        self is total,
     {
         self.offsets[k]
     }
 
     pub open spec(checked) fn active_keys(self, offset: nat) -> Set<Key>
     recommends
-        self.is_total(),
+        self is total,
     {
         Set::new(|k| self.offsets[k] <= offset)
     }
 
     pub open spec(checked) fn decrement(self, i: nat) -> OffsetMap
-        // recommends self.is_total()
+        // recommends self is total
     {
         OffsetMap{ offsets: Map::new(|k| self.offsets.contains_key(k), 
             |k| if i <= self.offsets[k] { (self.offsets[k]-i) as nat } else { 0 as nat} )}

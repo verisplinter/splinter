@@ -162,7 +162,7 @@ pub struct QueryReceiptLine {
 impl QueryReceiptLine {
     pub open spec(checked) fn wf(self) -> bool {
         &&& self.node.wf()
-        &&& self.result.is_Define()
+        &&& self.result is Define
     }
 } //end impl QueryReceiptLine
 
@@ -359,7 +359,7 @@ state_machine!{ PagedBetree {
     transition!{ freeze_as(lbl: Label) {
         require let Label::FreezeAs{stamped_betree} = lbl;
         require pre.wf();
-        require pre.memtable.is_empty();
+        require pre.memtable is empty;
         require stamped_betree == Stamped{value: pre.root, seq_end: pre.memtable.seq_end};
     }}
 

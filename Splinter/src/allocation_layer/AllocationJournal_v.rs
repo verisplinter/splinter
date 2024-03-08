@@ -210,7 +210,7 @@ impl DiskView {
             &&& self.acyclic()
         }
     {
-        if root.is_None() {
+        if root is None {
             Map::empty()
         } else {
             let curr_msgs = self.entries[root.unwrap()].message_seq;
@@ -421,7 +421,7 @@ impl DiskView {
             self.tj_at(root).decodable(),
             self.tj_at(root).seq_end() == msgs.seq_start,
             msgs.wf(),
-            !msgs.is_empty(),
+            !msgs is empty,
             !self.entries.contains_key(new_addr),
         ensures
             ({
@@ -446,7 +446,7 @@ impl DiskView {
     pub proof fn bottom_properties(self, root: Pointer, first: AU)
         requires
             self.pointer_is_upstream(root, first),
-            root.is_Some(),
+            root is Some,
             root.unwrap().au != first,
         ensures  // TODO wish I had a superlet for bottom=first_page(root) here
 
@@ -517,7 +517,7 @@ impl DiskView {
     pub proof fn nonfirst_properties(self, root: Pointer, first: AU)
         requires
             self.pointer_is_upstream(root, first),
-            root.is_Some(),
+            root is Some,
             root.unwrap().au != first,
         ensures
             forall|ptr: Pointer|
@@ -748,7 +748,7 @@ impl DiskView {
     )
         requires
             self.pointer_is_upstream(root, first),
-            root.is_Some(),
+            root is Some,
             root.unwrap().au != first,
             prior_result == self.build_lsn_au_index_au_walk(self.next(first_page(root)), first),
         ensures
@@ -1396,7 +1396,7 @@ state_machine!{ AllocationJournal {
 
         update journal = post_linked_journal;
         update lsn_au_index = lsn_au_index_append_record(pre.lsn_au_index, marshalled_msgs, addr.au);
-        update first = if pre.journal.truncated_journal.freshest_rec.is_Some() { pre.first } else { addr.au };
+        update first = if pre.journal.truncated_journal.freshest_rec is Some { pre.first } else { addr.au };
         update mini_allocator = pre.mini_allocator.allocate_and_observe(addr);
     } }
 
@@ -1450,8 +1450,8 @@ state_machine!{ AllocationJournal {
 
     pub open spec(checked) fn mini_allocator_follows_freshest_rec(root: Pointer, allocator: MiniAllocator) -> bool
     {
-        allocator.curr.is_Some() ==> {
-            &&& root.is_Some()
+        allocator.curr is Some ==> {
+            &&& root is Some
             &&& root.unwrap().au == allocator.curr.unwrap()
             // &&& forall |addr| freshest_rec.unwrap().after_page(addr) ==> #[trigger] allocator.can_allocate(addr)
         }
@@ -1740,7 +1740,7 @@ state_machine!{ AllocationJournal {
 //         Self::discard_old(pre, post, lbl, new_journal),
 //         post.tj().disk_view.entries.contains_key(zaddr),
 //         post.tj().seq_start() < post.tj().disk_view.entries[zaddr].message_seq.seq_start,
-//         post.tj().freshest_rec.is_Some(),
+//         post.tj().freshest_rec is Some,
 //         zaddr.au != pre.first,
 //         zaddr.au != post.first,
 //         xaddr.au == zaddr.au,
@@ -1754,7 +1754,7 @@ state_machine!{ AllocationJournal {
 //         // Self::invoke_submodule_inv(pre, post);
 //         // Note to Pranav: here's a good example of a deep layer violation!
 //         let zpaged = post_dv.iptr(Some(zaddr));    // relies on LinkedJournal_Refinement
-//         assert( zpaged.is_Some() );
+//         assert( zpaged is Some );
 //         let zpaged = zpaged.unwrap();
 //         let zlsn = post_dv.entries[zaddr].message_seq.seq_start;
 //         let ylsn = (zlsn - 1) as nat;

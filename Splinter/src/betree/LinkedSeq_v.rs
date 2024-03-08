@@ -106,7 +106,7 @@ impl<T: QueryableDisk> LinkedSeq<T> {
 
     pub open spec(checked) fn key_in_buffer_filtered(self, dv: T, offset_map: OffsetMap, 
             from_idx: int, k: Key, idx: int) -> bool
-        recommends 0 <= from_idx, offset_map.is_total()
+        recommends 0 <= from_idx, offset_map is total
     {
         &&& self.key_in_buffer(dv, from_idx, k, idx)
         &&& offset_map.offsets[k] <= idx

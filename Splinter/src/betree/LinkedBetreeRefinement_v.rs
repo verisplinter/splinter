@@ -46,7 +46,7 @@ impl DiskView{
 //     ensures forall |addr| #[trigger] ranking.contains_key(addr) ==> ranking[addr] <= max
 //     decreases ranking.dom().len()
 // {
-//     if ranking.dom().is_empty() {
+//     if ranking.dom() is empty {
 //         assert forall |addr| #[trigger] ranking.contains_key(addr) 
 //         implies ranking[addr] <= 0 by { assert(false); }
 //         0
@@ -173,7 +173,7 @@ impl LinkedBetree{
 
             assert forall |i| (
                 #[trigger] out.valid_child_index(i)
-                && out.get_Node_children()[i as int].is_Node()
+                && out.get_Node_children()[i as int] is Node
                 && out.get_Node_children()[i as int].local_structure()    
             ) implies (
                 out.get_Node_children()[i as int].my_domain() == out.child_domain(i)
@@ -283,15 +283,15 @@ impl LinkedBetree{
     pub proof fn indexiness_commutes_with_i(self)
         requires self.acyclic(), self.has_root()
         ensures 
-            self.root().is_index() ==> self.i().is_index(),
-            self.root().is_leaf() ==> self.i().is_leaf()
+            self.root() is index ==> self.i() is index,
+            self.root() is leaf ==> self.i() is leaf
     {
         self.i_wf();
         self.i_children_lemma(self.the_ranking());
 
-        if self.root().is_index() {
+        if self.root() is index {
             assert forall |i:nat| 0 <= i < self.i().get_Node_children().len()
-            implies #[trigger] self.i().get_Node_children()[i as int].is_Node()
+            implies #[trigger] self.i().get_Node_children()[i as int] is Node
             by {
                 assert(self.root().valid_child_index(i));
             }
@@ -413,7 +413,7 @@ impl LinkedBetree{
             self.dv.entries.dom().contains(addr),
         ensures ({
             let node = self.dv.entries[addr];
-            &&& forall |i| #[trigger] node.valid_child_index(i) && node.children[i as int].is_Some() 
+            &&& forall |i| #[trigger] node.valid_child_index(i) && node.children[i as int] is Some 
                 ==> self.reachable_addrs_using_ranking(ranking).contains(node.children[i as int].unwrap())
         })
         decreases self.get_rank(ranking)
@@ -422,7 +422,7 @@ impl LinkedBetree{
         let reachable_addrs = self.reachable_addrs_using_ranking(ranking);
         self.reachable_addrs_using_ranking_closed(ranking);
 
-        assert forall |i| #[trigger] node.valid_child_index(i) && node.children[i as int].is_Some() 
+        assert forall |i| #[trigger] node.valid_child_index(i) && node.children[i as int] is Some 
         implies reachable_addrs.contains(node.children[i as int].unwrap())
         by {
             if addr == self.root.unwrap() {
@@ -745,7 +745,7 @@ impl LinkedBetree{
     //         self.split_parent(request, new_addrs).valid_ranking(new_ranking),
     //         new_ranking.dom() == ranking.dom() + new_addrs.repr()
     // {
-    //     let child_idx = request.get_child_idx();
+    //     let child_idx = request.xxxget_child_idx();
     //     let old_child_addr = self.root().children[child_idx as int].unwrap();
 
     //     let old_parent_rank = ranking[self.root.unwrap()];
@@ -765,8 +765,8 @@ impl LinkedBetree{
     //     assert forall |i| new_left_child.valid_child_index(i) ==> old_child.valid_child_index(i) by {} // trigger
     //     // assert(result.dv.node_children_respects_rank(new_ranking, new_addrs.left));
 
-    //     assert forall |i| request.is_SplitLeaf() && new_right_child.valid_child_index(i) ==> old_child.valid_child_index(i) by {} // trigger
-    //     assert forall |i| request.is_SplitIndex() && new_right_child.valid_child_index(i) ==> 
+    //     assert forall |i| request is SplitLeaf && new_right_child.valid_child_index(i) ==> old_child.valid_child_index(i) by {} // trigger
+    //     assert forall |i| request is SplitIndex && new_right_child.valid_child_index(i) ==> 
     //         old_child.valid_child_index(i + request->child_pivot_idx) by {} // trigger
     //     // assert(result.dv.node_children_respects_rank(new_ranking, new_addrs.right));
 
@@ -799,7 +799,7 @@ impl LinkedBetree{
         let result = self.split_parent(request, new_addrs);
         let new_ranking = self.split_new_ranking(request, new_addrs, self.the_ranking());
 
-        let child_idx = request.get_child_idx();
+        let child_idx = request.xxxget_child_idx();
         let old_child = self.child_at_idx(child_idx);
 
         self.i_wf();
@@ -855,7 +855,7 @@ impl LinkedBetree{
                 by {
                     assert(new_right_child.root().valid_child_index(j as nat));
 
-                    if request.is_SplitIndex() {
+                    if request is SplitIndex {
                         let pivot_idx = request->child_pivot_idx;
                         assert(old_child.root().valid_child_index((j + pivot_idx)  as nat));
 
@@ -1056,7 +1056,7 @@ impl LinkedBetree{
             self.i().can_compact(start, end, compacted_buffer)
     {
         self.i_wf();
-        assert(self.i().is_Node());
+        assert(self.i() is Node);
         assert(start < end <= self.i().get_Node_buffers().len());
 
         let compact_slice = self.root().buffers.slice(start as int, end as int);
@@ -1390,7 +1390,7 @@ impl Path{
                 self.betree_diskview_diff(replacement, path_addrs);
                 if addr == new_root_addr {
                     let node = result.dv.entries[addr];
-                    assert forall |i| #[trigger] node.valid_child_index(i) && node.children[i as int].is_Some()
+                    assert forall |i| #[trigger] node.valid_child_index(i) && node.children[i as int] is Some
                     implies {
                         &&& new_ranking.contains_key(node.children[i as int].unwrap())
                         &&& new_ranking[node.children[i as int].unwrap()] < new_ranking[addr]

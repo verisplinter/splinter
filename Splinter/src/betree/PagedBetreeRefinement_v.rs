@@ -84,7 +84,7 @@ impl BetreeNode {
     }
 
     proof fn push_empty_memtable_refines(self, memtable: Memtable)
-        requires self.wf(), memtable.is_empty()
+        requires self.wf(), memtable is empty
         ensures i_stamped_betree(Stamped{value: self, seq_end: memtable.seq_end})
             == i_stamped_betree(self.push_memtable(memtable))
     {

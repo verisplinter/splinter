@@ -70,7 +70,7 @@ impl DiskView{
             #[trigger] self.build_lsn_addr_index(root)[lsn].au == self.build_lsn_au_index_page_walk(root)[lsn]
     decreases self.the_rank_of(root)
     {
-        if root.is_Some() {
+        if root is Some {
             self.build_lsn_au_index_page_walk_consistency(self.next(root));
         }
     }

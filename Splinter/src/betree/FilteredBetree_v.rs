@@ -175,7 +175,7 @@ impl BetreeNode {
     pub open spec(checked) fn can_split_leaf(self, split_key: Key) -> bool
     {
         &&& self.wf()
-        &&& self.is_leaf()
+        &&& self is leaf
         &&& self.my_domain().contains(split_key)
         &&& self.my_domain()->start != to_element(split_key)
     }
@@ -203,7 +203,7 @@ impl BetreeNode {
     pub open spec(checked) fn can_split_index(self, pivot_idx: nat) -> bool
     {
         &&& self.wf()
-        &&& self.is_index()
+        &&& self is index
         &&& 0 < pivot_idx < self->pivots.num_ranges()
     }
 
@@ -444,7 +444,7 @@ impl QueryReceiptLine{
     pub open spec(checked) fn wf(self) -> bool
     {
         &&& self.node.wf()
-        &&& self.result.is_Define()
+        &&& self.result is Define
     }
 } // end impl QueryReceiptLine
 
@@ -552,7 +552,7 @@ impl Path{
     {
         &&& self.node.wf()
         &&& self.node.key_in_domain(self.key)
-        &&& (0 < self.depth ==> self.node.is_index())
+        &&& (0 < self.depth ==> self.node is index)
         &&& (0 < self.depth ==> self.subpath().valid())
     }
 
@@ -643,7 +643,7 @@ state_machine!{ FilteredBetree {
     transition!{ freeze_as(lbl: Label) {
         require let Label::FreezeAs{stamped_betree} = lbl;
         require pre.wf();
-        require pre.memtable.is_empty();
+        require pre.memtable is empty;
         require stamped_betree == Stamped{value: pre.root, seq_end: pre.memtable.seq_end};
     }}
 

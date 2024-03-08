@@ -46,7 +46,7 @@ state_machine!{ AbstractMap {
     /// A query transition represents querying the value in a map.
     transition!{
         query(lbl: Label) {
-            require lbl.is_QueryLabel();
+            require lbl is QueryLabel;
             require lbl.get_QueryLabel_end_lsn() == pre.stamped_map.seq_end;
             require lbl.get_QueryLabel_value() === pre.stamped_map.value[lbl.get_QueryLabel_key()].get_Define_value();
         }
@@ -57,7 +57,7 @@ state_machine!{ AbstractMap {
     transition!{
         // Apply the MsgHistory in the label to this.state 
         put(lbl: Label) {
-            require lbl.is_PutLabel();
+            require lbl is PutLabel;
             require lbl.get_PutLabel_puts().can_follow(pre.stamped_map.seq_end);
             update stamped_map = MsgHistory::map_plus_history(pre.stamped_map, lbl.get_PutLabel_puts());
         }
@@ -69,7 +69,7 @@ state_machine!{ AbstractMap {
     /// the current state.
     transition!{
         freeze_as(lbl: Label) {
-            require lbl.is_FreezeAsLabel();
+            require lbl is FreezeAsLabel;
             require lbl.get_FreezeAsLabel_stamped_map() === pre.stamped_map;
         }
     }
@@ -77,7 +77,7 @@ state_machine!{ AbstractMap {
     /// Internal transition for non-public-facing updates.
     transition!{
         internal(lbl: Label) {
-            require lbl.is_InternalLabel();
+            require lbl is InternalLabel;
         }
     }
 }}

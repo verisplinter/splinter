@@ -38,7 +38,7 @@ impl Memtable {
         recommends puts.wf(), puts.can_follow(self.seq_end)
         decreases puts.seq_end when puts.wf()
     {
-        if puts.is_empty() {
+        if puts is empty {
             self
         } else {
             let last_lsn = (puts.seq_end - 1) as nat;
