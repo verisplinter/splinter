@@ -280,9 +280,9 @@ impl<T: IntFormattable> Marshal for IntFormat<T>
         true
     }
 
-    open spec fn parsable(&self, data: Seq<u8>) -> bool
+    open spec fn parsable(&self, slice: SpecSlice, data: Seq<u8>) -> bool
     {
-        T::uniform_size() <= data.len()
+        T::uniform_size() <= slice.len()
     }
 
     exec fn exec_parsable(&self, slice: &Slice, data: &Vec<u8>) -> (p: bool)
@@ -294,12 +294,12 @@ impl<T: IntFormattable> Marshal for IntFormat<T>
             assert( l == slice@.i(data@).len() );
             if p {
                 assert( T::uniform_size() <= data@.len() );
-                assert( self.parsable(slice@.i(data@)) );
+                assert( self.parsable(slice@, data@) );
             } else {
-                assert( !self.parsable(slice@.i(data@)) );
+                assert( !self.parsable(slice@, data@) );
             }
         }
-        assert( p == self.parsable(slice@.i(data@)) );
+        assert( p == self.parsable(slice@, data@) );
         p
     }
 
@@ -318,9 +318,9 @@ impl<T: IntFormattable> Marshal for IntFormat<T>
         T::exec_uniform_size()
     }
 
-    open spec fn parse(&self, data: Seq<u8>) -> int
+    open spec fn parse(&self, slice: SpecSlice, data: Seq<u8>) -> int
     {
-        T::as_int(T::spec_from_le_bytes(data.subrange(0, T::uniform_size() as int)))
+        T::as_int(T::spec_from_le_bytes(slice.subslice(0, T::uniform_size() as int).i(data)))
     }
 
     exec fn try_parse(&self, slice: &Slice, data: &Vec<u8>) -> (ov: Option<T>)
@@ -333,10 +333,10 @@ impl<T: IntFormattable> Marshal for IntFormat<T>
             let sr = slice_subrange(data.as_slice(), slice.start, slice.start+T::exec_uniform_size());
             let parsed = T::from_le_bytes(sr);
             assert( sr@ == slice@.i(data@).subrange(0, T::uniform_size() as int) ); // trigger
-            assert( parsed.deepv() == self.parse(slice@.i(data@)) );
+            assert( parsed.deepv() == self.parse(slice@, data@) );
             Some(parsed)
         } else {
-            assert( !self.parsable(slice@.i(data@)) );
+            assert( !self.parsable(slice@, data@) );
             None
         }
     }

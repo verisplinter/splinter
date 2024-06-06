@@ -42,8 +42,10 @@ pub trait Marshal {
 
     spec fn valid(&self) -> bool;
 
-    spec fn parsable(&self, data: Seq<u8>) -> bool
-    recommends self.valid()
+    spec fn parsable(&self, slice: SpecSlice, data: Seq<u8>) -> bool
+    recommends
+        self.valid(),
+        slice.valid(data),
     ;
 
     exec fn exec_parsable(&self, slice: &Slice, data: &Vec<u8>) -> (p: bool)
@@ -51,7 +53,7 @@ pub trait Marshal {
         self.valid(),
         slice@.valid(data@),
     ensures
-        p == self.parsable(slice@.i(data@))
+        p == self.parsable(slice@, data@)
     ;
 
     spec fn marshallable(&self, value: Self::DV) -> bool
@@ -71,10 +73,11 @@ pub trait Marshal {
         sz == self.spec_size(value.deepv())
     ;
 
-    spec fn parse(&self, data: Seq<u8>) -> Self::DV
+    spec fn parse(&self, slice: SpecSlice, data: Seq<u8>) -> Self::DV
     recommends 
         self.valid(),
-        self.parsable(data)
+        slice.valid(data),
+        self.parsable(slice, data),
     ;
 
     exec fn try_parse(&self, slice: &Slice, data: &Vec<u8>) -> (ov: Option<Self::U>)
@@ -82,17 +85,17 @@ pub trait Marshal {
         self.valid(),
         slice@.valid(data@),
     ensures
-        self.parsable(slice@.i(data@)) <==> ov is Some,
-        self.parsable(slice@.i(data@)) ==> ov.unwrap().deepv() == self.parse(slice@.i(data@))
+        self.parsable(slice@, data@) <==> ov is Some,
+        self.parsable(slice@, data@) ==> ov.unwrap().deepv() == self.parse(slice@, data@)
     ;
 
     exec fn exec_parse(&self, slice: &Slice, data: &Vec<u8>) -> (value: Self::U)
     requires
         self.valid(),
         slice@.valid(data@),
-        self.parsable(slice@.i(data@)),
+        self.parsable(slice@, data@),
     ensures
-        value.deepv() == self.parse(slice@.i(data@)),
+        value.deepv() == self.parse(slice@, data@),
     {
         self.try_parse(slice, data).unwrap()
     }
@@ -110,8 +113,8 @@ pub trait Marshal {
         data.len() == old(data).len(),
         forall |i| 0 <= i < start ==> data[i] == old(data)[i],
         forall |i| end <= i < data.len() ==> data[i] == old(data)[i],
-        self.parsable(data@.subrange(start as int, end as int)),
-        self.parse(data@.subrange(start as int, end as int)) == value.deepv()
+        self.parsable(SpecSlice{start: start as int, end: end as int}, data@),
+        self.parse(SpecSlice{start: start as int, end: end as int}, data@) == value.deepv()
     ;
 }
 

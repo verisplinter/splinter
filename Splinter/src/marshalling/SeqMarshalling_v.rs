@@ -22,15 +22,17 @@ verus! {
 pub trait SeqMarshal<DVElt, Elt: Deepview<DVElt>> {
     spec fn seq_valid(&self) -> bool;
 
-    spec fn lengthable(&self, data: Seq<u8>) -> bool
-    recommends
-        self.seq_valid()
-    ;
-
-    spec fn length(&self, data: Seq<u8>) -> int
+    spec fn lengthable(&self, dslice: SpecSlice, data: Seq<u8>) -> bool
     recommends
         self.seq_valid(),
-        self.lengthable(data)
+        dslice.valid(data),
+    ;
+
+    spec fn length(&self, dslice: SpecSlice, data: Seq<u8>) -> int
+    recommends
+        self.seq_valid(),
+        dslice.valid(data),
+        self.lengthable(dslice, data)
     ;
 
     exec fn try_length(&self, dslice: &Slice, data: &Vec<u8>) -> (out: Option<usize>)
@@ -38,8 +40,8 @@ pub trait SeqMarshal<DVElt, Elt: Deepview<DVElt>> {
         self.seq_valid(),
         dslice@.valid(data@),
     ensures
-        out is Some <==> self.lengthable(dslice@.i(data@)),
-        out is Some ==> out.unwrap() as int == self.length(dslice@.i(data@))
+        out is Some <==> self.lengthable(dslice@, data@),
+        out is Some ==> out.unwrap() as int == self.length(dslice@, data@)
     ;
 
     exec fn exec_lengthable(&self, dslice: &Slice, data: &Vec<u8>) -> (l: bool)
@@ -47,7 +49,7 @@ pub trait SeqMarshal<DVElt, Elt: Deepview<DVElt>> {
         self.seq_valid(),
         dslice@.valid(data@),
     ensures
-        l == self.lengthable(dslice@.i(data@))
+        l == self.lengthable(dslice@, data@)
     {
         self.try_length(dslice, data).is_some()
     }
@@ -56,9 +58,9 @@ pub trait SeqMarshal<DVElt, Elt: Deepview<DVElt>> {
     requires
         self.seq_valid(),
         dslice@.valid(data@),
-        self.lengthable(dslice@.i(data@)),
+        self.lengthable(dslice@, data@),
     ensures
-        len == self.length(dslice@.i(data@))
+        len == self.length(dslice@, data@)
     {
         self.try_length(dslice, data).unwrap()
     }
@@ -88,58 +90,53 @@ pub trait SeqMarshal<DVElt, Elt: Deepview<DVElt>> {
     // (taken as a subslice of) outerslice to be meaningful. That's a lot of shuffling that
     // we don't do in the exec code. Doing it in spec makes the proofs confusing at best.
     // This is something like Rob's (3) above.
-    spec fn gettable(&self, data: Seq<u8>, idx: int) -> bool
+    spec fn gettable(&self, dslice: SpecSlice, data: Seq<u8>, idx: int) -> bool
     recommends
-        self.seq_valid()
+        self.seq_valid(),
+        dslice.valid(data),
     ;
 
     spec fn get(&self, dslice: SpecSlice, data: Seq<u8>, idx: int) -> (eslice: SpecSlice)
     recommends
         self.seq_valid(),
         dslice.valid(data),
-        self.gettable(dslice.i(data), idx)
+        self.gettable(dslice, data, idx)
     ;
 
     proof fn get_ensures(&self, dslice: SpecSlice, data: Seq<u8>, idx: int)
     requires
         self.seq_valid(),
         dslice.valid(data),
-        self.gettable(dslice.i(data), idx),
+        self.gettable(dslice, data, idx)
     ensures
         self.get(dslice, data, idx).valid(data)
     ;
 
-    open spec fn get_data(&self, data: Seq<u8>, idx: int) -> (edata: Seq<u8>)
-    recommends
-        self.seq_valid(),
-        self.gettable(data, idx)
-    {
-        self.get(SpecSlice::all(data), data, idx).i(data)
-    }
-
-    // I can't make these two implementations (elt_parsable, get_elt) default without having a way
+    // LEFT OFF: I think we want to eliminate     // I can't make these two implementations (elt_parsable, get_elt) default without having a way
     // to "dispatch" to the element marshaller, which would require knowing the element marshaller
     // type here in this trait. That's more than I want to encode, so I'll settle for a little
     // duplication in the implementations for now.
-    spec fn elt_parsable(&self, data: Seq<u8>, idx: int) -> bool
+    spec fn elt_parsable(&self, dslice: SpecSlice, data: Seq<u8>, idx: int) -> bool
     recommends
         self.seq_valid(),
-        self.gettable(data, idx)
+        dslice.valid(data),
+        self.gettable(dslice, data, idx)
     // TODO dfy has a default impl here
     ;
 //     {
-//         self.spec_elt_marshalling().parsable(self.get_data(data, idx))
+//         self.spec_elt_marshalling().parsable(self.get(dslice, data, idx), data)
 //     }
 
-    spec fn get_elt(&self, data: Seq<u8>, idx: int) -> (elt: DVElt)
+    spec fn get_elt(&self, dslice: SpecSlice, data: Seq<u8>, idx: int) -> (elt: DVElt)
     recommends
         self.seq_valid(),
-        self.gettable(data, idx),
-        self.elt_parsable(data, idx)
+        dslice.valid(data),
+        self.gettable(dslice, data, idx),
+        self.elt_parsable(dslice, data, idx)
     // TODO dfy has a default impl here
     ;
 //     {
-//         self.spec_elt_marshalling().parse(self.get_data(data, idx))
+//         self.spec_elt_marshalling().parse(self.get(dslice, data, idx), data)
 //     }
 
     exec fn try_get(&self, dslice: &Slice, data: &Vec<u8>, idx: usize) -> (oeslice: Option<Slice>)
@@ -147,14 +144,14 @@ pub trait SeqMarshal<DVElt, Elt: Deepview<DVElt>> {
         self.seq_valid(),
         dslice@.valid(data@),
     ensures
-        oeslice is Some <==> self.gettable(dslice@.i(data@), idx as int),
+        oeslice is Some <==> self.gettable(dslice@, data@, idx as int),
         oeslice is Some ==> oeslice.unwrap()@ == self.get(dslice@, data@, idx as int)
     ;
 
     exec fn exec_gettable(&self, dslice: &Slice, data: &Vec<u8>, idx: usize) -> (g: bool)
     requires self.seq_valid(),
         dslice@.valid(data@),
-    ensures g == self.gettable(dslice@.i(data@), idx as int)
+    ensures g == self.gettable(dslice@, data@, idx as int)
     {
         // NB this default impl isn't used until VariableSizedElementSeqMarshalling
         self.try_get(dslice, data, idx).is_some()
@@ -164,7 +161,7 @@ pub trait SeqMarshal<DVElt, Elt: Deepview<DVElt>> {
     requires
         self.seq_valid(),
         dslice@.valid(data@),
-        self.gettable(dslice@.i(data@), idx as int),
+        self.gettable(dslice@, data@, idx as int),
     ensures
         eslice@.wf(),
         eslice@ == self.get(dslice@, data@, idx as int)
@@ -178,10 +175,10 @@ pub trait SeqMarshal<DVElt, Elt: Deepview<DVElt>> {
         dslice@.valid(data@),
     ensures
         oelt is Some <==> {
-                &&& self.gettable(dslice@.i(data@), idx as int)
-                &&& self.elt_parsable(dslice@.i(data@), idx as int)
+                &&& self.gettable(dslice@, data@, idx as int)
+                &&& self.elt_parsable(dslice@, data@, idx as int)
         },
-        oelt is Some ==> oelt.unwrap().deepv() == self.get_elt(dslice@.i(data@), idx as int)
+        oelt is Some ==> oelt.unwrap().deepv() == self.get_elt(dslice@, data@, idx as int)
     // TODO the implementations of this method could be factored out into a default method here
     // if we had a way of talking about eltm and its type in this trait.
     ;
@@ -189,11 +186,11 @@ pub trait SeqMarshal<DVElt, Elt: Deepview<DVElt>> {
     exec fn exec_get_elt(&self, dslice: &Slice, data: &Vec<u8>, idx: usize) -> (elt: Elt)
     requires
         self.seq_valid(),
-        self.gettable(dslice@.i(data@), idx as int),
-        self.elt_parsable(dslice@.i(data@), idx as int),
+        self.gettable(dslice@, data@, idx as int),
+        self.elt_parsable(dslice@, data@, idx as int),
         dslice@.valid(data@),
     ensures
-        elt.deepv() == self.get_elt(dslice@.i(data@), idx as int)
+        elt.deepv() == self.get_elt(dslice@, data@, idx as int)
     // TODO the implementations of this method could be factored out into a default method here
     // if we had a way of talking about eltm and its type in this trait.
     ;
@@ -204,40 +201,43 @@ pub trait SeqMarshal<DVElt, Elt: Deepview<DVElt>> {
     spec fn elt_marshallable(&self, elt: DVElt) -> bool
         ;
 
-    spec fn settable(&self, data: Seq<u8>, idx: int, value: DVElt) -> bool
+    spec fn settable(&self, dslice: SpecSlice, data: Seq<u8>, idx: int, value: DVElt) -> bool
     recommends
         self.seq_valid(),
+        dslice.valid(data),
         self.elt_marshallable(value)
     ;
 
-    open spec fn preserves_entry(&self, data: Seq<u8>, idx: int, new_data: Seq<u8>) -> bool
+    open spec fn preserves_entry(&self, dslice: SpecSlice, data: Seq<u8>, idx: int, new_data: Seq<u8>) -> bool
     recommends
-        self.seq_valid()
+        self.seq_valid(),
+        dslice.valid(data),
     {
-        &&& (self.gettable(data, idx) ==> self.gettable(new_data, idx))
-        &&& (self.gettable(data, idx) && self.elt_parsable(data, idx)) ==> {
-            &&& self.elt_parsable(new_data, idx)
-            &&& self.get_elt(new_data, idx) == self.get_elt(data, idx)
+        &&& (self.gettable(dslice, data, idx) ==> self.gettable(dslice, new_data, idx))
+        &&& (self.gettable(dslice, data, idx) && self.elt_parsable(dslice, data, idx)) ==> {
+            &&& self.elt_parsable(dslice, new_data, idx)
+            &&& self.get_elt(dslice, new_data, idx) == self.get_elt(dslice, data, idx)
             }
     }
 
     // proof fn preserves_entry_transitive
 
-    open spec fn sets(&self, data: Seq<u8>, idx: int, value: DVElt, new_data: Seq<u8>) -> bool
+    open spec fn sets(&self, dslice: SpecSlice, data: Seq<u8>, idx: int, value: DVElt, new_data: Seq<u8>) -> bool
     recommends
         self.seq_valid(),
+        dslice.valid(data),
         self.elt_marshallable(value),
-        self.settable(data, idx, value)
+        self.settable(dslice, data, idx, value)
     {
         &&& new_data.len() == data.len()
-        &&& self.lengthable(data) ==> {
-            &&& self.lengthable(new_data)
-            &&& self.length(new_data) == self.length(data)
+        &&& self.lengthable(dslice, data) ==> {
+            &&& self.lengthable(dslice, new_data)
+            &&& self.length(dslice, new_data) == self.length(dslice, data)
             }
-        &&& forall |i| i!=idx ==> self.preserves_entry(data, i, new_data)
-        &&& self.gettable(new_data, idx)
-        &&& self.elt_parsable(new_data, idx)
-        &&& self.get_elt(new_data, idx) == value
+        &&& forall |i| i!=idx ==> self.preserves_entry(dslice, data, i, new_data)
+        &&& self.gettable(dslice, new_data, idx)
+        &&& self.elt_parsable(dslice, new_data, idx)
+        &&& self.get_elt(dslice, new_data, idx) == value
     }
 
     exec fn exec_settable(&self, dslice: &Slice, data: &Vec<u8>, idx: usize, value: &Elt) -> (s: bool)
@@ -246,7 +246,7 @@ pub trait SeqMarshal<DVElt, Elt: Deepview<DVElt>> {
         dslice@.valid(data@),
         self.elt_marshallable(value.deepv()),
     ensures
-        s == self.settable(dslice@.i(data@), idx as int, value.deepv())
+        s == self.settable(dslice@, data@, idx as int, value.deepv())
     ;
 
     exec fn exec_set(&self, dslice: &Slice, data: &mut Vec<u8>, idx: usize, value: &Elt)
@@ -254,10 +254,10 @@ pub trait SeqMarshal<DVElt, Elt: Deepview<DVElt>> {
         self.seq_valid(),
         dslice@.valid(old(data)@),
         self.elt_marshallable(value.deepv()),
-        self.settable(dslice@.i(old(data)@), idx as int, value.deepv()),
+        self.settable(dslice@, old(data)@, idx as int, value.deepv()),
     ensures
         dslice@.agree_beyond_slice(old(data)@, data@),
-        self.sets(dslice@.i(old(data)@), idx as int, value.deepv(), dslice@.i(data@))
+        self.sets(dslice@, old(data)@, idx as int, value.deepv(), data@)
     ;
 
 
@@ -265,54 +265,67 @@ pub trait SeqMarshal<DVElt, Elt: Deepview<DVElt>> {
     // resizing
     /////////////////////////////////////////////////////////////////////////
 
-    spec fn resizable(&self, data: Seq<u8>, newlen: int) -> bool
-        recommends self.seq_valid()
+    spec fn resizable(&self, dslice: SpecSlice, data: Seq<u8>, newlen: int) -> bool
+        recommends self.seq_valid(), dslice.valid(data),
         ;
 
-    open spec fn resizes(&self, data: Seq<u8>, newlen: int, new_data: Seq<u8>) -> bool
-        recommends self.seq_valid(), self.resizable(data, newlen)
+    open spec fn resizes(&self, dslice: SpecSlice, data: Seq<u8>, newlen: int, new_data: Seq<u8>) -> bool
+        recommends
+        self.seq_valid(),
+        dslice.valid(data),
+        self.resizable(dslice, data, newlen)
     {
         &&& new_data.len() == data.len()
-        &&& self.lengthable(new_data)
-        &&& self.length(new_data) == newlen
-        &&& forall |i| self.preserves_entry(data, i, new_data)
+        &&& self.lengthable(dslice, new_data)
+        &&& self.length(dslice, new_data) == newlen
+        &&& forall |i| self.preserves_entry(dslice, data, i, new_data)
     }
 
     exec fn exec_resizable(&self, dslice: &Slice, data: &Vec<u8>, newlen: usize) -> (r: bool)
         requires self.seq_valid(), dslice@.valid(data@),
-        ensures r == self.resizable(dslice@.i(data@), newlen as int)
+        ensures r == self.resizable(dslice@, data@, newlen as int)
         ;
 
     exec fn resize(&self, dslice: &Slice, data: &mut Vec<u8>, newlen: usize)
-        requires self.seq_valid(), dslice@.valid(old(data)@), self.resizable(dslice@.i(old(data)@), newlen as int)
+        requires self.seq_valid(), dslice@.valid(old(data)@), self.resizable(dslice@, old(data)@, newlen as int)
         ensures data@.len() == old(data)@.len(),
             forall |i| 0 <= i < dslice.start ==> data[i] == old(data)@[i],
             forall |i| dslice.end <= i < data.len() ==> data[i] == old(data)@[i],
-            self.resizes(dslice@.i(old(data)@), newlen as int, dslice@.i(data@)),
+            self.resizes(dslice@, old(data)@, newlen as int, data@),
     ;
 
     /////////////////////////////////////////////////////////////////////////
     // append
     /////////////////////////////////////////////////////////////////////////
-    spec fn well_formed(&self, data: Seq<u8>) -> bool
-        recommends self.seq_valid()
+    spec fn well_formed(&self, dslice: SpecSlice, data: Seq<u8>) -> bool
+    recommends
+            self.seq_valid(),
+            dslice.valid(data),
         ;
 
-    proof fn well_formed_ensures(&self, data: Seq<u8>)
-        requires self.seq_valid()
-        ensures self.well_formed(data) ==> self.lengthable(data)
+    proof fn well_formed_ensures(&self, dslice: SpecSlice, data: Seq<u8>)
+    requires
+        self.seq_valid(),
+        dslice.valid(data),
+    ensures
+        self.well_formed(dslice, data) ==> self.lengthable(dslice, data)
         ;
 
-    spec fn appendable(&self, data: Seq<u8>, value: DVElt) -> bool
-        recommends self.seq_valid(), self.well_formed(data), self.elt_marshallable(value)
-        ;
-
-    spec fn appends(&self, data: Seq<u8>, value: DVElt, newdata: Seq<u8>) -> bool
+    spec fn appendable(&self, dslice: SpecSlice, data: Seq<u8>, value: DVElt) -> bool
     recommends
         self.seq_valid(),
-        self.well_formed(data),
+        dslice.valid(data),
+        self.well_formed(dslice, data),
+        self.elt_marshallable(value)
+        ;
+
+    spec fn appends(&self, dslice: SpecSlice, data: Seq<u8>, value: DVElt, newdata: Seq<u8>) -> bool
+    recommends
+        self.seq_valid(),
+        dslice.valid(data),
+        self.well_formed(dslice, data),
         self.elt_marshallable(value),
-        self.appendable(data, value)
+        self.appendable(dslice, data, value)
     // TODO dfy has a default impl here
         ;
 
@@ -321,60 +334,70 @@ pub trait SeqMarshal<DVElt, Elt: Deepview<DVElt>> {
     requires
         self.seq_valid(),
     ensures
-            w == self.well_formed(dslice@.i(data@))
+            w == self.well_formed(dslice@, data@)
         ;
 
     exec fn exec_appendable(&self, dslice: &Slice, data: &Vec<u8>, value: Elt) -> (r: bool)
     requires
         self.seq_valid(),
         dslice@.valid(data@),
-        self.well_formed(data@),
+        self.well_formed(dslice@, data@),
         self.elt_marshallable(value.deepv()),
     ensures
-        r == self.appendable(data@, value.deepv())
+        r == self.appendable(dslice@, data@, value.deepv())
     ;
 
     exec fn exec_append(&self, dslice: &Slice, data: &mut Vec<u8>, value: Elt)
     requires
         self.seq_valid(),
         dslice@.valid(old(data)@),
-        self.well_formed(old(data)@),
+        self.well_formed(dslice@, old(data)@),
         self.elt_marshallable(value.deepv()),
-        self.appendable(old(data)@, value.deepv()),
+        self.appendable(dslice@, old(data)@, value.deepv()),
     ensures
         data@.len() == old(data)@.len(),
         forall |i: int| 0 <= i < dslice.start as int ==> data@[i] == old(data)@[i],
         forall |i: int| dslice.end as int <= i < data.len() ==> data@[i] == old(data)@[i],
-        self.appends(old(data)@, value.deepv(), data@)
+        self.appends(dslice@, old(data)@, value.deepv(), data@)
     ;
 
     /////////////////////////////////////////////////////////////////////////
     // parse (entire sequence)
     /////////////////////////////////////////////////////////////////////////
-    open spec fn gettable_to_len(&self, data: Seq<u8>, len: int) -> bool
-    recommends self.seq_valid()
+    open spec fn gettable_to_len(&self, dslice: SpecSlice, data: Seq<u8>, len: int) -> bool
+    recommends
+        self.seq_valid(),
+        dslice.valid(data),
     {
-        forall |i: int| 0<=i && i<len ==> self.gettable(data, i)
+        forall |i: int| 0<=i && i<len ==> self.gettable(dslice, data, i)
     }
 
-    open spec fn elt_parsable_to_len(&self, data: Seq<u8>, len: int) -> bool
-    recommends self.seq_valid(), self.gettable_to_len(data, len)
+    open spec fn elt_parsable_to_len(&self, dslice:SpecSlice, data: Seq<u8>, len: int) -> bool
+    recommends
+        self.seq_valid(),
+        dslice.valid(data),
+        self.gettable_to_len(dslice, data, len),
     {
-        forall |i: int| 0<=i && i<len ==> self.elt_parsable(data, i)
+        forall |i: int| 0<=i && i<len ==> self.elt_parsable(dslice, data, i)
     }
 
     // TODO(robj): why switch to usize in spec land here?
-    open spec fn parsable_to_len(&self, data: Seq<u8>, len: usize) -> bool
-    recommends self.seq_valid()
+    open spec fn parsable_to_len(&self, dslice: SpecSlice, data: Seq<u8>, len: usize) -> bool
+    recommends
+        self.seq_valid(),
+        dslice.valid(data),
     {
-        &&& self.gettable_to_len(data, len as int)
-        &&& self.elt_parsable_to_len(data, len as int)
+        &&& self.gettable_to_len(dslice, data, len as int)
+        &&& self.elt_parsable_to_len(dslice, data, len as int)
     }
 
-    open spec fn parse_to_len(&self, data: Seq<u8>, len: usize) -> Seq<DVElt>
-    recommends self.seq_valid(), self.parsable_to_len(data, len)
+    open spec fn parse_to_len(&self, dslice: SpecSlice, data: Seq<u8>, len: usize) -> Seq<DVElt>
+    recommends
+        self.seq_valid(),
+        dslice.valid(data),
+        self.parsable_to_len(dslice, data, len),
     {
-        Seq::new(len as nat, |i: int| self.get_elt(data, i))
+        Seq::new(len as nat, |i: int| self.get_elt(dslice, data, i))
     }
 
 
