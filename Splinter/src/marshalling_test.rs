@@ -198,7 +198,7 @@ exec fn test_keyed_message() -> Vec<u8>
     let value = vec![ 2, 4, 6, 8, 244, 122, 11 ];
 
 //     if true {
-        return KeyedMessageFormat::construct(&key, &value);
+//         return KeyedMessageFormat::construct(&key, &value);
 //     }
 
 //     // A better test would construct a VariableSizedSeq, allocate space for a keyed message within
