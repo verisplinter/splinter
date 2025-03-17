@@ -360,7 +360,7 @@ impl Implementation {
             &&& forall |i| #![auto] 0 <= i < old_deferred_reqs.len() ==> old_deferred_reqs[i].id != req.id
         }) by {
             self.system_inv_sync_request_fresh_id(req, req_shard);
-            assume( false );
+            assume( false );    // fresh id stuff
         }
 
         // Consume the shard to convert into model state
@@ -629,7 +629,7 @@ impl Implementation {
         }
 //         multiset_map_singleton_ensures(disk_req_id, i_disk_response@);
 //         assert(disk_response_token@.multiset().contains((disk_req_id, i_disk_response@))); //trigger
-        assume( false );
+        assume( false );   // fresh id stuff
     }
 
     pub exec fn handle_disk_response(&mut self, id: ID, disk_response: IDiskResponse, response_shard: Tracked<DiskRespShard>,
