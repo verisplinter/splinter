@@ -13,6 +13,7 @@ pub mod UniformSizedSeq_v;
 pub mod math_v;
 // pub mod KeyedMessageFormat_v;
 pub mod KVPairFormat_v;
+// pub mod HashMapFormat_v;
 
 // next steps:
 //
