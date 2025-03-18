@@ -138,7 +138,7 @@ impl<KVTypes: KVTrait> KVPairFormat<KVTypes> {
         slice.xslice(&Slice{start: 0, end: self.keylen_field.exec_field_size()})
     }
 
-    exec fn exec_get_keylen_elt(&self, slice: &Slice, data: &Vec<u8>) -> <KVTypes::KeyLenType as Marshal>::U
+    exec fn exec_get_keylen_elt(&self, slice: &Slice, data: &Vec<u8>) -> usize
     requires
         self.keylen_field.field_size() <= slice@.len(), // TODO move to wf
         slice@.valid(data@),
@@ -148,14 +148,14 @@ impl<KVTypes: KVTrait> KVPairFormat<KVTypes> {
         self.keylen_field.exec_parse(&keylen_slice, data)
     }
 
-    exec fn exec_try_get_keylen_elt(&self, slice: &Slice, data: &Vec<u8>) -> (out: Option<<KVTypes::KeyLenType as Marshal>::U>)
+    exec fn exec_try_get_keylen_elt(&self, slice: &Slice, data: &Vec<u8>) -> (out: Option<usize>)
     requires
         self.valid(),
         self.keylen_field.field_size() <= slice@.len(), // TODO move to wf
         slice@.valid(data@),
     ensures
         out is Some <==> self.get_keylen_elt_parsable(slice@.i(data@)),
-        out is Some ==> out.unwrap().deepv() == self.get_keylen_elt(slice@.i(data@)),
+        out is Some ==> out.unwrap() as int == self.get_keylen_elt(slice@.i(data@)),
     {
         if slice.len() < self.keylen_field.exec_field_size() { return None }
         let keylen_slice = self.exec_get_keylen_subslice(slice);
@@ -176,7 +176,6 @@ impl<KVTypes: KVTrait> Marshal for KVPairFormat<KVTypes> {
         // so we can do exec math on it.
         // TODO: This definition excludes KeyLenType==u64. I guess we'd need to change the
         // math in try_parse to enable u64 LenTypes.
-        &&& self.keylen_field.valid()
         &&& KVTypes::KeyLenType::max() + self.keylen_field.field_size() <= usize::MAX
         &&& self.key_fmt.valid()
         &&& self.value_fmt.valid()
@@ -236,12 +235,12 @@ impl<KVTypes: KVTrait> Marshal for KVPairFormat<KVTypes> {
         let keylen_lentype = self.exec_try_get_keylen_elt(slice, data);
         if keylen_lentype.is_none() { return None }
 
-        assert( keylen_lentype.unwrap().deepv() == self.get_keylen_elt(slice@.i(data@)) );
+        assert( keylen_lentype.unwrap() as int == self.get_keylen_elt(slice@.i(data@)) );
 
-        let keylen = KVTypes::KeyLenType::to_usize(keylen_lentype.unwrap());
+        let keylen = keylen_lentype.unwrap();
 
 //         proof { KVTypes::KeyLenType::deepv_is_as_int_forall(); }
-        assert( keylen as int == keylen_lentype.unwrap().deepv() ); //tidy
+        assert( keylen as int == keylen_lentype.unwrap() as int ); //tidy
 
 //         proof { KVTypes::KeyLenType::max_ensures(keylen_lentype.unwrap()); }
         if !self.exec_key_fits(slice, keylen) {
@@ -305,10 +304,10 @@ impl<KVTypes: KVTrait> Marshal for KVPairFormat<KVTypes> {
     exec fn exec_marshall(&self, kvpair: &Self::U, data: &mut Vec<u8>, start: usize) -> (end: usize)
     {
         // ** Learn the key len
-        let keylen: <KVTypes::KeyLenType as Marshal>::U = KVTypes::KeyLenType::from_usize(self.key_fmt.exec_size(&kvpair.key));
+        let keylen = self.key_fmt.exec_size(&kvpair.key);
 
         // ** Marshall the key len
-        let keylen_end = self.keylen_field.exec_marshall(&keylen, data, start);
+        let keylen_end = self.keylen_field.exec_marshall(keylen, data, start);
 
         let ghost data_after_keylen = data@.subrange(start as int, keylen_end as int);
         // trigger slice extn equality
