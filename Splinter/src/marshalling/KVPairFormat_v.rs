@@ -7,6 +7,7 @@ use builtin_macros::*;
 use vstd::prelude::*;
 use vstd::bytes::*;
 use vstd::slice::*;
+use core::hash::Hash;
 use crate::marshalling::Slice_v::*;
 use crate::marshalling::Marshalling_v::*;
 use crate::marshalling::IntegerMarshalling_v::*;
@@ -352,92 +353,84 @@ impl<KVTypes: KVTrait> Marshal for KVPairFormat<KVTypes> {
     }
 }
 
-//////////////////////////////////////////////////////////////////////////////
-
-pub trait UniformSizedKVTrait {
-    // This trait bundles both the deepv relationships
-    // (above) and the formatter decisions (below).
-    // I'm okay with that, because I don't think we're ever
-    // going to care to decouple those decisions.
-    type UKeyFormat: Marshal + UniformSized;
-    type UValueFormat: Marshal + UniformSized;
-
-    proof fn no_overflow(kf: &Self::UKeyFormat, vf: &Self::UValueFormat)
-    ensures 
-              u8::uniform_size()
-            + kf.uniform_size()
-            + vf.uniform_size()
-         < usize::MAX as int
-    ;
-
-    exec fn key_format(&self) -> (out: &Self::UKeyFormat);
-
-    exec fn value_format(&self) -> (out: &Self::UValueFormat);
-}
-
-impl<UKV: UniformSizedKVTrait> KVTrait for UKV {
-    // really we want a UnitFormat wrapper that returns const KeyFormat::uniform_size
-    type KeyLenType = u8;
-
-    type KeyFormat = <Self as UniformSizedKVTrait>::UKeyFormat;
-    type ValueFormat = <Self as UniformSizedKVTrait>::UValueFormat;
-
-    // Pass through to underlying KVTrait
-    exec fn key_format(&self) -> &Self::KeyFormat
-    {
-        // TODO this can't be the right syntax...
-        <UKV as UniformSizedKVTrait>::key_format(self)
-    }
-
-    exec fn value_format(&self) -> &Self::ValueFormat
-    {
-        <UKV as UniformSizedKVTrait>::value_format(self)
-    }
-}
-
-// TODO: delete This doesn't do anything useful, right?
-// impl<UKV: UniformSizedKVTrait> UniformSized for UKV {
-//     spec fn uniform_size(&self) -> (sz: usize)
+// impl<KVTypes> UniformSized for KVPairFormat<KVTypes>
+// where KVTypes: KVTrait<KeyFormat: UniformSized, ValueFormat: UniformSized> {
+//     open spec fn uniform_size(&self) -> (sz: usize)
 //     {
 //         (
-//               <Self as KVTrait>::KeyLenType::uniform_size()
-//             + <Self as KVTrait>::KeyFormat::uniform_size(self.key_format())
-//             + <Self as KVTrait>::ValueFormat::uniform_size(self.value_format())
-//         )
-//         as usize
+//               self.keylen_fmt.uniform_size()
+//             + self.key_fmt.uniform_size()
+//             + self.value_fmt.uniform_size()
+//         ) as usize
 //     }
 // 
 //     proof fn uniform_size_ensures(&self)
 //     ensures 0 < self.uniform_size()
 //     {
+//         self.keylen_fmt.uniform_size_ensures();
+//         self.no_overflow();
+// //         assert(
+// //               self.keylen_fmt.uniform_size()
+// //             + self.key_fmt.uniform_size()
+// //             + self.value_fmt.uniform_size()
+// //          < usize::MAX as int );
 //     }
 // 
 //     exec fn exec_uniform_size(&self) -> (sz: usize)
 //     ensures sz == self.uniform_size()
 //     {
-//           <Self as KVTrait>::KeyLenType::exec_uniform_size()
-//         + <Self as KVTrait>::KeyFormat::exec_uniform_size(self.key_format())
-//         + <Self as KVTrait>::ValueFormat::exec_uniform_size(self.value_format())
+//         proof { self.no_overflow(); }
+// 
+//           self.keylen_fmt.exec_uniform_size()
+//         + self.key_fmt.exec_uniform_size()
+//         + self.value_fmt.exec_uniform_size()
 //     }
 // }
 
+//////////////////////////////////////////////////////////////////////////////
+// trait aliases are experimental
+// trait UniformSizedKVTrait = KVTrait<KeyFormat: Marshal<U: UniformSized>, ValueFormat: Marshal<U: UniformSized>>;
+pub trait UniformSizedKVTrait {
+    //type KVT : KVTrait<KeyFormat: Marshal<U: UniformSized>, ValueFormat: Marshal<U: UniformSized>>;
+    type KVT : KVTrait<KeyFormat: UniformSized, ValueFormat: UniformSized>;
+
+    spec fn spec_get_format(&self) -> KVPairFormat<Self::KVT>;
+    exec fn exec_get_format(&self) -> &KVPairFormat<Self::KVT>;
+
+    proof fn no_overflow(&self)
+    ensures 
+              u8::uniform_size()
+            + self.spec_get_format().key_fmt.uniform_size()
+            + self.spec_get_format().value_fmt.uniform_size()
+         < usize::MAX as int
+    ;
+}
+
 // Any KVPairFormat made from a UniformSizedKVTrait is itself UniformSized,
 // so it can be used as a key or value field to another UniformSizedKVTrait.
-impl<UKV: UniformSizedKVTrait> UniformSized for KVPairFormat<UKV> {
+//
+// impl< KVT : KVTrait<KeyFormat: Marshal<U: UniformSized>, ValueFormat: Marshal<U: UniformSized>>;
+//
+// I can't use the existence of a UKV to implement UniformSized for KVPairFormat.
+// The alternative is to implement UniformSized for the UKV.
+// Since the ultimate goal is to pass a UniformSized + Marshal to some parent UniformSizedSeq,
+// I need to pull the Marshall up to the UKV, by passing through all its methods. :v/
+
+impl<UKV: UniformSizedKVTrait> UniformSized for UKV {
     open spec fn uniform_size(&self) -> (sz: usize)
     {
         (
-              self.keylen_fmt.uniform_size()
-            + self.key_fmt.uniform_size()
-            + self.value_fmt.uniform_size()
+              self.spec_get_format().keylen_fmt.uniform_size()
+            + self.spec_get_format().key_fmt.uniform_size()
+            + self.spec_get_format().value_fmt.uniform_size()
         ) as usize
     }
 
     proof fn uniform_size_ensures(&self)
     ensures 0 < self.uniform_size()
     {
-        self.keylen_fmt.uniform_size_ensures();
-        UKV::no_overflow(&self.key_fmt, &self.value_fmt);
+        self.spec_get_format().keylen_fmt.uniform_size_ensures();
+        self.no_overflow();
 //         assert(
 //               self.keylen_fmt.uniform_size()
 //             + self.key_fmt.uniform_size()
@@ -448,11 +441,11 @@ impl<UKV: UniformSizedKVTrait> UniformSized for KVPairFormat<UKV> {
     exec fn exec_uniform_size(&self) -> (sz: usize)
     ensures sz == self.uniform_size()
     {
-        proof { UKV::no_overflow(&self.key_fmt, &self.value_fmt); }
+        proof { self.no_overflow(); }
 
-          self.keylen_fmt.exec_uniform_size()
-        + self.key_fmt.exec_uniform_size()
-        + self.value_fmt.exec_uniform_size()
+          self.exec_get_format().keylen_fmt.exec_uniform_size()
+        + self.exec_get_format().key_fmt.exec_uniform_size()
+        + self.exec_get_format().value_fmt.exec_uniform_size()
     }
 }
 
