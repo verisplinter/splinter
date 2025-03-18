@@ -508,7 +508,6 @@ impl<T: IntFormattable> Marshal for IntFormat<T>
         assert( sr@ == slice@.i(data@).subrange(0, T::uniform_size() as int) ); // trigger
         let value = T::from_le_bytes(sr);
         proof { T::deepv_is_as_int(value); }
-        assume( false );    // proof rotted
         value
     }
 

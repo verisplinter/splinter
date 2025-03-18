@@ -14,6 +14,7 @@ use crate::marshalling::IntegerMarshalling_v::*;
 use crate::marshalling::StaticallySized_v::*;
 use crate::marshalling::UniformSized_v::*;
 use crate::marshalling::UniformSizedSeq_v::*;
+use crate::marshalling::LengthField_v::*;
 use crate::marshalling::SeqMarshalling_v::*;
 use crate::marshalling::VariableSizedElementSeq_v::*;
 
@@ -29,7 +30,7 @@ pub trait KVTrait {
     // (above) and the formatter decisions (below).
     // I'm okay with that, because I don't think we're ever
     // going to care to decouple those decisions.
-    type KeyLenType: IntFormattable;
+    type KeyLenType: LengthField;
     type KeyFormat: Marshal;
     type ValueFormat: Marshal;
 
@@ -56,16 +57,16 @@ impl<KVTypes: KVTrait> Deepview<SpecKVPair<KVTypes>> for KVPair<KVTypes> {
 }
 
 pub struct KVPairFormat<KVTypes: KVTrait> {
-    pub keylen_fmt: IntFormat::<KVTypes::KeyLenType>,
+    pub keylen_field: KVTypes::KeyLenType,
     pub key_fmt: KVTypes::KeyFormat,
     pub value_fmt: KVTypes::ValueFormat,
 }
 
 impl<KVTypes: KVTrait> KVPairFormat<KVTypes> {
-    pub exec fn new(key_format: KVTypes::KeyFormat, value_format: KVTypes::ValueFormat) -> Self
+    pub exec fn new(keylen_field: KVTypes::KeyLenType, key_format: KVTypes::KeyFormat, value_format: KVTypes::ValueFormat) -> Self
     {
         KVPairFormat {
-            keylen_fmt: IntFormat::<KVTypes::KeyLenType>::new(),
+            keylen_field: keylen_field,
             key_fmt: key_format,
             value_fmt: value_format,
         }
@@ -73,7 +74,7 @@ impl<KVTypes: KVTrait> KVPairFormat<KVTypes> {
 
     closed spec fn get_keylen_slice(&self) -> SpecSlice
     {
-        SpecSlice{start: 0, end: self.keylen_fmt.uniform_size() as int}
+        SpecSlice{start: 0, end: self.keylen_field.field_size() as int}
     }
 
     closed spec fn get_keylen_elt_parsable(&self, data: Seq<u8>) -> bool
@@ -81,41 +82,41 @@ impl<KVTypes: KVTrait> KVPairFormat<KVTypes> {
         // slice is big enough
         &&& self.get_keylen_slice().valid(data)
         // keylen parser can parse the contents
-        &&& self.keylen_fmt.parsable(self.get_keylen_slice().i(data))
+        &&& self.keylen_field.parsable(self.get_keylen_slice().i(data))
     }
 
     closed spec fn get_keylen_elt(&self, data: Seq<u8>) -> int
     {
-        self.keylen_fmt.parse(self.get_keylen_slice().i(data))
+        self.keylen_field.parse(self.get_keylen_slice().i(data))
     }
 
     closed spec fn get_key_slice(&self, keylen: int) -> SpecSlice
     {
         SpecSlice{
-            start: self.keylen_fmt.uniform_size() as int,
-            end: self.keylen_fmt.uniform_size() + keylen }
+            start: self.keylen_field.field_size() as int,
+            end: self.keylen_field.field_size() + keylen }
     }
 
     closed spec fn key_fits(&self, base_slice: SpecSlice, keylen: int) -> bool
     {
-        &&& self.keylen_fmt.uniform_size() + keylen <= usize::MAX
-        &&& self.keylen_fmt.uniform_size() + keylen <= base_slice.len()
+        &&& self.keylen_field.field_size() + keylen <= usize::MAX
+        &&& self.keylen_field.field_size() + keylen <= base_slice.len()
     }
 
     exec fn exec_key_fits(&self, base_slice: &Slice, keylen: usize) -> (out: bool)
     requires
         base_slice@.wf(),
-        self.keylen_fmt.uniform_size() + keylen <= usize::MAX,
+        self.keylen_field.field_size() + keylen <= usize::MAX,
     ensures out == self.key_fits(base_slice@, keylen as int)
     {
-        self.keylen_fmt.exec_uniform_size() + keylen <= base_slice.len()
+        self.keylen_field.exec_field_size() + keylen <= base_slice.len()
     }
 
     exec fn exec_get_key_slice(&self, base_slice: &Slice, keylen: usize) -> (out: Slice)
     requires self.key_fits(base_slice@, keylen as int)
     ensures out@ == base_slice@.xslice(self.get_key_slice(keylen as int))
     {
-        let keylenlen = self.keylen_fmt.exec_uniform_size();
+        let keylenlen = self.keylen_field.exec_field_size();
         base_slice.xslice(&Slice{ start: keylenlen, end: keylenlen + keylen })
     }
 
@@ -129,37 +130,38 @@ impl<KVTypes: KVTrait> KVPairFormat<KVTypes> {
     exec fn exec_get_keylen_subslice(&self, slice: &Slice) -> (out: Slice)
     requires
         slice@.wf(),
-        self.keylen_fmt.uniform_size() <= slice@.len(),
+        self.keylen_field.field_size() <= slice@.len(),
     ensures
         out@.wf(),
         out@ == slice@.subslice(self.get_keylen_slice().start, self.get_keylen_slice().end),
     {
-        slice.xslice(&Slice{start: 0, end: self.keylen_fmt.exec_uniform_size()})
+        slice.xslice(&Slice{start: 0, end: self.keylen_field.exec_field_size()})
     }
 
-    exec fn exec_get_keylen_elt(&self, slice: &Slice, data: &Vec<u8>) -> KVTypes::KeyLenType
+    exec fn exec_get_keylen_elt(&self, slice: &Slice, data: &Vec<u8>) -> <KVTypes::KeyLenType as Marshal>::U
     requires
-        self.keylen_fmt.uniform_size() <= slice@.len(), // TODO move to wf
+        self.keylen_field.field_size() <= slice@.len(), // TODO move to wf
         slice@.valid(data@),
-        self.keylen_fmt.parsable(self.get_keylen_slice().i(data@)),
+        self.keylen_field.parsable(self.get_keylen_slice().i(data@)),
     {
         let keylen_slice = self.exec_get_keylen_subslice(slice);
-        self.keylen_fmt.exec_parse(&keylen_slice, data)
+        self.keylen_field.exec_parse(&keylen_slice, data)
     }
 
-    exec fn exec_try_get_keylen_elt(&self, slice: &Slice, data: &Vec<u8>) -> (out: Option<KVTypes::KeyLenType>)
+    exec fn exec_try_get_keylen_elt(&self, slice: &Slice, data: &Vec<u8>) -> (out: Option<<KVTypes::KeyLenType as Marshal>::U>)
     requires
-        self.keylen_fmt.uniform_size() <= slice@.len(), // TODO move to wf
+        self.valid(),
+        self.keylen_field.field_size() <= slice@.len(), // TODO move to wf
         slice@.valid(data@),
     ensures
         out is Some <==> self.get_keylen_elt_parsable(slice@.i(data@)),
         out is Some ==> out.unwrap().deepv() == self.get_keylen_elt(slice@.i(data@)),
     {
-        if slice.len() < self.keylen_fmt.exec_uniform_size() { return None }
+        if slice.len() < self.keylen_field.exec_field_size() { return None }
         let keylen_slice = self.exec_get_keylen_subslice(slice);
-        let out = self.keylen_fmt.try_parse(&keylen_slice, data);
+        let out = self.keylen_field.try_parse(&keylen_slice, data);
         assert( self.get_keylen_slice().i(slice@.i(data@)) == keylen_slice@.i(data@) );
-        proof { KVTypes::KeyLenType::deepv_is_as_int(out.unwrap()) };
+//         proof { KVTypes::KeyLenType::deepv_is_as_int(out.unwrap()) };
         out
     }
 }
@@ -174,7 +176,8 @@ impl<KVTypes: KVTrait> Marshal for KVPairFormat<KVTypes> {
         // so we can do exec math on it.
         // TODO: This definition excludes KeyLenType==u64. I guess we'd need to change the
         // math in try_parse to enable u64 LenTypes.
-        &&& KVTypes::KeyLenType::max() + self.keylen_fmt.uniform_size() <= usize::MAX
+        &&& self.keylen_field.valid()
+        &&& KVTypes::KeyLenType::max() + self.keylen_field.field_size() <= usize::MAX
         &&& self.key_fmt.valid()
         &&& self.value_fmt.valid()
     }
@@ -196,7 +199,7 @@ impl<KVTypes: KVTrait> Marshal for KVPairFormat<KVTypes> {
     {
         &&& self.key_fmt.marshallable(kvpair.key)
         &&& self.value_fmt.marshallable(kvpair.value)
-        &&& self.keylen_fmt.uniform_size()
+        &&& self.keylen_field.field_size()
             + self.key_fmt.spec_size(kvpair.key)
             + self.value_fmt.spec_size(kvpair.value) <= usize::MAX
         &&& self.key_fmt.spec_size(kvpair.key) <= KVTypes::KeyLenType::max()
@@ -205,7 +208,7 @@ impl<KVTypes: KVTrait> Marshal for KVPairFormat<KVTypes> {
     open spec fn spec_size(&self, kvpair: Self::DV) -> usize
     {
         (
-            self.keylen_fmt.uniform_size()
+            self.keylen_field.field_size()
             + self.key_fmt.spec_size(kvpair.key)
             + self.value_fmt.spec_size(kvpair.value)
         ) as usize
@@ -213,7 +216,7 @@ impl<KVTypes: KVTrait> Marshal for KVPairFormat<KVTypes> {
 
     exec fn exec_size(&self, kvpair: &Self::U) -> (sz: usize)
     {
-        self.keylen_fmt.exec_uniform_size()
+        self.keylen_field.exec_field_size()
         + self.key_fmt.exec_size(&kvpair.key)
         + self.value_fmt.exec_size(&kvpair.value)
     }
@@ -228,7 +231,7 @@ impl<KVTypes: KVTrait> Marshal for KVPairFormat<KVTypes> {
 
     exec fn try_parse(&self, slice: &Slice, data: &Vec<u8>) -> (ov: Option<Self::U>)
     {
-        if slice.len() < self.keylen_fmt.exec_uniform_size() { return None }
+        if slice.len() < self.keylen_field.exec_field_size() { return None }
 
         let keylen_lentype = self.exec_try_get_keylen_elt(slice, data);
         if keylen_lentype.is_none() { return None }
@@ -237,10 +240,10 @@ impl<KVTypes: KVTrait> Marshal for KVPairFormat<KVTypes> {
 
         let keylen = KVTypes::KeyLenType::to_usize(keylen_lentype.unwrap());
 
-        proof { KVTypes::KeyLenType::deepv_is_as_int_forall(); }
-//         assert( keylen as int == keylen_lentype.unwrap().deepv() ); //tidy
+//         proof { KVTypes::KeyLenType::deepv_is_as_int_forall(); }
+        assert( keylen as int == keylen_lentype.unwrap().deepv() ); //tidy
 
-        proof { KVTypes::KeyLenType::max_ensures(keylen_lentype.unwrap()); }
+//         proof { KVTypes::KeyLenType::max_ensures(keylen_lentype.unwrap()); }
         if !self.exec_key_fits(slice, keylen) {
             // keylen describes more data than we have in the slice
             return None
@@ -261,7 +264,7 @@ impl<KVTypes: KVTrait> Marshal for KVPairFormat<KVTypes> {
             return None
         }
 
-        let key_slice = slice.subslice(self.keylen_fmt.exec_uniform_size(), self.keylen_fmt.exec_uniform_size() + keylen );
+        let key_slice = slice.subslice(self.keylen_field.exec_field_size(), self.keylen_field.exec_field_size() + keylen );
         let key = self.key_fmt.try_parse(&key_slice, data);
         if key.is_none() {
             return None
@@ -302,10 +305,10 @@ impl<KVTypes: KVTrait> Marshal for KVPairFormat<KVTypes> {
     exec fn exec_marshall(&self, kvpair: &Self::U, data: &mut Vec<u8>, start: usize) -> (end: usize)
     {
         // ** Learn the key len
-        let keylen: KVTypes::KeyLenType = KVTypes::KeyLenType::from_usize(self.key_fmt.exec_size(&kvpair.key));
+        let keylen: <KVTypes::KeyLenType as Marshal>::U = KVTypes::KeyLenType::from_usize(self.key_fmt.exec_size(&kvpair.key));
 
         // ** Marshall the key len
-        let keylen_end = self.keylen_fmt.exec_marshall(&keylen, data, start);
+        let keylen_end = self.keylen_field.exec_marshall(&keylen, data, start);
 
         let ghost data_after_keylen = data@.subrange(start as int, keylen_end as int);
         // trigger slice extn equality
@@ -316,7 +319,7 @@ impl<KVTypes: KVTrait> Marshal for KVPairFormat<KVTypes> {
 
         let ghost data_after_key = data@.subrange(start as int, key_end as int);
         proof {
-            KVTypes::KeyLenType::deepv_is_as_int(keylen);
+//             KVTypes::KeyLenType::deepv_is_as_int(keylen);
 
             // trigger extn equality
             assert( self.get_keylen_slice().i(data_after_key) == self.get_keylen_slice().i(data_after_keylen) );
@@ -350,102 +353,6 @@ impl<KVTypes: KVTrait> Marshal for KVPairFormat<KVTypes> {
 //             assert( self.parse(data@.subrange(start as int, end as int)) == kvpair.deepv() );
         }
         end
-    }
-}
-
-// impl<KVTypes> UniformSized for KVPairFormat<KVTypes>
-// where KVTypes: KVTrait<KeyFormat: UniformSized, ValueFormat: UniformSized> {
-//     open spec fn uniform_size(&self) -> (sz: usize)
-//     {
-//         (
-//               self.keylen_fmt.uniform_size()
-//             + self.key_fmt.uniform_size()
-//             + self.value_fmt.uniform_size()
-//         ) as usize
-//     }
-// 
-//     proof fn uniform_size_ensures(&self)
-//     ensures 0 < self.uniform_size()
-//     {
-//         self.keylen_fmt.uniform_size_ensures();
-//         self.no_overflow();
-// //         assert(
-// //               self.keylen_fmt.uniform_size()
-// //             + self.key_fmt.uniform_size()
-// //             + self.value_fmt.uniform_size()
-// //          < usize::MAX as int );
-//     }
-// 
-//     exec fn exec_uniform_size(&self) -> (sz: usize)
-//     ensures sz == self.uniform_size()
-//     {
-//         proof { self.no_overflow(); }
-// 
-//           self.keylen_fmt.exec_uniform_size()
-//         + self.key_fmt.exec_uniform_size()
-//         + self.value_fmt.exec_uniform_size()
-//     }
-// }
-
-//////////////////////////////////////////////////////////////////////////////
-// trait aliases are experimental
-// trait UniformSizedKVTrait = KVTrait<KeyFormat: Marshal<U: UniformSized>, ValueFormat: Marshal<U: UniformSized>>;
-pub trait UniformSizedKVTrait {
-    //type KVT : KVTrait<KeyFormat: Marshal<U: UniformSized>, ValueFormat: Marshal<U: UniformSized>>;
-    type KVT : KVTrait<KeyFormat: UniformSized, ValueFormat: UniformSized>;
-
-    spec fn spec_get_format(&self) -> KVPairFormat<Self::KVT>;
-    exec fn exec_get_format(&self) -> &KVPairFormat<Self::KVT>;
-
-    proof fn no_overflow(&self)
-    ensures 
-              u8::uniform_size()
-            + self.spec_get_format().key_fmt.uniform_size()
-            + self.spec_get_format().value_fmt.uniform_size()
-         < usize::MAX as int
-    ;
-}
-
-// Any KVPairFormat made from a UniformSizedKVTrait is itself UniformSized,
-// so it can be used as a key or value field to another UniformSizedKVTrait.
-//
-// impl< KVT : KVTrait<KeyFormat: Marshal<U: UniformSized>, ValueFormat: Marshal<U: UniformSized>>;
-//
-// I can't use the existence of a UKV to implement UniformSized for KVPairFormat.
-// The alternative is to implement UniformSized for the UKV.
-// Since the ultimate goal is to pass a UniformSized + Marshal to some parent UniformSizedSeq,
-// I need to pull the Marshall up to the UKV, by passing through all its methods. :v/
-
-impl<UKV: UniformSizedKVTrait> UniformSized for UKV {
-    open spec fn uniform_size(&self) -> (sz: usize)
-    {
-        (
-              self.spec_get_format().keylen_fmt.uniform_size()
-            + self.spec_get_format().key_fmt.uniform_size()
-            + self.spec_get_format().value_fmt.uniform_size()
-        ) as usize
-    }
-
-    proof fn uniform_size_ensures(&self)
-    ensures 0 < self.uniform_size()
-    {
-        self.spec_get_format().keylen_fmt.uniform_size_ensures();
-        self.no_overflow();
-//         assert(
-//               self.keylen_fmt.uniform_size()
-//             + self.key_fmt.uniform_size()
-//             + self.value_fmt.uniform_size()
-//          < usize::MAX as int );
-    }
-
-    exec fn exec_uniform_size(&self) -> (sz: usize)
-    ensures sz == self.uniform_size()
-    {
-        proof { self.no_overflow(); }
-
-          self.exec_get_format().keylen_fmt.exec_uniform_size()
-        + self.exec_get_format().key_fmt.exec_uniform_size()
-        + self.exec_get_format().value_fmt.exec_uniform_size()
     }
 }
 
