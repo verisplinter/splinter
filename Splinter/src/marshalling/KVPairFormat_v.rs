@@ -347,4 +347,33 @@ impl<KVTypes: KVTrait> Marshal for KVPairFormat<KVTypes> {
     }
 }
 
+impl<KVTypes: KVTrait> UniformSized for KVPairFormat<KVTypes>
+where
+    KVTypes::KeyFormat : UniformSized,
+    KVTypes::ValueFormat : UniformSized,
+{
+    open spec fn uniform_size(&self) -> (sz: usize)
+    {
+        (KVTypes::KeyFormat::uniform_size(&self.key_fmt)
+           + KVTypes::ValueFormat::uniform_size(&self.value_fmt)) as usize
+    }
+
+    proof fn uniform_size_ensures(&self)
+    ensures 0 < self.uniform_size()
+    {
+        KVTypes::KeyFormat::uniform_size_ensures(&self.key_fmt);
+        assume( (KVTypes::KeyFormat::uniform_size(&self.key_fmt)
+           + KVTypes::ValueFormat::uniform_size(&self.value_fmt)) < usize::MAX);
+    }
+
+    exec fn exec_uniform_size(&self) -> (sz: usize)
+    ensures sz == self.uniform_size()
+    {
+        assume( (KVTypes::KeyFormat::uniform_size(&self.key_fmt)
+           + KVTypes::ValueFormat::uniform_size(&self.value_fmt)) < usize::MAX);
+        KVTypes::KeyFormat::exec_uniform_size(&self.key_fmt)
+           + KVTypes::ValueFormat::exec_uniform_size(&self.value_fmt)
+    }
+}
+
 }
