@@ -55,7 +55,7 @@ impl<KVTypes: KVTrait> Deepview<SpecKVPair<KVTypes>> for KVPair<KVTypes> {
     }
 }
 
-pub struct KVPairFormat<KVTypes: KVTrait> {
+pub struct KVPairFormat<KVTypes: KVTrait + ?Sized> {
     pub keylen_fmt: IntFormat::<KVTypes::KeyLenType>,
     pub key_fmt: KVTypes::KeyFormat,
     pub value_fmt: KVTypes::ValueFormat,
@@ -389,19 +389,26 @@ impl<KVTypes: KVTrait> Marshal for KVPairFormat<KVTypes> {
 
 //////////////////////////////////////////////////////////////////////////////
 // trait aliases are experimental
-// trait UniformSizedKVTrait = KVTrait<KeyFormat: Marshal<U: UniformSized>, ValueFormat: Marshal<U: UniformSized>>;
-pub trait UniformSizedKVTrait {
-    //type KVT : KVTrait<KeyFormat: Marshal<U: UniformSized>, ValueFormat: Marshal<U: UniformSized>>;
-    type KVT : KVTrait<KeyFormat: UniformSized, ValueFormat: UniformSized>;
-
-    spec fn spec_get_format(&self) -> KVPairFormat<Self::KVT>;
-    exec fn exec_get_format(&self) -> &KVPairFormat<Self::KVT>;
+trait UniformSizedKVTrait : KVTrait
+where
+    Self::KeyLenType: Sized,
+    Self::KeyFormat: Marshal + Sized + UniformSized,
+//     <Self::KeyFormat as Marshal>::U: UniformSized,
+    Self::ValueFormat: Marshal + Sized + UniformSized,
+//     Self::ValueFormat: Marshal<U: UniformSized> + Sized,
+{
+    spec fn spec_get_format(&self) -> &KVPairFormat<Self>;
+    exec fn exec_get_format(&self) -> &KVPairFormat<Self>;
 
     proof fn no_overflow(&self)
     ensures 
               u8::uniform_size()
-            + self.spec_get_format().key_fmt.uniform_size()
-            + self.spec_get_format().value_fmt.uniform_size()
+//             + self.spec_get_format().key_fmt.uniform_size()
+               + <<Self as KVTrait>::KeyFormat as UniformSized>::uniform_size(&self.spec_get_format().key_fmt)
+//             + <<Self as KVTrait>::KeyFormat as UniformSized>::uniform_size(&self.spec_get_format().key_fmt)
+//             + <Self as KVTrait>::KeyFormat::uniform_size()
+               + <<Self as KVTrait>::ValueFormat as UniformSized>::uniform_size(&self.spec_get_format().value_fmt)
+//             + self.spec_get_format().value_fmt.uniform_size()
          < usize::MAX as int
     ;
 }
@@ -415,6 +422,19 @@ pub trait UniformSizedKVTrait {
 // The alternative is to implement UniformSized for the UKV.
 // Since the ultimate goal is to pass a UniformSized + Marshal to some parent UniformSizedSeq,
 // I need to pull the Marshall up to the UKV, by passing through all its methods. :v/
+
+struct Foo {
+}
+
+impl UniformSized for Foo {
+    spec fn uniform_size(&self) -> (sz: usize) { 0 }
+
+    proof fn uniform_size_ensures(&self)
+    ensures 0 < self.uniform_size() { assume(false); }
+
+    exec fn exec_uniform_size(&self) -> (sz: usize)
+    ensures sz == self.uniform_size() { 0 }
+}
 
 impl<UKV: UniformSizedKVTrait> UniformSized for UKV {
     open spec fn uniform_size(&self) -> (sz: usize)
