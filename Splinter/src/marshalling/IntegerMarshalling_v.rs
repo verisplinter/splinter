@@ -82,9 +82,14 @@ pub trait IntFormattable : Deepview<int> + builtin::Integer + SpecOrd + Copy + S
         ensures v as int == w as int
     ;
 
+    spec fn spec_from_usize(v: usize) -> (w: Self)
+    ;
+
     exec fn from_usize(v: usize) -> (w: Self)
         requires v <= Self::max()
-        ensures w as int == v as int
+        ensures
+            w == Self::spec_from_usize(v),
+            w as int == v as int,
     ;
 
     // Maybe this class should be NatObligations? Or have an additional Natty trait?
@@ -163,6 +168,8 @@ impl IntFormattable for u8 {
 
     exec fn to_usize(v: Self) -> (w: usize) { v as usize }
 
+    open spec fn spec_from_usize(v: usize) -> (w: Self) { v as Self }
+
     exec fn from_usize(v: usize) -> (w: Self) { v as Self }
 
     proof fn nonnegative(v: Self) {}
@@ -231,6 +238,8 @@ impl IntFormattable for u16 {
 
     exec fn to_usize(v: Self) -> (w: usize) { v as usize }
 
+    open spec fn spec_from_usize(v: usize) -> (w: Self) { v as Self }
+
     exec fn from_usize(v: usize) -> (w: Self) { v as Self }
 
     proof fn nonnegative(v: Self) {}
@@ -298,6 +307,8 @@ impl IntFormattable for u32 {
     exec fn exec_max() -> (m: usize) { Self::MAX as usize }
 
     exec fn to_usize(v: Self) -> (w: usize) { v as usize }
+
+    open spec fn spec_from_usize(v: usize) -> (w: Self) { v as Self }
 
     exec fn from_usize(v: usize) -> (w: Self) { v as Self }
 
@@ -368,6 +379,8 @@ impl IntFormattable for u64 {
         proof { usize64_workaround() };
         v as usize
     }
+
+    open spec fn spec_from_usize(v: usize) -> (w: Self) { v as Self }
 
     exec fn from_usize(v: usize) -> (w: Self) { v as Self }
 
