@@ -72,6 +72,7 @@ impl<KVTypes: KVTrait> KVPairFormat<KVTypes> {
         }
     }
 
+    // a slice relative to a container that starts at the begining of the marshalled KVPair.
     closed spec fn get_keylen_slice(&self) -> SpecSlice
     {
         SpecSlice{start: 0, end: self.keylen_field.field_size() as int}
@@ -106,10 +107,13 @@ impl<KVTypes: KVTrait> KVPairFormat<KVTypes> {
     exec fn exec_key_fits(&self, base_slice: &Slice, keylen: usize) -> (out: bool)
     requires
         base_slice@.wf(),
-        self.keylen_field.field_size() + keylen <= usize::MAX,
+//         self.keylen_field.field_size() + keylen <= usize::MAX,
     ensures out == self.key_fits(base_slice@, keylen as int)
     {
-        self.keylen_field.exec_field_size() + keylen <= base_slice.len()
+        // avoid an exec + that can overflow
+        // self.keylen_field.exec_field_size() + keylen <= base_slice.len()
+        &&& keylen <= base_slice.len()
+        &&& self.keylen_field.exec_field_size() <= base_slice.len() - keylen
     }
 
     exec fn exec_get_key_slice(&self, base_slice: &Slice, keylen: usize) -> (out: Slice)
@@ -133,7 +137,8 @@ impl<KVTypes: KVTrait> KVPairFormat<KVTypes> {
         self.keylen_field.field_size() <= slice@.len(),
     ensures
         out@.wf(),
-        out@ == slice@.subslice(self.get_keylen_slice().start, self.get_keylen_slice().end),
+//         out@ == slice@.subslice(self.get_keylen_slice().start, self.get_keylen_slice().end),
+        out@ == slice@.xslice(SpecSlice{start: self.get_keylen_slice().start, end: self.get_keylen_slice().end}),
     {
         slice.xslice(&Slice{start: 0, end: self.keylen_field.exec_field_size()})
     }
@@ -142,9 +147,10 @@ impl<KVTypes: KVTrait> KVPairFormat<KVTypes> {
     requires
         self.keylen_field.field_size() <= slice@.len(), // TODO move to wf
         slice@.valid(data@),
-        self.keylen_field.parsable(self.get_keylen_slice().i(data@)),
+        self.keylen_field.parsable(self.get_keylen_slice().i(slice@.i(data@))),
     {
         let keylen_slice = self.exec_get_keylen_subslice(slice);
+        assert( self.get_keylen_slice().i(slice@.i(data@)) == keylen_slice@.i(data@) ); // extn
         self.keylen_field.exec_parse(&keylen_slice, data)
     }
 
@@ -160,8 +166,7 @@ impl<KVTypes: KVTrait> KVPairFormat<KVTypes> {
         if slice.len() < self.keylen_field.exec_field_size() { return None }
         let keylen_slice = self.exec_get_keylen_subslice(slice);
         let out = self.keylen_field.try_parse(&keylen_slice, data);
-        assert( self.get_keylen_slice().i(slice@.i(data@)) == keylen_slice@.i(data@) );
-//         proof { KVTypes::KeyLenType::deepv_is_as_int(out.unwrap()) };
+        assert( self.get_keylen_slice().i(slice@.i(data@)) == keylen_slice@.i(data@) ); // extn
         out
     }
 }
@@ -235,24 +240,14 @@ impl<KVTypes: KVTrait> Marshal for KVPairFormat<KVTypes> {
         let keylen_lentype = self.exec_try_get_keylen_elt(slice, data);
         if keylen_lentype.is_none() { return None }
 
-        assert( keylen_lentype.unwrap() as int == self.get_keylen_elt(slice@.i(data@)) );
-
         let keylen = keylen_lentype.unwrap();
 
-//         proof { KVTypes::KeyLenType::deepv_is_as_int_forall(); }
-        assert( keylen as int == keylen_lentype.unwrap() as int ); //tidy
-
-//         proof { KVTypes::KeyLenType::max_ensures(keylen_lentype.unwrap()); }
         if !self.exec_key_fits(slice, keylen) {
             // keylen describes more data than we have in the slice
             return None
         }
 
         let key_slice = self.exec_get_key_slice(slice, keylen);
-
-        assert( key_slice@.wf() );
-        assert( key_slice.start <= key_slice.end );
-        assert( key_slice.end <= slice.end );
 
         let ghost l_data = slice@.i(data@);
         let ghost l_keylen = self.get_keylen_elt(l_data);
@@ -310,16 +305,13 @@ impl<KVTypes: KVTrait> Marshal for KVPairFormat<KVTypes> {
         let keylen_end = self.keylen_field.exec_marshall(keylen, data, start);
 
         let ghost data_after_keylen = data@.subrange(start as int, keylen_end as int);
-        // trigger slice extn equality
-        assert( self.get_keylen_slice().i(data_after_keylen) == data@.subrange(start as int, keylen_end as int) );
+        assert( self.get_keylen_slice().i(data_after_keylen) == data@.subrange(start as int, keylen_end as int) );  // extn
 
         // ** Marshall the key
         let key_end = self.key_fmt.exec_marshall(&kvpair.key, data, keylen_end);
 
         let ghost data_after_key = data@.subrange(start as int, key_end as int);
         proof {
-//             KVTypes::KeyLenType::deepv_is_as_int(keylen);
-
             // trigger extn equality
             assert( self.get_keylen_slice().i(data_after_key) == self.get_keylen_slice().i(data_after_keylen) );
 
