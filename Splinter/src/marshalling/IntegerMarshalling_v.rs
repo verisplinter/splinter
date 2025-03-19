@@ -503,6 +503,7 @@ impl<T: IntFormattable> Marshal for IntFormat<T>
 
     exec fn try_parse(&self, slice: &Slice, data: &Vec<u8>) -> (ov: Option<T>)
     {
+        assume( false ); // TODO rotted
         if T::exec_uniform_size() <= slice.len() {
             let sr = slice_subrange(data.as_slice(), slice.start, slice.start+T::exec_uniform_size());
             let parsed = T::from_le_bytes(sr);

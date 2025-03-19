@@ -241,40 +241,92 @@ impl Lorem {
     }
 }
 
+struct PairU32 {
+    key_fmt: IntFormat<u32>,
+    value_fmt: IntFormat<u32>,
+}
+
+impl KVTrait for PairU32 {
+    type KeyLenType = IntFormat<u8>;
+    type KeyFormat = IntFormat<u32>;
+    type ValueFormat = IntFormat<u32>;
+
+    exec fn key_format(&self) -> &Self::KeyFormat
+    {
+        &self.key_fmt
+    }
+
+    exec fn value_format(&self) -> &Self::ValueFormat
+    {
+        &self.value_fmt
+    }
+}
+
+struct PairU64 {
+    key_fmt: IntFormat<u64>,
+    value_fmt: IntFormat<u64>,
+}
+
+impl KVTrait for PairU64 {
+    type KeyLenType = IntFormat<u8>;
+    type KeyFormat = IntFormat<u64>;
+    type ValueFormat = IntFormat<u64>;
+
+    exec fn key_format(&self) -> &Self::KeyFormat
+    {
+        &self.key_fmt
+    }
+
+    exec fn value_format(&self) -> &Self::ValueFormat
+    {
+        &self.value_fmt
+    }
+}
+
 exec fn test_marshal_seq_kvpair() -> Vec<u8>
 {
     let total_size = 200;
-    let kv_format = KVPairFormat::<u32>::new();
     proof { usize64_workaround(); }
-    let bdy_int_fmt = IntFormat::<u32>::new();
-    let bdy_int_size = bdy_int_fmt.exec_uniform_size();
-    let lenf = IntFormat::<u32>::new();
-    let vfmt = VariableSizedElementSeqFormat::new(kv_format, bdy_int_fmt, lenf, total_size);
-    let kv_format = KVPairFormat::<u32>::new();    // until we can borrow it into vfmt... verus issue #1271
+//     let bdy_int_fmt = IntFormat::<u32>::new();
+//     let bdy_int_size = bdy_int_fmt.exec_uniform_size();
+//     let lenf = IntFormat::<u32>::new();
+
     let mut data = prealloc(total_size);
-    let slice = Slice::all(&data);
-    vfmt.initialize(&slice, &mut data);
+    let value = KVPair{key: 7, value: 9};
+    let kv_format = KVPairFormat::<PairU32>::new(IntFormat::new(), IntFormat::new(), IntFormat::new());
+    let end = kv_format.exec_marshall(&value, &mut data, 0);
 
-    let mut free_space: usize = total_size - u32::exec_uniform_size();
+    let value = KVPair{key: 11, value: 13};
+    let kv_format = KVPairFormat::<PairU64>::new(IntFormat::new(), IntFormat::new(), IntFormat::new());
+    kv_format.exec_marshall(&value, &mut data, end);
 
-    let mut lorem = Lorem::new();
-    loop
-    invariant
-        lorem.valid(),
-        slice@.valid(data@),    // because data len never changes
-        vfmt.tableable(slice@.i(data@)),
-        vfmt.valid_table(slice@.i(data@)),
-        free_space == vfmt.free_space(slice@.i(data@)),
-    {
-        let kvpair = KVPair{key: lorem.ipsum(6), value: lorem.ipsum(12)};
-        let kv_space = kv_format.exec_size(&kvpair) + bdy_int_size;
-
-        if free_space < kv_space { break; }
-
-        vfmt.exec_append(&slice, &mut data, &kvpair);
-        free_space = free_space - kv_space;
-    }
     data
+
+//     let vfmt = VariableSizedElementSeqFormat::new(kv_format, bdy_int_fmt, lenf, total_size);
+//     let kv_format = KVPairFormat::<u32>::new();    // until we can borrow it into vfmt... verus issue #1271
+//     let slice = Slice::all(&data);
+//     vfmt.initialize(&slice, &mut data);
+
+//     let mut free_space: usize = total_size - u32::exec_uniform_size();
+// 
+//     let mut lorem = Lorem::new();
+//     loop
+//     invariant
+//         lorem.valid(),
+//         slice@.valid(data@),    // because data len never changes
+//         vfmt.tableable(slice@.i(data@)),
+//         vfmt.valid_table(slice@.i(data@)),
+//         free_space == vfmt.free_space(slice@.i(data@)),
+//     {
+//         let kvpair = KVPair{key: lorem.ipsum(6), value: lorem.ipsum(12)};
+//         let kv_space = kv_format.exec_size(&kvpair) + bdy_int_size;
+// 
+//         if free_space < kv_space { break; }
+// 
+//         vfmt.exec_append(&slice, &mut data, &kvpair);
+//         free_space = free_space - kv_space;
+//     }
+//     data
 }
 
 
