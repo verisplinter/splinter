@@ -20,6 +20,16 @@ use crate::marshalling::VariableSizedElementSeq_v::*;
 
 verus! {
 
+pub struct SpecKVPair<K,V> {
+    pub key: K,
+    pub value: V,
+}
+
+pub struct KVPair<K, V> {
+    pub key: K,
+    pub value: V,
+}
+
 pub trait KVTrait {
 //     type KDV;
 //     type K: Deepview<Self::KDV>;
@@ -38,19 +48,12 @@ pub trait KVTrait {
     exec fn value_format(&self) -> &Self::ValueFormat;
 }
 
-pub struct SpecKVPair<KVTypes: KVTrait> {
-    pub key: <KVTypes::KeyFormat as Marshal>::DV,
-    pub value: <KVTypes::ValueFormat as Marshal>::DV,
-}
-
 // TODO: Generalize from Vec<u8> to some Deepviewable types.
-pub struct KVPair<KVTypes: KVTrait> {
-    pub key: <KVTypes::KeyFormat as Marshal>::U,
-    pub value: <KVTypes::ValueFormat as Marshal>::U,
-}
-
-impl<KVTypes: KVTrait> Deepview<SpecKVPair<KVTypes>> for KVPair<KVTypes> {
-    open spec fn deepv(&self) -> SpecKVPair<KVTypes>
+impl<KDV, VDV, KU, VU> Deepview<SpecKVPair<KDV,VDV>> for KVPair<KU,VU>
+where KU: Deepview<KDV>,
+      VU: Deepview<VDV>,
+{
+    open spec fn deepv(&self) -> SpecKVPair<KDV, VDV>
     {
         SpecKVPair{key: self.key.deepv(), value: self.value.deepv()}
     }
@@ -172,8 +175,8 @@ impl<KVTypes: KVTrait> KVPairFormat<KVTypes> {
 }
 
 impl<KVTypes: KVTrait> Marshal for KVPairFormat<KVTypes> {
-    type DV = SpecKVPair<KVTypes>;
-    type U = KVPair<KVTypes>;
+    type DV = SpecKVPair<<KVTypes::KeyFormat as Marshal>::DV, <KVTypes::ValueFormat as Marshal>::DV>;
+    type U = KVPair<<KVTypes::KeyFormat as Marshal>::U, <KVTypes::ValueFormat as Marshal>::U>;
 
     open spec fn valid(&self) -> bool
     {
