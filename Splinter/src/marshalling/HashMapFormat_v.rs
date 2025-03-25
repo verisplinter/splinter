@@ -115,6 +115,16 @@ decreases m.dom().len()
     assert( pair_seq_to_map(map_to_pair_seq(m)) == m ); // map extn
 }
 
+spec fn view_injective<T: View>() -> bool
+{
+    forall |e1: T, e2: T| e1@==e2@ ==> e1==e2
+}
+
+spec fn view_is_deepview<T: View + Deepview<<T as View>::V>>() -> bool
+{
+    forall |e: T| #![auto] e@ == e.deepv()
+}
+
 impl<KMarshal: Marshal + UniformSized, VMarshal: Marshal + UniformSized>
 HashMapFormat<KMarshal, VMarshal>
 where
@@ -123,22 +133,21 @@ where
 {
     exec fn pair_vec_to_hash_map(mut pair_vec: Vec<KVPair<<KMarshal as Marshal>::U, <VMarshal as Marshal>::U>>)
         -> (out: HashMapWithView<<KMarshal as Marshal>::U, <VMarshal as Marshal>::U>)
+    requires
+        obeys_key_model::<<KMarshal as Marshal>::U>(),
+        view_injective::<<KMarshal as Marshal>::U>(),
+        view_is_deepview::<<KMarshal as Marshal>::U>(),
+        view_is_deepview::<<VMarshal as Marshal>::U>(),
     ensures out.deepv() == pair_seq_to_map(pair_vec.deepv())
     {
         let ghost orig_pair_vec = pair_vec.deepv();
-        assume( obeys_key_model::<<KMarshal as Marshal>::U>() );
-        // not sure where to push this obligation upstream. Trait?
-        assume( forall |k1: <KMarshal as Marshal>::U, k2: <KMarshal as Marshal>::U| k1@==k2@ ==> k1==k2 );
-        assume( forall |k1: <KMarshal as Marshal>::U| #![auto] k1@ == k1.deepv() );
-        assume( forall |v1: <VMarshal as Marshal>::U| #![auto] v1@ == v1.deepv() );
-//         new_map_assumption::<<kMarshal as Marshal>::U>();
 
         let mut hm = HashMapWithView::new();
         let ghost count = 0;
 
         // TODO(verus): this extn equality didn't trigger itself in the invariant context;
         // had to utter it out loud to get it to go.
-        assert( hm.deepv() == pair_seq_to_map(orig_pair_vec.take(count)) );
+        assert( hm.deepv() == pair_seq_to_map(orig_pair_vec.take(count)) ); // extn
         assert( orig_pair_vec == orig_pair_vec.subrange(count, orig_pair_vec.len() as int) ); // extn
 
         while 0 < pair_vec.len()
@@ -213,7 +222,11 @@ where
 
     closed spec fn valid(&self) -> bool
     {
-        self.kvpair_format.valid()
+        &&& obeys_key_model::<<KMarshal as Marshal>::U>()
+        &&& view_injective::<<KMarshal as Marshal>::U>()
+        &&& view_is_deepview::<<KMarshal as Marshal>::U>()
+        &&& view_is_deepview::<<VMarshal as Marshal>::U>()
+        &&& self.kvpair_format.valid()
     }
 
     //////////////////////////////////////////////////////////////////////
