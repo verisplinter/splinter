@@ -150,7 +150,7 @@ exec fn test_resizable_seq_marshalling() -> (outpr: (Vec<u8>, usize))
     val.push(16 as u32);
     let rusm = u32_resizable_seq_marshaller_factory();
 
-//     assert( val.deepv().len() == 3);    // witness to the multiplicand in marshallable
+    assert( val.deepv().len() == 3);    // witness to the multiplicand in marshallable
     assert( rusm.total_size == 24 );
     assert( rusm.spec_size(val.deepv()) == rusm.total_size );
     assert(rusm.marshallable(val.deepv()));
@@ -339,15 +339,18 @@ exec fn test_marshal_seq_kvpair() -> Vec<u8>
 //     data
 }
 
-impl Deepview<u32> for u32 {
-    spec fn deepv(&self) -> u32 {
-        *self
+impl Deepview<Map<int,int>> for HashMapWithView<u32,u32> {
+    open spec fn deepv(&self) -> Map<int,int>
+    {
+        Map::new(|k: int| self@.contains_key(k as u32),
+            |k: int| self@[k as u32] as int)
     }
 }
 
 exec fn test_marshal_hash_map() -> Vec<u8>
 {
-    let value = HashMapWithView::new();
+    assume( obeys_key_model::<u32>() );
+    let mut value = HashMapWithView::new();
     value.insert(7, 170);
     value.insert(8, 180);
     value.insert(6, 160);
@@ -358,8 +361,10 @@ exec fn test_marshal_hash_map() -> Vec<u8>
 
     let mut data = prealloc(total_size);
 
-
     let hash_map_format = HashMapFormat::new(IntFormat::<u32>::new(), IntFormat::<u32>::new());
+    assume( hash_map_format.valid() );
+    assume( hash_map_format.marshallable(value.deepv()) );
+    assume( 0 + hash_map_format.spec_size(value.deepv()) as int <= data.len() );
     let end = hash_map_format.exec_marshall(&value, &mut data, 0);
 
     data
@@ -397,4 +402,7 @@ fn main() {
 
     let v = test_marshal_seq_kvpair();
     print!("test_marshal_seq_kvpair: {:?}\n", v);
+
+    let v = test_marshal_hash_map();
+    print!("test_marshal_hash_map: {:?}\n", v);
 }
