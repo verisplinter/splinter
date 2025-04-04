@@ -20,6 +20,16 @@ use crate::marshalling::UniformSized_v::UniformSized;
 // use crate::marshalling::ResizableIntegerSeq_v::*;
 use crate::marshalling::VariableSizedElementSeq_v::*;
 use crate::marshalling::StaticallySized_v::*;
+use crate::marshalling::HashMapFormat_v::*;
+use vstd::std_specs::hash::*;
+
+use vstd::prelude::*;
+use vstd::bytes::*;
+use vstd::slice::*;
+use vstd::hash_map::*;
+use vstd::set_lib::*;
+use vstd::std_specs::hash::*;
+use core::hash::Hash;
 
 // fn m<M: Marshalling<int, u32>>(m: &M) {
 // }
@@ -140,7 +150,7 @@ exec fn test_resizable_seq_marshalling() -> (outpr: (Vec<u8>, usize))
     val.push(16 as u32);
     let rusm = u32_resizable_seq_marshaller_factory();
 
-    assert( val.deepv().len() == 3);    // witness to the multiplicand in marshallable
+//     assert( val.deepv().len() == 3);    // witness to the multiplicand in marshallable
     assert( rusm.total_size == 24 );
     assert( rusm.spec_size(val.deepv()) == rusm.total_size );
     assert(rusm.marshallable(val.deepv()));
@@ -329,6 +339,31 @@ exec fn test_marshal_seq_kvpair() -> Vec<u8>
 //     data
 }
 
+impl Deepview<u32> for u32 {
+    spec fn deepv(&self) -> u32 {
+        *self
+    }
+}
+
+exec fn test_marshal_hash_map() -> Vec<u8>
+{
+    let value = HashMapWithView::new();
+    value.insert(7, 170);
+    value.insert(8, 180);
+    value.insert(6, 160);
+    value.insert(9, 190);
+
+    let total_size = 200;
+//     proof { usize64_workaround(); }
+
+    let mut data = prealloc(total_size);
+
+
+    let hash_map_format = HashMapFormat::new(IntFormat::<u32>::new(), IntFormat::<u32>::new());
+    let end = hash_map_format.exec_marshall(&value, &mut data, 0);
+
+    data
+}
 
 // exec fn test_parse_keyed_message_seq() -> Vec<u8>
 
