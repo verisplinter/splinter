@@ -20,7 +20,7 @@ verus! {
 
 // An int type T can be IntFormat<T> if we know these things about it:
 
-pub trait IntFormattable : Deepview<int> + builtin::Integer + SpecOrd + Copy + StaticallySized
+pub trait IntFormattable : Deepview<int> + builtin::Integer + Sized + SpecOrd + Copy + StaticallySized
 {
     // generic wrappers over vstd::bytes, which should probably be rewritten this way.
     spec fn spec_from_le_bytes(s: Seq<u8>) -> Self
@@ -427,6 +427,7 @@ impl<T: IntFormattable> IntFormat<T>
             forall |i| 0 <= i < start ==> data[i] == old(data)[i],
             forall |i| 0 <= i < k ==> data[start as int + i] == source[i],
             forall |i| end <= i < data.len() ==> data[i] == old(data)[i],
+        decreases count-k,
         {
             //data[k] = s[k];
             // Do we want some sort of intrinsic so we don't have to copy u32s a byte at a time!?

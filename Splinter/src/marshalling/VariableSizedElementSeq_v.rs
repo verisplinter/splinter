@@ -651,6 +651,7 @@ impl <
                 invariant
                     0 <= i < len,
                     forall |ip, jp| 0 <= ip <= jp <= i ==> #[trigger] tbl[jp] as int <= #[trigger] tbl[ip] as int
+                decreases len-i,
                 {
                     assume( false ); // proof rotted
                     assert( tbl[i as int] as int == self.table(idata)[i as int] );  // trigger

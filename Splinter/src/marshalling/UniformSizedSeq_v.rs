@@ -349,6 +349,7 @@ impl<EltFormat: Marshal + UniformSized>
                     result.len() == i,
                     forall |j| 0<=j<i as nat ==> self.elt_parsable(dslice@.i(data@), j),
                     forall |j| #![auto] 0<=j<i as nat ==> result[j].deepv() == self.get_elt(dslice@.i(data@), j),
+                decreases len-i,
                 {
                     let ghost idata = dslice@.i(data@);
                     assume( false );    // proof rotted
@@ -403,6 +404,7 @@ impl<EltFormat: Marshal + UniformSized>
             forall |j| end as int <= j < old(data)@.len() ==> data@[j] == old(data)@[j],
             self.parsable(data@.subrange(start as int, end as int)),
             self.parse(data@.subrange(start as int, end as int)) == value.deepv().subrange(0, i as int),
+        decreases value.len()-i,
         {
             assume( false ); // proof rotted
             let ghost oldend = end;

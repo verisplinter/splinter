@@ -7,7 +7,7 @@ use vstd::pervasive::*;
 use vstd::prelude::*;
 use vstd::modes::*;
 use vstd::tokens::InstanceId;
-use vstd::hash_map::*;
+// use vstd::hash_map::*;
 use vstd::std_specs::hash::*;
 
 use crate::trusted::ClientAPI_t::*;
@@ -30,6 +30,7 @@ use crate::implementation::ModelRefinement_v::*;
 use crate::implementation::ConcreteProgramModel_v::*;
 use crate::implementation::AtomicState_v::*;
 use crate::implementation::MultisetMapRelation_v::*;
+use crate::implementation::VecMap_v::*;
 
 #[allow(unused_imports)]
 use vstd::multiset::*;
@@ -90,6 +91,18 @@ impl SyncRequestBuffer {
 }
 
 pub type ModelShard = KVStoreTokenized::model<ConcreteProgramModel>;
+// This struct supplies KVStoreTrait, which has both the entry point to the implementation and the
+// proof hooks to satisfy the refinement obligation trait.
+pub struct Implementation {
+    store: VecMap<Key, Value>,
+    version: u64,
+
+    model: Tracked<KVStoreTokenized::model<ConcreteProgramModel>>,
+    instance: Tracked<KVStoreTokenized::Instance<ConcreteProgramModel>>,
+
+    sync_requests: SyncRequestBuffer,
+}
+
 pub type RequestShard = KVStoreTokenized::requests<ConcreteProgramModel>;
 pub type ReplyShard = KVStoreTokenized::replies<ConcreteProgramModel>;
 
@@ -193,6 +206,7 @@ impl Implementation {
     closed spec fn inv(self) -> bool {
         let state = self.state();
 
+        &&& self.store.wf()
         &&& self.model@.instance_id() == self.instance@.id()
         &&& state.recovery_state is RecoveryComplete
 
@@ -866,6 +880,9 @@ impl Implementation {
             proof { tracked_swap(self.model.borrow_mut(), &mut model); }
 
             let superblock = unmarshall(&raw_page);
+            assert( superblock.store.wf() ) by {
+                assume( false ); // LEFT OFF extract model invariant
+            }
             // Record our learnings in the physical model.
             // self.store = superblock.store;
 
@@ -934,6 +951,7 @@ impl KVStoreTrait for Implementation {
         &&& self.model@.value().state.recovery_state is Begin
         &&& !self.sync_requests.in_flight()
         &&& self.sync_requests.deferred_reqs@.len() == 0
+        &&& self.store.wf()
     }
 
     closed spec fn instance_id(self) -> InstanceId
@@ -986,12 +1004,14 @@ impl KVStoreTrait for Implementation {
     }
 }
 
-pub fn new_empty_hash_map() -> (out: HashMapWithView<Key,Value>)
-ensures out@.is_empty()
+pub fn new_empty_hash_map() -> (out: VecMap<Key,Value>)
+ensures
+    out.wf(),
+    out@.is_empty(),
 {
     // verus/source/vstd/std_specs/hash.rs says this is the best we can do right now
     assume( obeys_key_model::<Key>() );
-    HashMapWithView::new()
+    VecMap::new()
 }
 
 // Convert overflow into a liveness failure

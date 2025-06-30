@@ -323,6 +323,10 @@ pub type SyncReqId = u64;
 
 /// A Version is a snapshot of a map (its key-value pairs). Specifically it wraps
 /// a `MapSpec::State`.
+// TODO(verus): why would I need to add this? Without it I got :
+// warning: verus-related attribute has no effect because Verus is already ignoring this item. You may need to mark it as `#[verifier::verify]`.
+#[verifier::verify]
+#[verifier::ext_equal]
 pub type Version = PersistentState;
 
 pub open spec fn SingletonVersions(appv: MapSpec::State) -> FloatingSeq<Version> {

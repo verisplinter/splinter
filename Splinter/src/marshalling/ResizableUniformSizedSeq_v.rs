@@ -537,6 +537,7 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
                     forall |j| 0<=j<i as nat ==> self.gettable(dslice@.i(data@), j),
                     forall |j| 0<=j<i as nat ==> self.elt_parsable(dslice@.i(data@), j),
                     forall |j| #![auto] 0<=j<i as nat ==> result[j].deepv() == self.get_elt(dslice@.i(data@), j),
+                decreases len-i,
                 {
                     assume(false); // proof rotted
                     let oelt = self.try_get_elt(dslice, data, i);
@@ -610,6 +611,7 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
             self.length(slice@.i(data@)) == value.len(),
             forall |j| 0 <= j < i ==> self.elt_parsable(slice@.i(data@), j),
             forall |j| #![auto] 0 <= j < i ==> self.get_elt(slice@.i(data@), j) == value[j].deepv(),
+        decreases value.len() - i,
         {
             assume( false );    // proof rotted
             let ghost prev_data = data@;

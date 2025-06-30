@@ -48,6 +48,7 @@ exec fn prealloc(len: usize) -> (out: Vec<u8>)
         invariant
             i <= len,
             out.len() == i,
+        decreases len-i,
     {
         out.push(0);
         i += 1;
@@ -241,6 +242,7 @@ impl Lorem {
                 i <= len,
                 out.len() == i,
                 self.valid(),
+            decreases len-i,
         {
             out.push(self.last_val as u8);
             self.last_val = self.last_val + 1;

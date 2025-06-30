@@ -1,7 +1,7 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
 use vstd::{prelude::*};
-use vstd::hash_map::*;
+// use vstd::hash_map::*;
 use crate::spec::MapSpec_t::*;
 use crate::spec::AsyncDisk_t::*;
 use crate::spec::ImplDisk_t::*;
@@ -11,6 +11,7 @@ use crate::spec::TotalKMMap_t::*;
 use crate::spec::FloatingSeq_t::*;
 use crate::abstract_system::MsgHistory_v::{MsgHistory, KeyedMessage};
 use crate::abstract_system::StampedMap_v::*;
+use crate::implementation::VecMap_v::*;
 
 verus! {
 
@@ -22,7 +23,7 @@ pub open spec(checked) fn singleton_floating_seq(at_index: nat, kmmap: TotalKMMa
           |i| Version{ appv: MapSpec::State{ kmmap } } )
 }
 
-pub open spec(checked) fn view_store_as_kmmap(store: HashMapWithView<Key, Value>) -> TotalKMMap
+pub open spec(checked) fn view_store_as_kmmap(store: VecMap<Key, Value>) -> TotalKMMap
 {
     TotalKMMap(Map::new(
             |k: Key| true,
@@ -30,7 +31,7 @@ pub open spec(checked) fn view_store_as_kmmap(store: HashMapWithView<Key, Value>
                      else { Message::empty() }))
 }
 
-pub open spec(checked) fn view_store_as_singleton_floating_seq(at_index: nat, store: HashMapWithView<Key, Value>) -> FloatingSeq<Version>
+pub open spec(checked) fn view_store_as_singleton_floating_seq(at_index: nat, store: VecMap<Key, Value>) -> FloatingSeq<Version>
 {
     singleton_floating_seq(at_index, view_store_as_kmmap(store))
 }
@@ -64,6 +65,9 @@ impl View for Journal {
 
 pub struct ISuperblock {
     pub journal: Journal
+    pub store: VecMap<Key, Value>,
+    // need version so recovery knows the shape of the (mostly-empty) history to reconstruct (the LSN)
+    pub version_index: u64,
 }
 
 impl View for ISuperblock {

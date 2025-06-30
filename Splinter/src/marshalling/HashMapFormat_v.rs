@@ -365,6 +365,7 @@ where
             0 <= count <= orig_pair_vec.len(),
             hm.deepv() == pair_seq_to_map(orig_pair_vec.take(count)),
             pair_vec.deepv() == orig_pair_vec.subrange(count, orig_pair_vec.len() as int),
+        decreases pair_vec.len(),
         {
             let ghost prev_count = count;
             let ghost prev_pair_vec = pair_vec.deepv();
