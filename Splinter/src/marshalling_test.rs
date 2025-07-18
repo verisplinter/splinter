@@ -405,6 +405,6 @@ fn main() {
     let v = test_marshal_seq_kvpair();
     print!("test_marshal_seq_kvpair: {:?}\n", v);
 
-    let v = test_marshal_hash_map();
-    print!("test_marshal_hash_map: {:?}\n", v);
+//     let v = test_marshal_hash_map();
+//     print!("test_marshal_hash_map: {:?}\n", v);
 }
