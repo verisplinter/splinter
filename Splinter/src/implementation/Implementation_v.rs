@@ -95,6 +95,7 @@ pub type ModelShard = KVStoreTokenized::model<ConcreteProgramModel>;
 // proof hooks to satisfy the refinement obligation trait.
 pub struct Implementation {
     store: VecMap<Key, Value>,
+    journal: Journal,
     version: u64,
 
     model: Tracked<KVStoreTokenized::model<ConcreteProgramModel>>,
@@ -102,6 +103,22 @@ pub struct Implementation {
 
     sync_requests: SyncRequestBuffer,
 }
+
+// This struct supplies KVStoreTrait, which has both the entry point to the implementation and the
+// proof hooks to satisfy the refinement obligation trait.
+// this was Jon's thing, I guess? Replaced by Jialin's thing above?
+// pub struct Implementation {
+//     // store: HashMapWithView<Key, Value>,
+//     journal: Journal,
+// 
+//     // token for the program model variable
+//     model: Tracked<ModelShard>,
+// 
+//     // we do not own a mutable reference to this
+//     instance: Tracked<KVStoreTokenized::Instance<ConcreteProgramModel>>,
+// 
+//     sync_requests: SyncRequestBuffer,
+// }
 
 pub type RequestShard = KVStoreTokenized::requests<ConcreteProgramModel>;
 pub type ReplyShard = KVStoreTokenized::replies<ConcreteProgramModel>;
@@ -138,21 +155,6 @@ impl Journal {
     {
         self.msg_history.push(KeyedMessage{key, message: Message::Define{value}})
     }
-}
-
-// This struct supplies KVStoreTrait, which has both the entry point to the implementation and the
-// proof hooks to satisfy the refinement obligation trait.
-pub struct Implementation {
-    // store: HashMapWithView<Key, Value>,
-    journal: Journal,
-
-    // token for the program model variable
-    model: Tracked<ModelShard>,
-
-    // we do not own a mutable reference to this
-    instance: Tracked<KVStoreTokenized::Instance<ConcreteProgramModel>>,
-
-    sync_requests: SyncRequestBuffer,
 }
 
 impl Implementation {
@@ -225,9 +227,9 @@ impl Implementation {
         &&& (state.in_flight is Some ==> {
             // The in-flight version stays active so get_suffix doesn't choke on it when it's time
             // to handle the disk response
-            &&& state.history.is_active(state.in_flight.get_Some_0().version as int)
+            &&& state.history.is_active(state.in_flight->Some_0.version as int)
             // The in-flight 'satisfied requests' can indeed be satisfied by the in-flight version
-            &&& self.sync_reqs_in_version(self.sync_requests.satisfied_reqs@, state.in_flight.get_Some_0().version as int)
+            &&& self.sync_reqs_in_version(self.sync_requests.satisfied_reqs@, state.in_flight->Some_0.version as int)
         })
         &&& self.sync_reqs_in_version(self.sync_requests.deferred_reqs@, self.version() as int)
         &&& Self::sync_req_lists_mutually_unique(self.sync_requests.satisfied_reqs@, self.sync_requests.deferred_reqs@)
@@ -514,7 +516,10 @@ impl Implementation {
         // actual implementation will only contain pointers of these metadata and not the entire structure
         let mut tmp_journal = Journal::new_empty();
         std::mem::swap(&mut self.journal, &mut tmp_journal);
-        let sb = ISuperblock{ journal: tmp_journal };
+        let sb = ISuperblock{
+            journal: tmp_journal,
+            store: self.store.clone(),
+            version_index: self.version };
 
         // Yoink the store out of self just long enough to marshall it as part of the superblock.
         let raw_page = marshall(&sb);
@@ -549,7 +554,11 @@ impl Implementation {
 
         proof {
             let pre_sb = self.state().ephemeral_sb();
-            assert(pre_sb == ISuperblock{journal: self.journal}@) by {
+            assert(pre_sb == ISuperblock{
+                journal: self.journal,
+                store: self.store,
+                version_index: self.version,
+            }@) by {
                 self.view_as_kmmap_ensures();
                 self.journal@.apply_to_stamped_map_length_lemma(StampedMap_v::empty());
             }
@@ -753,7 +762,7 @@ impl Implementation {
         assume(false);
 
         let ghost pre_state = self.model@.value();
-        let ghost new_persistent_version = pre_state.state.in_flight.get_Some_0().version;
+        let ghost new_persistent_version = pre_state.state.in_flight->Some_0.version;
         let ghost post_state = ConcreteProgramModel{ state: AtomicState{
             in_flight: None,
             history: pre_state.state.history.get_suffix(new_persistent_version as int),
@@ -972,8 +981,9 @@ impl KVStoreTrait for Implementation {
         ) = KVStoreTokenized::Instance::initialize(ConcreteProgramModel{state: AtomicState::init()});
 
         let selff = Implementation{
-            // store: new_empty_hash_map(),
+            store: new_empty_hash_map(),
             journal: Journal::new_empty(),
+            version: 0,
             model: Tracked(model),
             instance: Tracked(instance),
             sync_requests: SyncRequestBuffer::new_empty(),

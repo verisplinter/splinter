@@ -138,7 +138,7 @@ impl<ProgramModel: ProgramModelTrait> ClientAPI<ProgramModel>{
         out.2@.instance_id() == self.instance_id(),
         out.2@.multiset() == multiset_map_singleton(out.0, out.1@),
     {
-        let arbitrary_idiskresponse = IDiskResponse::ReadResp{data: RawPage};
+        let arbitrary_idiskresponse = IDiskResponse::ReadResp{data: arbitrary()};
         (0, arbitrary_idiskresponse, Tracked::assume_new())
     }
 

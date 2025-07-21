@@ -42,12 +42,12 @@ impl IAddress {
 
 /// axioms relating spec and impl page and au count
 #[verifier(external_body)]
-pub broadcast proof fn page_count_equals_ipage_count()
+pub broadcast axiom fn page_count_equals_ipage_count()
     ensures #[trigger] page_count() == ipage_count()
 ;
 
 #[verifier(external_body)]
-pub broadcast proof fn au_count_equals_iau_count()
+pub broadcast axiom fn au_count_equals_iau_count()
     ensures #[trigger] au_count() == iau_count()
 ;
 

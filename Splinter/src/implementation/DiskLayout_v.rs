@@ -64,7 +64,7 @@ impl View for Journal {
 }
 
 pub struct ISuperblock {
-    pub journal: Journal
+    pub journal: Journal,
     pub store: VecMap<Key, Value>,
     // need version so recovery knows the shape of the (mostly-empty) history to reconstruct (the LSN)
     pub version_index: u64,
