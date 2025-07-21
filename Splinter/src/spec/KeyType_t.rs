@@ -6,6 +6,7 @@ use builtin::*;
 use builtin_macros::*;
 use vstd::prelude::*;
 use vstd::set_lib::*;
+use crate::spec::injective_t::*;
 
 verus! {
 
@@ -29,6 +30,13 @@ impl View for Key {
     type V = int;
     open spec fn view(&self) -> int {
         self.0 as int
+    }
+}
+
+impl Injective for Key {
+    proof fn lemma_injective()
+    ensures forall |x1: Self, x2: Self| x1@ == x2@ ==> x1 == x2
+    {
     }
 }
 
