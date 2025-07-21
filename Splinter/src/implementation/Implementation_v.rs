@@ -783,7 +783,7 @@ impl Implementation {
             let info = ProgramDiskInfo{ reqs: Multiset::empty(), resps: response_shard@.multiset() };
             let disk_event = DiskEvent::ExecuteSyncEnd{};
 
-            assert( response_shard@.multiset() == Multiset::singleton((pre_state.state.in_flight.get_Some_0().req_id, DiskResponse::WriteResp{})) );    // extn
+            assert( response_shard@.multiset() == Multiset::singleton((pre_state.state.in_flight->Some_0.req_id, DiskResponse::WriteResp{})) );    // extn
 
             assert( AtomicState::disk_transition(
                 pre_state.state, post_state.state, disk_event, info.reqs, info.resps) );    // witness

@@ -41,7 +41,7 @@ verus! {
         {
             &&& self.persistent.wf()
             &&& self.ephemeral.wf()
-            &&& (self.in_flight is Some ==> self.in_flight.get_Some_0().wf())
+            &&& (self.in_flight is Some ==> self.in_flight->Some_0.wf())
         }
     }
 
@@ -170,7 +170,7 @@ verus! {
 
                 let in_flight_map = self.mapadt.in_flight.unwrap();
                 let remaining_journal = self.journal.i().discard_old(in_flight_map.seq_end);
-                let in_flight_journal = self.journal.i().discard_recent(self.mapadt.in_flight.get_Some_0().seq_end);
+                let in_flight_journal = self.journal.i().discard_recent(self.mapadt.in_flight->Some_0.seq_end);
                 let remaining_journal_discarded = remaining_journal.discard_recent(lsn as LSN);
 
                 journal_associativity(self.mapadt.persistent, in_flight_journal, remaining_journal_discarded);
@@ -304,7 +304,7 @@ verus! {
             // Ephemeral journal is no shorter than persistent state
             &&& self.journal.persistent.seq_end <= self.ephemeral_seq_end()
             // Local snapshot of mapLsn matched actual map state machine
-            &&& self.ephemeral.get_Some_0().map_lsn == self.mapadt.ephemeral->v.stamped_map.seq_end
+            &&& self.ephemeral->Some_0.map_lsn == self.mapadt.ephemeral->v.stamped_map.seq_end
         }
 
         pub open spec(checked) fn inv_ephemeral_value_agreement(self) -> bool
@@ -340,9 +340,9 @@ verus! {
                 self.map_is_frozen()
         {
             // frozen map hasn't passed ephemeral journal
-            &&& self.mapadt.in_flight.get_Some_0().seq_end <= self.ephemeral_seq_end()
+            &&& self.mapadt.in_flight->Some_0.seq_end <= self.ephemeral_seq_end()
             // Frozen map doesn't regress before persistent map
-            &&& self.mapadt.persistent.seq_end <= self.mapadt.in_flight.get_Some_0().seq_end
+            &&& self.mapadt.persistent.seq_end <= self.mapadt.in_flight->Some_0.seq_end
         }
 
         pub open spec(checked) fn inv_frozen_map_value_agreement(self) -> bool
@@ -355,10 +355,10 @@ verus! {
         {
             // invariant: the in_flight map agrees with the persistent map,
             // plus has extra entries from the ephemeral journal.
-            self.mapadt.in_flight.get_Some_0() ==
+            self.mapadt.in_flight->Some_0 ==
                 MsgHistory::map_plus_history(
                     self.mapadt.persistent,
-                    self.journal.i().discard_recent(self.mapadt.in_flight.get_Some_0().seq_end)
+                    self.journal.i().discard_recent(self.mapadt.in_flight->Some_0.seq_end)
                 )
 
             // NB: Frozen Journal agreement comes "for free" because the frozen
@@ -369,8 +369,8 @@ verus! {
         pub open spec(checked) fn inv_commit_started_geometry(self) -> bool
             recommends self.commit_started()
         {
-            let if_map = self.mapadt.in_flight.get_Some_0();
-            let if_journal = self.journal.in_flight.get_Some_0();
+            let if_map = self.mapadt.in_flight->Some_0;
+            let if_journal = self.journal.in_flight->Some_0;
 
             // We need a well-behaved journal to relate in-flight state to.
             &&& self.wf()
@@ -395,8 +395,8 @@ verus! {
                 self.commit_started(),
                 self.inv_commit_started_geometry(),
         {
-            let if_map = self.mapadt.in_flight.get_Some_0();
-            let if_journal = self.journal.in_flight.get_Some_0();
+            let if_map = self.mapadt.in_flight->Some_0;
+            let if_journal = self.journal.in_flight->Some_0;
 
             // in-flight journal is consistent with the persistent journal
             &&& journal_overlaps_agree(if_journal, self.journal.persistent)
@@ -519,7 +519,7 @@ verus! {
             // What we'd like to do ideally:
             // step.is_commit_complete(),
             v.mapadt.persistent.seq_end <= lsn <= v.ephemeral_seq_end(),
-            v.mapadt.in_flight.get_Some_0().seq_end <= lsn,
+            v.mapadt.in_flight->Some_0.seq_end <= lsn,
         ensures
             v.journal.i().can_discard_to(lsn),
             MsgHistory::map_plus_history(v.mapadt.persistent, v.journal.i().discard_recent(lsn))
@@ -539,7 +539,7 @@ verus! {
         assert(v.journal.ephemeral is Known);
 
         assert(CrashTolerantJournal::State::next(v.journal, vp.journal, CrashTolerantJournal::Label::CommitCompleteLabel {
-            require_end: v.ephemeral.get_Some_0().map_lsn,
+            require_end: v.ephemeral->Some_0.map_lsn,
         }));
 
         // There are six pieces in play here: the persistent and in-flight images and the ephemeral journals:
@@ -558,7 +558,7 @@ verus! {
         // "R" is the "reference LSN" -- that's where we're going to prune ephemeral.journal, since
         // after the commit it is going to be the LSN of the persistent map.
 
-        let ref_lsn = v.mapadt.in_flight.get_Some_0().seq_end;
+        let ref_lsn = v.mapadt.in_flight->Some_0.seq_end;
         let ej = v.journal.i();
 
         // Recommendation fails even though assertion passes.
@@ -659,7 +659,7 @@ verus! {
         reveal(AbstractMap::State::next_by);
 
         if v.map_is_frozen() {
-            let frozen_end = v.mapadt.in_flight.get_Some_0().seq_end;
+            let frozen_end = v.mapadt.in_flight->Some_0.seq_end;
             assert(v.journal.i().discard_recent(frozen_end)
                 == vp.journal.i().discard_recent(frozen_end))
             by
@@ -681,7 +681,7 @@ verus! {
             message: Message::Define { value: value },
         };
 
-        let singleton = MsgHistory::singleton_at(v.ephemeral.get_Some_0().map_lsn, keyed_message);
+        let singleton = MsgHistory::singleton_at(v.ephemeral->Some_0.map_lsn, keyed_message);
 
         assert(CrashTolerantJournal::State::next(v.journal, vp.journal, CrashTolerantJournal::Label::PutLabel{ records: singleton }));
 
@@ -787,7 +787,7 @@ verus! {
         let pm = v.mapadt.persistent;
         let em_end = v.mapadt.i().seq_end;
         let ej = v.journal.i();
-        let im_end = v.mapadt.in_flight.get_Some_0().seq_end;
+        let im_end = v.mapadt.in_flight->Some_0.seq_end;
 
         // Show that ej[:em_end] == ej[:im_end] + ej[im_end:em_end]
         // Needed an extensionality argument... took a while to find
@@ -1180,7 +1180,7 @@ verus! {
         assert forall |lsn| { vers_p.is_active(lsn) }
             implies { vers_p[lsn] == vers_s[lsn] } by
         {
-            if (v.journal.in_flight.get_Some_0().seq_end <= lsn) {
+            if (v.journal.in_flight->Some_0.seq_end <= lsn) {
                 commit_step_preserves_history(v, vp, label, step, lsn as nat);
             }
         }

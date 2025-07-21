@@ -193,7 +193,7 @@ state_machine!{ CoordinationSystem {
       update ephemeral = Some(
         Known {
           map_lsn: records.seq_end,
-          ..pre.ephemeral.get_Some_0()
+          ..pre.ephemeral->Some_0
         }
       );
 
@@ -227,18 +227,18 @@ state_machine!{ CoordinationSystem {
 
       // Alternative syntax for destructuring and matching enum type
       // require pre.ephemeral is Some;
-      // let pre_ephemeral = pre.ephemeral.get_Some_0();
+      // let pre_ephemeral = pre.ephemeral->Some_0;
       // require ctam_label is OperateOp;
       // let base_op = ctam_label->base_op;
       // require base_op is RequestOp;
       // let req = base_op->req;
 
-      require !pre.ephemeral.get_Some_0().progress.requests.contains(req);
+      require !pre.ephemeral->Some_0.progress.requests.contains(req);
 
       // Wanted to do something like this but not available
       // let mut new_ephemeral = pre.ephemeral;
-      // new_ephemeral.get_Some_0().progress.requests =
-      //   new_ephemeral.get_Some_0().progress.requests + req;
+      // new_ephemeral->Some_0.progress.requests =
+      //   new_ephemeral->Some_0.progress.requests + req;
 
       // This is ugly
       // IDEAL SYNTAX:
@@ -246,10 +246,10 @@ state_machine!{ CoordinationSystem {
       update ephemeral = Some(
         Known{
           progress: MapSpec_t::EphemeralState{
-            requests: pre.ephemeral.get_Some_0().progress.requests.insert(req),
-            ..pre.ephemeral.get_Some_0().progress
+            requests: pre.ephemeral->Some_0.progress.requests.insert(req),
+            ..pre.ephemeral->Some_0.progress
           },
-          ..pre.ephemeral.get_Some_0()
+          ..pre.ephemeral->Some_0
         }
       );
     }
@@ -264,7 +264,7 @@ state_machine!{ CoordinationSystem {
     ) {
       // State must be known
       require pre.ephemeral is Some;
-      let pre_ephemeral = pre.ephemeral.get_Some_0();
+      let pre_ephemeral = pre.ephemeral->Some_0;
 
       // The query transition label is labeled with the input and output of the
       // query operation. We want to dissect that information out so that we can
@@ -328,7 +328,7 @@ state_machine!{ CoordinationSystem {
       new_mapadt: CrashTolerantMap::State,
     ) {
       require pre.ephemeral is Some;
-      let pre_ephemeral = pre.ephemeral.get_Some_0();
+      let pre_ephemeral = pre.ephemeral->Some_0;
 
       // Destructuring and label checking boilerplate
       require let Label::Label{
@@ -395,7 +395,7 @@ state_machine!{ CoordinationSystem {
   transition! {
     deliver_reply(label: Label) {
       require pre.ephemeral is Some;
-      let pre_ephemeral = pre.ephemeral.get_Some_0();
+      let pre_ephemeral = pre.ephemeral->Some_0;
       
       let ctam_label = label->ctam_label;
 
@@ -425,7 +425,7 @@ state_machine!{ CoordinationSystem {
       new_journal: CrashTolerantJournal::State,
     ) {
       require pre.ephemeral is Some;
-      let pre_ephemeral = pre.ephemeral.get_Some_0();
+      let pre_ephemeral = pre.ephemeral->Some_0;
 
       let ctam_label = label->ctam_label;
       require ctam_label is Noop;
@@ -446,7 +446,7 @@ state_machine!{ CoordinationSystem {
       new_mapadt: CrashTolerantMap::State,
     ) {
       require pre.ephemeral is Some;
-      let pre_ephemeral = pre.ephemeral.get_Some_0();
+      let pre_ephemeral = pre.ephemeral->Some_0;
 
       let ctam_label = label->ctam_label;
       require ctam_label is Noop;
@@ -467,7 +467,7 @@ state_machine!{ CoordinationSystem {
       new_journal: CrashTolerantJournal::State,
     ) {
       require pre.ephemeral is Some;
-      let pre_ephemeral = pre.ephemeral.get_Some_0();
+      let pre_ephemeral = pre.ephemeral->Some_0;
 
       let ctam_label = label->ctam_label;
       require ctam_label is ReqSyncOp;
@@ -497,7 +497,7 @@ state_machine!{ CoordinationSystem {
       new_journal: CrashTolerantJournal::State,
     ) {
       require pre.ephemeral is Some;
-      let pre_ephemeral = pre.ephemeral.get_Some_0();
+      let pre_ephemeral = pre.ephemeral->Some_0;
 
       let ctam_label = label->ctam_label;
       require ctam_label is ReplySyncOp;
@@ -529,7 +529,7 @@ state_machine!{ CoordinationSystem {
       new_boundary_lsn: LSN,
     ) {
       require pre.ephemeral is Some;
-      let pre_ephemeral = pre.ephemeral.get_Some_0();
+      let pre_ephemeral = pre.ephemeral->Some_0;
 
       let ctam_label = label->ctam_label;
       require ctam_label is Noop;
@@ -583,7 +583,7 @@ state_machine!{ CoordinationSystem {
       // notification.
       require !pre.superblock_in_flight;
       require pre.ephemeral is Some;
-      let pre_ephemeral = pre.ephemeral.get_Some_0();
+      let pre_ephemeral = pre.ephemeral->Some_0;
 
       let ctam_label = label->ctam_label;
       require ctam_label is Noop;

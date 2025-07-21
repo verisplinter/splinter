@@ -50,7 +50,7 @@ impl JournalRecord {
     decreases self
     {
         if new_lsn < self.message_seq.seq_start {
-            self.prior_rec.get_Some_0().new_boundary_valid(old_lsn, new_lsn);
+            self.prior_rec->Some_0.new_boundary_valid(old_lsn, new_lsn);
         }
     }
 
@@ -168,7 +168,7 @@ impl JournalRecord {
     decreases depth
     {
         if 0<depth {
-            self.cropped_prior(boundary_lsn).get_Some_0().can_crop_monotonic(boundary_lsn, (depth-1) as nat, (more-1) as nat);
+            self.cropped_prior(boundary_lsn)->Some_0.can_crop_monotonic(boundary_lsn, (depth-1) as nat, (more-1) as nat);
         }
     }
 
@@ -186,7 +186,7 @@ impl JournalRecord {
 //          // TODO(chris): not enough fuel for mutual recursion? This is painful wrt dafny
 //          // TODO(jonh): expain this to andrea
             assert(Self::opt_rec_can_crop_head_records(self.cropped_prior(boundary_lsn), boundary_lsn, (more-1) as nat));
-            self.cropped_prior(boundary_lsn).get_Some_0().can_crop_more_yields_some(boundary_lsn, (depth-1) as nat, (more-1) as nat);
+            self.cropped_prior(boundary_lsn)->Some_0.can_crop_more_yields_some(boundary_lsn, (depth-1) as nat, (more-1) as nat);
 //          // TODO(chris): not enough fuel for mutual recursion? This is painful wrt dafny
             assert(Self::opt_rec_crop_head_records(self.cropped_prior(boundary_lsn), boundary_lsn, (depth-1) as nat) is Some);
         }
@@ -198,7 +198,7 @@ impl JournalRecord {
         self.can_crop_head_records(boundary_lsn, depth+1)
     {
         //XXX self.can_crop_more_yields_some(boundary_lsn, depth, depth+1);
-        let chrms = self.crop_head_records(boundary_lsn, depth).get_Some_0().message_seq;
+        let chrms = self.crop_head_records(boundary_lsn, depth)->Some_0.message_seq;
         let _ = spec_affirm(chrms.wf());
         chrms.maybe_discard_old(boundary_lsn)
     }
