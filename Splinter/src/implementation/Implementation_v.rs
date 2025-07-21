@@ -516,15 +516,20 @@ impl Implementation {
         // actual implementation will only contain pointers of these metadata and not the entire structure
         let mut tmp_journal = Journal::new_empty();
         std::mem::swap(&mut self.journal, &mut tmp_journal);
+        let mut tmp_store = VecMap::new();
+        std::mem::swap(&mut self.store, &mut tmp_store);
+        // Why are we doing all this nonsense? Can't we just borrow this stuff immutably?
+
         let sb = ISuperblock{
             journal: tmp_journal,
-            store: self.store.clone(),
+            store: tmp_store,
             version_index: self.version };
 
         // Yoink the store out of self just long enough to marshall it as part of the superblock.
         let raw_page = marshall(&sb);
-        let ISuperblock{journal: mut tmp_journal, ..} = sb;
+        let ISuperblock{journal: mut tmp_journal, store: mut tmp_store, ..} = sb;
         std::mem::swap(&mut self.journal, &mut tmp_journal);    // un-yoink
+        std::mem::swap(&mut self.store, &mut tmp_store);    // un-yoink
 
         let req_id_perm = Tracked( api.send_disk_request_predict_id() );
         let ghost disk_req_id = req_id_perm@;
@@ -605,6 +610,7 @@ impl Implementation {
             old(self).sync_requests.deferred_reqs@ == self.sync_requests.deferred_reqs@,
             Self::sync_req_lists_mutually_unique(old(ready_reqs)@, old(self).sync_requests.deferred_reqs@),   // mutter mutter
             ready_reqs@ == old(ready_reqs)@.take(ready_reqs@.len() as int),
+        decreases ready_reqs.len(),
         {
             match ready_reqs.pop()
             {
@@ -991,6 +997,7 @@ impl KVStoreTrait for Implementation {
         selff
     }
 
+    #[verifier::exec_allows_no_decreases_clause]    // main loop doesn't terminate
     fn kvstore_main(&mut self, mut api: ClientAPI<Self::ProgramModel>)
     {
         self.recover(&mut api);
@@ -1024,12 +1031,13 @@ ensures
     VecMap::new()
 }
 
-// Convert overflow into a liveness failure
-pub fn increment(x: u64) -> (y: u64)
-ensures y == x + 1
-{
-    if x == u64::MAX { loop {} }
-    x + 1
-}
+// // Convert overflow into a liveness failure
+// #[verifier::exec_allows_no_decreases_clause]
+// pub fn increment(x: u64) -> (y: u64)
+// ensures y == x + 1
+// {
+//     if x == u64::MAX { loop {} }
+//     x + 1
+// }
 
 }
