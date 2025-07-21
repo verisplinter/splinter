@@ -15,7 +15,7 @@ use crate::implementation::VecMap_v::*;
 
 verus! {
 
-pub type iLSN = u64;
+pub type ILsn = u64;
 
 pub open spec(checked) fn singleton_floating_seq(at_index: nat, kmmap: TotalKMMap) -> FloatingSeq<Version>
 {
@@ -45,7 +45,7 @@ pub struct Superblock {
 // NOTE: all subfields must be pub 
 pub struct Journal {
     pub msg_history: Vec<KeyedMessage>,
-    pub seq_start: iLSN,
+    pub seq_start: ILsn,
 }
 
 impl View for Journal {
