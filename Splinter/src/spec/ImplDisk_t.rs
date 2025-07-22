@@ -6,7 +6,7 @@ use builtin::*;
 
 use builtin_macros::*;
 use state_machines_macros::state_machine;
-use vstd::{map::*, seq::*, bytes::*};
+use vstd::{map::*, seq::*, bytes::*, string::View};
 
 use crate::spec::MapSpec_t::{ID};
 use crate::spec::AsyncDisk_t::{*};
@@ -51,25 +51,15 @@ pub broadcast axiom fn au_count_equals_iau_count()
     ensures #[trigger] au_count() == iau_count()
 ;
 
-pub type IDiskRequest = GenericDiskRequest<IAddress>;
-pub type IDiskResponse = GenericDiskResponse;
-
-// TODO delete
-// pub enum IDiskRequest {
-//     ReadReq{from: IAddress},
-//     WriteReq{to: IAddress, data: RawPage},
-// }
-// 
-// pub enum IDiskResponse {
-//     ReadResp{from: IAddress, data: RawPage},
-//     WriteResp{to: IAddress},
-// }
+pub type IPageData = Vec<u8>;
+pub type IDiskRequest = GenericDiskRequest<IAddress, IPageData>;
+pub type IDiskResponse = GenericDiskResponse<IPageData>;
 
 impl IDiskRequest {
     pub open spec fn view(self) -> DiskRequest {
         match self {
             Self::ReadReq{from} => DiskRequest::ReadReq{from: from@},
-            Self::WriteReq{to, data} => DiskRequest::WriteReq{to: to@, data: data}, 
+            Self::WriteReq{to, data} => DiskRequest::WriteReq{to: to@, data: data@}, 
         }
     }
 }
@@ -77,7 +67,7 @@ impl IDiskRequest {
 impl IDiskResponse {
     pub open spec fn view(self) -> DiskResponse {
         match self {
-            Self::ReadResp{data} => DiskResponse::ReadResp{data: data},
+            Self::ReadResp{data} => DiskResponse::ReadResp{data: data@},
             Self::WriteResp{} => DiskResponse::WriteResp{}, 
         }
     }

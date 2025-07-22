@@ -7,6 +7,7 @@ use vstd::tokens::InstanceId;
 use crate::spec::MapSpec_t::{ID};
 use crate::spec::KeyType_t::Key;
 use crate::spec::Messages_t::Value;
+use crate::spec::AsyncDisk_t;
 use crate::spec::ImplDisk_t::*;
 
 use crate::implementation::MultisetMapRelation_v::*;    // TODO move to _t, I guess
@@ -14,6 +15,98 @@ use crate::implementation::MultisetMapRelation_v::*;    // TODO move to _t, I gu
 use crate::trusted::ReqReply_t::*;
 use crate::trusted::KVStoreTokenized_t::*;
 use crate::trusted::ProgramModelTrait_t::*;
+
+use std::fs::*;
+use std::path::*;
+use std::os::unix::fs::FileExt;
+use std::sync::Arc;
+use std::sync::mpsc;
+use std::sync::mpsc::*;
+use std::{thread, time};
+
+// The message that rides on the channel from worker threads back to the ClientAPI main thread.
+pub struct ChannelResponse {
+    id: ID,
+    value: IDiskResponse,
+}
+
+// The shared object on which threads make IO calls and deliver their responses back through
+// a shared channel.
+pub struct DiskWorker {
+    file: File,
+    sender: Sender<ChannelResponse>,
+}
+
+impl DiskWorker {
+    fn write_work(&self, block: u64, payload: Vec<u8>) {
+        match self.file.write_all_at(&payload, BLOCK_SIZE * block) {
+            Err(why) => panic!("Write failed: {}", why),
+            Ok(()) => (),
+        };
+    }
+
+    fn read_at(&self, block: u64) -> Vec<u8> {
+        let mut rv = vec![0; BLOCK_SIZE as usize];
+        match self.file.read_exact_at(&mut rv, BLOCK_SIZE * block) {
+            Err(why) => panic!("Read failed: {}", why),
+            Ok(()) => (),
+        };
+        rv
+    }
+
+    fn deliver_response(&self, response: ChannelResponse) {
+        self.sender.send(response).unwrap();
+    }
+}
+
+// The object that's uniquely owned by the ClientAPI thread.
+pub struct TheDisk {
+    disk_worker: Arc<DiskWorker>,
+    receiver: Receiver<ChannelResponse>,
+}
+
+const BLOCK_SIZE: u64 = 100;
+
+impl TheDisk {
+    fn new() -> Self
+    {
+        let path = Path::new("storage.bin");
+        let file = match OpenOptions::new().read(true).write(true).open(&path) {
+            Err(why) => panic!("Couldn't open {}: {}", path.display(), why),
+            Ok(file) => file,
+        };
+        let (sender, receiver) = mpsc::channel();
+        TheDisk{ disk_worker: Arc::new(DiskWorker{file, sender}), receiver}
+    }
+}
+
+struct WriteReq {
+    disk: Arc<DiskWorker>,
+    id: ID,
+    block: u64,
+    payload: Vec<u8>,
+}
+
+impl WriteReq {
+    fn run(self) {
+        self.disk.write_work(self.block, self.payload);
+        self.disk.deliver_response(ChannelResponse{id: self.id, value: IDiskResponse::WriteResp{}});
+    }
+}
+
+struct ReadReq {
+    disk: Arc<DiskWorker>,
+    id: ID,
+    block: u64,
+}
+
+impl ReadReq {
+    fn run(&self) {
+        let v = self.disk.read_at(self.block);
+        self.disk.deliver_response(ChannelResponse{id: self.id,
+            value: IDiskResponse::ReadResp{ data: v } });
+    }
+}
 
 verus! {
 
@@ -28,6 +121,7 @@ verus! {
 pub struct ClientAPI<ProgramModel: ProgramModelTrait>{
     pub id: AtomicU64,
     pub inputs: Vec<Input>,
+    pub the_disk: TheDisk,
     pub _p: std::marker::PhantomData<(ProgramModel,)>,
 }
 
@@ -51,7 +145,12 @@ impl<ProgramModel: ProgramModelTrait> ClientAPI<ProgramModel>{
             Input::QueryInput{key: Key(3)},
         ];
 
-        Self{id: AtomicU64::new(0), inputs, _p: std::marker::PhantomData}
+        Self{
+            id: AtomicU64::new(0),
+            inputs,
+            the_disk: TheDisk::new(),
+            _p: std::marker::PhantomData
+        }
     }
     
     #[verifier::external_body]
@@ -115,6 +214,19 @@ impl<ProgramModel: ProgramModelTrait> ClientAPI<ProgramModel>{
         let Tracked(out) = Tracked::assume_new(); out
     }
 
+    pub fn i_page_count() -> (out: u64)
+        ensures out as nat == 7
+        // ensures out as nat == AsyncDisk_t::page_count()
+        // well that's difficult to ensure since the abstract page_count() is uninterp
+    {
+        7
+    }
+    
+    pub fn block_num(ia: &IAddress) -> u64
+    {
+        ia.au as u64 * Self::i_page_count() + ia.page as u64
+    }
+
     #[verifier::external_body]
     pub fn send_disk_request(&mut self, disk_req: IDiskRequest, id_perm: Tracked<ID>, 
         disk_request_tokens: Tracked<KVStoreTokenized::disk_requests_multiset<ProgramModel>>) -> (out: ID)
@@ -125,6 +237,18 @@ impl<ProgramModel: ProgramModelTrait> ClientAPI<ProgramModel>{
         out == id_perm@,
     {
         let id = self.id.fetch_add(1, Ordering::SeqCst);
+        let disk = self.the_disk.disk_worker.clone();
+        let req = match disk_req {
+            IDiskRequest::ReadReq{from} => {
+                thread::spawn(move ||
+                    ReadReq{ disk, id, block: Self::block_num(&from) }.run())
+            },
+            IDiskRequest::WriteReq{to, data} => {
+                thread::spawn(move ||
+                    WriteReq{ disk, id, block: Self::block_num(&to), payload: data }.run())
+            },
+        };
+        
         id
     }
 
@@ -138,8 +262,20 @@ impl<ProgramModel: ProgramModelTrait> ClientAPI<ProgramModel>{
         out.2@.instance_id() == self.instance_id(),
         out.2@.multiset() == multiset_map_singleton(out.0, out.1@),
     {
-        let arbitrary_idiskresponse = IDiskResponse::ReadResp{data: arbitrary()};
-        (0, arbitrary_idiskresponse, Tracked::assume_new())
+        let mut t = 0;
+        loop {
+            if t > 1 {
+                println!("...io...");
+                t = 0;
+            }
+            match self.the_disk.receiver.try_recv() {
+                Err(TryRecvError::Empty) => { thread::sleep(time::Duration::from_millis(100)); t += 1 },
+                Err(TryRecvError::Disconnected) => { panic!("disconnected!?") },
+                Ok(ChannelResponse{id, value}) => {
+                    return (id, value, Tracked::assume_new())
+                }
+            }
+        }
     }
 
     // TODO(jonh): none of this stuff is gonna work until we, you know, implement it.

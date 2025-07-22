@@ -252,7 +252,7 @@ impl Implementation {
     pub closed spec fn good_disk_response(self, id: ID, disk_response: IDiskResponse, response_shard: DiskRespShard) -> bool
     {
         &&& response_shard.instance_id() == self.instance_id()
-        &&& response_shard.multiset() == multiset_map_singleton(id, disk_response)
+        &&& response_shard.multiset() == multiset_map_singleton(id, disk_response@)
     }
 
     pub exec fn handle_noop(&mut self, req: Request, req_shard: Tracked<RequestShard>, api: &mut ClientAPI<ConcreteProgramModel>)

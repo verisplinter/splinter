@@ -69,12 +69,12 @@ pub type Disk = Map<Address, RawPage>;
 //     pub content: Map<Address, RawPage>,
 // }
 
-pub enum GenericDiskRequest<A> {
+pub enum GenericDiskRequest<A, D> {
     ReadReq{from: A},
-    WriteReq{to: A, data: RawPage},
+    WriteReq{to: A, data: D},
 }
 
-pub type DiskRequest = GenericDiskRequest<Address>;
+pub type DiskRequest = GenericDiskRequest<Address, RawPage>;
 
 impl DiskRequest {
     pub open spec fn addr(self) -> Address
@@ -86,12 +86,12 @@ impl DiskRequest {
     }
 }
 
-pub enum GenericDiskResponse {
-    ReadResp{data: RawPage},
+pub enum GenericDiskResponse<D> {
+    ReadResp{data: D},
     WriteResp{},
 }
 
-pub type DiskResponse = GenericDiskResponse;
+pub type DiskResponse = GenericDiskResponse<RawPage>;
 
 pub open spec fn empty_requests() -> Map<ID, DiskRequest>
 {

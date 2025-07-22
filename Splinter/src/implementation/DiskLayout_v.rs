@@ -93,17 +93,17 @@ pub closed spec fn spec_unmarshall(raw_page: RawPage) -> (out: Superblock)
     arbitrary()
 }
 
-pub fn marshall(sb: &ISuperblock) -> (out: RawPage)
+pub fn marshall(sb: &ISuperblock) -> (out: IPageData)
 ensures
-    out == spec_marshall(sb@)
+    out@ == spec_marshall(sb@)
 {
     assume( false ); // TODO
     unreached()
 }
 
-pub fn unmarshall(raw_page: &RawPage) -> (out: ISuperblock)
+pub fn unmarshall(raw_page: &IPageData) -> (out: ISuperblock)
 ensures
-    out@ == spec_unmarshall(*raw_page)
+    out@ == spec_unmarshall(raw_page@)
 {
     assume( false ); // TODO
     unreached()
