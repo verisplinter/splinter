@@ -894,7 +894,7 @@ impl Implementation {
             let tracked mut model = KVStoreTokenized::model::arbitrary();
             proof { tracked_swap(self.model.borrow_mut(), &mut model); }
 
-            let superblock = unmarshall(&raw_page);
+            let superblock = parse(&raw_page);
             assert( superblock.store.wf() ) by {
                 assume( false ); // LEFT OFF extract model invariant
             }

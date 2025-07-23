@@ -15,6 +15,8 @@ pub mod math_v;
 pub mod LengthField_v;
 pub mod KVPairFormat_v;
 pub mod HashMapFormat_v;
+pub mod UniformPairFormat_v;
+pub mod KeyedMessageFormat_v;
 
 // next steps:
 //

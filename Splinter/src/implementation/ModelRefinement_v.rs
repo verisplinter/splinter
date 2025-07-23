@@ -20,8 +20,8 @@ pub open spec fn multiset_to_set<V>(m: Multiset<V>) -> Set<V> {
     Set::new(|v| m.contains(v))
 }
 
-broadcast proof fn unmarshall_marshall(sb: Superblock)
-    ensures sb == #[trigger] spec_unmarshall(spec_marshall(sb))
+broadcast proof fn parse_marshall(sb: Superblock)
+    ensures sb == #[trigger] spec_parse(spec_marshall(sb))
 {
     assume(false);
 }
@@ -74,7 +74,7 @@ impl SystemModel::State<ConcreteProgramModel>  {
     {
         &&& self.disk.content.contains_key(spec_superblock_addr())
         &&& {
-            let sb : Superblock = spec_unmarshall(self.disk.content[spec_superblock_addr()]);
+            let sb : Superblock = spec_parse(self.disk.content[spec_superblock_addr()]);
             &&& sb.store.appv.invariant()
             &&& self.program.state.client_ready() ==> {
                 // on disk sb either contains inflight sb or persistent sb
@@ -180,7 +180,7 @@ impl SystemModel::State<ConcreteProgramModel>  {
         !self.program.state.client_ready(),
         self.disk.content.contains_key(spec_superblock_addr()),    // quash recommendation not met
     {
-        let sb = spec_unmarshall(self.disk.content[spec_superblock_addr()]);
+        let sb = spec_parse(self.disk.content[spec_superblock_addr()]);
         CrashTolerantAsyncMap::State{
             versions: singleton_floating_seq(sb.version_index, sb.store.appv.kmmap),
             async_ephemeral: EphemeralState{
@@ -296,7 +296,7 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
 
     proof fn init_refines(pre: SystemModel::State<ConcreteProgramModel>)
     {
-        broadcast use unmarshall_marshall;
+        broadcast use parse_marshall;
         assert( SystemModel::State::initialize(pre, pre.program, pre.disk) );
         assert( Self::i(pre).async_ephemeral == AsyncMap::State::init_ephemeral_state() );
         assert( Self::i(pre).sync_requests == Map::<SyncReqId,nat>::empty() );  // extn
@@ -316,7 +316,7 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
         reveal(MapSpec::State::next_by);
 
         // requires:
-        broadcast use unmarshall_marshall;
+        broadcast use parse_marshall;
         assert( SystemModel::State::next(pre, post, lbl) );
         assert( Self::inv(pre) );
 
@@ -477,7 +477,7 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                         assert(pre.disk.responses.contains_key(req_id));
                         assert(raw_page == pre.disk.content[spec_superblock_addr()]);
 
-                        let superblock = spec_unmarshall(raw_page); 
+                        let superblock = spec_parse(raw_page); 
                         assert(superblock.store.appv.invariant());
                         assert(post.program.state.wf());
                         assert(post.sync_requests_inv());

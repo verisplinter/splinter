@@ -65,7 +65,7 @@ pub struct TheDisk {
     receiver: Receiver<ChannelResponse>,
 }
 
-const BLOCK_SIZE: u64 = 100;
+pub const BLOCK_SIZE: u64 = 100;
 
 impl TheDisk {
     fn new() -> Self
