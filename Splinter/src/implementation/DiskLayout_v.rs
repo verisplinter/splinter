@@ -9,18 +9,8 @@ use crate::spec::KeyType_t::*;
 use crate::spec::Messages_t::*;
 use crate::spec::TotalKMMap_t::*;
 use crate::spec::FloatingSeq_t::*;
-use crate::abstract_system::MsgHistory_v::{MsgHistory, KeyedMessage};
-use crate::abstract_system::StampedMap_v::*;
 use crate::implementation::VecMap_v::*;
-use crate::marshalling::Slice_v::Slice;
-use crate::marshalling::Marshalling_v::{Marshal, Deepview};
-use crate::marshalling::IntegerMarshalling_v::IntFormat;
-use crate::marshalling::StaticallySized_v::StaticallySized;
-use crate::marshalling::UniformSized_v::UniformSized;
-use crate::marshalling::UniformPairFormat_v::UniformPairMarshal;
-use crate::marshalling::KeyedMessageFormat_v::KeyedMessageFormat;
-use crate::marshalling::JournalFormat_v::JournalFormat;
-use crate::marshalling::ResizableUniformSizedSeq_v::ResizableUniformSizedElementSeqFormat;
+use crate::marshalling::Marshalling_v::Deepview;
 use crate::implementation::JournalTypes_v::*;
 
 verus! {

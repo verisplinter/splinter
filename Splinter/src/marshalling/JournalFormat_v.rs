@@ -1,28 +1,22 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
 use vstd::{prelude::*};
-// use vstd::hash_map::*;
-use crate::spec::MapSpec_t::*;
-use crate::spec::AsyncDisk_t::*;
-use crate::spec::ImplDisk_t::*;
-use crate::spec::KeyType_t::*;
-use crate::spec::Messages_t::*;
-use crate::spec::TotalKMMap_t::*;
-use crate::spec::FloatingSeq_t::*;
-use crate::abstract_system::MsgHistory_v::{MsgHistory, KeyedMessage};
-use crate::abstract_system::StampedMap_v::*;
-use crate::implementation::VecMap_v::*;
 use crate::marshalling::Slice_v::Slice;
+use crate::abstract_system::MsgHistory_v::KeyedMessage;
 use crate::marshalling::Marshalling_v::{Marshal, Deepview};
 use crate::marshalling::IntegerMarshalling_v::IntFormat;
 use crate::marshalling::StaticallySized_v::StaticallySized;
-use crate::marshalling::UniformSized_v::UniformSized;
-use crate::marshalling::UniformPairFormat_v::UniformPairMarshal;
+// use crate::marshalling::UniformSized_v::UniformSized;
 use crate::marshalling::ResizableUniformSizedSeq_v::ResizableUniformSizedElementSeqFormat;
 use crate::marshalling::KeyedMessageFormat_v::KeyedMessageFormat;
 use crate::implementation::JournalTypes_v::*;
 
 verus! {
+
+impl Deepview<KeyedMessage> for KeyedMessage {
+    open spec fn deepv(&self) -> KeyedMessage { *self }
+}
+
 
 pub struct JournalFormat {
     ilsn_fmt: IntFormat::<ILsn>,
@@ -100,6 +94,7 @@ impl Marshal for JournalFormat {
                 let idata = slice@.i(data@);
                 assert( idata.subrange(0, bdy0) == seq_start_slice@.i(data@) );   // extn
                 assert( seq_start == self.parse(idata).seq_start );
+                assert( idata.subrange(bdy0, bdy1) == msg_history_slice@.i(data@) );   // extn
                 assert( msg_history@ == self.parse(idata).msg_history );
                 assert( out.deepv() == self.parse(idata) );   // extn
             }

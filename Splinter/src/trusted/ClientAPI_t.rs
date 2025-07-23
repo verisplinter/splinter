@@ -7,7 +7,7 @@ use vstd::tokens::InstanceId;
 use crate::spec::MapSpec_t::{ID};
 use crate::spec::KeyType_t::Key;
 use crate::spec::Messages_t::Value;
-use crate::spec::AsyncDisk_t;
+// use crate::spec::AsyncDisk_t;
 use crate::spec::ImplDisk_t::*;
 
 use crate::implementation::MultisetMapRelation_v::*;    // TODO move to _t, I guess
@@ -264,7 +264,7 @@ impl<ProgramModel: ProgramModelTrait> ClientAPI<ProgramModel>{
     {
         let mut t = 0;
         loop {
-            if t > 1 {
+            if t > 10 {
                 println!("...io...");
                 t = 0;
             }
