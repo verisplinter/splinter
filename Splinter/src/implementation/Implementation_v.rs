@@ -31,6 +31,7 @@ use crate::implementation::ConcreteProgramModel_v::*;
 use crate::implementation::AtomicState_v::*;
 use crate::implementation::MultisetMapRelation_v::*;
 use crate::implementation::VecMap_v::*;
+use crate::implementation::JournalTypes_v::*;
 
 #[allow(unused_imports)]
 use vstd::multiset::*;

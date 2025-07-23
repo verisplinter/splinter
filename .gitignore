@@ -8,6 +8,7 @@
 *.deps
 *.includes
 *.output
+*.long-type-*
 .build_info
 /build/
 /ycsb/build/

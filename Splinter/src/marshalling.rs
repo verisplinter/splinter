@@ -17,6 +17,7 @@ pub mod KVPairFormat_v;
 pub mod HashMapFormat_v;
 pub mod UniformPairFormat_v;
 pub mod KeyedMessageFormat_v;
+pub mod JournalFormat_v;
 
 // next steps:
 //
