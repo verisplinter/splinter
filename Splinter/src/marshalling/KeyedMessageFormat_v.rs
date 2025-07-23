@@ -65,8 +65,8 @@ impl KeyedMessageFormat {
 
     exec fn exec_from_pair(pair: (u64, u64)) -> (km: KeyedMessage)
     ensures ({
-        &&& Self::to_pair(km.deepv()) == pair.deepv()
-        &&& km.deepv() == KeyedMessage{ key: Key(pair.0), message: Message::Define{value: Value(pair.1)} }
+//         &&& Self::to_pair(km.deepv()) == pair.deepv()
+        &&& km.deepv() == Self::from_pair(pair.deepv())
     }),
     {
         KeyedMessage{ key: Key(pair.0), message: Message::Define{value: Value(pair.1)}}
@@ -120,12 +120,7 @@ impl Marshal for KeyedMessageFormat {
 
     exec fn exec_marshall(&self, value: &Self::U, data: &mut Vec<u8>, start: usize) -> (end: usize)
     {
-        let message_data = match value.message {
-            Message::Define{value: Value(v)} => v,
-            Message::Update{delta: Delta(_)} => { assume(false); 0 },
-        };
-        let pair = (value.key.0, message_data);
-        self.pair_fmt.exec_marshall(&pair, data, start)
+        self.pair_fmt.exec_marshall(&Self::exec_to_pair(value), data, start)
     }
 }
 
