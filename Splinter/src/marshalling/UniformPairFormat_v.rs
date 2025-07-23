@@ -3,7 +3,6 @@
 use vstd::{prelude::*};
 use crate::marshalling::Slice_v::Slice;
 use crate::marshalling::Marshalling_v::{Marshal, Deepview};
-use crate::marshalling::StaticallySized_v::StaticallySized;
 use crate::marshalling::UniformSized_v::UniformSized;
 
 verus! {

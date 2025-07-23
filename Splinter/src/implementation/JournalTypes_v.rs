@@ -19,6 +19,13 @@ pub struct AJournal {
     pub seq_start: ILsn,
 }
 
+impl AJournal {
+    pub open spec fn wf(self) -> bool
+    {
+        forall |i| #![auto] 0 <= i < self.msg_history.len() ==> self.msg_history[i].message is Define
+    }
+}
+
 impl View for AJournal
 {
     type V = MsgHistory;

@@ -41,8 +41,19 @@ impl KeyedMessageFormat {
         (value.key.0 as int, message_data as int)
     }
 
-    exec fn exec_to_pair(value: KeyedMessage) -> (pair: (u64, u64))
-    requires value.message is Define,
+    pub open spec fn from_pair(pair: (int, int)) -> (value: KeyedMessage)
+    {
+        KeyedMessage{ key: Key(pair.0 as u64), message: Message::Define{value: Value(pair.1 as u64)}}
+    }
+
+    pub open spec fn value_marshallable(value: KeyedMessage) -> bool
+    {
+        // We aren't gonna need Delta values for a long time
+        value.message is Define
+    }
+
+    exec fn exec_to_pair(value: &KeyedMessage) -> (pair: (u64, u64))
+    requires Self::value_marshallable(*value)
     ensures Self::to_pair(value.deepv()) == pair.deepv(),
     {
         let message_data = match value.message {
@@ -75,8 +86,7 @@ impl Marshal for KeyedMessageFormat {
 
     open spec fn parse(&self, data: Seq<u8>) -> Self::DV
     {
-        let pair = self.pair_fmt.parse(data);
-        KeyedMessage{ key: Key(pair.0 as u64), message: Message::Define{value: Value(pair.1 as u64)} }
+        Self::from_pair(self.pair_fmt.parse(data))
     }
 
     exec fn try_parse(&self, slice: &Slice, data: &Vec<u8>) -> (ov: Option<Self::U>)
@@ -94,7 +104,8 @@ impl Marshal for KeyedMessageFormat {
 
     open spec fn marshallable(&self, value: Self::DV) -> bool
     {
-        self.pair_fmt.marshallable(Self::to_pair(value))
+        &&& Self::value_marshallable(value)
+        &&& self.pair_fmt.marshallable(Self::to_pair(value))
     }
         
     open spec fn spec_size(&self, value: Self::DV) -> usize
@@ -104,13 +115,7 @@ impl Marshal for KeyedMessageFormat {
 
     exec fn exec_size(&self, value: &Self::U) -> (sz: usize)
     {
-        let message_data = match value.message {
-            Message::Define{value: Value(v)} => v,
-            Message::Update{delta: Delta(_)} => { assume(false); 0 },
-        };
-        let pair = (value.key.0, message_data);
-
-        self.pair_fmt.exec_size(&pair)
+        self.pair_fmt.exec_size(&Self::exec_to_pair(value))
     }
 
     exec fn exec_marshall(&self, value: &Self::U, data: &mut Vec<u8>, start: usize) -> (end: usize)

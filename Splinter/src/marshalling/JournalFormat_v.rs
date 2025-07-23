@@ -105,6 +105,7 @@ impl Marshal for JournalFormat {
     closed spec fn marshallable(&self, value: Self::DV) -> bool
     {
         &&& ILsn::uniform_size() + self.msg_history_fmt.spec_size(value.msg_history) <= usize::MAX 
+        &&& value.wf()
         &&& self.msg_history_fmt.marshallable(value.msg_history)
     }
         
