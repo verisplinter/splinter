@@ -36,9 +36,9 @@ pub trait Wrappable {
     ensures forall |value: Self::DV| #![auto] Self::value_marshallable(value) ==> Self::from_pair(Self::to_pair(value)) == value,
     ;
 
-    exec fn exec_to_pair<'a>(value: &'a Self::U) -> (pair: (&'a <Self::AF as Marshal>::U, &'a <Self::BF as Marshal>::U))
+    exec fn exec_to_pair(value: &Self::U) -> (pair: (<Self::AF as Marshal>::U, <Self::BF as Marshal>::U))
     requires Self::value_marshallable((*value).deepv())
-    ensures Self::to_pair((*value).deepv()) == (*pair.0, *pair.1).deepv(),
+    ensures Self::to_pair((*value).deepv()) == pair.deepv(),
     ;
 
     exec fn exec_from_pair(pair: (<Self::AF as Marshal>::U, <Self::BF as Marshal>::U)) -> (value: Self::U)
@@ -53,7 +53,7 @@ pub trait Wrappable {
 
 // Marshalling formatter for any type that is a pretty wrapper for a pair of other Marshable things.
 pub struct WrappableFormat<W: Wrappable> {
-    pub pair_fmt: UniformPairFormat<&W::AF, &W::BF>,
+    pub pair_fmt: UniformPairFormat<W::AF, W::BF>,
 }
 
 // Need a valid predicate, since not every instance of WrappableFormat is UniformSized due to
@@ -142,7 +142,7 @@ impl<W: Wrappable> Marshal for WrappableFormat<W> {
 
     exec fn exec_marshall(&self, value: &Self::U, data: &mut Vec<u8>, start: usize) -> (end: usize)
     {
-        let end = self.pair_fmt.exec_marshall(&W::exec_to_pair(value), data, start);
+        let end = self.pair_fmt.exec_marshall((&W::exec_to_pair(value)), data, start);
         proof {
             let dsr = data@.subrange(start as int, end as int);
             W::to_from_bijective();

@@ -35,9 +35,9 @@ impl Wrappable for KeyValueFormatWrappable {
     {
     }
 
-    exec fn exec_to_pair<'a>(value: &'a (Key, Value)) -> (pair: (&'a u64, &'a u64))
+    exec fn exec_to_pair(value: &(Key, Value)) -> (pair: (u64, u64))
     {
-        (&value.0.0, &value.1.0)
+        (value.0.0, value.1.0)
     }
 
     exec fn exec_from_pair(pair: (u64, u64)) -> (km: (Key, Value))

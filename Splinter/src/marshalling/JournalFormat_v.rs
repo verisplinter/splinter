@@ -73,9 +73,9 @@ impl Wrappable for JournalFormatWrappable {
     {
     }
 
-    exec fn exec_to_pair<'a>(value: &'a Journal) -> (pair: (&'a Vec<KeyedMessage>, &'a ILsn))
+    exec fn exec_to_pair(value: &Journal) -> (pair: (Vec<KeyedMessage>, ILsn))
     {
-        (&value.msg_history, &value.seq_start)
+        (value.msg_history, value.seq_start)
     }
 
     exec fn exec_from_pair(pair: (Vec<KeyedMessage>, ILsn)) -> (j: Journal)
