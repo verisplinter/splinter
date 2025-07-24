@@ -95,7 +95,9 @@ impl Marshal for JournalFormat {
                 assert( idata.subrange(0, bdy0) == seq_start_slice@.i(data@) );   // extn
                 assert( seq_start == self.parse(idata).seq_start );
                 assert( idata.subrange(bdy0, bdy1) == msg_history_slice@.i(data@) );   // extn
-                assert( msg_history@ == self.parse(idata).msg_history );
+
+//                 assert( msg_history.deepv() == self.msg_history_fmt.parse(msg_history_slice@.i(data@)) );
+                assert( msg_history@ == self.parse(idata).msg_history );    // Saw this flake once
                 assert( out.deepv() == self.parse(idata) );   // extn
             }
             Some(out)

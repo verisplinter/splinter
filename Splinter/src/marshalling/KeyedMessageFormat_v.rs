@@ -4,35 +4,28 @@ use vstd::{prelude::*};
 use crate::spec::KeyType_t::*;
 use crate::spec::Messages_t::*;
 use crate::abstract_system::MsgHistory_v::KeyedMessage;
-use crate::marshalling::Slice_v::Slice;
-use crate::marshalling::Marshalling_v::{Marshal, Deepview};
+use crate::marshalling::Marshalling_v::{Deepview};
 use crate::marshalling::IntegerMarshalling_v::IntFormat;
-use crate::marshalling::UniformPairFormat_v::UniformPairMarshal;
 use crate::marshalling::UniformSized_v::UniformSized;
 use crate::marshalling::StaticallySized_v::StaticallySized;
+use crate::marshalling::Wrappable_v::*;
 
 verus! {
 
-impl Deepview<(int,int)> for (u64,u64) {
-    open spec fn deepv(&self) -> (int,int) { (self.0 as int, self.1 as int) }
-}
+pub struct KeyedMessageFormatWrappable {}
+impl Wrappable for KeyedMessageFormatWrappable {
+    type AF = IntFormat::<u64>;
+    type BF = IntFormat::<u64>;
+    type DV = KeyedMessage;
+    type U = KeyedMessage;
 
-pub struct KeyedMessageFormat {
-    pub pair_fmt: UniformPairMarshal<IntFormat::<u64>, IntFormat::<u64>>,
-}
-
-impl KeyedMessageFormat {
-    pub fn new() -> Self
+    open spec fn value_marshallable(value: KeyedMessage) -> bool
     {
-        KeyedMessageFormat{
-            pair_fmt: UniformPairMarshal::new(IntFormat::new(), IntFormat::new()),
-        }
+        // We aren't gonna need Delta values for a long time
+        value.message is Define
     }
-}
 
-impl KeyedMessageFormat {
-    pub open spec fn to_pair(value: KeyedMessage) -> (int, int)
-        recommends value.message is Define
+    open spec fn to_pair(value: KeyedMessage) -> (int, int)
     {
         let message_data = match value.message {
             Message::Define{value: Value(v)} => v,
@@ -41,86 +34,34 @@ impl KeyedMessageFormat {
         (value.key.0 as int, message_data as int)
     }
 
-    pub open spec fn from_pair(pair: (int, int)) -> (value: KeyedMessage)
+    open spec fn from_pair(pair: (int, int)) -> (value: KeyedMessage)
     {
         KeyedMessage{ key: Key(pair.0 as u64), message: Message::Define{value: Value(pair.1 as u64)}}
     }
 
-    pub open spec fn value_marshallable(value: KeyedMessage) -> bool
+    proof fn to_from_bijective()
     {
-        // We aren't gonna need Delta values for a long time
-        value.message is Define
     }
 
     exec fn exec_to_pair(value: &KeyedMessage) -> (pair: (u64, u64))
-    requires Self::value_marshallable(*value)
-    ensures Self::to_pair(value.deepv()) == pair.deepv(),
     {
         let message_data = match value.message {
             Message::Define{value: Value(v)} => v,
             Message::Update{delta: Delta(_)} => { assert(false); 0 },
         };
-        (value.key.0, message_data)
+        let pair = (value.key.0, message_data);
+        assert( Self::to_pair((*value).deepv()) == pair.deepv() );  // verus #1534
+        pair
     }
 
     exec fn exec_from_pair(pair: (u64, u64)) -> (km: KeyedMessage)
-    ensures ({
-//         &&& Self::to_pair(km.deepv()) == pair.deepv()
-        &&& km.deepv() == Self::from_pair(pair.deepv())
-    }),
     {
         KeyedMessage{ key: Key(pair.0), message: Message::Define{value: Value(pair.1)}}
     }
-}
-    
-impl Marshal for KeyedMessageFormat {
-    type DV = KeyedMessage;
-    type U = KeyedMessage;
 
-    open spec fn valid(&self) -> bool { true }
-
-    open spec fn parsable(&self, data: Seq<u8>) -> bool
+    exec fn new_format_pair() -> (Self::AF, Self::BF)
     {
-        self.pair_fmt.parsable(data)
-    }
-
-    open spec fn parse(&self, data: Seq<u8>) -> Self::DV
-    {
-        Self::from_pair(self.pair_fmt.parse(data))
-    }
-
-    exec fn try_parse(&self, slice: &Slice, data: &Vec<u8>) -> (ov: Option<Self::U>)
-    {
-        match self.pair_fmt.try_parse(slice, data) {
-            None => None,
-            Some(pair) => {
-                let v = Self::exec_from_pair(pair);
-                assert( Self::to_pair(v.deepv()) == pair.deepv() );
-                assert( v.deepv() == self.parse(slice@.i(data@)) );
-                Some(v)
-            },
-        }
-    }
-
-    open spec fn marshallable(&self, value: Self::DV) -> bool
-    {
-        &&& Self::value_marshallable(value)
-        &&& self.pair_fmt.marshallable(Self::to_pair(value))
-    }
-        
-    open spec fn spec_size(&self, value: Self::DV) -> usize
-    {
-        self.pair_fmt.spec_size(Self::to_pair(value))
-    }
-
-    exec fn exec_size(&self, value: &Self::U) -> (sz: usize)
-    {
-        self.pair_fmt.exec_size(&Self::exec_to_pair(value))
-    }
-
-    exec fn exec_marshall(&self, value: &Self::U, data: &mut Vec<u8>, start: usize) -> (end: usize)
-    {
-        self.pair_fmt.exec_marshall(&Self::exec_to_pair(value), data, start)
+        (IntFormat::new(), IntFormat::new())
     }
 }
 
@@ -139,5 +80,7 @@ impl UniformSized for KeyedMessageFormat {
         u64::exec_uniform_size() + u64::exec_uniform_size()
     }
 }
+
+pub type KeyedMessageFormat = WrappableFormat<KeyedMessageFormatWrappable>;
 
 } //verus!

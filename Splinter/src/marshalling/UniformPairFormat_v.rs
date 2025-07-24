@@ -7,19 +7,19 @@ use crate::marshalling::UniformSized_v::UniformSized;
 
 verus! {
 
-pub struct UniformPairMarshal<AF: Marshal + UniformSized, BF: Marshal + UniformSized> {
+pub struct UniformPairFormat<AF: Marshal + UniformSized, BF: Marshal + UniformSized> {
     pub a_fmt: AF,
     pub b_fmt: BF,
 }
 
-impl<AF: Marshal + UniformSized, BF: Marshal + UniformSized> UniformPairMarshal<AF, BF> {
+impl<AF: Marshal + UniformSized, BF: Marshal + UniformSized> UniformPairFormat<AF, BF> {
     pub fn new(a_fmt: AF, b_fmt: BF) -> Self
     {
-        UniformPairMarshal{ a_fmt, b_fmt }
+        UniformPairFormat{ a_fmt, b_fmt }
     }
 }
 
-impl<AF: Marshal + UniformSized, BF: Marshal + UniformSized> Marshal for UniformPairMarshal<AF, BF>
+impl<AF: Marshal + UniformSized, BF: Marshal + UniformSized> Marshal for UniformPairFormat<AF, BF>
     where (AF::U, BF::U): Deepview<(AF::DV, BF::DV)> 
 {
     type DV = (AF::DV, BF::DV);
