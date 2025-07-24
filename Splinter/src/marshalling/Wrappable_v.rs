@@ -1,15 +1,10 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
 use vstd::{prelude::*};
-// use crate::spec::KeyType_t::*;
-// use crate::spec::Messages_t::*;
-// use crate::abstract_system::MsgHistory_v::KeyedMessage;
 use crate::marshalling::Slice_v::Slice;
 use crate::marshalling::Marshalling_v::{Marshal, Deepview};
-// use crate::marshalling::IntegerMarshalling_v::IntFormat;
 use crate::marshalling::UniformPairFormat_v::UniformPairFormat;
 use crate::marshalling::UniformSized_v::UniformSized;
-use crate::marshalling::StaticallySized_v::StaticallySized;
 
 verus! {
 
