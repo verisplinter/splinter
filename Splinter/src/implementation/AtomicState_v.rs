@@ -7,6 +7,7 @@ use crate::spec::MapSpec_t::*;
 use crate::spec::FloatingSeq_t::*;
 use crate::spec::AsyncDisk_t::*;
 use crate::implementation::DiskLayout_v::*;
+use crate::implementation::SuperblockTypes_v::*;
 
 verus! {
 

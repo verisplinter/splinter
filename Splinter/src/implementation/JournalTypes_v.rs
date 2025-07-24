@@ -42,6 +42,14 @@ impl View for AJournal
     }
 }
 
+// The deepview only takes us up to AJournal, so that the marshalling spec fns talk
+// about Seq<KeyedMessage>, not the Map-shaped MsgHistory object.
+impl Deepview<AJournal> for Journal {
+    open spec fn deepv(&self) -> AJournal {
+        AJournal{msg_history: self.msg_history@, seq_start: self.seq_start}
+    }
+}
+
 pub struct Journal {
     pub msg_history: Vec<KeyedMessage>,
     pub seq_start: ILsn,
