@@ -63,25 +63,32 @@ pub struct WrappableFormat<W: Wrappable> {
 
 // Need a valid predicate, since not every instance of WrappableFormat is UniformSized due to
 // possible overflow.
-// impl<W: Wrappable> UniformSized for WrappableFormat<W> {
-//     open spec fn uniform_size(&self) -> (sz: usize) {
-//         (W::AF::uniform_size(&self.pair_fmt.a_fmt) + W::BF::uniform_size(&self.pair_fmt.b_fmt)) as usize
-//     }
-// 
-//     proof fn uniform_size_ensures(&self)
-//     ensures 0 < self.uniform_size()
-//     {
-//         W::AF::uniform_size_ensures(&self.pair_fmt.a_fmt);
-//         W::BF::uniform_size_ensures(&self.pair_fmt.b_fmt);
-//         assert( W::AF::uniform_size(&self.pair_fmt.a_fmt) as int + W::BF::uniform_size(&self.pair_fmt.b_fmt) as int <= usize::MAX );
-//     }
-// 
-//     exec fn exec_uniform_size(&self) -> (sz: usize)
-//     ensures sz == self.uniform_size()
-//     {
-//         W::AF::exec_uniform_size(&self.pair_fmt.a_fmt) + W::BF::exec_uniform_size(&self.pair_fmt.b_fmt)
-//     }
-// }
+impl<W: Wrappable> UniformSized for WrappableFormat<W> {
+    open spec fn us_valid(&self) -> bool
+    {
+        &&& self.pair_fmt.valid()
+//         &&& self.pair_fmt.a_fmt.us_valid()
+//         &&& self.pair_fmt.b_fmt.us_valid()
+//         &&& W::AF::uniform_size(&self.pair_fmt.a_fmt) as int + W::BF::uniform_size(&self.pair_fmt.b_fmt) as int <= usize::MAX
+    }
+    
+    open spec fn uniform_size(&self) -> (sz: usize) {
+        (W::AF::uniform_size(&self.pair_fmt.a_fmt) + W::BF::uniform_size(&self.pair_fmt.b_fmt)) as usize
+    }
+
+    proof fn uniform_size_ensures(&self)
+    ensures 0 < self.uniform_size()
+    {
+        W::AF::uniform_size_ensures(&self.pair_fmt.a_fmt);
+        W::BF::uniform_size_ensures(&self.pair_fmt.b_fmt);
+    }
+
+    exec fn exec_uniform_size(&self) -> (sz: usize)
+    ensures sz == self.uniform_size()
+    {
+        W::AF::exec_uniform_size(&self.pair_fmt.a_fmt) + W::BF::exec_uniform_size(&self.pair_fmt.b_fmt)
+    }
+}
 
 impl<W: Wrappable> WrappableFormat<W> {
     pub fn new() -> Self

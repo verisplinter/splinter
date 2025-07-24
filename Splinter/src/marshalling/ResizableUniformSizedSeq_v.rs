@@ -37,7 +37,9 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
 {
     pub fn new(eltf: EltFormat, lenf: IntFormat<LenType>, total_size: usize) -> (s: Self)
     requires
+        eltf.us_valid(),
         eltf.valid(),
+        lenf.us_valid(),
         lenf.valid(),
         LenType::uniform_size() <= total_size,
     ensures
@@ -62,6 +64,7 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
     }
 
     exec fn exec_size_of_length_field(&self) -> (out: usize)
+    requires self.seq_valid(),
     ensures out == self.size_of_length_field()
     {
         self.lenf.exec_uniform_size()
@@ -135,7 +138,9 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
     type Elt = EltFormat::U;
 
     open spec fn seq_valid(&self) -> bool {
+        &&& self.eltf.us_valid()
         &&& self.eltf.valid()
+        &&& self.lenf.us_valid()
         &&& self.lenf.valid()
         &&& self.size_of_length_field() <= self.total_size
         &&& self.max_length == self.spec_max_length()

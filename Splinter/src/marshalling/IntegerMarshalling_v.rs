@@ -543,6 +543,11 @@ impl<T: IntFormattable> Marshal for IntFormat<T>
 }
 
 impl<T: IntFormattable> UniformSized for IntFormat<T> {
+    open spec fn us_valid(&self) -> bool
+    {
+        true
+    }
+
     open spec fn uniform_size(&self) -> (sz: usize)
     {
         T::uniform_size()

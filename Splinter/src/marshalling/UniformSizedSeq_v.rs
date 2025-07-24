@@ -21,7 +21,9 @@ pub struct UniformSizedElementSeqFormat<EltFormat: Marshal + UniformSized> {
 impl<EltFormat: Marshal + UniformSized> UniformSizedElementSeqFormat<EltFormat>
 {
     pub fn new(eltf: EltFormat) -> (s: Self)
-    requires eltf.valid()
+    requires
+        eltf.valid(),
+        eltf.us_valid(),
     ensures s.seq_valid()
     {
         Self{ eltf }
@@ -60,6 +62,7 @@ impl<EltFormat: Marshal + UniformSized>
     type Elt = EltFormat::U;
 
     open spec fn seq_valid(&self) -> bool {
+        &&& self.eltf.us_valid()
         &&& self.eltf.valid()
     }
 

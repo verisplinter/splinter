@@ -20,6 +20,8 @@ use crate::marshalling::VariableSizedElementSeq_v::*;
 
 verus! {
 
+// TODO(jonh): obsolete, deleteme. Replace with UniformPairFormat family of formatters
+
 pub struct SpecKVPair<K,V> {
     pub key: K,
     pub value: V,
@@ -355,6 +357,14 @@ where
     KVTypes::KeyFormat : UniformSized,
     KVTypes::ValueFormat : UniformSized,
 {
+    open spec fn us_valid(&self) -> bool
+    {
+        &&& self.key_fmt.us_valid()
+        &&& self.value_fmt.us_valid()
+        &&& KVTypes::KeyFormat::uniform_size(&self.key_fmt)
+           + KVTypes::ValueFormat::uniform_size(&self.value_fmt) < usize::MAX
+    }
+
     open spec fn uniform_size(&self) -> (sz: usize)
     {
         (KVTypes::KeyFormat::uniform_size(&self.key_fmt)
@@ -365,15 +375,11 @@ where
     ensures 0 < self.uniform_size()
     {
         KVTypes::KeyFormat::uniform_size_ensures(&self.key_fmt);
-        assume( (KVTypes::KeyFormat::uniform_size(&self.key_fmt)
-           + KVTypes::ValueFormat::uniform_size(&self.value_fmt)) < usize::MAX);
     }
 
     exec fn exec_uniform_size(&self) -> (sz: usize)
     ensures sz == self.uniform_size()
     {
-        assume( (KVTypes::KeyFormat::uniform_size(&self.key_fmt)
-           + KVTypes::ValueFormat::uniform_size(&self.value_fmt)) < usize::MAX);
         KVTypes::KeyFormat::exec_uniform_size(&self.key_fmt)
            + KVTypes::ValueFormat::exec_uniform_size(&self.value_fmt)
     }

@@ -26,7 +26,9 @@ impl<AF: Marshal + UniformSized, BF: Marshal + UniformSized> Marshal for Uniform
     type U = (AF::U, BF::U);
 
     open spec fn valid(&self) -> bool {
+        &&& self.a_fmt.us_valid()
         &&& self.a_fmt.valid()
+        &&& self.b_fmt.us_valid()
         &&& self.b_fmt.valid()
         &&& self.a_fmt.uniform_size() as int + self.b_fmt.uniform_size() as int <= usize::MAX
 

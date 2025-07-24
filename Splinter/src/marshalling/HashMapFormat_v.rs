@@ -64,6 +64,7 @@ where KMarshal::U : Eq + Hash
     {
         let total_size = 7;
         let kvpair_format = KVPairFormat::new(IntFormat::new(), kformat, vformat);
+        assume( kvpair_format.us_valid() );    // left off wip
         assume( kvpair_format.valid() );    // left off wip
         Self{ kvpair_format: ResizableUniformSizedElementSeqFormat::new(kvpair_format, IntFormat::new(), total_size) }
     }

@@ -65,21 +65,21 @@ impl Wrappable for KeyedMessageFormatWrappable {
     }
 }
 
-impl UniformSized for KeyedMessageFormat {
-    open spec fn uniform_size(&self) -> (sz: usize) {
-        (u64::uniform_size() + u64::uniform_size()) as usize
-    }
-
-    proof fn uniform_size_ensures(&self)
-    ensures 0 < self.uniform_size()
-    { }
-
-    exec fn exec_uniform_size(&self) -> (sz: usize)
-    ensures sz == self.uniform_size()
-    {
-        u64::exec_uniform_size() + u64::exec_uniform_size()
-    }
-}
+// impl UniformSized for KeyedMessageFormat {
+//     open spec fn uniform_size(&self) -> (sz: usize) {
+//         (u64::uniform_size() + u64::uniform_size()) as usize
+//     }
+// 
+//     proof fn uniform_size_ensures(&self)
+//     ensures 0 < self.uniform_size()
+//     { }
+// 
+//     exec fn exec_uniform_size(&self) -> (sz: usize)
+//     ensures sz == self.uniform_size()
+//     {
+//         u64::exec_uniform_size() + u64::exec_uniform_size()
+//     }
+// }
 
 pub type KeyedMessageFormat = WrappableFormat<KeyedMessageFormatWrappable>;
 
