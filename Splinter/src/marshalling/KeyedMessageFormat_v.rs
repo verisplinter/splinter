@@ -41,14 +41,14 @@ impl Wrappable for KeyedMessageFormatWrappable {
     {
     }
 
-    exec fn exec_to_pair(value: &KeyedMessage) -> (pair: (u64, u64))
+    exec fn exec_to_pair<'a>(value: &'a KeyedMessage) -> (pair: (&'a u64, &'a u64))
     {
         let message_data = match value.message {
             Message::Define{value: Value(v)} => v,
             Message::Update{delta: Delta(_)} => { assert(false); 0 },
         };
-        let pair = (value.key.0, message_data);
-        assert( Self::to_pair((*value).deepv()) == pair.deepv() );  // verus #1534
+        let pair = (&value.key.0, &message_data);
+        assert( Self::to_pair((*value).deepv()) == (*pair.0, *pair.1).deepv() );  // verus #1534
         pair
     }
 

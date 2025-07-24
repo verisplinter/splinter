@@ -525,7 +525,8 @@ impl Implementation {
         let sb = ISuperblock{
             journal: tmp_journal,
             store: tmp_store,
-            version_index: self.version };
+//             version_index: self.version  // TODO(jonh): delete
+        };
 
         // Yoink the store out of self just long enough to marshall it as part of the superblock.
         let raw_page = marshall(&sb);
@@ -564,7 +565,7 @@ impl Implementation {
             assert(pre_sb == ISuperblock{
                 journal: self.journal,
                 store: self.store,
-                version_index: self.version,
+//                 version_index: self.version, // TODO(jonh): delete
             }@) by {
                 self.view_as_kmmap_ensures();
                 self.journal@.apply_to_stamped_map_length_lemma(StampedMap_v::empty());
