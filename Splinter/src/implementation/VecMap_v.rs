@@ -320,8 +320,7 @@ where Key: View + Injective + Eq + Structural
     {
     }
 
-    proof fn view_ensures(self)
-    requires self.wf()
+    pub proof fn view_ensures(self)
     ensures self@.dom().finite()
     {
         Self::seq_to_map_ensures(self.v@);

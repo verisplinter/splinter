@@ -82,7 +82,7 @@ impl Marshal for VecMapFormat {
 
     closed spec fn marshallable(&self, value: Self::DV) -> bool
     {
-        self.seq_fmt.marshallable(VecMap::map_to_seq(value))
+        &&& self.seq_fmt.marshallable(VecMap::map_to_seq(value))
     }
 
     closed spec fn spec_size(&self, value: Self::DV) -> usize
@@ -103,6 +103,7 @@ impl Marshal for VecMapFormat {
             let dsr = data@.subrange(start as int, end as int);
             assert( self.seq_fmt.parsable(dsr) );
             assert( self.seq_fmt.parse(dsr) == VecMap::map_to_seq(value@) );
+            value.view_ensures();
             VecMap::map_to_seq_contents(value@);
             
             assert( self.parsable(dsr) );
