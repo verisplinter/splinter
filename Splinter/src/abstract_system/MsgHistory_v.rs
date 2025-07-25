@@ -12,6 +12,9 @@ verus! {
 
 /// A KeyedMessage stores a "key" to perform the operation in the stored
 /// "message" on.
+/// TODO(jonh): We don't really want Copy here, but it works around a Verus bug about not being
+/// able to specify clone for non-Copy things.
+#[derive(Clone, Copy, Debug)]
 pub struct KeyedMessage { 
   pub key: Key, 
   pub message: Message 

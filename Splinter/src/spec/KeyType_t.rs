@@ -15,7 +15,7 @@ verus! {
 /// Keys in the real implementation are meant to be strings.
 // TODO: this is a placeholder for the Key type, eventually should be a byte string
 // struct.
-#[derive(PartialEq, Eq, Hash, Debug, Structural)]
+#[derive(PartialEq, Eq, Hash, Debug, Structural, Copy)]
 pub struct Key(pub u64);
 
 impl Clone for Key {
@@ -26,10 +26,15 @@ impl Clone for Key {
     }
 }
 
+// Keys don't need to change.
 impl View for Key {
-    type V = int;
-    open spec fn view(&self) -> int {
-        self.0 as int
+//     type V = int;
+//     open spec fn view(&self) -> int {
+//         self.0 as int
+//     }
+    type V = Key;
+    open spec fn view(&self) -> Key {
+        *self
     }
 }
 

@@ -69,20 +69,183 @@ where Key: View + Injective + Eq + Structural
 impl<Key,Value> VecMap<Key,Value>
 where Key: View + Injective + Eq + Structural
 {
+    pub open spec fn unique_keys(s: Seq<(Key, Value)>) -> bool
+    {
+        forall |i,j| #![auto] 0<=i<s.len() && 0<=j<s.len() && s[i].0@ == s[j].0@ ==> i == j
+    }
+
+    pub fn exec_unique_keys(v: &Vec<(Key, Value)>) -> (out: bool)
+    ensures out == Self::unique_keys(v@)
+    {
+        assume(false);  // TODO(jonh): write some code. Only relevant on the try_parse path.
+        true
+    }
+
+    pub closed spec fn seq_to_map_r(s: Seq<(Key, Value)>) -> Map<Key, Value>
+    decreases s.len()
+    {
+        if s.len() == 0 {
+            Map::empty()
+        } else {
+            let (k,v) = s.last();
+            Self::seq_to_map_r(s.drop_last()).insert(k, v)
+        }
+    }
+
+    pub closed spec fn seq_to_map(s: Seq<(Key, Value)>) -> Map<Key, Value>
+    recommends Self::unique_keys(s)
+    {
+        Map::new(
+            |k| exists |i| #![auto] 0<=i<s.len() && s[i].0 == k,
+            |k| s[choose |i| #![auto] 0<=i<s.len() && s[i].0 == k].1)
+    }
+
+    pub proof fn seq_to_map_ensures(s: Seq<(Key, Value)>)
+    requires Self::unique_keys(s),
+    ensures
+        Self::seq_to_map(s).dom().finite(),
+        Self::seq_to_map(s) == Self::seq_to_map_r(s)
+    decreases s.len()
+    {
+        // TODO(jonh): ensmallify proof
+        if s.len() == 0 {
+            assert( Self::seq_to_map(s) == Map::<Key, Value>::empty() );
+            assert( Self::seq_to_map(s).dom().finite() );
+            assert( Self::seq_to_map(s) == Self::seq_to_map_r(s) );
+        } else {
+            let rs = s.drop_last();
+            Self::seq_to_map_ensures(rs);
+            let (kl,vl) = s.last();
+            let ms = Self::seq_to_map(s);
+            let rm = Self::seq_to_map(rs);
+            assert( rm == Self::seq_to_map(s.drop_last()) );    // from rec call
+            let rmi = rm.insert(kl,vl);
+            assert forall |k| ms.contains_key(k) implies rmi.contains_key(k) by {
+                if k == kl {
+                    assert(rmi.contains_key(kl));
+                } else {
+                    let i = choose |i| #![auto] 0<=i<s.len() && s[i].0 == k;
+                    assert(s[i].0 == k);
+                    assert(rs[i].0 == k);
+                    assert(rm.contains_key(k));
+                }
+            }
+            assert forall |k| rmi.contains_key(k) implies ms.contains_key(k) by {
+            }
+            assert forall |k| rmi.contains_key(k) implies rmi[k] == ms[k] by {
+                let i = choose |i| #![auto] 0<=i<s.len() && s[i].0 == k;
+                assert(ms[k] == s[i].1);
+                assert(rmi[k] == s[i].1);
+                if k == kl {
+                    assert(s[s.len()-1].0 == k);
+                    assert(Self::unique_keys(s));
+                    assert(i == s.len()-1);
+                } else {
+                    assert(rs[i].0 == k);
+                    assert(rmi[k] == rs[i].1);
+                }
+            }
+            assert( ms == rmi );
+            assert( Self::seq_to_map(s).dom().finite() );
+            assert( Self::seq_to_map(s) == Self::seq_to_map_r(s) );
+        }
+    }
+
+    pub closed spec fn map_to_seq(m: Map<Key, Value>) -> (s: Seq<(Key, Value)>)
+    decreases m.dom().len() when m.dom().finite()
+    {
+        if m.dom().is_empty() {
+            seq![]
+        } else {
+            let k = m.dom().choose();
+            Self::map_to_seq(m.remove(k)).push((k, m[k]))
+        }
+    }
+
+    pub proof fn map_to_seq_contents(m: Map<Key, Value>)
+    requires m.dom().finite()
+    ensures ({
+        let s = Self::map_to_seq(m);
+            &&& Self::unique_keys(s)
+            &&& forall |i| #![auto] 0<=i<s.len() ==> m.contains_key(s[i].0)
+            &&& forall |k| m.contains_key(k) ==> exists |i| 0 <= i < s.len() && s[i]==(k, m[k])
+        }),
+    decreases m.dom().len()
+    {
+        let s = Self::map_to_seq(m);
+
+        if m.dom().is_empty() {
+            assert( forall |i| #![auto] 0<=i<s.len() ==> m.contains_key(s[i].0) );
+            assert( forall |k| m.contains_key(k) ==> exists |i| 0 <= i < s.len() && s[i]==(k, m[k]) );
+        } else {
+            let ck = m.dom().choose();
+            let rm = m.remove(ck);
+            Self::map_to_seq_contents(rm);
+            let rs = Self::map_to_seq(rm);
+            Key::lemma_injective(); // needed to prove unique_keys, since it's over key views
+                                    //
+            assert forall |i| #![auto] 0<=i<s.len() implies m.contains_key(s[i].0) by {
+                if i < s.len()-1 {
+                    let rs = Self::map_to_seq(m.remove(ck)); // trigger
+                }
+            }
+            assert forall |k| m.contains_key(k) implies exists |i| 0 <= i < s.len() && s[i]==(k, m[k])  by {
+                let i = if k == ck {
+                    s.len() - 1
+                } else {
+                    choose |i| 0 <= i < rs.len() && rs[i]==(k, rm[k])
+                };
+                assert( 0 <= i < s.len() && s[i]==(k, m[k]) );  // provide the witness
+            }
+        }
+    }
+
+    // Yeah you can't have this one, since map_to_seq is nondeterministic!
+//     pub proof fn map_to_seq_inverse(v: Seq<(Key, Value)>)
+//     requires Self::unique_keys(v)
+//     ensures Self::map_to_seq(Self::seq_to_map(v)) == v
+//     {
+//         Self::map_to_seq_contents(Self::seq_to_map(v));
+//     }
+
+    pub proof fn seq_to_map_inverse(m: Map<Key, Value>)
+    requires m.dom().finite()
+    ensures Self::seq_to_map(Self::map_to_seq(m)) == m
+    {
+        Self::map_to_seq_contents(m);
+        assert( Self::seq_to_map(Self::map_to_seq(m)) == m ); // verus #1534
+    }
+
     pub closed spec fn wf(self) -> bool
     {
-        // unique key views
-        forall |i,j| #![auto] 0<=i<self.v.len() && 0<=j<self.v.len() && self.v[i].0@ == self.v[j].0@ ==> i == j
+        Self::unique_keys(self.v@)
     }
 
     pub fn new() -> (out: Self)
     ensures
         out.wf(),
-        out@ == Map::<<Key as View>::V, Value>::empty(),
+        out@ == Map::<Key, Value>::empty(),
     {
         let out = Self{v: vec![]};
-        assert( out@ == Map::<<Key as View>::V, Value>::empty() );  // trigger extn in ensures
+        assert( out@ == Map::<Key, Value>::empty() );  // trigger extn in ensures
         out
+    }
+
+    pub fn from_vec(v: Vec<(Key, Value)>) -> (out: Self)
+        requires Self::unique_keys(v@)
+        ensures out@ == Self::seq_to_map(v@)
+    {
+        Self{v}
+    }
+
+    pub fn borrow_vec<'a>(&'a self) -> (out: &'a Vec<(Key, Value)>)
+        ensures
+            Self::map_to_seq(self@) == (*out)@,
+            (*out)@ == Self::map_to_seq(self@),
+    {
+        assume(false);  // left off here
+//         proof { Self::seq_to_map_inverse(self.v@); }
+        &self.v
     }
     
     pub fn insert(&mut self, k: Key, v: Value)
@@ -90,8 +253,9 @@ where Key: View + Injective + Eq + Structural
         old(self).wf(),
     ensures
         self.wf(),
-        self@ == old(self)@.insert(k@, v),
+        self@ == old(self)@.insert(k, v),
     {
+        // need to look for an existing element
         assume( false );
     }
 
@@ -100,8 +264,8 @@ where Key: View + Injective + Eq + Structural
         self.wf(),
     ensures
         match result {
-            Some(v) => self@.contains_key(k@) && *v == self@[k@],
-            None => !self@.contains_key(k@),
+            Some(v) => self@.contains_key(*k) && *v == self@[*k],
+            None => !self@.contains_key(*k),
         },
     {
         let mut i: usize = 0;
@@ -123,8 +287,8 @@ where Key: View + Injective + Eq + Structural
                     assert( iasint == ii );
                     assert( ii == i );
                     assert( self.index_for_key(*k) == Some(i as int) );
-                    assert( self@[k@] == self.v[ii].1 );
-                    assert( self@[k@] == out );
+                    assert( self@[*k] == self.v[ii].1 );
+                    assert( self@[*k] == out );
                 }
                 return Some(out)
             }
@@ -133,7 +297,7 @@ where Key: View + Injective + Eq + Structural
         // Loop proves that impl k doesn't appear in impl vec, but we also need
         // to know that no other k could have supplied the same view k@:
         proof { Key::lemma_injective(); }
-        assert( !self@.contains_key(k@) );
+        assert( !self@.contains_key(*k) );
         None
     }
 
@@ -155,18 +319,23 @@ where Key: View + Injective + Eq + Structural
         }
     {
     }
+
+    proof fn view_ensures(self)
+    requires self.wf()
+    ensures self@.dom().finite()
+    {
+        Self::seq_to_map_ensures(self.v@);
+    }
 }
 
 impl<Key, Value> View for VecMap<Key, Value>
 where Key: View + Injective + Eq + Structural
 {
-    type V = Map<<Key as View>::V, Value>;
+    type V = Map<Key, Value>;
 
     closed spec fn view(&self) -> Self::V
     {
-        Map::new(
-            |k| exists |i| #![auto] 0<=i<self.v.len() && self.v[i].0@ == k,
-            |k| self.v[choose |i| #![auto] 0<=i<self.v.len() && self.v[i].0@ == k].1)
+        VecMap::seq_to_map(self.v@)
     }
 }
 

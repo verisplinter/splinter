@@ -7,12 +7,10 @@ use builtin_macros::*;
 
 verus! {
 
-// TODO: These are placeholders
-// TODO: (tenzinhl) convert placeholder types to enum so that
-// typchecker doesn't allow them to be interchangeably assigned
 #[derive(Clone,Copy,Debug)]
 pub struct Value(pub u64);
 
+#[derive(Clone,Copy,Debug)]
 pub struct Delta(pub u64);
 
 // TODO(jonh): Need to genericize the types of Key, Value; and then we'll need to axiomitify /
@@ -30,6 +28,7 @@ pub open spec(checked) fn nop_delta() -> Delta {
 /// state of values in a map.
 /// Messages can themselves be used as the values of a map as long as only "Define"
 /// messages are stored (see TotalKMMap).
+#[derive(Clone,Copy,Debug)]
 pub enum Message {
     /// A Define message represents setting a variable to the given value.
     Define { value: Value },
