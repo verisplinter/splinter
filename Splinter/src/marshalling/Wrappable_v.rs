@@ -5,6 +5,7 @@ use crate::marshalling::Slice_v::Slice;
 use crate::marshalling::Marshalling_v::{Marshal, Deepview};
 use crate::marshalling::UniformPairFormat_v::UniformPairFormat;
 use crate::marshalling::UniformSized_v::UniformSized;
+use crate::marshalling::WF_v::WF;
 
 verus! {
 
@@ -20,7 +21,7 @@ pub trait Wrappable {
     type AF: Marshal + UniformSized;
     type BF: Marshal + UniformSized;
     type DV;
-    type U: Deepview<Self::DV>;
+    type U: WF + Deepview<Self::DV>;
 
     spec fn value_marshallable(value: Self::DV) -> bool
     ;
@@ -39,12 +40,15 @@ pub trait Wrappable {
     exec fn exec_to_pair(value: &Self::U) -> (pair: (<Self::AF as Marshal>::U, <Self::BF as Marshal>::U))
     requires Self::value_marshallable((*value).deepv())
     ensures Self::to_pair((*value).deepv()) == pair.deepv(),
+        pair.wf(),
     ;
 
     exec fn exec_from_pair(pair: (<Self::AF as Marshal>::U, <Self::BF as Marshal>::U)) -> (value: Self::U)
+    requires pair.wf()
     ensures
         value.deepv() == Self::from_pair(pair.deepv()),
         Self::to_pair(value.deepv()) == pair.deepv(),
+        value.wf(),
     ;
 
     exec fn new_format_pair() -> (Self::AF, Self::BF)

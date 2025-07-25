@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-2-Clause
 use vstd::{prelude::*};
 use crate::marshalling::Slice_v::Slice;
+use crate::marshalling::WF_v::WF;
 use crate::marshalling::Marshalling_v::{Marshal, Deepview};
 use crate::marshalling::UniformSized_v::UniformSized;
 
@@ -89,6 +90,7 @@ impl<AF: Marshal + UniformSized, BF: Marshal + UniformSized> Marshal for Uniform
 //                 assert( pair_value.0.deepv() == self.a_fmt.parse(idata.subrange(0, bdy0)) );
                 assert( pair_value.1.deepv() == self.b_fmt.parse(idata.subrange(bdy0, bdy1)) );
                 assert( pair_value.deepv() == self.parse(idata) );   // extn
+                assert( pair_value.wf() );  // trigger ensures?
             }
             Some(pair_value)
         }

@@ -33,6 +33,8 @@ use crate::implementation::MultisetMapRelation_v::*;
 use crate::implementation::VecMap_v::*;
 use crate::implementation::JournalTypes_v::*;
 use crate::implementation::SuperblockTypes_v::*;
+use crate::marshalling::WF_v::WF;
+
 
 #[allow(unused_imports)]
 use vstd::multiset::*;

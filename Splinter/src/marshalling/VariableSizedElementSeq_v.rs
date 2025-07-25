@@ -726,6 +726,7 @@ impl <
         // Append the new boundary element
         ////////////////////////////////////////////////////////////
         let new_bdy = BdyType::from_usize(start);
+        proof { new_bdy.always_wf(); }
 
         // Suppose len(idata) == 19
         // suppose LenType == u16

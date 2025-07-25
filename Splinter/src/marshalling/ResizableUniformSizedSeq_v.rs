@@ -379,6 +379,7 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
     ensures self.untampered_bytes(dslice@, old(data)@, data@)
     {
         let length_val = LenType::from_usize(newlen);
+        proof { length_val.always_wf(); }
         let length_end = self.lenf.exec_marshall(&length_val, data, dslice.start);
 
         proof {
@@ -596,6 +597,7 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
         // Just call resize instead? no, that requires the data already be well-formatted
         // (such as lengthable)
         let length_val = LenType::from_usize(value.len());
+        proof { length_val.always_wf(); }
         let length_end = self.lenf.exec_marshall(&length_val, data, start);
         proof {
             LenType::deepv_is_as_int(length_val);

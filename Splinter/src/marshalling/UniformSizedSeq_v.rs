@@ -7,6 +7,7 @@ use vstd::prelude::*;
 // use vstd::bytes::*;
 // use vstd::slice::*;
 use crate::marshalling::Slice_v::*;
+use crate::marshalling::WF_v::WF;
 use crate::marshalling::Marshalling_v::*;
 use crate::marshalling::SeqMarshalling_v::*;
 use crate::marshalling::UniformSized_v::*;
@@ -352,6 +353,7 @@ impl<EltFormat: Marshal + UniformSized>
                     result.len() == i,
                     forall |j| 0<=j<i as nat ==> self.elt_parsable(dslice@.i(data@), j),
                     forall |j| #![auto] 0<=j<i as nat ==> result[j].deepv() == self.get_elt(dslice@.i(data@), j),
+                    forall |j| #![auto] 0<=j<i as nat ==> result[j].wf(),
                 decreases len-i,
                 {
                     let ghost idata = dslice@.i(data@);
@@ -365,6 +367,7 @@ impl<EltFormat: Marshal + UniformSized>
                 }
 
                 assert( result.deepv() == self.parse(dslice@.i(data@)) );    // trigger.
+                assert( result.wf() );  // trigger trait ensures
                 return Some(result);
             }
         }

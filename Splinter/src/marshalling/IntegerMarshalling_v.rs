@@ -7,12 +7,12 @@ use vstd::prelude::*;
 use vstd::bytes::*;
 use vstd::slice::*;
 use crate::marshalling::Slice_v::*;
+use crate::marshalling::WF_v::WF;
 use crate::marshalling::Marshalling_v::*;
 use crate::marshalling::StaticallySized_v::*;
 use crate::marshalling::UniformSized_v::*;
 
 verus! {
-
 
 // TODO: clean up the usize mess. Require all IntFormattable types to be no bigger than usize.
 // (We don't need to support marshalling u64s on a 32-bit-usize platform.)
@@ -20,7 +20,7 @@ verus! {
 
 // An int type T can be IntFormat<T> if we know these things about it:
 
-pub trait IntFormattable : Deepview<int> + builtin::Integer + Sized + SpecOrd + Copy + StaticallySized
+pub trait IntFormattable : WF + Deepview<int> + builtin::Integer + Sized + SpecOrd + Copy + StaticallySized
 {
     // generic wrappers over vstd::bytes, which should probably be rewritten this way.
     spec fn spec_from_le_bytes(s: Seq<u8>) -> Self
@@ -95,6 +95,10 @@ pub trait IntFormattable : Deepview<int> + builtin::Integer + Sized + SpecOrd + 
     // Maybe this class should be NatObligations? Or have an additional Natty trait?
     proof fn nonnegative(t: Self)
     ensures 0 <= t as int;
+
+    proof fn always_wf(self)
+    ensures self.wf()
+    ;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -173,6 +177,8 @@ impl IntFormattable for u8 {
     exec fn from_usize(v: usize) -> (w: Self) { v as Self }
 
     proof fn nonnegative(v: Self) {}
+
+    proof fn always_wf(self) {}
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -243,6 +249,8 @@ impl IntFormattable for u16 {
     exec fn from_usize(v: usize) -> (w: Self) { v as Self }
 
     proof fn nonnegative(v: Self) {}
+
+    proof fn always_wf(self) {}
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -313,6 +321,8 @@ impl IntFormattable for u32 {
     exec fn from_usize(v: usize) -> (w: Self) { v as Self }
 
     proof fn nonnegative(v: Self) {}
+
+    proof fn always_wf(self) {}
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -385,6 +395,8 @@ impl IntFormattable for u64 {
     exec fn from_usize(v: usize) -> (w: Self) { v as Self }
 
     proof fn nonnegative(v: Self) {}
+
+    proof fn always_wf(self) {}
 }
 
 //////////////////////////////////////////////////////////////////////////////

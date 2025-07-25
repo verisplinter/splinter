@@ -3,38 +3,9 @@
 
 use builtin::*;
 use builtin_macros::*;
-// use vstd::pervasive::*;
 use vstd::prelude::*;
-// use vstd::modes::*;
-// use vstd::tokens::InstanceId;
-// use vstd::hash_map::*;
-// use vstd::std_specs::hash::*;
-// 
-// use crate::trusted::ClientAPI_t::*;
-// use crate::trusted::ReqReply_t::*;
-// use crate::trusted::KVStoreTrait_t::*;
-// use crate::trusted::KVStoreTokenized_t::*;
-// use crate::trusted::ProgramModelTrait_t::*;
-// 
-// use crate::spec::MapSpec_t::{ID, MapSpec, PersistentState};
-// use crate::spec::TotalKMMap_t::*;
-// use crate::spec::KeyType_t::*;
-// use crate::spec::Messages_t::*;
-// use crate::implementation::ModelRefinement_v::*;
-// use crate::implementation::ConcreteProgramModel_v::*;
-// use crate::implementation::AtomicState_v::*;
-// use crate::implementation::MultisetMapRelation_v::*;
-// 
-// #[allow(unused_imports)]
-// use vstd::multiset::*;
-// #[allow(unused_imports)]
-// use vstd::tokens::*;
-// #[allow(unused_imports)]
-// use crate::spec::AsyncDisk_t::*;
-// use crate::spec::ImplDisk_t::*;
-// #[allow(unused_imports)]
-// use crate::implementation::DiskLayout_v::*;
 use crate::spec::injective_t::*;
+use crate::marshalling::WF_v::WF;
 
 verus!{
 
@@ -52,6 +23,15 @@ pub struct VecMap<Key,Value>
 where Key: View + Injective + Eq + Structural
 {
     v: Vec<(Key,Value)>
+}
+
+impl<Key,Value> WF for VecMap<Key,Value>
+where Key: View + Injective + Eq + Structural
+{
+    closed spec fn wf(&self) -> bool
+    {
+        Self::unique_keys(self.v@)
+    }
 }
 
 // TODO(jonh): move into verus std lib
@@ -130,9 +110,9 @@ where Key: View + Injective + Eq + Structural
                     assert(rm.contains_key(k));
                 }
             }
-            assert forall |k| rmi.contains_key(k) implies ms.contains_key(k) by {
-            }
-            assert forall |k| rmi.contains_key(k) implies rmi[k] == ms[k] by {
+//             assert forall |k| rmi.contains_key(k) implies ms.contains_key(k) by {
+//             }
+            assert forall |k| #![auto] rmi.contains_key(k) implies rmi[k] == ms[k] by {
                 let i = choose |i| #![auto] 0<=i<s.len() && s[i].0 == k;
                 assert(ms[k] == s[i].1);
                 assert(rmi[k] == s[i].1);
@@ -216,11 +196,6 @@ where Key: View + Injective + Eq + Structural
         assert( Self::seq_to_map(Self::map_to_seq(m)) == m ); // verus #1534
     }
 
-    pub closed spec fn wf(self) -> bool
-    {
-        Self::unique_keys(self.v@)
-    }
-
     pub fn new() -> (out: Self)
     ensures
         out.wf(),
@@ -233,7 +208,7 @@ where Key: View + Injective + Eq + Structural
 
     pub fn from_vec(v: Vec<(Key, Value)>) -> (out: Self)
         requires Self::unique_keys(v@)
-        ensures out@ == Self::seq_to_map(v@)
+        ensures out@ == Self::seq_to_map(v@), out.wf()
     {
         Self{v}
     }
@@ -321,6 +296,7 @@ where Key: View + Injective + Eq + Structural
     }
 
     pub proof fn view_ensures(self)
+    requires self.wf()
     ensures self@.dom().finite()
     {
         Self::seq_to_map_ensures(self.v@);

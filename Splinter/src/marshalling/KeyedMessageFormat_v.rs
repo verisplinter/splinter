@@ -7,8 +7,11 @@ use crate::abstract_system::MsgHistory_v::KeyedMessage;
 use crate::marshalling::Marshalling_v::{Deepview};
 use crate::marshalling::IntegerMarshalling_v::IntFormat;
 use crate::marshalling::Wrappable_v::*;
+use crate::marshalling::WF_v::WF;
 
 verus! {
+
+impl WF for KeyedMessage { }
 
 pub struct KeyedMessageFormatWrappable {}
 impl Wrappable for KeyedMessageFormatWrappable {

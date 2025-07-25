@@ -10,6 +10,7 @@ use crate::marshalling::KeyedMessageFormat_v::KeyedMessageFormat;
 use crate::marshalling::Wrappable_v::*;
 use crate::marshalling::UniformSized_v::*;
 use crate::implementation::JournalTypes_v::*;
+use crate::marshalling::WF_v::WF;
 
 verus! {
 
@@ -17,6 +18,8 @@ verus! {
 impl Deepview<KeyedMessage> for KeyedMessage {
     open spec fn deepv(&self) -> KeyedMessage { *self }
 }
+
+impl WF for Journal { }
 
 // Move to ResizableUniformSizedElementSeqFormat?
 impl<T,L> UniformSized for ResizableUniformSizedElementSeqFormat<T,L>

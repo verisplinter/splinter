@@ -7,6 +7,7 @@ use vstd::prelude::*;
 //use vstd::bytes::*;
 //use vstd::slice::*;
 use crate::marshalling::Slice_v::*;
+use crate::marshalling::WF_v::WF;
 
 verus! {
 
@@ -41,7 +42,7 @@ impl<DVE, Elt: Deepview<DVE>> Deepview<Seq<DVE>> for Vec<Elt> {
 //
 pub trait Marshal {
     type DV;                // The view (spec) type
-    type U: Deepview<Self::DV>;    // The runtime type
+    type U: WF + Deepview<Self::DV>;    // The runtime type
 
     spec fn valid(&self) -> bool;
 
@@ -65,7 +66,7 @@ pub trait Marshal {
         slice@.valid(data@),
     ensures
         self.parsable(slice@.i(data@)) <==> ov is Some,
-        self.parsable(slice@.i(data@)) ==> ov.unwrap().deepv() == self.parse(slice@.i(data@))
+        self.parsable(slice@.i(data@)) ==> ov.unwrap().deepv() == self.parse(slice@.i(data@)) && ov.unwrap().wf()
     ;
 
     exec fn exec_parsable(&self, slice: &Slice, data: &Vec<u8>) -> (p: bool)
@@ -85,6 +86,7 @@ pub trait Marshal {
         slice@.valid(data@),
         self.parsable(slice@.i(data@)),
     ensures
+        value.wf(),
         value.deepv() == self.parse(slice@.i(data@)),
     {
         self.try_parse(slice, data).unwrap()
@@ -106,6 +108,7 @@ pub trait Marshal {
     exec fn exec_size(&self, value: &Self::U) -> (sz: usize)
     requires
         self.valid(),
+        value.wf(),
         self.marshallable(value.deepv()),
     ensures
         sz == self.spec_size(value.deepv())
@@ -114,6 +117,7 @@ pub trait Marshal {
     exec fn exec_marshall(&self, value: &Self::U, data: &mut Vec<u8>, start: usize) -> (end: usize)
     requires
         self.valid(),
+        value.wf(),
         self.marshallable(value.deepv()),
         start as int + self.spec_size(value.deepv()) as int <= old(data).len(),
     ensures

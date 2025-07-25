@@ -6,8 +6,12 @@ use crate::spec::Messages_t::*;
 use crate::marshalling::Marshalling_v::Deepview;
 use crate::marshalling::IntegerMarshalling_v::IntFormat;
 use crate::marshalling::Wrappable_v::*;
+use crate::marshalling::WF_v::WF;
 
 verus! {
+
+impl WF for Key { }
+impl WF for Value { }
 
 pub struct KeyValueFormatWrappable {}
 impl Wrappable for KeyValueFormatWrappable {
@@ -39,12 +43,15 @@ impl Wrappable for KeyValueFormatWrappable {
     {
         let pair = (value.0.0, value.1.0);
         assert( Self::to_pair((*value).deepv()) == pair.deepv() );
+        assert( pair.wf() );    // manually trigger trait ensures
         pair
     }
 
     exec fn exec_from_pair(pair: (u64, u64)) -> (km: (Key, Value))
     {
-        (Key(pair.0 as u64), Value(pair.1 as u64))
+        let pair = (Key(pair.0 as u64), Value(pair.1 as u64));
+        assert(pair.wf());  // manually trigger trait ensures
+        pair
     }
 
     exec fn new_format_pair() -> (Self::AF, Self::BF)

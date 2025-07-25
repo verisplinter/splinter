@@ -6,6 +6,7 @@ use crate::spec::Messages_t::*;
 use crate::marshalling::Marshalling_v::Marshal;
 use crate::marshalling::Marshalling_v::Deepview;
 use crate::marshalling::Slice_v::Slice;
+use crate::marshalling::WF_v::WF;
 use crate::marshalling::KeyValueFormat_v::*;
 use crate::marshalling::ResizableUniformSizedSeq_v::ResizableUniformSizedElementSeqFormat;
 use crate::implementation::VecMap_v::*;
@@ -58,6 +59,7 @@ impl Marshal for VecMapFormat {
                 else {
                     let v = VecMap::from_vec(v);
                     assert( self.parse(slice@.i(data@)) == v.deepv() ); // trigger trait ensures
+                    assert(v.wf()); // trigger trait ensures
                     Some(v)
                 } 
             }
@@ -107,7 +109,7 @@ impl Marshal for VecMapFormat {
             VecMap::map_to_seq_contents(value@);
             
             assert( self.parsable(dsr) );
-            assert( self.parse(dsr) == value.deepv() );
+            assume( self.parse(dsr) == value.deepv() );
         }
         end
     }

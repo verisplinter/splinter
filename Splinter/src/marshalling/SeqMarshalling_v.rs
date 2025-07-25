@@ -7,6 +7,7 @@ use vstd::prelude::*;
 // use vstd::bytes::*;
 // use vstd::slice::*;
 use crate::marshalling::Slice_v::*;
+use crate::marshalling::WF_v::*;
 use crate::marshalling::Marshalling_v::*;
 
 verus! {
@@ -21,7 +22,7 @@ verus! {
 
 pub trait SeqMarshal {
     type DVElt;                         // The view (spec) type of each element
-    type Elt: Deepview<Self::DVElt>;    // The runtime type of each element
+    type Elt: WF + Deepview<Self::DVElt>;    // The runtime type of each element
 
     spec fn seq_valid(&self) -> bool;
 
@@ -250,6 +251,7 @@ pub trait SeqMarshal {
     exec fn exec_settable(&self, dslice: &Slice, data: &Vec<u8>, idx: usize, value: &Self::Elt) -> (s: bool)
     requires
         self.seq_valid(),
+        value.wf(),
         dslice@.valid(data@),
         self.elt_marshallable(value.deepv()),
     ensures
@@ -259,6 +261,7 @@ pub trait SeqMarshal {
     exec fn exec_set(&self, dslice: &Slice, data: &mut Vec<u8>, idx: usize, value: &Self::Elt)
     requires
         self.seq_valid(),
+        value.wf(),
         dslice@.valid(old(data)@),
         self.elt_marshallable(value.deepv()),
         self.settable(dslice@.i(old(data)@), idx as int, value.deepv()),
@@ -344,6 +347,7 @@ pub trait SeqMarshal {
     exec fn exec_appendable(&self, dslice: &Slice, data: &Vec<u8>, value: &Self::Elt) -> (r: bool)
     requires
         self.seq_valid(),
+        value.wf(),
         dslice@.valid(data@),
         self.well_formed(dslice@.i(data@)),
         self.elt_marshallable(value.deepv()),
@@ -354,6 +358,7 @@ pub trait SeqMarshal {
     exec fn exec_append(&self, dslice: &Slice, data: &mut Vec<u8>, value: &Self::Elt)
     requires
         self.seq_valid(),
+        value.wf(),
         dslice@.valid(old(data)@),
         self.well_formed(dslice@.i(old(data)@)),
         self.elt_marshallable(value.deepv()),
