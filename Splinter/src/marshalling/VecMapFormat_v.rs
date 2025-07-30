@@ -109,7 +109,10 @@ impl Marshal for VecMapFormat {
             VecMap::map_to_seq_contents(value@);
             
             assert( self.parsable(dsr) );
-            assume( self.parse(dsr) == value.deepv() );
+            assert( self.parse(dsr) == VecMap::seq_to_map(self.seq_fmt.parse(dsr)) );
+            VecMap::seq_to_map_inverse(value@);
+            assert( value.deepv() == VecMap::seq_to_map(VecMap::map_to_seq(value@)) );
+            assert( self.parse(dsr) == value.deepv() );
         }
         end
     }
