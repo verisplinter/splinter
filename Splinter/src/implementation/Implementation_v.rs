@@ -33,6 +33,7 @@ use crate::implementation::MultisetMapRelation_v::*;
 use crate::implementation::VecMap_v::*;
 use crate::implementation::JournalTypes_v::*;
 use crate::implementation::SuperblockTypes_v::*;
+use crate::marshalling::Marshalling_v::Deepview;
 use crate::marshalling::WF_v::WF;
 
 
@@ -526,13 +527,12 @@ impl Implementation {
 
         let sb = ISuperblock{
             journal: tmp_journal,
-            store: tmp_store,
-//             version_index: self.version  // TODO(jonh): delete
+            store: tmp_store.borrow_vec().clone(),  // TODO(jonh): clone perf mess
         };
 
         // Yoink the store out of self just long enough to marshall it as part of the superblock.
-        let raw_page = marshall(&sb);
-        let ISuperblock{journal: mut tmp_journal, store: mut tmp_store, ..} = sb;
+        let raw_page = the_disk_layout.marshall(&sb);
+        let ISuperblock{journal: mut tmp_journal, /*store: mut tmp_store,*/ ..} = sb;
         std::mem::swap(&mut self.journal, &mut tmp_journal);    // un-yoink
         std::mem::swap(&mut self.store, &mut tmp_store);    // un-yoink
 
@@ -564,17 +564,20 @@ impl Implementation {
 
         proof {
             let pre_sb = self.state().ephemeral_sb();
-            assert(pre_sb == ISuperblock{
-                journal: self.journal,
-                store: self.store,
-//                 version_index: self.version, // TODO(jonh): delete
-            }@) by {
-                self.view_as_kmmap_ensures();
-                self.journal@.apply_to_stamped_map_length_lemma(StampedMap_v::empty());
-            }
+            assume( false );    // TODO(jonh): left off trying to relate the disk request we just
+                                // sent to the current ephemeral state. But Superblock doesn't seem
+                                // connected to ASuperblock yet.
+//             assert(pre_sb == ASuperblock{
+//                 journal: self.journal.deepv(),
+//                 store: self.store.borrow_vec()@,
+// //                 version_index: self.version, // TODO(jonh): delete
+//             }) by {
+//                 self.view_as_kmmap_ensures();
+//                 self.journal@.apply_to_stamped_map_length_lemma(StampedMap_v::empty());
+//             }
             assert( disk_reqs == Multiset::singleton(
                 (disk_event.arrow_ExecuteSyncBegin_req_id(), 
-                DiskRequest::WriteReq{to: spec_superblock_addr(), data: spec_marshall(pre_sb)})) 
+                DiskRequest::WriteReq{to: spec_superblock_addr(), data: the_disk_layout.spec_marshall(pre_sb)})) 
             );   // extn
             assert( AtomicState::disk_transition(self.state(), post_state.state, disk_event, info.reqs, info.resps) );  // witness
         }
@@ -899,7 +902,7 @@ impl Implementation {
             let tracked mut model = KVStoreTokenized::model::arbitrary();
             proof { tracked_swap(self.model.borrow_mut(), &mut model); }
 
-            let superblock = parse(&raw_page);
+            let superblock = the_disk_layout.parse(&raw_page);
             assert( superblock.store.wf() ) by {
                 assume( false ); // LEFT OFF extract model invariant
             }

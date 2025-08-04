@@ -103,16 +103,10 @@ impl Marshal for VecMapFormat {
         let end = self.seq_fmt.exec_marshall(value.borrow_vec(), data, start);
         proof {
             let dsr = data@.subrange(start as int, end as int);
-            assert( self.seq_fmt.parsable(dsr) );
-            assert( self.seq_fmt.parse(dsr) == VecMap::map_to_seq(value@) );
+            assert( self.seq_fmt.parse(dsr) == VecMap::map_to_seq(value@) );    // extn
             value.view_ensures();
             VecMap::map_to_seq_contents(value@);
-            
-            assert( self.parsable(dsr) );
-            assert( self.parse(dsr) == VecMap::seq_to_map(self.seq_fmt.parse(dsr)) );
             VecMap::seq_to_map_inverse(value@);
-            assert( value.deepv() == VecMap::seq_to_map(VecMap::map_to_seq(value@)) );
-            assert( self.parse(dsr) == value.deepv() );
         }
         end
     }

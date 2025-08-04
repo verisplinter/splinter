@@ -6,19 +6,26 @@ use crate::spec::Messages_t::*;
 use crate::marshalling::Marshalling_v::Deepview;
 use crate::marshalling::IntegerMarshalling_v::IntFormat;
 use crate::marshalling::Wrappable_v::*;
+use crate::marshalling::WF_v::WF;
 use crate::marshalling::JournalFormat_v::*;
 use crate::marshalling::KeyValueFormat_v::*;
 use crate::marshalling::ResizableUniformSizedSeq_v::ResizableUniformSizedElementSeqFormat;
 use crate::implementation::JournalTypes_v::*;
 use crate::implementation::SuperblockTypes_v::*;
+use crate::implementation::VecMap_v::*;
 
 verus! {
 
 impl Deepview<ASuperblock> for ISuperblock {
     open spec fn deepv(&self) -> ASuperblock {
-        ASuperblock{journal: self.journal.deepv(), store: self.store.deepv()}
+        ASuperblock{
+            journal: self.journal.deepv(),
+            store: self.store@,
+        }
     }
 }
+
+impl WF for ISuperblock {}
 
 pub struct SuperblockJSWrappable {}
 impl Wrappable for SuperblockJSWrappable {
@@ -29,8 +36,7 @@ impl Wrappable for SuperblockJSWrappable {
 
     open spec fn value_marshallable(value: Self::DV) -> bool
     {
-        // We aren't gonna need Delta values for a long time
-        value.message is Define
+        true
     }
 
     open spec fn to_pair(value: Self::DV) -> (AJournal, Seq<(Key,Value)>)
@@ -49,19 +55,30 @@ impl Wrappable for SuperblockJSWrappable {
 
     exec fn exec_to_pair(value: &Self::U) -> (pair: (Journal, Vec<(Key,Value)>))
     {
-        let pair = (value.journal, value.store);
+        // TODO(jonh) clonity clone clone
+        let journal_clone = value.journal.clone();
+        let store_clone = value.store.clone();
+        let pair = (journal_clone, store_clone);
+        // TODO(jonh): why aren't we getting a clone spec?
+        assume( journal_clone == value.journal );
+        assume( store_clone == value.store );
         assert( Self::to_pair((*value).deepv()) == pair.deepv() );  // verus #1534
         pair
     }
 
     exec fn exec_from_pair(pair: (Journal, Vec<(Key, Value)>)) -> (u: Self::U)
     {
-        Self::DV{ journal: pair.0, store: pair.1 }
+        let u = Self::U{ journal: pair.0, store: pair.1 };
+        assert( u.deepv().store == Self::from_pair(pair.deepv()).store );   // extn
+//         assert( u.deepv() == Self::from_pair(pair.deepv()) );
+        u
     }
 
     exec fn new_format_pair() -> (Self::AF, Self::BF)
     {
-        (JournalFormat::new(), Self::BF::new())
+        (
+            JournalFormat::new(), // TODO where is this implemented!?
+            Self::BF::new(KeyValueFormat::new(), IntFormat::<u8>::new(), 200))
     }
 }
 

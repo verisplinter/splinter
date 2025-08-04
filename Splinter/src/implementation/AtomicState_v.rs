@@ -144,7 +144,7 @@ impl AtomicState {
         &&& resps == Multiset::empty().insert((req_id, DiskResponse::ReadResp{data: raw_page}))
         // &&& valid_checksum(raw_page)
         &&& {
-            let superblock = spec_parse(raw_page);
+            let superblock = the_disk_layout.spec_parse(raw_page);
             post == Self{
                 recovery_state: RecoveryState::RecoveryComplete,
                 history: singleton_floating_seq(superblock.version_index, superblock.store.appv.kmmap),
@@ -164,7 +164,7 @@ impl AtomicState {
         &&& pre.in_flight is None
 
         &&& reqs == Multiset::singleton((
-            req_id, DiskRequest::WriteReq{to: spec_superblock_addr(), data: spec_marshall(sb)}
+            req_id, DiskRequest::WriteReq{to: spec_superblock_addr(), data: the_disk_layout.spec_marshall(sb)}
         ))
         &&& resps.is_empty()
 
@@ -205,7 +205,7 @@ impl AtomicState {
         match disk_event {
             DiskEvent::CompleteRecovery{req_id, raw_page} => {
                 // remember that superblock invariant survives disk
-                let superblock = spec_parse(raw_page);
+                let superblock = the_disk_layout.spec_parse(raw_page);
                 superblock.store.appv.invariant()
             },
             _ => { true },

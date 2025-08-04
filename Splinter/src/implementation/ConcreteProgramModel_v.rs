@@ -26,7 +26,7 @@ impl ConcreteProgramModel {
 impl ProgramModelTrait for ConcreteProgramModel {
     open spec fn is_mkfs(disk: DiskModel) -> bool
     {
-        &&& mkfs(disk.content)
+        &&& the_disk_layout.mkfs(disk.content)
         &&& disk.requests == Map::<ID, DiskRequest>::empty()
         &&& disk.responses == Map::<ID, DiskResponse>::empty()
     }

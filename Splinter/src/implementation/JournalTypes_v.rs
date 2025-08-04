@@ -64,6 +64,16 @@ impl View for Journal {
     }
 }
 
+impl Clone for Journal {
+    fn clone(&self) -> Self {
+        Journal{
+            msg_history: self.msg_history.clone(),
+            seq_start: self.seq_start
+        }
+    }
+}
+
+
 struct JournalFormat {
     ilsn_fmt: IntFormat::<ILsn>,
     msg_history_fmt: ResizableUniformSizedElementSeqFormat<KeyedMessageFormat, u8>,

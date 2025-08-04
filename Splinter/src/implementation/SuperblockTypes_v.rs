@@ -22,9 +22,9 @@ pub struct Superblock {
 }
 
 // Stores structured for easy marshalling. :v/
-type ARawStore = VecMap<Key, Value>;
+type ARawStore = Seq<(Key, Value)>;
 
-type RawStore = VecMap<Key, Value>;
+type RawStore = Vec<(Key, Value)>;
 // 
 // pub fn vec_map_to_raw_store(vec_map: &VecMap<Key, Value>) -> RawStore {
 //     vec_map.v
@@ -37,6 +37,15 @@ pub struct ASuperblock {
     // Wait no this is dumb; the journal contains its start LSN, which must match the store's LSN.
 //     pub version_index: u64,
 }
+
+// impl View for ASuperblock {
+//     type V = Superblock;
+// 
+//     open spec fn view(&self) -> Self::V
+//     {
+//         Superblock{ store: store }
+//     }
+// }
 
 pub struct ISuperblock {
     pub journal: Journal,
