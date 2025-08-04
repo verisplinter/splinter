@@ -10,8 +10,10 @@ use crate::spec::Messages_t::*;
 // use crate::spec::TotalKMMap_t::*;
 // use crate::spec::FloatingSeq_t::*;
 use crate::implementation::VecMap_v::*;
-// use crate::marshalling::Marshalling_v::Deepview;
+use crate::marshalling::Marshalling_v::Deepview;
 use crate::implementation::JournalTypes_v::*;
+use crate::spec::TotalKMMap_t::*;
+use crate::abstract_system::StampedMap_v::*;
 
 verus! {
 
@@ -38,14 +40,27 @@ pub struct ASuperblock {
 //     pub version_index: u64,
 }
 
-// impl View for ASuperblock {
-//     type V = Superblock;
-// 
-//     open spec fn view(&self) -> Self::V
-//     {
-//         Superblock{ store: store }
-//     }
-// }
+impl View for ASuperblock {
+    type V = Superblock;
+
+    open spec fn view(&self) -> Self::V
+    {
+        let value_map = VecMap::seq_to_map(self.store);
+        let message_map = Map::new(
+                |k| value_map.contains_key(k),
+                |k| Message::Define{value: value_map[k]});
+        let total_map = TotalKMMap(message_map); 
+        assert( total_map.wf() );   // need to "totalize" the map
+        let store_stamped_map = StampedMap{value: total_map, seq_end: 0};
+        let msg_history = self.journal@; // convert AJournal into MsgHistory
+        let final_stamped_map = msg_history.apply_to_stamped_map(store_stamped_map);
+        let persistent_state = PersistentState{ appv: MapSpec::State{ kmmap: final_stamped_map.value}};
+        Superblock{
+            store: persistent_state,
+            version_index: final_stamped_map.seq_end,
+        }
+    }
+}
 
 pub struct ISuperblock {
     pub journal: Journal,
@@ -59,11 +74,8 @@ impl View for ISuperblock {
 
     open spec fn view(&self) -> Self::V
     {
-        let map = self.journal.to_stamped_map();
-        Superblock{
-            store: PersistentState{ appv: MapSpec::State{ kmmap: map.value}},
-            version_index: map.seq_end
-        }
+        // promote to ASuperblock, thence to Superblock
+        self.deepv()@
     }
 }
 

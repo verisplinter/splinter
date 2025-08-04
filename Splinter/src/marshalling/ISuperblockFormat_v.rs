@@ -82,6 +82,6 @@ impl Wrappable for SuperblockJSWrappable {
     }
 }
 
-// WrappableFormat<SuperblockJSWrappable>
+pub type ISuperblockFormat = WrappableFormat<SuperblockJSWrappable>;
 
 } //verus!

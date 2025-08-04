@@ -115,13 +115,13 @@ pub struct Implementation {
 // pub struct Implementation {
 //     // store: HashMapWithView<Key, Value>,
 //     journal: Journal,
-// 
+//
 //     // token for the program model variable
 //     model: Tracked<ModelShard>,
-// 
+//
 //     // we do not own a mutable reference to this
 //     instance: Tracked<KVStoreTokenized::Instance<ConcreteProgramModel>>,
-// 
+//
 //     sync_requests: SyncRequestBuffer,
 // }
 
@@ -136,7 +136,7 @@ impl Journal {
     pub open spec fn inv(self) -> bool
     {
         self@.wf()
-    } 
+    }
 
     pub closed spec fn to_stamped_map(&self) -> StampedMap
     {
@@ -151,11 +151,11 @@ impl Journal {
 
     fn insert(&mut self, key: Key, value: Value)
         requires old(self).inv()
-        ensures 
+        ensures
             self.inv(),
             self@.seq_start == old(self)@.seq_start,
             self@.seq_end == old(self)@.seq_end+1,
-            self@.msgs =~= old(self)@.msgs.insert(old(self)@.seq_end, 
+            self@.msgs =~= old(self)@.msgs.insert(old(self)@.seq_end,
                 KeyedMessage{key, message: Message::Define{value}}),
     {
         self.msg_history.push(KeyedMessage{key, message: Message::Define{value}})
@@ -200,7 +200,7 @@ impl Implementation {
     // pub in_flight: Option<InflightInfo>,
 
     // // maps each syncreq id with a version
-    // pub sync_req_map: Map<SyncReqId, nat>, 
+    // pub sync_req_map: Map<SyncReqId, nat>,
 // }
         // self.model@.value().state
     }
@@ -217,7 +217,7 @@ impl Implementation {
         &&& self.model@.instance_id() == self.instance@.id()
         &&& state.recovery_state is RecoveryComplete
 
-        // model 
+        // model
         // &&& self.i().mapspec().kmmap == self.view_as_kmmap()
         &&& self.i().history == self.view_as_floating_versions()
 
@@ -288,7 +288,7 @@ impl Implementation {
                             map_lbl, MapSpec::Step::noop())); // witness to step
                     assert( post_state.state.history.get_prefix(pre_state.state.history.len()) == pre_state.state.history );  // extn
                     assert( AtomicState::map_transition(pre_state.state, post_state.state, map_req, map_reply) );
-                    assert( ConcreteProgramModel::next(pre_state, post_state, 
+                    assert( ConcreteProgramModel::next(pre_state, post_state,
                         ProgramLabel::UserIO{op: ProgramUserOp::Execute{req: map_req, reply: map_reply}}) );
                 }
 
@@ -315,7 +315,7 @@ impl Implementation {
     ensures
         self.inv_api(api),
     {
-        broadcast use 
+        broadcast use
             Implementation::view_as_kmmap_ensures,
             MsgHistory::map_plus_history_lemma;
 
@@ -353,10 +353,10 @@ impl Implementation {
 
                 assert(self.view_as_kmmap() =~= old(self).view_as_kmmap().insert(key, Message::Define{value}));
                 assert( MapSpec::State::next_by(pre_state.state.mapspec(), post_state.state.mapspec(), map_lbl, MapSpec::Step::put())); // witness to step
-                
+
                 assert( post_state.state.history.get_prefix(pre_state.state.history.len()) =~= pre_state.state.history );  // extn
                 assert( AtomicState::map_transition(pre_state.state, post_state.state, map_req, map_reply) );
-                assert( ConcreteProgramModel::next(pre_state, post_state, 
+                assert( ConcreteProgramModel::next(pre_state, post_state,
                     ProgramLabel::UserIO{op: ProgramUserOp::Execute{req: map_req, reply: map_reply}}) );
             }
 
@@ -421,7 +421,7 @@ impl Implementation {
                 assert( MapSpec::State::next_by(pre_state.state.mapspec(), post_state.state.mapspec(),
                         map_lbl, MapSpec::Step::query())); // witness to step
                 assert( post_state.state.history.get_prefix(pre_state.state.history.len()) == pre_state.state.history );  // extn
-                assert( ConcreteProgramModel::next(pre_state, post_state, 
+                assert( ConcreteProgramModel::next(pre_state, post_state,
                     ProgramLabel::UserIO{op: ProgramUserOp::Execute{req: map_req, reply: map_reply}}) );
             }
 
@@ -531,7 +531,7 @@ impl Implementation {
         };
 
         // Yoink the store out of self just long enough to marshall it as part of the superblock.
-        let raw_page = the_disk_layout.marshall(&sb);
+        let raw_page = DiskLayout::new().marshall(&sb);
         let ISuperblock{journal: mut tmp_journal, /*store: mut tmp_store,*/ ..} = sb;
         std::mem::swap(&mut self.journal, &mut tmp_journal);    // un-yoink
         std::mem::swap(&mut self.store, &mut tmp_store);    // un-yoink
@@ -549,17 +549,17 @@ impl Implementation {
                 in_flight: Some(inflight_info),
                 ..old(self).state()}
         };
-      
+
         let tracked empty_disk_responses: DiskRespShard = DiskRespShard::empty(self.instance_id());
 
         let ghost lbl = KVStoreTokenized::Label::DiskOp{
                 disk_request_tuples: disk_reqs,
                 disk_response_tuples: empty_disk_responses.multiset(),
             };
-        
+
         let ghost info = ProgramDiskInfo{
-                reqs: lbl->disk_request_tuples, 
-                resps: lbl->disk_response_tuples, 
+                reqs: lbl->disk_request_tuples,
+                resps: lbl->disk_response_tuples,
             };
 
         proof {
@@ -576,8 +576,8 @@ impl Implementation {
 //                 self.journal@.apply_to_stamped_map_length_lemma(StampedMap_v::empty());
 //             }
             assert( disk_reqs == Multiset::singleton(
-                (disk_event.arrow_ExecuteSyncBegin_req_id(), 
-                DiskRequest::WriteReq{to: spec_superblock_addr(), data: the_disk_layout.spec_marshall(pre_sb)})) 
+                (disk_event.arrow_ExecuteSyncBegin_req_id(),
+                DiskRequest::WriteReq{to: spec_superblock_addr(), data: DiskLayout::spec_new().spec_marshall(pre_sb)}))
             );   // extn
             assert( AtomicState::disk_transition(self.state(), post_state.state, disk_event, info.reqs, info.resps) );  // witness
         }
@@ -801,7 +801,7 @@ impl Implementation {
 
             assert( AtomicState::disk_transition(
                 pre_state.state, post_state.state, disk_event, info.reqs, info.resps) );    // witness
-//             assert( ConcreteProgramModel::next(pre_state, post_state, 
+//             assert( ConcreteProgramModel::next(pre_state, post_state,
 //                     ProgramLabel::DiskIO{ info }) );
         }
 
@@ -850,8 +850,8 @@ impl Implementation {
             // proof { multiset_map_singleton_ensures(req_id_perm@, disk_req@); }
             proof {
                 let info = ProgramDiskInfo{
-                    reqs: disk_request_tuples, 
-                    resps: disk_response_tuples, 
+                    reqs: disk_request_tuples,
+                    resps: disk_response_tuples,
                 };
                 assert(AtomicState::disk_transition(
                     pre_state.state, post_state.state, disk_event, info.reqs, info.resps));
@@ -872,14 +872,14 @@ impl Implementation {
             assert( model.value() == post_state );
 
             // this way of composition feels like it can be easily cheated?
-            // if we really want to we can try to 
+            // if we really want to we can try to
             // let ghost disk_lbl = AsyncDisk::Label::DiskOps{
             //         requests: Map::empty().insert(req_id_perm@, disk_req@),
             //         responses: Map::empty()
             // };
             // assert( disk_lbl->responses == multiset_to_map(disk_response_tuples) ); // extn equality
 
-            // this models external_diskop with the disk label  
+            // this models external_diskop with the disk label
             let disk_req_id = api.send_disk_request(disk_req, req_id_perm, Tracked(disk_request_tokens));
             self.model = Tracked(model);
         }
@@ -902,7 +902,7 @@ impl Implementation {
             let tracked mut model = KVStoreTokenized::model::arbitrary();
             proof { tracked_swap(self.model.borrow_mut(), &mut model); }
 
-            let superblock = the_disk_layout.parse(&raw_page);
+            let superblock = DiskLayout::new().parse(&raw_page);
             assert( superblock.store.wf() ) by {
                 assume( false ); // LEFT OFF extract model invariant
             }
@@ -935,10 +935,10 @@ impl Implementation {
             // // assert( disk_lbl->requests == multiset_to_map(disk_request_tuples) );   // extn
             // proof {
             //     let info = ProgramDiskInfo{
-            //         reqs: disk_request_tuples, 
-            //         resps: disk_response_tuples, 
+            //         reqs: disk_request_tuples,
+            //         resps: disk_response_tuples,
             //     };
-            //     // TODO: this is crazy, I have to use info.reqs otherwise it doesn't match for 
+            //     // TODO: this is crazy, I have to use info.reqs otherwise it doesn't match for
             //     // valid disk transition
             //     multiset_map_singleton_ensures(disk_req_id, i_disk_response@);
             //     assert(disk_response_token@.multiset().contains((disk_req_id, i_disk_response@))); //trigger
@@ -966,7 +966,7 @@ impl Implementation {
 }
 
 impl KVStoreTrait for Implementation {
-    type ProgramModel = ConcreteProgramModel; 
+    type ProgramModel = ConcreteProgramModel;
     type Proof = RefinementProof;
 
     closed spec fn wf_init(self) -> bool {

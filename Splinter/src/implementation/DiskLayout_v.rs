@@ -11,6 +11,8 @@ use crate::spec::TotalKMMap_t::*;
 use crate::spec::FloatingSeq_t::*;
 use crate::implementation::VecMap_v::*;
 use crate::implementation::SuperblockTypes_v::*;
+use crate::marshalling::ISuperblockFormat_v::*;
+use crate::marshalling::Marshalling_v::*;
 
 verus! {
 
@@ -44,6 +46,7 @@ pub open spec(checked) fn view_store_as_singleton_floating_seq(at_index: nat, st
 }
 
 pub struct DiskLayout {
+    pub fmt: ISuperblockFormat,
 }
 
 impl DiskLayout {
@@ -54,7 +57,7 @@ impl DiskLayout {
 
     pub closed spec fn spec_parse(self, raw_page: RawPage) -> (out: Superblock)
     {
-        arbitrary()
+        self.fmt.parse(raw_page)@
     }
 
     pub fn marshall(&self, sb: &ISuperblock) -> (out: IPageData)
@@ -83,12 +86,19 @@ impl DiskLayout {
             })
     }
 
-    pub const fn new() -> Self
+    pub fn new() -> Self
     {
-        DiskLayout{}
+        DiskLayout{
+            fmt: ISuperblockFormat::new()
+        }
+    }
+
+    pub open spec fn spec_new() -> Self
+    {
+        DiskLayout{
+            fmt: ISuperblockFormat::new()
+        }
     }
 }
-
-pub const the_disk_layout: DiskLayout = DiskLayout::new();
 
 }//verus!
