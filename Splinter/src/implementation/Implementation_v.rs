@@ -98,22 +98,8 @@ impl SyncRequestBuffer {
 pub type ModelShard = KVStoreTokenized::model<ConcreteProgramModel>;
 // This struct supplies KVStoreTrait, which has both the entry point to the implementation and the
 // proof hooks to satisfy the refinement obligation trait.
-pub struct Implementation {
-    store: VecMap<Key, Value>,
-    journal: Journal,
-    version: u64,
-
-    model: Tracked<KVStoreTokenized::model<ConcreteProgramModel>>,
-    instance: Tracked<KVStoreTokenized::Instance<ConcreteProgramModel>>,
-
-    sync_requests: SyncRequestBuffer,
-}
-
-// This struct supplies KVStoreTrait, which has both the entry point to the implementation and the
-// proof hooks to satisfy the refinement obligation trait.
-// this was Jon's thing, I guess? Replaced by Jialin's thing above?
 // pub struct Implementation {
-//     // store: HashMapWithView<Key, Value>,
+//     store: VecMap<Key, Value>,
 //     journal: Journal,
 //
 //     // token for the program model variable
@@ -149,6 +135,14 @@ impl Journal {
         Journal{ msg_history: vec![], seq_start:0 }
     }
 
+    fn seq_end(&self) -> (out: ILsn)
+        ensures self@.seq_end == out
+    {
+        let out = self.seq_start + self.msg_history.len() as u64;
+        assume(out < u64::MAX);
+        out
+    }
+
     fn insert(&mut self, key: Key, value: Value)
         requires old(self).inv()
         ensures
@@ -162,24 +156,44 @@ impl Journal {
     }
 }
 
+// This struct supplies KVStoreTrait, which has both the entry point to the implementation and the
+// proof hooks to satisfy the refinement obligation trait.
+pub struct Implementation {
+    store: VecMap<Key, Value>,
+
+    // store: HashMapWithView<Key, Value>,
+    journal: Journal,
+
+    // indicate the actual persistent version on disk
+    // how do we get the persistent version upon a crash
+    // it's the seq start in journal
+    persistent_version: Ghost<nat>, 
+
+    // token for the program model variable
+    model: Tracked<ModelShard>,
+
+    // we do not own a mutable reference to this
+    instance: Tracked<KVStoreTokenized::Instance<ConcreteProgramModel>>,
+
+    sync_requests: SyncRequestBuffer,
+}
+
 impl Implementation {
     closed spec(checked) fn view_as_kmmap(self) -> TotalKMMap
-        recommends self.journal.seq_start == 0
     {
         self.view_as_floating_versions().last().appv.kmmap
     }
 
     closed spec(checked) fn view_as_floating_versions(self) -> FloatingSeq<PersistentState>
-        recommends self.journal.seq_start == 0
     {
         AbstractCrashAwareSystemRefinement_v::floating_versions(
-            StampedMap_v::empty(), self.journal@, self.journal.seq_start as nat)
+            StampedMap_v::empty(), self.journal@, self.persistent_version@)
     }
 
     broadcast proof fn view_as_kmmap_ensures(self)
-        requires self.journal.seq_start == 0, self.journal.inv()
+        requires self.persistent_version@ <= self.version(), self.journal.seq_start == 0
         ensures #[trigger] self.view_as_kmmap() =~= MsgHistory::map_plus_history(StampedMap_v::empty(), self.journal@).value
-    {
+    { 
         assert(self.journal@.discard_recent((self.journal@.seq_end) as nat) =~= self.journal@);
     }
 
@@ -190,18 +204,6 @@ impl Implementation {
     closed spec fn state(&self) -> AtomicState
     {
         self.model@.value().state
-
-    // pub history: FloatingSeq<PersistentState>,
-
-    // // tells us what syncs can be replied
-    // pub persistent_version: nat,
-
-    // // tells us what we can bump persistent_version when the disk response comes back.
-    // pub in_flight: Option<InflightInfo>,
-
-    // // maps each syncreq id with a version
-    // pub sync_req_map: Map<SyncReqId, nat>,
-        // self.model@.value().state
     }
 
     closed spec fn version(&self) -> nat
@@ -224,11 +226,17 @@ impl Implementation {
             <==> self.sync_requests.in_flight())
         &&& self.sync_requests.wf(self.instance@.id())
 
+        // version index in other place
+        // we can generate the history needed
+
         // physical version num tracks ghost model versions
-        &&& self.version() == self.state().history.len()-1
+        &&& self.persistent_version@ == state.history.first_active_index()
+        &&& self.version() == state.history.len()-1
+        &&& self.persistent_version@ <= self.version()
         &&& self.journal.seq_start == 0
 
         &&& (state.in_flight is Some ==> {
+            // &&& self.persistent_version <= state.in_flight.get_Some_0().version
             // The in-flight version stays active so get_suffix doesn't choke on it when it's time
             // to handle the disk response
             &&& state.history.is_active(state.in_flight->Some_0.version as int)
@@ -333,7 +341,7 @@ impl Implementation {
             let ghost post_state = ConcreteProgramModel{
                 state: AtomicState{
                     history: self.view_as_floating_versions(),
-                    ..self.state()
+                    ..pre_state.state
                 }
             };
 
@@ -394,6 +402,7 @@ impl Implementation {
         req.input is QueryInput,
     ensures
         self.inv_api(api),
+        // allowed to do nothing in response
     {
         match req.input {
         Input::QueryInput{key} => {
@@ -513,7 +522,8 @@ impl Implementation {
     {
         proof { self.system_inv_implies_atomic_state_wf(); }
 
-        let ghost version_index = self.version();
+        let version = self.journal.seq_end();
+        // let ghost version_index = self.version();
 
         // NOTE: swap out journal to avoid making a copy of it when marshalling the superblock
         // this is temporary because we are shoving map/journal right into the superblock
@@ -542,7 +552,7 @@ impl Implementation {
         let ghost disk_reqs = multiset_map_singleton(disk_req_id, disk_request@);
         let ghost info = ProgramDiskInfo{ reqs: disk_reqs, resps: Multiset::empty() };
 
-        let ghost inflight_info = InflightInfo{version: version_index, req_id: disk_req_id};
+        let ghost inflight_info = InflightInfo{version: version as nat, req_id: disk_req_id};
         let ghost post_state = ConcreteProgramModel {
             state: AtomicState{
                 in_flight: Some(inflight_info),
@@ -563,17 +573,11 @@ impl Implementation {
 
         proof {
             let pre_sb = self.state().ephemeral_sb();
-            assume( false );    // TODO(jonh): left off trying to relate the disk request we just
-                                // sent to the current ephemeral state. But Superblock doesn't seem
-                                // connected to ASuperblock yet.
-//             assert(pre_sb == ASuperblock{
-//                 journal: self.journal.deepv(),
-//                 store: self.store.borrow_vec()@,
-// //                 version_index: self.version, // TODO(jonh): delete
-//             }) by {
-//                 self.view_as_kmmap_ensures();
-//                 self.journal@.apply_to_stamped_map_length_lemma(StampedMap_v::empty());
-//             }
+            // assert(pre_sb.store == self.journal@);
+            assert(pre_sb.version_index as nat == self.version()) by {
+                self.view_as_kmmap_ensures();
+                self.journal@.apply_to_stamped_map_length_lemma(StampedMap_v::empty());
+            }
             assert( disk_reqs == Multiset::singleton(
                 (disk_event.arrow_ExecuteSyncBegin_req_id(),
                 disk_request@))
@@ -771,15 +775,15 @@ impl Implementation {
         let ghost req = Request{input: Input::NoopInput, id: 0};
         let reply = Reply{output: Output::NoopOutput, id: 0};
 
-
-        assume(false);
-
         let ghost pre_state = self.model@.value();
-        let ghost new_persistent_version = pre_state.state.in_flight->Some_0.version;
+        assert(pre_state.state.history == self.view_as_floating_versions());
+
+        let ghost new_persistent_version = pre_state.state.in_flight.get_Some_0().version;
+        self.persistent_version = Ghost(new_persistent_version);
+
         let ghost post_state = ConcreteProgramModel{ state: AtomicState{
             in_flight: None,
-            history: pre_state.state.history.get_suffix(new_persistent_version as int),
-            persistent_version: new_persistent_version,
+            history: self.view_as_floating_versions(), 
             ..pre_state.state
         }};
 
@@ -788,6 +792,11 @@ impl Implementation {
             assert( self.i().recovery_state is RecoveryComplete );
             self.system_inv_response_implies_in_flight(id, disk_response, response_shard);
         }
+
+        assert(post_state.state.history == self.view_as_floating_versions());
+        assert(self.view_as_floating_versions() == pre_state.state.history.get_suffix(new_persistent_version as int));
+
+        // assert(self.i().history == self.view_as_floating_versions());
 
         let tracked mut model = KVStoreTokenized::model::arbitrary();
         proof { tracked_swap(self.model.borrow_mut(), &mut model); }
@@ -798,14 +807,18 @@ impl Implementation {
 
             assert( response_shard@.multiset() == Multiset::singleton((pre_state.state.in_flight->Some_0.req_id, DiskResponse::WriteResp{})) );    // extn
 
+            // must be receving superblock
+            // we want to show 
+
+            // state 
+
             assert( AtomicState::disk_transition(
                 pre_state.state, post_state.state, disk_event, info.reqs, info.resps) );    // witness
 //             assert( ConcreteProgramModel::next(pre_state, post_state,
 //                     ProgramLabel::DiskIO{ info }) );
         }
 
-        let tracked empty_disk_requests:KVStoreTokenized::disk_requests_multiset<ConcreteProgramModel>
-            = KVStoreTokenized::disk_requests_multiset::empty(self.instance_id());
+        let tracked empty_disk_requests = DiskReqShard::empty(self.instance_id());
         let tracked new_reply_token = self.instance.borrow().disk_transitions(
             KVStoreTokenized::Label::DiskOp{
                 disk_request_tuples: empty_disk_requests.multiset(),
@@ -815,6 +828,12 @@ impl Implementation {
             response_shard.get(),
         );
         self.model = Tracked(model);
+
+        // assert(self.i().history.start == 0);
+ 
+        // assert(self.i().history == self.view_as_floating_versions());
+
+        // assume(false);
 
         self.deliver_inflight_replies(&mut ready_reqs, api);
 
@@ -907,9 +926,9 @@ impl Implementation {
 
             let layout = DiskLayout::new();
             let superblock = layout.parse(&raw_page);
-            assert( superblock.store.wf() ) by {
-                assume( false ); // LEFT OFF extract model invariant
-            }
+            // assert( superblock.store.wf() ) by {
+            //     assume( false ); // LEFT OFF extract model invariant
+            // }
             // Record our learnings in the physical model.
             // self.store = superblock.store;
 
@@ -1025,7 +1044,7 @@ impl KVStoreTrait for Implementation {
         let selff = Implementation{
             store: new_empty_hash_map(),
             journal: Journal::new_empty(),
-            version: 0,
+            persistent_version: Ghost(0),
             model: Tracked(model),
             instance: Tracked(instance),
             sync_requests: SyncRequestBuffer::new_empty(),

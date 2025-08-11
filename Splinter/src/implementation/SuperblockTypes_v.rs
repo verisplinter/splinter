@@ -17,12 +17,6 @@ use crate::abstract_system::StampedMap_v::*;
 
 verus! {
 
-pub struct Superblock {
-    pub store: PersistentState, // mapspec
-    // need version so recovery knows the shape of the (mostly-empty) history to reconstruct (the LSN)
-    pub version_index: nat,
-}
-
 // Stores structured for easy marshalling. :v/
 type ARawStore = Seq<(Key, Value)>;
 
@@ -31,6 +25,12 @@ type RawStore = Vec<(Key, Value)>;
 // pub fn vec_map_to_raw_store(vec_map: &VecMap<Key, Value>) -> RawStore {
 //     vec_map.v
 // }
+
+pub struct Superblock {
+    pub store: PersistentState, // mapspec
+    // need version so recovery knows the shape of the (mostly-empty) history to reconstruct (the LSN)
+    pub version_index: nat,
+}
 
 pub struct ASuperblock {
     pub journal: AJournal,
@@ -66,7 +66,7 @@ pub struct ISuperblock {
     pub journal: Journal,
     pub store: RawStore,
     // need version so recovery knows the shape of the (mostly-empty) history to reconstruct (the LSN)
-//     pub version_index: u64,
+    // pub version_index: u64,
 }
 
 impl View for ISuperblock {

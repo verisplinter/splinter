@@ -36,19 +36,6 @@ pub open spec(checked) fn singleton_floating_seq(at_index: nat, kmmap: TotalKMMa
           |i| Version{ appv: MapSpec::State{ kmmap } } )
 }
 
-pub open spec(checked) fn view_store_as_kmmap(store: VecMap<Key, Value>) -> TotalKMMap
-{
-    TotalKMMap(Map::new(
-            |k: Key| true,
-            |k: Key| if store@.contains_key(k@) { Message::Define{value: store@[k@]} }
-                     else { Message::empty() }))
-}
-
-pub open spec(checked) fn view_store_as_singleton_floating_seq(at_index: nat, store: VecMap<Key, Value>) -> FloatingSeq<Version>
-{
-    singleton_floating_seq(at_index, view_store_as_kmmap(store))
-}
-
 pub struct DiskLayout {
     pub fmt: ISuperblockFormat,
 }
