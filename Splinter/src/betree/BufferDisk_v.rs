@@ -74,7 +74,7 @@ impl<T: Buffer> BufferDisk<T> {
     }
 
     // true if address is present and key is present within the queryable structure
-    pub open spec fn queryable_contains(self, addr: Address, k: Key) -> bool
+    pub open spec fn buffer_contains(self, addr: Address, k: Key) -> bool
     {
         &&& self.entries.contains_key(addr)
         &&& self.entries[addr].linked_contains(self, addr, k)
@@ -84,7 +84,7 @@ impl<T: Buffer> BufferDisk<T> {
         recommends 0 <= from_idx
     {
         &&& from_idx <= idx < buffers.len()
-        &&& self.queryable_contains(buffers[idx], k)
+        &&& self.buffer_contains(buffers[idx], k) // can find it
     }
 
     pub open spec(checked) fn key_in_buffer_filtered(self, buffers: LinkedSeq, offset_map: OffsetMap, from_idx: int, k: Key, idx: int) -> bool

@@ -723,6 +723,24 @@ pub proof fn query_refines(pre: Node, lbl: QueryLabel)
     }
 }
 
+pub proof fn contains_refines(pre: Node, key: Key, result: bool)
+    requires
+        pre.wf(),
+        pre.contains(key) == result
+    ensures
+        pre.i().map.contains_key(key) == result
+    decreases pre
+{
+    let r = pre.route(key);
+    if pre is Index {
+        let pivots = pre->pivots;
+        let children = pre->children;
+        assert(children[r+1].wf());
+        contains_refines(children[r+1], key, result);
+        assert(children[r+1].i().map.contains_key(key) == result); // subgoal 2
+    }
+}
+
 pub proof fn lemma_insert_inserts_to_all_keys(node: Node, key: Key, msg: Message, path: Path)
     requires
         node.wf(),

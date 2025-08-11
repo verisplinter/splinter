@@ -18,6 +18,7 @@ use crate::betree::PivotTable_v::PivotTable;
 use crate::betree::LinkedBetree_v::*;
 use crate::betree::LinkedBranch_v;
 use crate::betree::LinkedBranch_v::Refinement_v;
+use crate::betree::PivotBranch_v;
 use crate::betree::PivotBranchRefinement_v;
 use crate::allocation_layer::Likes_v::*;
 use crate::allocation_layer::LikesBetree_v::*;
@@ -157,14 +158,8 @@ impl LinkedBetree<BranchNode> {
     ensures 
         self.i().inv(),
         self.transitive_likes() == self.i().transitive_likes(),
-
-        // self.reachable_addrs == self.reachable_buffer_addrs(),
-
         self.transitive_likes().1.dom() == self.reachable_buffer_addrs(),
         self.i().transitive_likes().1.dom() == self.i().reachable_buffer_addrs(),
-
-
-        // self.reachable_buffer_addrs() == self.i().reachable_buffer_addrs(),
     {
         let i_linked = self.i();
         let ranking = self.the_ranking();
@@ -191,7 +186,7 @@ impl LinkedBetreeVars::State<BranchNode> {
 
 impl BufferDisk<BranchNode> {
     // to refine query refines, we need to know that addr get banch is inv
-    pub proof fn query_refines(self, buffer: Address, k: Key)
+    proof fn query_refines(self, buffer: Address, k: Key)
         requires self.get_branch(buffer).inv()
         ensures self.query(buffer, k) == self.i().query(buffer, k)
     {
@@ -205,7 +200,7 @@ impl BufferDisk<BranchNode> {
         PivotBranchRefinement_v::query_refines(pivot_branch, lbl);
     }
 
-    pub proof fn query_from_refines(self, buffers: LinkedSeq, k: Key, start: int)
+    proof fn query_from_refines(self, buffers: LinkedSeq, k: Key, start: int)
         requires 
             0 <= start <= buffers.len(),
             forall |i| start <= i < buffers.len() ==> #[trigger] self.get_branch(buffers[i]).inv()
@@ -217,6 +212,19 @@ impl BufferDisk<BranchNode> {
             self.query_refines(buffers[start], k);
             self.query_from_refines(buffers, k, start+1);
         }
+    }
+
+    proof fn buffer_contains_refines(self, addr: Address, k: Key)
+        requires self.get_branch(addr).inv()
+        ensures self.buffer_contains(addr, k) == self.i().buffer_contains(addr, k)
+    {
+        let branch = self.get_branch(addr);
+        let ranking = branch.the_ranking();
+        let result = self.entries[addr].linked_contains(self, addr, k);
+
+        Refinement_v::i_wf(branch);
+        Refinement_v::contains_internal_refines(branch, ranking, k, result);
+        PivotBranchRefinement_v::contains_refines(branch.i(), k, result);
     }
 
     pub proof fn i_preserves_sub_disk(self, other: Self)
@@ -562,19 +570,86 @@ impl AllocationBranchBetree::State {
         reveal(AllocationBetree::State::next_by);
     }
 
-//     proof fn internal_compact_complete_inv_refines(pre: Self, post: Self, lbl: AllocationBetree::Label, 
-//         new_betree: LinkedBetreeVars::State<SimpleBuffer>, input_idx: int, path: Path<SimpleBuffer>, 
-//         start: nat, end: nat, compacted_buffer: SimpleBuffer, new_addrs: TwoAddrs, path_addrs: PathAddrs)
-//     requires 
-//         pre.inv(), 
-//         AllocationBetree::State::internal_compact_complete(pre, post, lbl, input_idx, new_betree, 
-//             path, start, end, compacted_buffer, new_addrs, path_addrs),
-//     ensures
-//         post.inv(),
-//         LikesBetree::State::next_by(pre.i(), post.i(), lbl.i(), 
-//             LikesBetree::Step::internal_compact(new_betree, path, start, end, compacted_buffer, new_addrs, path_addrs))
-//     {
-//         reveal(LikesBetree::State::next_by);
+    proof fn internal_compact_complete_inv_refines(pre: Self, post: Self, lbl: AllocationBranchBetree::Label, 
+        new_betree: LinkedBetreeVars::State<BranchNode>, path: Path<BranchNode>, 
+        start: nat, end: nat, input_idx: int, branch_idx: int, new_node_addr: Address, path_addrs: PathAddrs)
+    requires 
+        pre.inv(), 
+        post.inv(),
+        AllocationBranchBetree::State::internal_compact_complete(pre, post, lbl, new_betree,
+            path, start, end, input_idx, branch_idx, new_node_addr, path_addrs),
+    ensures ({
+        let new_branch = pre.wip_branches[branch_idx].branch.unwrap();
+        let new_addrs = TwoAddrs{addr1: new_node_addr, addr2: new_branch.root};
+
+        &&& AllocationBetree::State::next_by(pre.i(), post.i(), lbl.i(), 
+            AllocationBetree::Step::internal_compact_complete(new_betree.i(), path.i(), start, end, new_branch.i().i(), new_addrs, path_addrs))
+    }) {
+        let new_branch = pre.wip_branches[branch_idx].branch.unwrap();
+        let buffer = new_branch.i().i();
+
+        let linked_new_addrs = TwoAddrs{addr1: new_node_addr, addr2: new_branch.root};
+        assert(pre.betree.linked.is_fresh(linked_new_addrs.repr() + path_addrs.to_set())) by {
+            to_aus_domain(path_addrs.to_set());
+            AllocationBranch::alloc_aus_ensures(pre.wip_branches, branch_idx);
+        }
+
+        path.i_ensures();
+        path.target_ensures();
+
+        let pre_bdv = pre.betree.linked.buffer_dv;
+        let bdv = new_betree.linked.buffer_dv;
+        assert(path.target().compact_buffer_valid_domain(start, end, new_branch.root(), bdv, new_branch.root));
+
+        assert(new_branch.inv());
+        post.inv_implies_wf_branch_dv();
+        
+        // 
+        // new_branch.valid_subdisk_preserves_valid_sealed_branch(bdv.get_branch(new_branch.root), new_branch.get_summary());
+
+        assert(new_branch.disk_view.is_sub_disk(bdv.to_branch_disk())); // meow
+        // bdv is the larger new_branch d
+
+        assume(bdv.get_branch(new_branch.root).inv());
+        assume(bdv.get_branch(new_branch.root).i() == new_branch.i());
+        
+        assert forall |k| true 
+        implies (buffer.linked_contains(bdv.i(), new_branch.root, k) <==> 
+            #[trigger] pre_bdv.i().valid_compact_key_domain(path.i().target().root(), start, end, k))
+        by {
+            if buffer.linked_contains(bdv.i(), new_branch.root, k) {
+
+                
+                // new_branch.buffer_contains();
+                // proof fn buffer_contains_refines(self, addr: Address, k: Key)
+
+            }
+
+            assume(false);
+            // pub open spec(checked) fn valid_compact_key_domain(self, node: BetreeNode, start: nat, end: nat, k: Key) -> bool
+
+        }
+
+        assert(path.i().target().compact_buffer_valid_domain(start, end, buffer, bdv.i(), new_branch.root));
+
+        // requires self.get_branch(addr).inv()
+        // ensures self.buffer_contains(addr, k) == self.i().buffer_contains(addr, k)
+        
+        assert(path.target().compact_buffer_valid_range(start, end, new_branch.root(), bdv, new_branch.root));
+        assume(path.i().target().compact_buffer_valid_range(start, end, buffer, bdv.i(), new_branch.root));
+
+        assert(path.i().target().can_compact(start, end, buffer, bdv.i(), linked_new_addrs));
+
+        assume(false);
+        // missing valid_view
+
+        assert(LinkedBetreeVars::State::internal_compact(pre.i().betree, new_betree.i(), lbl.i()->linked_lbl, 
+            new_betree.i().linked, path.i(), start, end, new_branch.i().i(), linked_new_addrs, path_addrs));
+
+
+
+        assume(false);
+//         reveal(AllocationBetree::State::next_by);
 
 //         let (betree_likes, buffer_likes) = pre.betree.linked.transitive_likes();
 //         let compacted = LinkedBetreeVars::State::post_compact(path, start, end, compacted_buffer, new_addrs, path_addrs);
@@ -591,7 +666,7 @@ impl AllocationBranchBetree::State {
 //         compacted.buffer_likes_domain(compacted_betree_likes);
 //         restrict_domain_au_ensures(compacted_buffer_likes, compacted.buffer_dv.entries);
 //         assert(new_betree.linked.valid_buffer_dv());
-//     }
+    }
 
     proof fn next_refines(pre: Self, post: Self, lbl: AllocationBranchBetree::Label) 
         requires 

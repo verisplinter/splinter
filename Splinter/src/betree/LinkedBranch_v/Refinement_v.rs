@@ -244,6 +244,35 @@ pub proof fn query_internal_refines<T>(pre: LinkedBranch<T>, ranking: Ranking, k
     }
 }
 
+pub proof fn contains_internal_refines<T>(pre: LinkedBranch<T>, ranking: Ranking, key: Key, result: bool)
+    requires
+        inv_internal(pre, ranking),
+        pre.contains_internal(ranking, key) == result,
+    ensures
+        pre.i_internal(ranking).contains(key) == result,
+    decreases pre.get_rank(ranking)
+{
+    i_internal_wf(pre, ranking);
+    assert(pre.i_internal(ranking).wf());
+
+    broadcast use lemma_route_ensures;
+
+    let r = pre.root().route(key);
+    if pre.root() is Index {
+        let pivots = pre.root()->pivots;
+        let children = pre.root()->children;
+        assert(pre.root().valid_child_index(r+1));
+        let child = pre.child_at_idx(r+1);
+        assert(child.wf());
+        assert(child.root().wf());
+        assert(child.valid_ranking(ranking));
+        assert(child.keys_strictly_sorted_internal(ranking));
+        contains_internal_refines(child, ranking, key, result);
+        assert(0 <= r+1 < pre.i_internal(ranking)->children.len());
+        assert(pre.i_internal(ranking)->children[r+1] == child.i_internal(ranking));
+    }
+}
+
 pub proof fn grow_refines<T>(pre: LinkedBranch<T>, addr: Address)
     requires
         inv(pre),

@@ -25,10 +25,27 @@ verus!{
 pub type Summary = Set<AU>; // describe the set of AUs occupied by the rest of the b+tree
 pub type BranchNode = Node<Summary>;
 
+impl BufferDisk<BranchNode> {
+    pub open spec fn to_branch_disk(self) -> DiskView::<Summary>
+    {
+       DiskView{entries: self.entries}
+    }
+
+    pub open spec fn get_branch(self, root: Address) -> LinkedBranch<Summary>
+    {
+        LinkedBranch{root, disk_view: self.to_branch_disk()}
+    }
+}
+
 impl Buffer for BranchNode {
     open spec fn linked_contains(self, dv: BufferDisk<Self>, addr: Address, key: Key) -> bool 
     {
-        self.linked_query(dv, addr, key) == Message::Update{ delta: nop_delta() }
+        let branch = dv.get_branch(addr);
+        if branch.acyclic() {
+            branch.contains_internal(branch.the_ranking(), key)
+        } else {
+            false
+        }
     }
 
     open spec fn linked_query(self, dv: BufferDisk<Self>, addr: Address, key: Key) -> Message 

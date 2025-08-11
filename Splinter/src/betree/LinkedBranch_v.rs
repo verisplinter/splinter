@@ -383,7 +383,6 @@ impl<T> LinkedBranch<T> {
         ranking
     }
 
-
     pub open spec(checked) fn acyclic(self) -> bool
     {
         &&& self.wf()
@@ -587,6 +586,31 @@ impl<T> LinkedBranch<T> {
             self.child_at_idx(r+1).query_internal(key, ranking)
         } else {
             arbitrary() // should not be defined!
+        }
+    }
+
+    pub open spec fn contains_internal(self, ranking: Ranking, key: Key) -> bool
+        recommends
+            self.wf(),
+            self.valid_ranking(ranking),
+        decreases self.get_rank(ranking)
+        when {
+            self.root() is Index ==> {
+                let r = self.root().route(key);
+                &&& self.wf()
+                &&& self.valid_ranking(ranking)
+                &&& self.root().valid_child_index(r + 1)
+            }
+        }
+    {
+        let node = self.root();
+        let r = node.route(key);
+        if node is Leaf {
+            r >= 0 && node->keys[r] == key
+        } else if node is Index {
+            self.child_at_idx(r+1).contains_internal(ranking, key)
+        } else {
+            false
         }
     }
 

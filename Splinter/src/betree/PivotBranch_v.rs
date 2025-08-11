@@ -237,6 +237,23 @@ impl Node {
         }
     }
 
+    pub open spec/*XXX (checked)*/ fn contains(self, key: Key) -> bool
+        recommends self.wf()
+        decreases self
+        when self is Index ==> 0 <= self.route(key)+1 < self->children.len()
+    {
+        // Need ensures from route to restore checked
+        let r = self.route(key);
+        match self {
+            Node::Leaf{keys, msgs} => {
+                if r >= 0 && keys[r] == key { true } else { false }
+            },
+            Node::Index{pivots, children} => {
+                children[r+1].contains(key)
+            }
+        }
+    }
+
     /// Returns a new Leaf node where the key-message pair {key, msg} is inserted into
     /// self.
     pub open spec/* XXX (checked)*/ fn insert_leaf(self, key: Key, msg: Message) -> Node

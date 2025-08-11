@@ -37,15 +37,15 @@ verus! {
 pub const Internal:LinkedBetreeVars::Label = LinkedBetreeVars::Label::Internal{};
 
 impl BufferDisk<BranchNode> {
-    pub open spec fn to_branch_disk(self) -> LinkedBranch_v::DiskView::<Summary>
-    {
-       LinkedBranch_v::DiskView{entries: self.entries}
-    }
+    // pub open spec fn to_branch_disk(self) -> LinkedBranch_v::DiskView::<Summary>
+    // {
+    //    LinkedBranch_v::DiskView{entries: self.entries}
+    // }
 
-    pub open spec fn get_branch(self, root: Address) -> LinkedBranch<Summary>
-    {
-        LinkedBranch{root, disk_view: self.to_branch_disk()}
-    }
+    // pub open spec fn get_branch(self, root: Address) -> LinkedBranch<Summary>
+    // {
+    //     LinkedBranch{root, disk_view: self.to_branch_disk()}
+    // }
 
     pub open spec fn sealed_branch_roots(self, branch_roots: Set<Address>) -> bool
     {
@@ -416,6 +416,8 @@ state_machine!{ AllocationBranchBetree {
         require Self::valid_compactor_input(path, start, end, pre.compactors[input_idx]);
         require 0 <= branch_idx < pre.wip_branches.len();
         require pre.wip_branches[branch_idx].branch_sealed();
+
+        // branch sealed
 
         let new_branch = pre.wip_branches[branch_idx].branch.unwrap();
         let linked_new_addrs = TwoAddrs{addr1: new_node_addr, addr2: new_branch.root};
@@ -1483,7 +1485,7 @@ proof fn branch_summary_insert_ensures(branch_summary: Map<AU, Set<AU>>, branch:
 }
 
 impl LinkedBranch<Summary> {
-    proof fn valid_subdisk_preserves_valid_sealed_branch(self, other: Self, domain_bound: Set<AU>)
+    pub proof fn valid_subdisk_preserves_valid_sealed_branch(self, other: Self, domain_bound: Set<AU>)
     requires 
         other.disk_view.wf(),
         self.root == other.root,

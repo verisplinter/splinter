@@ -26,8 +26,7 @@ pub type JournalDiskView = LinkedJournal_v::DiskView;
 pub struct ImageState {
     pub freshest_rec: Pointer,  // from LinkedJournal::TruncatedJournal
     pub boundary_lsn: LSN,  // from LinkedJournal::TruncatedJournal
-    pub first:
-        AU,  // from AJ::State, needed to faciliate AU recovery scan (page skip)
+    pub first: AU,  // from AJ::State, needed to faciliate AU recovery scan (page skip)
     // in memory Option<lsn_au_index>
 }
 
