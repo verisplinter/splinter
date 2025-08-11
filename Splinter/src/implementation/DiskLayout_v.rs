@@ -13,6 +13,7 @@ use crate::implementation::VecMap_v::*;
 use crate::implementation::SuperblockTypes_v::*;
 use crate::marshalling::ISuperblockFormat_v::*;
 use crate::marshalling::Marshalling_v::*;
+use crate::marshalling::Slice_v::*;
 
 verus! {
 
@@ -49,11 +50,23 @@ pub struct DiskLayout {
     pub fmt: ISuperblockFormat,
 }
 
+#[verifier::external_body]
+pub fn empty_vec_u8_with_size(s: usize) -> (out: Vec<u8>)
+ensures out.len() == s
+{
+    vec![0; s]
+}
+
 impl DiskLayout {
-    pub closed spec fn spec_marshall(self, superblock: Superblock) -> (out: RawPage)
+    pub closed spec fn wf(self) -> bool
     {
-        arbitrary()
+        self.fmt.valid()
     }
+
+//     pub closed spec fn spec_marshall(self, superblock: Superblock) -> (out: RawPage)
+//     {
+//         choose |out| #![auto] self.fmt.parse(out)@ == superblock
+//     }
 
     pub closed spec fn spec_parse(self, raw_page: RawPage) -> (out: Superblock)
     {
@@ -61,32 +74,49 @@ impl DiskLayout {
     }
 
     pub fn marshall(&self, sb: &ISuperblock) -> (out: IPageData)
+    requires
+        self.wf(),
     ensures
-        out@ == self.spec_marshall(sb@)
+        sb@ == self.spec_parse(out@)
     {
-        assume( false ); // TODO
-        unreached()
+        assert( self.fmt.valid() );
+        assume( self.fmt.marshallable(sb.deepv()) );
+        let mut space = empty_vec_u8_with_size(self.fmt.exec_size(sb));
+        assert( self.fmt.spec_size(sb.deepv()) == space.len() );
+        assert(0 as int + self.fmt.spec_size(sb.deepv()) as int <= space.len() );
+        let end = self.fmt.exec_marshall(sb, &mut space, 0);
+        assert( end == self.fmt.spec_size(sb.deepv()) );
+        assert( space@ == space@.subrange(0, end as int) );
+        assert( self.fmt.parse(space@) == sb.deepv() );
+        assert( sb@ == self.spec_parse(space@) );
+        space
     }
 
     pub fn parse(&self, raw_page: &IPageData) -> (out: ISuperblock)
+    requires
+        self.wf(),
     ensures
         out@ == self.spec_parse(raw_page@)
     {
-        assume( false ); // TODO
-        unreached()
+        assert( self.fmt.parsable(raw_page@) );  // TODO carry in from disk invariant
+        let all_slice = Slice::all(raw_page);
+        assert( all_slice@.i(raw_page@) == raw_page@ );
+        let out = self.fmt.exec_parse(&all_slice, raw_page);
+        assert( out@ == self.spec_parse(raw_page@) );
+        out
     }
 
     pub open spec fn mkfs(&self, disk: Disk) -> bool
     {
         &&& disk.contains_key(spec_superblock_addr())
-        &&& disk[spec_superblock_addr()] ==
-            self.spec_marshall(Superblock{
+        &&& Superblock{
                 store: PersistentState{ appv: my_init() },
                 version_index: 0,
-            })
+            } == self.spec_parse(disk[spec_superblock_addr()])
     }
 
-    pub fn new() -> Self
+    pub fn new() -> (out: Self)
+    ensures out.wf()
     {
         DiskLayout{
             fmt: ISuperblockFormat::new()
@@ -96,7 +126,7 @@ impl DiskLayout {
     pub open spec fn spec_new() -> Self
     {
         DiskLayout{
-            fmt: ISuperblockFormat::new()
+            fmt: ISuperblockFormat::spec_new()
         }
     }
 }

@@ -54,6 +54,11 @@ impl Wrappable for KeyValueFormatWrappable {
         pair
     }
 
+    open spec fn spec_new_format_pair() -> (Self::AF, Self::BF)
+    {
+        (IntFormat::spec_new(), IntFormat::spec_new())
+    }
+
     exec fn new_format_pair() -> (Self::AF, Self::BF)
     {
         (IntFormat::new(), IntFormat::new())

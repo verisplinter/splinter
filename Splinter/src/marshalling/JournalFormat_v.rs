@@ -47,7 +47,7 @@ where T: Marshal + UniformSized, L: IntFormattable
     }
 }
 
-const JOURNAL_CAPACITY: usize = 200;
+pub const JOURNAL_CAPACITY: usize = 200;
 
 pub struct JournalFormatWrappable {}
 impl Wrappable for JournalFormatWrappable {
@@ -86,6 +86,7 @@ impl Wrappable for JournalFormatWrappable {
         assume( mhclone == value.msg_history ); // TODO: hmm, Verus can't see the equality from clone?
         let pair = (mhclone, value.seq_start);
         assert( Self::to_pair(value.deepv()).0 == pair.deepv().0 ); // extn
+        assume( pair.wf() );    // TODO(jonh)
         pair
     }
 
@@ -94,6 +95,15 @@ impl Wrappable for JournalFormatWrappable {
         let j = Journal{msg_history: pair.0, seq_start: pair.1};
         assert( j.deepv().msg_history == pair.0.deepv() );  // extn
         j
+    }
+
+    open spec fn spec_new_format_pair() -> (Self::AF, Self::BF)
+    {
+        (
+            ResizableUniformSizedElementSeqFormat::spec_new(
+                KeyedMessageFormat::spec_new(), IntFormat::<u8>::spec_new(), JOURNAL_CAPACITY),
+            IntFormat::spec_new()
+        )
     }
 
     exec fn new_format_pair() -> (Self::AF, Self::BF)

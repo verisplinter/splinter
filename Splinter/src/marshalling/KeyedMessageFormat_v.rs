@@ -60,6 +60,11 @@ impl Wrappable for KeyedMessageFormatWrappable {
         KeyedMessage{ key: Key(pair.0), message: Message::Define{value: Value(pair.1)}}
     }
 
+    open spec fn spec_new_format_pair() -> (Self::AF, Self::BF)
+    {
+        (IntFormat::spec_new(), IntFormat::spec_new())
+    }
+
     exec fn new_format_pair() -> (Self::AF, Self::BF)
     {
         (IntFormat::new(), IntFormat::new())

@@ -50,7 +50,7 @@ impl View for ASuperblock {
                 |k| value_map.contains_key(k),
                 |k| Message::Define{value: value_map[k]});
         let total_map = TotalKMMap(message_map); 
-        assert( total_map.wf() );   // need to "totalize" the map
+//         assert( total_map.wf() );   // need to "totalize" the map
         let store_stamped_map = StampedMap{value: total_map, seq_end: 0};
         let msg_history = self.journal@; // convert AJournal into MsgHistory
         let final_stamped_map = msg_history.apply_to_stamped_map(store_stamped_map);

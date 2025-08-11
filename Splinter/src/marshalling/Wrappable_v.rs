@@ -3,7 +3,7 @@
 use vstd::{prelude::*};
 use crate::marshalling::Slice_v::Slice;
 use crate::marshalling::Marshalling_v::{Marshal, Deepview};
-use crate::marshalling::UniformPairFormat_v::UniformPairFormat;
+use crate::marshalling::UniformPairFormat_v::*;
 use crate::marshalling::UniformSized_v::UniformSized;
 use crate::marshalling::WF_v::WF;
 
@@ -51,8 +51,20 @@ pub trait Wrappable {
         value.wf(),
     ;
 
-    exec fn new_format_pair() -> (Self::AF, Self::BF)
+    spec fn spec_new_format_pair() -> (Self::AF, Self::BF)
     ;
+
+    exec fn new_format_pair() -> (out: (Self::AF, Self::BF))
+        ensures
+            out.0.valid(),
+            out.1.valid(),
+            out.0.us_valid(),
+            out.1.us_valid(),
+            out.0.uniform_size() as int + out.1.uniform_size() as int <= usize::MAX,
+            uniform_size_matches_spec_size(out.0),
+            uniform_size_matches_spec_size(out.1),
+    ;
+
 }
 
 // Marshalling formatter for any type that is a pretty wrapper for a pair of other Marshable things.
@@ -90,10 +102,20 @@ impl<W: Wrappable> UniformSized for WrappableFormat<W> {
 }
 
 impl<W: Wrappable> WrappableFormat<W> {
-    pub fn new() -> Self
+    pub open spec fn spec_new() -> Self
+    {
+        let (a_fmt, b_fmt) = W::spec_new_format_pair();
+        WrappableFormat{ pair_fmt: UniformPairFormat::spec_new(a_fmt, b_fmt), }
+    }
+
+    pub fn new() -> (out: Self)
+    ensures out.valid()
     {
         let (a_fmt, b_fmt) = W::new_format_pair();
-        WrappableFormat{ pair_fmt: UniformPairFormat::new(a_fmt, b_fmt), }
+        assert( a_fmt.valid() );
+        let pair_fmt = UniformPairFormat::new(a_fmt, b_fmt);
+        assert( pair_fmt.valid() );
+        WrappableFormat{ pair_fmt }
     }
 }
 

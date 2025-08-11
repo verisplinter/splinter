@@ -14,10 +14,21 @@ pub struct UniformPairFormat<AF: Marshal + UniformSized, BF: Marshal + UniformSi
 }
 
 impl<AF: Marshal + UniformSized, BF: Marshal + UniformSized> UniformPairFormat<AF, BF> {
-    pub fn new(a_fmt: AF, b_fmt: BF) -> Self
+    pub open spec fn spec_new(a_fmt: AF, b_fmt: BF) -> Self
     {
         UniformPairFormat{ a_fmt, b_fmt }
     }
+
+    pub fn new(a_fmt: AF, b_fmt: BF) -> (out: Self)
+    ensures out == (Self{ a_fmt, b_fmt })
+    {
+        UniformPairFormat{ a_fmt, b_fmt }
+    }
+}
+
+pub open spec fn uniform_size_matches_spec_size<F: Marshal + UniformSized>(fmt: F) -> bool
+{
+    forall |val: F::DV| fmt.spec_size(val) == fmt.uniform_size()
 }
 
 impl<AF: Marshal + UniformSized, BF: Marshal + UniformSized> Marshal for UniformPairFormat<AF, BF>
@@ -34,8 +45,8 @@ impl<AF: Marshal + UniformSized, BF: Marshal + UniformSized> Marshal for Uniform
         &&& self.a_fmt.uniform_size() as int + self.b_fmt.uniform_size() as int <= usize::MAX
 
         // Uniform size matches spec_size
-        &&& forall |a_val: AF::DV| self.a_fmt.spec_size(a_val) == self.a_fmt.uniform_size()
-        &&& forall |b_val: BF::DV| self.b_fmt.spec_size(b_val) == self.b_fmt.uniform_size()
+        &&& uniform_size_matches_spec_size(self.a_fmt)
+        &&& uniform_size_matches_spec_size(self.b_fmt)
 
         // deepv of pair is pair of deepvs
         &&& forall |pair: (AF::U, BF::U)| #![auto] ( pair.0.deepv() == pair.deepv().0 && pair.1.deepv() == pair.deepv().1 )

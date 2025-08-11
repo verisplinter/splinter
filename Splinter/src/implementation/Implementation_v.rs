@@ -538,8 +538,8 @@ impl Implementation {
 
         let req_id_perm = Tracked( api.send_disk_request_predict_id() );
         let ghost disk_req_id = req_id_perm@;
-        let ghost disk_event = DiskEvent::ExecuteSyncBegin{req_id: disk_req_id};
         let disk_request = IDiskRequest::WriteReq{to: superblock_addr(), data: raw_page};
+        let ghost disk_event = DiskEvent::ExecuteSyncBegin{req: disk_request@, req_id: disk_req_id};
         let ghost disk_reqs = multiset_map_singleton(disk_req_id, disk_request@);
         let ghost info = ProgramDiskInfo{ reqs: disk_reqs, resps: Multiset::empty() };
 
@@ -577,7 +577,7 @@ impl Implementation {
 //             }
             assert( disk_reqs == Multiset::singleton(
                 (disk_event.arrow_ExecuteSyncBegin_req_id(),
-                DiskRequest::WriteReq{to: spec_superblock_addr(), data: DiskLayout::spec_new().spec_marshall(pre_sb)}))
+                disk_request@))
             );   // extn
             assert( AtomicState::disk_transition(self.state(), post_state.state, disk_event, info.reqs, info.resps) );  // witness
         }
@@ -902,7 +902,8 @@ impl Implementation {
             let tracked mut model = KVStoreTokenized::model::arbitrary();
             proof { tracked_swap(self.model.borrow_mut(), &mut model); }
 
-            let superblock = DiskLayout::new().parse(&raw_page);
+            let layout = DiskLayout::new();
+            let superblock = layout.parse(&raw_page);
             assert( superblock.store.wf() ) by {
                 assume( false ); // LEFT OFF extract model invariant
             }
@@ -1014,7 +1015,7 @@ impl KVStoreTrait for Implementation {
         loop
         invariant
             self.inv_api(&api),
-            self.model@.value().state.recovery_state is RecoveryComplete,
+            self.model@.value().state.recovery_state is RecoveryComplete,   // TODO(jonh): delete; redundant with inv
         {
             let poll_result = api.poll();
             if poll_result.disk_response_ready {

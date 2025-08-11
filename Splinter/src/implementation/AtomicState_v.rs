@@ -44,7 +44,7 @@ pub struct AtomicState {
 pub enum DiskEvent{
     InitiateRecovery{req_id: ID},
     CompleteRecovery{req_id: ID, raw_page: RawPage},
-    ExecuteSyncBegin{req_id: ID},
+    ExecuteSyncBegin{req_id: ID, req: DiskRequest},
     ExecuteSyncEnd{},
 }
 
@@ -155,17 +155,19 @@ impl AtomicState {
         }
     }
 
-    pub open spec fn execute_sync_begin(pre: Self, post: Self, reqs: Multiset<(ID, DiskRequest)>, resps: Multiset<(ID, DiskResponse)>, req_id: ID) -> bool
+    pub open spec fn execute_sync_begin(pre: Self, post: Self, req_id: ID, req: DiskRequest, reqs: Multiset<(ID, DiskRequest)>, resps: Multiset<(ID, DiskResponse)>) -> bool
     {
         let sb = pre.ephemeral_sb();
-        let inflight_info = InflightInfo{version: sb.version_index, req_id: req_id};
+        let inflight_info = InflightInfo{version: sb.version_index, req_id};
 
         &&& pre.client_ready()
         &&& pre.in_flight is None
 
-        &&& reqs == Multiset::singleton((
-            req_id, DiskRequest::WriteReq{to: spec_superblock_addr(), data: DiskLayout::spec_new().spec_marshall(sb)}
-        ))
+        &&& req is WriteReq
+        &&& req->to == spec_superblock_addr()
+        &&& DiskLayout::spec_new().spec_parse(req->data) == sb
+        &&& reqs == Multiset::singleton((req_id, req))
+
         &&& resps.is_empty()
 
         &&& post == Self{ in_flight: Some(inflight_info), .. pre }
@@ -195,7 +197,7 @@ impl AtomicState {
         match disk_event {
             DiskEvent::InitiateRecovery{req_id} => Self::initiate_recovery(pre, post, reqs, resps, req_id),
             DiskEvent::CompleteRecovery{req_id, raw_page} => Self::complete_recovery(pre, post, reqs, resps, req_id, raw_page),
-            DiskEvent::ExecuteSyncBegin{req_id} => Self::execute_sync_begin(pre, post, reqs, resps, req_id),
+            DiskEvent::ExecuteSyncBegin{req_id, req} => Self::execute_sync_begin(pre, post, req_id, req, reqs, resps),
             DiskEvent::ExecuteSyncEnd{} => Self::execute_sync_end(pre, post, reqs, resps),
         }
     }

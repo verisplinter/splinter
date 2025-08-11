@@ -410,6 +410,12 @@ pub struct IntFormat<T: IntFormattable> {
 impl<T: IntFormattable> IntFormat<T>
 {
     #[verifier(external_body)]
+    pub closed spec fn spec_new() -> (s: Self)
+    {
+        Self{ _p: Default::default() }
+    }
+
+    #[verifier(external_body)]
     pub fn new() -> (s: Self)
         ensures s.valid()
     {

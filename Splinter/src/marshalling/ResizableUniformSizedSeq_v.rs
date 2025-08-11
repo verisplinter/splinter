@@ -35,6 +35,12 @@ pub struct ResizableUniformSizedElementSeqFormat
 impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
     ResizableUniformSizedElementSeqFormat<EltFormat, LenType>
 {
+    pub open spec fn spec_new(eltf: EltFormat, lenf: IntFormat<LenType>, total_size: usize) -> (s: Self)
+    {
+        let max_length = (total_size - lenf.uniform_size()) as usize / eltf.uniform_size();
+        Self{ eltf, lenf, total_size, max_length }
+    }
+
     pub fn new(eltf: EltFormat, lenf: IntFormat<LenType>, total_size: usize) -> (s: Self)
     requires
         eltf.us_valid(),

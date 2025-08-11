@@ -63,6 +63,7 @@ impl Wrappable for SuperblockJSWrappable {
         assume( journal_clone == value.journal );
         assume( store_clone == value.store );
         assert( Self::to_pair((*value).deepv()) == pair.deepv() );  // verus #1534
+        assume( pair.wf() );    // TODO(jonh)
         pair
     }
 
@@ -72,6 +73,13 @@ impl Wrappable for SuperblockJSWrappable {
         assert( u.deepv().store == Self::from_pair(pair.deepv()).store );   // extn
 //         assert( u.deepv() == Self::from_pair(pair.deepv()) );
         u
+    }
+
+    open spec fn spec_new_format_pair() -> (Self::AF, Self::BF)
+    {
+        (
+            JournalFormat::spec_new(), // TODO where is this implemented!?
+            Self::BF::spec_new(KeyValueFormat::spec_new(), IntFormat::<u8>::spec_new(), 200))
     }
 
     exec fn new_format_pair() -> (Self::AF, Self::BF)

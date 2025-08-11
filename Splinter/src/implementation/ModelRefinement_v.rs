@@ -21,12 +21,6 @@ pub open spec fn multiset_to_set<V>(m: Multiset<V>) -> Set<V> {
     Set::new(|v| m.contains(v))
 }
 
-broadcast proof fn parse_marshall(sb: Superblock)
-    ensures sb == #[trigger] DiskLayout::spec_new().spec_parse(DiskLayout::spec_new().spec_marshall(sb))
-{
-    assume(false);
-}
-
 impl SystemModel::State<ConcreteProgramModel>  {
     pub open spec fn inv(self) -> bool
     {
@@ -54,10 +48,10 @@ impl SystemModel::State<ConcreteProgramModel>  {
             &&& in_flight is Some ==> {
                 let id = in_flight.unwrap().req_id;
                 &&& (self.disk.requests.contains_key(id) || self.disk.responses.contains_key(id))
-                &&& self.disk.requests.contains_key(id) ==> 
-                    self.disk.requests[id] == DiskRequest::WriteReq{
-                        to: spec_superblock_addr(), 
-                        data: DiskLayout::spec_new().spec_marshall(self.program.state.in_flight_sb())
+                &&& self.disk.requests.contains_key(id) ==>  {
+                    &&& self.disk.requests[id] is WriteReq
+                    &&& self.disk.requests[id]->to == spec_superblock_addr()
+                    &&& DiskLayout::spec_new().spec_parse(self.disk.requests[id]->data) == self.program.state.in_flight_sb()
                     }
                 &&& self.disk.responses.contains_key(id) ==> 
                     self.disk.responses[id] == DiskResponse::WriteResp{}
@@ -125,7 +119,7 @@ impl SystemModel::State<ConcreteProgramModel>  {
             &&& self.disk.responses[id] is ReadResp /* && valid_checksum(self.disk.responses[id]->data)*/ ==>
                 self.disk.responses[id]->data == self.disk.content[self.addr_for_id(id)]
             &&& self.disk.responses[id] is WriteResp ==>
-                DiskLayout::spec_new().spec_marshall(self.program.state.in_flight_sb()) == self.disk.content[self.addr_for_id(id)]
+                DiskLayout::spec_new().spec_parse(self.disk.content[self.addr_for_id(id)]) == self.program.state.in_flight_sb()
         }
     }
 
@@ -297,7 +291,6 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
 
     proof fn init_refines(pre: SystemModel::State<ConcreteProgramModel>)
     {
-        broadcast use parse_marshall;
         assert( SystemModel::State::initialize(pre, pre.program, pre.disk) );
         assert( Self::i(pre).async_ephemeral == AsyncMap::State::init_ephemeral_state() );
         assert( Self::i(pre).sync_requests == Map::<SyncReqId,nat>::empty() );  // extn
@@ -317,7 +310,6 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
         reveal(MapSpec::State::next_by);
 
         // requires:
-        broadcast use parse_marshall;
         assert( SystemModel::State::next(pre, post, lbl) );
         assert( Self::inv(pre) );
 
@@ -483,11 +475,10 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                         assert(post.program.state.wf());
                         assert(post.sync_requests_inv());
                     },
-                    DiskEvent::ExecuteSyncBegin{req_id} => {    
-                        AtomicState::execute_sync_begin(pre.program.state, post.program.state, reqs, resps, req_id);
+                    DiskEvent::ExecuteSyncBegin{req_id, req} => {    
+                        AtomicState::execute_sync_begin(pre.program.state, post.program.state, req_id, req, reqs, resps);
                         let sb = pre.program.state.ephemeral_sb();
-                        let write_req = DiskRequest::WriteReq{to: spec_superblock_addr(), data: DiskLayout::spec_new().spec_marshall(sb)};
-                        multiset_map_membership(reqs, req_id, write_req);
+                        multiset_map_membership(reqs, req_id, req);
                     },
                     DiskEvent::ExecuteSyncEnd{} => {
                         AtomicState::execute_sync_end(pre.program.state, post.program.state, reqs, resps);
