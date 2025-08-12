@@ -56,6 +56,7 @@ pub trait Wrappable {
 
     exec fn new_format_pair() -> (out: (Self::AF, Self::BF))
         ensures
+            out == Self::spec_new_format_pair(),
             out.0.valid(),
             out.1.valid(),
             out.0.us_valid(),
@@ -109,12 +110,11 @@ impl<W: Wrappable> WrappableFormat<W> {
     }
 
     pub fn new() -> (out: Self)
-    ensures out.valid()
+    ensures out.valid(),
+        (out.pair_fmt.a_fmt, out.pair_fmt.b_fmt) == W::spec_new_format_pair(),
     {
         let (a_fmt, b_fmt) = W::new_format_pair();
-        assert( a_fmt.valid() );
         let pair_fmt = UniformPairFormat::new(a_fmt, b_fmt);
-        assert( pair_fmt.valid() );
         WrappableFormat{ pair_fmt }
     }
 }

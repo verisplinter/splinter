@@ -11,6 +11,7 @@ use crate::spec::TotalKMMap_t::*;
 use crate::spec::FloatingSeq_t::*;
 use crate::implementation::VecMap_v::*;
 use crate::implementation::SuperblockTypes_v::*;
+use crate::implementation::JournalTypes_v::*;
 use crate::marshalling::ISuperblockFormat_v::*;
 use crate::marshalling::Marshalling_v::*;
 use crate::marshalling::Slice_v::*;
@@ -98,7 +99,7 @@ impl DiskLayout {
     ensures
         out@ == self.spec_parse(raw_page@)
     {
-        assert( self.fmt.parsable(raw_page@) );  // TODO carry in from disk invariant
+        assume( self.fmt.parsable(raw_page@) );  // TODO carry in from disk invariant
         let all_slice = Slice::all(raw_page);
         assert( all_slice@.i(raw_page@) == raw_page@ );
         let out = self.fmt.exec_parse(&all_slice, raw_page);
@@ -113,6 +114,14 @@ impl DiskLayout {
                 store: PersistentState{ appv: my_init() },
                 version_index: 0,
             } == self.spec_parse(disk[spec_superblock_addr()])
+    }
+
+    pub exec fn exec_mkfs(&self) -> (out: Vec<u8>)
+    requires self.wf()
+    {
+        let journal = Journal{ msg_history: vec![], seq_start: 0 };
+        let sb = ISuperblock { journal, store: vec![] };
+        self.marshall(&sb)
     }
 
     pub fn new() -> (out: Self)

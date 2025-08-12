@@ -108,11 +108,11 @@ impl Wrappable for JournalFormatWrappable {
 
     exec fn new_format_pair() -> (Self::AF, Self::BF)
     {
-        (
-            ResizableUniformSizedElementSeqFormat::new(
-                KeyedMessageFormat::new(), IntFormat::<u8>::new(), JOURNAL_CAPACITY),
-            IntFormat::new()
-        )
+        let a_fmt = ResizableUniformSizedElementSeqFormat::new(
+                KeyedMessageFormat::new(), IntFormat::<u8>::new(), JOURNAL_CAPACITY);
+        assert(a_fmt.us_valid());   // why does this need triggering?
+        let b_fmt = IntFormat::new();
+        (a_fmt, b_fmt)
     }
 }
 

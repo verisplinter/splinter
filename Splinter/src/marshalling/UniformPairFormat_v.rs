@@ -20,7 +20,7 @@ impl<AF: Marshal + UniformSized, BF: Marshal + UniformSized> UniformPairFormat<A
     }
 
     pub fn new(a_fmt: AF, b_fmt: BF) -> (out: Self)
-    ensures out == (Self{ a_fmt, b_fmt })
+    ensures out == (Self{ a_fmt, b_fmt }),
     {
         UniformPairFormat{ a_fmt, b_fmt }
     }

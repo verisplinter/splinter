@@ -9,6 +9,7 @@ use crate::marshalling::Wrappable_v::*;
 use crate::marshalling::WF_v::WF;
 use crate::marshalling::JournalFormat_v::*;
 use crate::marshalling::KeyValueFormat_v::*;
+use crate::marshalling::UniformSized_v::*;
 use crate::marshalling::ResizableUniformSizedSeq_v::ResizableUniformSizedElementSeqFormat;
 use crate::implementation::JournalTypes_v::*;
 use crate::implementation::SuperblockTypes_v::*;
@@ -84,9 +85,22 @@ impl Wrappable for SuperblockJSWrappable {
 
     exec fn new_format_pair() -> (Self::AF, Self::BF)
     {
-        (
-            JournalFormat::new(), // TODO where is this implemented!?
-            Self::BF::new(KeyValueFormat::new(), IntFormat::<u8>::new(), 200))
+        let a_fmt = JournalFormat::new(); // TODO where is this implemented!?
+        let b_fmt = Self::BF::new(KeyValueFormat::new(), IntFormat::<u8>::new(), 200);
+
+        assert( a_fmt.uniform_size() == a_fmt.pair_fmt.a_fmt.uniform_size() + a_fmt.pair_fmt.b_fmt.uniform_size() );
+
+        use crate::marshalling::KeyedMessageFormat_v::KeyedMessageFormat;
+        assert( a_fmt.pair_fmt.a_fmt ==
+            ResizableUniformSizedElementSeqFormat::spec_new(
+                KeyedMessageFormat::spec_new(), IntFormat::<u8>::spec_new(), JOURNAL_CAPACITY) );
+        
+        assert( a_fmt.pair_fmt.a_fmt.uniform_size() == JOURNAL_CAPACITY );
+        assert( a_fmt.pair_fmt.b_fmt.uniform_size() == 8 );
+        assert( a_fmt.uniform_size() == JOURNAL_CAPACITY + 8 );
+        assert( b_fmt.uniform_size() == 200 );
+        assert( a_fmt.uniform_size() as int + a_fmt.uniform_size() as int <= usize::MAX );
+        (a_fmt, b_fmt)
     }
 }
 
