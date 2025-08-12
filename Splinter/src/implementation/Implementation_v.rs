@@ -33,7 +33,7 @@ use crate::implementation::MultisetMapRelation_v::*;
 use crate::implementation::VecMap_v::*;
 use crate::implementation::JournalTypes_v::*;
 use crate::implementation::SuperblockTypes_v::*;
-use crate::marshalling::Marshalling_v::Deepview;
+// use crate::marshalling::Marshalling_v::Deepview;
 use crate::marshalling::WF_v::WF;
 
 
@@ -201,7 +201,6 @@ impl Implementation {
 
     // // maps each syncreq id with a version
     // pub sync_req_map: Map<SyncReqId, nat>,
-// }
         // self.model@.value().state
     }
 
@@ -964,6 +963,17 @@ impl Implementation {
             // self.version = superblock.version_index;
         }
     }
+
+    #[verifier::external_body]
+    fn exec_mkfs(api: &mut ClientAPI<ConcreteProgramModel>)
+    ensures api == old(api) // liiiies
+    {
+        let raw_page = DiskLayout::new().exec_mkfs();
+        let disk_request = IDiskRequest::WriteReq{to: superblock_addr(), data: raw_page};
+        let req_id_perm = Tracked( api.send_disk_request_predict_id() );
+        let tracked new_reply_token = arbitrary();
+        api.send_disk_request(disk_request, req_id_perm, Tracked(new_reply_token));
+    }
 }
 
 impl KVStoreTrait for Implementation {
@@ -1009,6 +1019,7 @@ impl KVStoreTrait for Implementation {
     #[verifier::exec_allows_no_decreases_clause]    // main loop doesn't terminate
     fn kvstore_main(&mut self, mut api: ClientAPI<Self::ProgramModel>)
     {
+        Self::exec_mkfs(&mut api);
         self.recover(&mut api);
 
         let debug_print = true;

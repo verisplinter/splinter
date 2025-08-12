@@ -13,7 +13,7 @@ use crate::marshalling::UniformSized_v::*;
 use crate::marshalling::ResizableUniformSizedSeq_v::ResizableUniformSizedElementSeqFormat;
 use crate::implementation::JournalTypes_v::*;
 use crate::implementation::SuperblockTypes_v::*;
-use crate::implementation::VecMap_v::*;
+// use crate::implementation::VecMap_v::*;
 
 verus! {
 
