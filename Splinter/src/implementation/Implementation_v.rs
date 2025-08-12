@@ -898,6 +898,8 @@ impl Implementation {
                 }
             };
 
+            Self::debug_print_raw_page(&raw_page);
+
             let tracked mut model = KVStoreTokenized::model::arbitrary();
             proof { tracked_swap(self.model.borrow_mut(), &mut model); }
 
@@ -973,6 +975,19 @@ impl Implementation {
         let req_id_perm = Tracked( api.send_disk_request_predict_id() );
         let tracked new_reply_token = arbitrary();
         api.send_disk_request(disk_request, req_id_perm, Tracked(new_reply_token));
+
+        // absorb the write response
+        let (disk_req_id, i_disk_response, disk_response_token) = api.receive_disk_response();
+        let raw_page = match i_disk_response {
+            IDiskResponse::ReadResp{data} => { panic!(); }
+            IDiskResponse::WriteResp{} => { println!("hooray"); }
+        };
+    }
+
+    #[verifier::external_body]
+    fn debug_print_raw_page(raw_page: &Vec<u8>)
+    {
+        println!("raw_page: {:?}", raw_page);
     }
 }
 
