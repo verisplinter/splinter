@@ -15,6 +15,8 @@ use crate::implementation::JournalTypes_v::*;
 use crate::marshalling::ISuperblockFormat_v::*;
 use crate::marshalling::Marshalling_v::*;
 use crate::marshalling::Slice_v::*;
+use crate::trusted::ClientAPI_t::BLOCK_SIZE;
+use crate::marshalling::UniformSized_v::UniformSized;
 
 verus! {
 
@@ -74,22 +76,31 @@ impl DiskLayout {
         self.fmt.parse(raw_page)@
     }
 
+    // LEFT OFF: I think we need a proof obligation that all formatters are prefix-stable:
+    // if you can parse a buffer, you can parse any extension of that buffer and get the
+    // same thing back.
+
     pub fn marshall(&self, sb: &ISuperblock) -> (out: IPageData)
     requires
         self.wf(),
     ensures
-        sb@ == self.spec_parse(out@)
+        sb@ == self.spec_parse(out@.subrange(0, self.fmt.uniform_size() as int))
     {
         assert( self.fmt.valid() );
         assume( self.fmt.marshallable(sb.deepv()) );
-        let mut space = empty_vec_u8_with_size(self.fmt.exec_size(sb));
-        assert( self.fmt.spec_size(sb.deepv()) == space.len() );
+//         let mut space = empty_vec_u8_with_size(self.fmt.exec_size(sb));
+
+        let ghost marshalled_size = self.fmt.uniform_size();
+//         proof { self.fmt.size_is() }
+        assert( marshalled_size == 408 );
+        assert( marshalled_size <= BLOCK_SIZE );
+        let mut space = empty_vec_u8_with_size(BLOCK_SIZE);
+//         assert( self.fmt.spec_size(sb.deepv()) == space.len() );
         assert(0 as int + self.fmt.spec_size(sb.deepv()) as int <= space.len() );
         let end = self.fmt.exec_marshall(sb, &mut space, 0);
         assert( end == self.fmt.spec_size(sb.deepv()) );
-        assert( space@ == space@.subrange(0, end as int) );
-        assert( self.fmt.parse(space@) == sb.deepv() );
-        assert( sb@ == self.spec_parse(space@) );
+//         assert( space@ == space@.subrange(0, end as int) );
+        assert( self.fmt.parse(space@.subrange(0, marshalled_size as int)) == sb.deepv() );
         space
     }
 

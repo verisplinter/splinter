@@ -124,7 +124,8 @@ impl<W: Wrappable> Marshal for WrappableFormat<W> {
     type U = W::U;
 
     open spec fn valid(&self) -> bool {
-        self.pair_fmt.valid()
+        &&& self.pair_fmt.valid()
+        &&& (self.pair_fmt.a_fmt, self.pair_fmt.b_fmt) == W::spec_new_format_pair()
     }
 
     open spec fn parsable(&self, data: Seq<u8>) -> bool

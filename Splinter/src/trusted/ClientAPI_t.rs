@@ -39,7 +39,7 @@ pub struct DiskWorker {
 
 impl DiskWorker {
     fn write_work(&self, block: u64, payload: Vec<u8>) {
-        match self.file.write_all_at(&payload, BLOCK_SIZE * block) {
+        match self.file.write_all_at(&payload, BLOCK_SIZE as u64 * block) {
             Err(why) => panic!("Write failed: {}", why),
             Ok(()) => (),
         };
@@ -47,7 +47,7 @@ impl DiskWorker {
 
     fn read_at(&self, block: u64) -> Vec<u8> {
         let mut rv = vec![0; BLOCK_SIZE as usize];
-        match self.file.read_exact_at(&mut rv, BLOCK_SIZE * block) {
+        match self.file.read_exact_at(&mut rv, BLOCK_SIZE as u64 * block) {
             Err(why) => panic!("Read failed: {}", why),
             Ok(()) => (),
         };
@@ -65,7 +65,9 @@ pub struct TheDisk {
     receiver: Receiver<ChannelResponse>,
 }
 
-pub const BLOCK_SIZE: u64 = 100;
+verus! {
+pub const BLOCK_SIZE: usize = 1000;
+}
 
 impl TheDisk {
     fn new() -> Self

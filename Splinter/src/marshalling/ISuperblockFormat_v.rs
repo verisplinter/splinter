@@ -3,7 +3,7 @@
 use vstd::{prelude::*};
 use crate::spec::KeyType_t::*;
 use crate::spec::Messages_t::*;
-use crate::marshalling::Marshalling_v::Deepview;
+use crate::marshalling::Marshalling_v::*;
 use crate::marshalling::IntegerMarshalling_v::IntFormat;
 use crate::marshalling::Wrappable_v::*;
 use crate::marshalling::WF_v::WF;
@@ -105,5 +105,17 @@ impl Wrappable for SuperblockJSWrappable {
 }
 
 pub type ISuperblockFormat = WrappableFormat<SuperblockJSWrappable>;
+
+// impl ISuperblockFormat {
+//     pub proof fn size_is(self)
+//         requires self.valid()
+//         ensures self.uniform_size() == 408
+//     {
+// //         assert( self.pair_fmt.a_fmt == JournalFormat::spec_new() );
+// //         assert( self.pair_fmt.a_fmt.uniform_size() == JOURNAL_CAPACITY + 8 );
+// //         assert( self.pair_fmt.b_fmt.uniform_size() == 200 );
+// //         assert( self.uniform_size() == self.pair_fmt.a_fmt.uniform_size() + self.pair_fmt.b_fmt.uniform_size() );
+//     }
+// }
 
 } //verus!

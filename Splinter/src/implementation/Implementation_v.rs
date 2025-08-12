@@ -971,6 +971,8 @@ impl Implementation {
     ensures api == old(api) // liiiies
     {
         let raw_page = DiskLayout::new().exec_mkfs();
+        Self::debug_print_raw_page(&raw_page);
+        println!("raw_page len {:?}", raw_page.len());
         let disk_request = IDiskRequest::WriteReq{to: superblock_addr(), data: raw_page};
         let req_id_perm = Tracked( api.send_disk_request_predict_id() );
         let tracked new_reply_token = arbitrary();
@@ -987,7 +989,7 @@ impl Implementation {
     #[verifier::external_body]
     fn debug_print_raw_page(raw_page: &Vec<u8>)
     {
-        println!("raw_page: {:?}", raw_page);
+        println!("raw_page: {:?} (len {:?})", raw_page, raw_page.len());
     }
 }
 
