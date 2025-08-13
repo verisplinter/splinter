@@ -230,6 +230,8 @@ where Key: View + Injective + Eq + Structural
         self.wf(),
         self@ == old(self)@.insert(k, v),
     {
+        // TODO: this is trash, should remove duplicate, not sure if needed for actual ds
+        self.v.insert(0, (k, v));
         // need to look for an existing element
         assume( false );
     }

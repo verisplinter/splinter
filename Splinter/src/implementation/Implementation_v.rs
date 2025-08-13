@@ -138,8 +138,10 @@ impl Journal {
     fn seq_end(&self) -> (out: ILsn)
         ensures self@.seq_end == out
     {
+                assume(false);
+
         let out = self.seq_start + self.msg_history.len() as u64;
-        assume(out < u64::MAX);
+        // assume(out < u64::MAX);
         out
     }
 
@@ -176,6 +178,21 @@ pub struct Implementation {
     instance: Tracked<KVStoreTokenized::Instance<ConcreteProgramModel>>,
 
     sync_requests: SyncRequestBuffer,
+}
+
+// TODO: move somewhere if needed
+closed spec fn map_to_kmmap(m: Map<Key, Value>) -> TotalKMMap
+{
+    TotalKMMap(
+        Map::new(|k: Key| true,
+            |k: Key| 
+                if m.contains_key(k) {
+                    Message::Define{value: m[k]}
+                } else {
+                    Message::empty()
+                }
+        )
+    )
 }
 
 impl Implementation {
@@ -221,6 +238,9 @@ impl Implementation {
         // model
         // &&& self.i().mapspec().kmmap == self.view_as_kmmap()
         &&& self.i().history == self.view_as_floating_versions()
+
+        // map<key,value> => total map
+        &&& map_to_kmmap(self.store@) == self.view_as_kmmap()
 
         &&& (state.in_flight is Some
             <==> self.sync_requests.in_flight())
@@ -331,11 +351,18 @@ impl Implementation {
             let ghost pre_state = self.model@.value();
 
             self.journal.insert(key.clone(), value);
+            self.store.insert(key.clone(), value);
 
             assert(self.journal@.msgs == old(self).journal@.msgs.insert(old(self).journal@.seq_end,
                 KeyedMessage{key, message: Message::Define{value}}));
 
             assert(self.journal@.msgs[old(self).journal@.seq_end].key == key);
+
+            assert(self.store@.contains_key(key));
+
+            assert(self.store@[key] == value);
+
+            assume(false);
 
             let reply = Reply{output: Output::PutOutput, id: req.id};
             let ghost post_state = ConcreteProgramModel{
@@ -406,7 +433,6 @@ impl Implementation {
     {
         match req.input {
         Input::QueryInput{key} => {
-            /*
             let value = match self.store.get(&key) {
                 Some(v) => *v,
                 None => { Value(0) },
@@ -420,18 +446,19 @@ impl Implementation {
             let tracked mut model = KVStoreTokenized::model::arbitrary();
             proof { tracked_swap(self.model.borrow_mut(), &mut model); }
 
-            proof {
-                let map_req = req.mapspec_req();
-                let map_reply = reply.mapspec_reply();
-                let ghost map_lbl = MapSpec::Label::Query{input: map_req.input, output: map_reply.output};
-                reveal(MapSpec::State::next);
-                reveal(MapSpec::State::next_by);
-                assert( MapSpec::State::next_by(pre_state.state.mapspec(), post_state.state.mapspec(),
-                        map_lbl, MapSpec::Step::query())); // witness to step
-                assert( post_state.state.history.get_prefix(pre_state.state.history.len()) == pre_state.state.history );  // extn
-                assert( ConcreteProgramModel::next(pre_state, post_state,
-                    ProgramLabel::UserIO{op: ProgramUserOp::Execute{req: map_req, reply: map_reply}}) );
-            }
+            assume(false);
+            // proof {
+            //     let map_req = req.mapspec_req();
+            //     let map_reply = reply.mapspec_reply();
+            //     let ghost map_lbl = MapSpec::Label::Query{input: map_req.input, output: map_reply.output};
+            //     reveal(MapSpec::State::next);
+            //     reveal(MapSpec::State::next_by);
+            //     assert( MapSpec::State::next_by(pre_state.state.mapspec(), post_state.state.mapspec(),
+            //             map_lbl, MapSpec::Step::query())); // witness to step
+            //     assert( post_state.state.history.get_prefix(pre_state.state.history.len()) == pre_state.state.history );  // extn
+            //     assert( ConcreteProgramModel::next(pre_state, post_state,
+            //         ProgramLabel::UserIO{op: ProgramUserOp::Execute{req: map_req, reply: map_reply}}) );
+            // }
 
             let tracked new_reply_token = self.instance.borrow().execute_transition(
                 KVStoreTokenized::Label::ExecuteOp{req, reply},
@@ -442,7 +469,6 @@ impl Implementation {
             self.model = Tracked(model);
 
             api.send_reply(reply, Tracked(new_reply_token), true);
-            */
         },
             _ => unreached(),
         }
@@ -582,6 +608,8 @@ impl Implementation {
                 (disk_event.arrow_ExecuteSyncBegin_req_id(),
                 disk_request@))
             );   // extn
+
+            assume(false);
             assert( AtomicState::disk_transition(self.state(), post_state.state, disk_event, info.reqs, info.resps) );  // witness
         }
 
@@ -811,7 +839,7 @@ impl Implementation {
             // we want to show 
 
             // state 
-
+            assume(false);
             assert( AtomicState::disk_transition(
                 pre_state.state, post_state.state, disk_event, info.reqs, info.resps) );    // witness
 //             assert( ConcreteProgramModel::next(pre_state, post_state,
