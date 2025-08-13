@@ -132,6 +132,17 @@ pub struct PollResult {
     pub disk_response_ready: bool,
 }
 
+pub struct UserRequestRecord<ProgramModel: ProgramModelTrait> {
+    pub request: Request,
+    pub token: Tracked<KVStoreTokenized::requests<ProgramModel>>,
+}
+
+pub struct DiskResponseRecord<ProgramModel: ProgramModelTrait> {
+    pub id: ID,
+    pub disk_response: IDiskResponse,
+    pub token: Tracked<KVStoreTokenized::disk_responses_multiset<ProgramModel>>,
+}
+
 impl<ProgramModel: ProgramModelTrait> ClientAPI<ProgramModel>{
     #[verifier::external_body]
     pub fn new(instance: Ghost<InstanceId>) -> (out: Self)
@@ -163,22 +174,30 @@ impl<ProgramModel: ProgramModelTrait> ClientAPI<ProgramModel>{
     // we want (out.1, out.2) == self.instance_id().request(KVStoreTokenized::Label::RequestOp{req})
     // but this ensure is rolling out the result of the ensure
     #[verifier::external_body]
-    pub fn receive_request(&mut self, print: bool) -> (out: (Request, Tracked<KVStoreTokenized::requests<ProgramModel>>))
+    pub fn receive_request(&mut self, print: bool) -> (out: Option<UserRequestRecord<ProgramModel>>)
     ensures
         self.instance_id() == old(self).instance_id(),
-        out.1@.instance_id() == self.instance_id(),
-        out.1@.element() == out.0,
+        match out {
+            None => true,
+            Some(rec) => {
+                &&& rec.token@.instance_id() == self.instance_id()
+                &&& rec.token@.element() == rec.request
+            }
+        }
     {
         let id = self.id.fetch_add(1, Ordering::SeqCst);
-        let input = if 0 < self.inputs.len() { self.inputs.remove(0) }
-            else { Input::NoopInput{} };    // TODO: block instead
+        let input = if 0 < self.inputs.len() {
+            self.inputs.remove(0)
+        } else {
+            return None;
+        };
 
         let request = Request {input, id};
         if print {
             println!("request input {:?}", request);
         }
 
-        (request, Tracked::assume_new())
+        Some(UserRequestRecord{request, token: Tracked::assume_new()})
     }
 
     #[verifier::external_body]
@@ -258,40 +277,62 @@ impl<ProgramModel: ProgramModelTrait> ClientAPI<ProgramModel>{
     // response is waiting?
     #[verifier::external_body]
     pub fn receive_disk_response(&mut self)
-        -> (out: (ID, IDiskResponse, Tracked<KVStoreTokenized::disk_responses_multiset<ProgramModel>>))
+        -> (out: Option<DiskResponseRecord<ProgramModel>>)
     ensures
         self.instance_id() == old(self).instance_id(),
-        out.2@.instance_id() == self.instance_id(),
-        out.2@.multiset() == multiset_map_singleton(out.0, out.1@),
-    {
-        let mut t = 0;
-        loop {
-            if t > 10 {
-                println!("...io...");
-                t = 0;
+        match out {
+            None => true,
+            Some(rec) => {
+                &&& rec.token@.instance_id() == self.instance_id()
+                &&& rec.token@.multiset() == multiset_map_singleton(rec.id, rec.disk_response@)
             }
-            match self.the_disk.receiver.try_recv() {
-                Err(TryRecvError::Empty) => { thread::sleep(time::Duration::from_millis(100)); t += 1 },
-                Err(TryRecvError::Disconnected) => { panic!("disconnected!?") },
-                Ok(ChannelResponse{id, value}) => {
-                    return (id, value, Tracked::assume_new())
-                }
+        }
+    {
+        match self.the_disk.receiver.try_recv() {
+            Err(TryRecvError::Empty) => { None },
+            Err(TryRecvError::Disconnected) => { panic!("disconnected!?") },
+            Ok(ChannelResponse{id, value}) => {
+                return Some(DiskResponseRecord{id, disk_response: value, token: Tracked::assume_new()})
             }
         }
     }
 
-    // TODO(jonh): none of this stuff is gonna work until we, you know, implement it.
-    // Returns a hint as to which receive_* method may be called without blocking. If neither
-    // is ready, this method blocks until one is.
-    #[verifier::external_body]
-    pub fn poll(&self) -> (out: PollResult)
+    // Convenience wrapper for the very special case of recover, which is the only place we expect
+    // to make blocking calls.
+    #[verifier::exec_allows_no_decreases_clause]    // main loop doesn't terminate
+    pub fn blocking_receive_disk_response(&mut self)
+        -> (rec: DiskResponseRecord<ProgramModel>)
+    ensures
+        self.instance_id() == old(self).instance_id(),
+        rec.token@.instance_id() == self.instance_id(),
+        rec.token@.multiset() == multiset_map_singleton(rec.id, rec.disk_response@),
     {
-        PollResult{
-            user_input_ready: true,
-            disk_response_ready: true,
+        let mut t = 0;
+        loop
+            invariant self.instance_id() == old(self).instance_id(),
+        {
+            if t > 10 {
+                self.log("...io...");
+                t = 0;
+            }
+            match self.receive_disk_response() {
+                None => { self.sleep_a_little(); t += 1 },
+                Some(rec) => { return rec; }
+            }
         }
     }
-        
+
+    #[verifier::external_body]
+    pub fn sleep_a_little(&self) {
+        thread::sleep(time::Duration::from_millis(100));
+    }
+
+    #[verifier::external_body]
+    pub fn log(&self, s: &str) {
+        println!("{}", s)
+    }
+
+
     // Seems like it should always be okay to brew up a token containing an empty multiset (an empty shard).
     // Yeah, MultisetToken::empty() does that.
 //     #[verifier::external_body]
@@ -303,5 +344,6 @@ impl<ProgramModel: ProgramModelTrait> ClientAPI<ProgramModel>{
 //     }
 
 }
+
 } 
 

@@ -889,7 +889,9 @@ impl Implementation {
         { // braces to scope variables used in this step
             let ghost pre_state = self.model@.value();
             let disk_resp = IDiskRequest::ReadReq{from: superblock_addr() };
-            let (disk_req_id, i_disk_response, disk_response_token) = api.receive_disk_response();
+            let DiskResponseRecord{id: disk_req_id, disk_response: i_disk_response, token: disk_response_token}
+                = api.blocking_receive_disk_response();
+
             let raw_page = match i_disk_response {
                 IDiskResponse::ReadResp{data} => data,
                 IDiskResponse::WriteResp{} => {
@@ -972,17 +974,15 @@ impl Implementation {
     {
         let raw_page = DiskLayout::new().exec_mkfs();
         Self::debug_print_raw_page(&raw_page);
-        println!("raw_page len {:?}", raw_page.len());
         let disk_request = IDiskRequest::WriteReq{to: superblock_addr(), data: raw_page};
         let req_id_perm = Tracked( api.send_disk_request_predict_id() );
         let tracked new_reply_token = arbitrary();
         api.send_disk_request(disk_request, req_id_perm, Tracked(new_reply_token));
 
         // absorb the write response
-        let (disk_req_id, i_disk_response, disk_response_token) = api.receive_disk_response();
-        let raw_page = match i_disk_response {
-            IDiskResponse::ReadResp{data} => { panic!(); }
-            IDiskResponse::WriteResp{} => { println!("hooray"); }
+        match api.blocking_receive_disk_response() {
+            DiskResponseRecord{disk_response: IDiskResponse::WriteResp{..}, ..} => { println!("hooray") }
+            _ => { panic!(); }
         };
     }
 
@@ -1045,14 +1045,21 @@ impl KVStoreTrait for Implementation {
             self.inv_api(&api),
             self.model@.value().state.recovery_state is RecoveryComplete,   // TODO(jonh): delete; redundant with inv
         {
-            let poll_result = api.poll();
-            if poll_result.disk_response_ready {
-                let (id, disk_response, response_shard) = api.receive_disk_response();
-                self.handle_disk_response(id, disk_response, response_shard, &mut api);
+            let mut progress = false;
+            api.log("main loop");
+
+            match api.receive_disk_response() {
+                None => {},
+                // TODO pass the req through
+                Some(rec) => { progress = true; self.handle_disk_response(rec.id, rec.disk_response, rec.token, &mut api); }
             }
-            if poll_result.user_input_ready {
-                let (req, req_shard) = api.receive_request(debug_print);
-                self.handle_user_request(req, req_shard, &mut api);
+            match api.receive_request(debug_print) {
+                None => {},
+                Some(rec) => { progress = true; self.handle_user_request(rec.request, rec.token, &mut api); }
+            }
+            if !progress {
+                api.log("sleeping");
+                api.sleep_a_little();
             }
         }
     }
