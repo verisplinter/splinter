@@ -121,7 +121,8 @@ pub type DiskReqShard = KVStoreTokenized::disk_requests_multiset<ConcreteProgram
 impl Journal {
     pub open spec fn inv(self) -> bool
     {
-        self@.wf()
+        &&& self@.wf()
+        &&& self.seq_start + self.msg_history.len() <= u64::MAX
     }
 
     pub closed spec fn to_stamped_map(&self) -> StampedMap
@@ -136,12 +137,11 @@ impl Journal {
     }
 
     fn seq_end(&self) -> (out: ILsn)
+        requires self.inv()
         ensures self@.seq_end == out
     {
-                assume(false);
-
         let out = self.seq_start + self.msg_history.len() as u64;
-        // assume(out < u64::MAX);
+        assert( self@.seq_end == out );
         out
     }
 
@@ -154,8 +154,18 @@ impl Journal {
             self@.msgs =~= old(self)@.msgs.insert(old(self)@.seq_end,
                 KeyedMessage{key, message: Message::Define{value}}),
     {
-        self.msg_history.push(KeyedMessage{key, message: Message::Define{value}})
+        if self.seq_end() == u64::MAX {
+            convert_overflow_into_liveness_failure();
+        }
+        self.msg_history.push(KeyedMessage{key, message: Message::Define{value}});
     }
+}
+
+#[verifier::exec_allows_no_decreases_clause]
+pub fn convert_overflow_into_liveness_failure()
+    ensures false
+{
+    loop {}
 }
 
 // This struct supplies KVStoreTrait, which has both the entry point to the implementation and the
@@ -254,6 +264,7 @@ impl Implementation {
         &&& self.version() == state.history.len()-1
         &&& self.persistent_version@ <= self.version()
         &&& self.journal.seq_start == 0
+        &&& self.journal.inv()
 
         &&& (state.in_flight is Some ==> {
             // &&& self.persistent_version <= state.in_flight.get_Some_0().version
@@ -548,6 +559,7 @@ impl Implementation {
     {
         proof { self.system_inv_implies_atomic_state_wf(); }
 
+        assert( self.journal.inv() );
         let version = self.journal.seq_end();
         // let ghost version_index = self.version();
 
@@ -806,7 +818,7 @@ impl Implementation {
         let ghost pre_state = self.model@.value();
         assert(pre_state.state.history == self.view_as_floating_versions());
 
-        let ghost new_persistent_version = pre_state.state.in_flight.get_Some_0().version;
+        let ghost new_persistent_version = pre_state.state.in_flight->0.version;
         self.persistent_version = Ghost(new_persistent_version);
 
         let ghost post_state = ConcreteProgramModel{ state: AtomicState{
