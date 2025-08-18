@@ -207,11 +207,13 @@ closed spec fn map_to_kmmap(m: Map<Key, Value>) -> TotalKMMap
 
 impl Implementation {
     closed spec(checked) fn view_as_kmmap(self) -> TotalKMMap
+    recommends self.inv_tmp_journal_never_truncated(), self.journal@.can_discard_to(self.persistent_version@)
     {
         self.view_as_floating_versions().last().appv.kmmap
     }
 
     closed spec(checked) fn view_as_floating_versions(self) -> FloatingSeq<PersistentState>
+    recommends self.inv_tmp_journal_never_truncated(), self.journal@.can_discard_to(self.persistent_version@)
     {
         AbstractCrashAwareSystemRefinement_v::floating_versions(
             StampedMap_v::empty(), self.journal@, self.persistent_version@)
@@ -236,6 +238,10 @@ impl Implementation {
     closed spec fn version(&self) -> nat
     {
         (self.journal.seq_start + self.journal.msg_history.len()) as nat
+    }
+
+    closed spec fn inv_tmp_journal_never_truncated(self) -> bool {
+        &&& self.journal.seq_start == 0
     }
 
     closed spec fn inv(self) -> bool {
@@ -263,8 +269,8 @@ impl Implementation {
         &&& self.persistent_version@ == state.history.first_active_index()
         &&& self.version() == state.history.len()-1
         &&& self.persistent_version@ <= self.version()
-        &&& self.journal.seq_start == 0
         &&& self.journal.inv()
+        &&& self.inv_tmp_journal_never_truncated()
 
         &&& (state.in_flight is Some ==> {
             // &&& self.persistent_version <= state.in_flight.get_Some_0().version
