@@ -373,8 +373,6 @@ impl Implementation {
 
             assert(self.store@[key] == value);
 
-            assume(false);
-
             let reply = Reply{output: Output::PutOutput, id: req.id};
             let ghost post_state = ConcreteProgramModel{
                 state: AtomicState{
@@ -413,7 +411,7 @@ impl Implementation {
             );
             self.model = Tracked(model);
 
-            assert( self.i().mapspec().kmmap == self.view_as_kmmap() ); // trigger extn equality
+            assert( map_to_kmmap(self.store@) == self.view_as_kmmap() ); // trigger extn equality
             api.send_reply(reply, Tracked(new_reply_token), true);
         },
             _ => unreached(),
