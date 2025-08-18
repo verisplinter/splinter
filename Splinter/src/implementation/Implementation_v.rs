@@ -461,19 +461,18 @@ impl Implementation {
             let tracked mut model = KVStoreTokenized::model::arbitrary();
             proof { tracked_swap(self.model.borrow_mut(), &mut model); }
 
-            assume(false);
-            // proof {
-            //     let map_req = req.mapspec_req();
-            //     let map_reply = reply.mapspec_reply();
-            //     let ghost map_lbl = MapSpec::Label::Query{input: map_req.input, output: map_reply.output};
-            //     reveal(MapSpec::State::next);
-            //     reveal(MapSpec::State::next_by);
-            //     assert( MapSpec::State::next_by(pre_state.state.mapspec(), post_state.state.mapspec(),
-            //             map_lbl, MapSpec::Step::query())); // witness to step
-            //     assert( post_state.state.history.get_prefix(pre_state.state.history.len()) == pre_state.state.history );  // extn
-            //     assert( ConcreteProgramModel::next(pre_state, post_state,
-            //         ProgramLabel::UserIO{op: ProgramUserOp::Execute{req: map_req, reply: map_reply}}) );
-            // }
+            proof {
+                let map_req = req.mapspec_req();
+                let map_reply = reply.mapspec_reply();
+                let ghost map_lbl = MapSpec::Label::Query{input: map_req.input, output: map_reply.output};
+                reveal(MapSpec::State::next);
+                reveal(MapSpec::State::next_by);
+                assert( MapSpec::State::next_by(pre_state.state.mapspec(), post_state.state.mapspec(),
+                        map_lbl, MapSpec::Step::query())); // witness to step
+                assert( post_state.state.history.get_prefix(pre_state.state.history.len()) == pre_state.state.history );  // extn
+//                 assert( ConcreteProgramModel::next(pre_state, post_state,
+//                     ProgramLabel::UserIO{op: ProgramUserOp::Execute{req: map_req, reply: map_reply}}) );
+            }
 
             let tracked new_reply_token = self.instance.borrow().execute_transition(
                 KVStoreTokenized::Label::ExecuteOp{req, reply},
