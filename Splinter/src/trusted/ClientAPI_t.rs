@@ -22,6 +22,7 @@ use std::os::unix::fs::FileExt;
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::sync::mpsc::*;
+use std::collections::HashSet;
 use std::{thread, time};
 
 // The message that rides on the channel from worker threads back to the ClientAPI main thread.
@@ -123,6 +124,7 @@ verus! {
 pub struct ClientAPI<ProgramModel: ProgramModelTrait>{
     pub id: AtomicU64,
     pub inputs: Vec<Input>,
+    pub outstanding_request_ids: HashSet<ID>,
     pub the_disk: TheDisk,
     pub _p: std::marker::PhantomData<(ProgramModel,)>,
 }
@@ -145,22 +147,35 @@ pub struct DiskResponseRecord<ProgramModel: ProgramModelTrait> {
 
 impl<ProgramModel: ProgramModelTrait> ClientAPI<ProgramModel>{
     #[verifier::external_body]
-    pub fn new(instance: Ghost<InstanceId>) -> (out: Self)
+    pub fn new(instance: Ghost<InstanceId>, script_phase: Option<usize>) -> (out: Self)
         ensures out.instance_id() == instance
     {
-        let inputs = vec![
-            Input::NoopInput{},
-            Input::PutInput{key: Key(1), value: Value(11)},
-            Input::QueryInput{key: Key(1)},
-            Input::QueryInput{key: Key(0)},
-            Input::QueryInput{key: Key(3)},
-            Input::PutInput{key: Key(3), value: Value(33)},
-            Input::QueryInput{key: Key(3)},
-        ];
+        let inputs =
+            match script_phase {
+                None => vec![],
+                Some(0) => vec![
+                    Input::NoopInput{},
+                    Input::PutInput{key: Key(1), value: Value(11)},
+                    Input::QueryInput{key: Key(1)},
+                    Input::QueryInput{key: Key(0)},
+                    Input::QueryInput{key: Key(3)},
+                    Input::PutInput{key: Key(3), value: Value(33)},
+                    Input::QueryInput{key: Key(3)},
+                    Input::SyncInput{},
+                    Input::QueryInput{key: Key(3)},
+                    Input::SimulateCrash,
+                ],
+                Some(1) => vec![
+                    Input::QueryInput{key: Key(1)},
+                    Input::QueryInput{key: Key(3)},
+                ],
+                _ => panic!(),
+            };
 
         Self{
             id: AtomicU64::new(0),
             inputs,
+            outstanding_request_ids: HashSet::new(),
             the_disk: TheDisk::new(),
             _p: std::marker::PhantomData
         }
@@ -185,6 +200,17 @@ impl<ProgramModel: ProgramModelTrait> ClientAPI<ProgramModel>{
             }
         }
     {
+        // Special case the control flow for the case where the next step is SimulateCrash;
+        // this is the only case where we delay replying.
+        if 0 < self.inputs.len() && match self.inputs[0] { Input::SimulateCrash => true, _ => false } {
+            if !self.outstanding_request_ids.is_empty() {
+                // Don't want to crash (in this scripty mode) until all the outstanding requests have been retired
+                println!("SimulateCrash waiting for {:?}", self.outstanding_request_ids);
+                return None;
+            }
+            // okay, now we can fall through, consume the input token, and tell the impl to exit its main loop.
+        }
+
         let id = self.id.fetch_add(1, Ordering::SeqCst);
         let input = if 0 < self.inputs.len() {
             self.inputs.remove(0)
@@ -196,6 +222,7 @@ impl<ProgramModel: ProgramModelTrait> ClientAPI<ProgramModel>{
         if print {
             println!("request input {:?}", request);
         }
+        self.outstanding_request_ids.insert(id);
 
         Some(UserRequestRecord{request, token: Tracked::assume_new()})
     }
@@ -217,11 +244,13 @@ impl<ProgramModel: ProgramModelTrait> ClientAPI<ProgramModel>{
 
     // NOTE: corresponds to a tokenized state machine reply step, consumes the reply shard
     #[verifier::external_body]
-    pub fn send_reply(&self, reply: Reply,  reply_shard: Tracked<KVStoreTokenized::replies<ProgramModel>>, print: bool)
+    pub fn send_reply(&mut self, reply: Reply,  reply_shard: Tracked<KVStoreTokenized::replies<ProgramModel>>, print: bool)
         requires 
-            reply_shard@.instance_id() == self.instance_id(),
+            reply_shard@.instance_id() == old(self).instance_id(),
             reply_shard@.element() == reply
+        ensures self.instance_id() == old(self).instance_id(),
     {
+        self.outstanding_request_ids.remove(&reply.id);
         if print {
             println!("   reply {:?}", reply);
             println!("");

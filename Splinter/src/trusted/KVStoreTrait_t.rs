@@ -33,6 +33,13 @@ pub trait KVStoreTrait : Sized{
             old(self).wf_init(),
             old(self).instance_id() == api.instance_id()
     ;
+
+    // TODO: someday add an ensures that the disk model "after this runs" abstracts to an initial state.
+    fn kvstore_mkfs(&mut self, api: ClientAPI<Self::ProgramModel>)
+        requires 
+            old(self).wf_init(),
+            old(self).instance_id() == api.instance_id()
+    ;
 }
 
 // Auditor promise

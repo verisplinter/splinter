@@ -17,6 +17,7 @@ pub enum Input {
     PutInput { key: Key, value: Value },
     SyncInput,
     NoopInput,
+    SimulateCrash,
 }
 
 /// An Output represents the result from taking an Input action (and contains

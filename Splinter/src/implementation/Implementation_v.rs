@@ -770,6 +770,7 @@ impl Implementation {
             Input::PutInput{..} => self.handle_put(req, req_shard, api),
             Input::QueryInput{..} => self.handle_query(req, req_shard, api),
             Input::SyncInput{} => self.handle_sync_request(req, req_shard, api),
+            Input::SimulateCrash{} => (),
         }
     }
 
@@ -1112,10 +1113,14 @@ impl KVStoreTrait for Implementation {
         selff
     }
 
+    fn kvstore_mkfs(&mut self, mut api: ClientAPI<Self::ProgramModel>)
+    {
+        Self::exec_mkfs(&mut api);
+    }
+
     #[verifier::exec_allows_no_decreases_clause]    // main loop doesn't terminate
     fn kvstore_main(&mut self, mut api: ClientAPI<Self::ProgramModel>)
     {
-        Self::exec_mkfs(&mut api);
         self.recover(&mut api);
 
         let debug_print = true;
@@ -1134,7 +1139,19 @@ impl KVStoreTrait for Implementation {
             }
             match api.receive_request(debug_print) {
                 None => {},
-                Some(rec) => { progress = true; self.handle_user_request(rec.request, rec.token, &mut api); }
+                Some(rec) => {
+                    progress = true;
+                    match rec.request.input {
+                        Input::SimulateCrash => {
+                        // End this main thread so the trusted main can restart us "after the
+                        // crash" to exercise the recovery path.
+                        return;
+                        }
+                        _ => {
+                            self.handle_user_request(rec.request, rec.token, &mut api);
+                        }
+                    }
+                }
             }
             if !progress {
                 api.log("sleeping");
