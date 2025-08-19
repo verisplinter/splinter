@@ -120,7 +120,7 @@ impl DiskLayout {
     }
 
     pub fn new() -> (out: Self)
-    ensures out.wf()
+    ensures out.wf(), out == Self::spec_new()
     {
         DiskLayout{
             fmt: ISuperblockFormat::new()

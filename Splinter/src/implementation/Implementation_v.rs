@@ -33,8 +33,9 @@ use crate::implementation::MultisetMapRelation_v::*;
 use crate::implementation::VecMap_v::*;
 use crate::implementation::JournalTypes_v::*;
 use crate::implementation::SuperblockTypes_v::*;
-// use crate::marshalling::Marshalling_v::Deepview;
+use crate::marshalling::Marshalling_v::Deepview;
 use crate::marshalling::WF_v::WF;
+use crate::marshalling::UniformSized_v::UniformSized;
 
 
 #[allow(unused_imports)]
@@ -575,13 +576,20 @@ impl Implementation {
         std::mem::swap(&mut self.store, &mut tmp_store);
         // Why are we doing all this nonsense? Can't we just borrow this stuff immutably?
 
+        let pre_cloned_store = tmp_store.borrow_vec();
+        let cloned_store = pre_cloned_store.clone();
+        // TODO(jonh): clone isn't providing required equivalence promise. Ask verus team for intended design
+        assume( pre_cloned_store@ == cloned_store@ );
+
         let sb = ISuperblock{
             journal: tmp_journal,
-            store: tmp_store.borrow_vec().clone(),  // TODO(jonh): clone perf mess
+            store: cloned_store,  // TODO(jonh): clone perf mess
         };
 
         // Yoink the store out of self just long enough to marshall it as part of the superblock.
         let raw_page = DiskLayout::new().marshall(&sb);
+        assert( DiskLayout::spec_new().spec_parse(raw_page@.subrange(0, DiskLayout::spec_new().fmt.uniform_size() as int)) == sb@ );
+
         let ISuperblock{journal: mut tmp_journal, /*store: mut tmp_store,*/ ..} = sb;
         std::mem::swap(&mut self.journal, &mut tmp_journal);    // un-yoink
         std::mem::swap(&mut self.store, &mut tmp_store);    // un-yoink
@@ -624,7 +632,16 @@ impl Implementation {
                 disk_request@))
             );   // extn
 
-            assume(false);
+            // Problem 1
+            let asb: ASuperblock = sb.deepv();
+            assert( asb@ == sb@ );
+//             assert( sb@.store == VecMap::seq_to_map(pre_cloned_store@) );
+            assume( sb@.store == pre_sb.store );    // clone problem?
+            assume( sb@.version_index == pre_sb.version_index );    // clone problem?
+            assert( sb@ == pre_sb );
+            // Problem 2: need to pad superblock so we don't have to talk about its truncation?
+            assume( DiskLayout::spec_new().spec_parse(disk_request@->data) == sb@ );
+            assert( DiskLayout::spec_new().spec_parse(disk_request@->data) == pre_sb );
             assert( AtomicState::disk_transition(self.state(), post_state.state, disk_event, info.reqs, info.resps) );  // witness
         }
 

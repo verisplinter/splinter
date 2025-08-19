@@ -216,7 +216,7 @@ where Key: View + Injective + Eq + Structural
     pub fn borrow_vec<'a>(&'a self) -> (out: &'a Vec<(Key, Value)>)
         ensures
             Self::map_to_seq(self@) == (*out)@,
-            (*out)@ == Self::map_to_seq(self@),
+//             (*out)@ == Self::map_to_seq(self@),
     {
         assume(false);  // left off here
 //         proof { Self::seq_to_map_inverse(self.v@); }
