@@ -1,14 +1,10 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
 use vstd::{prelude::*};
-// use vstd::hash_map::*;
 use crate::spec::MapSpec_t::*;
-// use crate::spec::AsyncDisk_t::*;
-// use crate::spec::ImplDisk_t::*;
+use crate::spec::FloatingSeq_t::*;
 use crate::spec::KeyType_t::*;
 use crate::spec::Messages_t::*;
-// use crate::spec::TotalKMMap_t::*;
-// use crate::spec::FloatingSeq_t::*;
 use crate::implementation::VecMap_v::*;
 use crate::marshalling::Marshalling_v::Deepview;
 use crate::implementation::JournalTypes_v::*;
@@ -20,7 +16,7 @@ verus! {
 // Stores structured for easy marshalling. :v/
 type ARawStore = Seq<(Key, Value)>;
 
-type RawStore = Vec<(Key, Value)>;
+pub type RawStore = Vec<(Key, Value)>;
 // 
 // pub fn vec_map_to_raw_store(vec_map: &VecMap<Key, Value>) -> RawStore {
 //     vec_map.v
@@ -32,6 +28,19 @@ pub struct Superblock {
     pub version_index: nat,
 }
 
+pub open spec(checked) fn singleton_floating_seq(at_index: nat, kmmap: TotalKMMap) -> FloatingSeq<Version>
+{
+    FloatingSeq::new(at_index, at_index+1,
+          |i| Version{ appv: MapSpec::State{ kmmap } } )
+}
+
+impl Superblock {
+    pub open spec fn initial_history(self) -> FloatingSeq<PersistentState>
+    {
+        singleton_floating_seq(self.version_index, self.store.appv.kmmap)
+    }
+}
+
 pub struct ASuperblock {
     pub journal: AJournal,
     pub store: ARawStore,
@@ -40,19 +49,32 @@ pub struct ASuperblock {
 //     pub version_index: u64,
 }
 
+impl ASuperblock {
+    pub open spec fn map_to_kmmap(m: Map<Key, Value>) -> TotalKMMap
+    {
+        TotalKMMap(
+            Map::new(|k: Key| true,
+                |k: Key| 
+                    if m.contains_key(k) {
+                        Message::Define{value: m[k]}
+                    } else {
+                        Message::empty()
+                    }
+            )
+        )
+    }
+}
+
 impl View for ASuperblock {
     type V = Superblock;
 
     open spec fn view(&self) -> Self::V
     {
         let value_map = VecMap::seq_to_map(self.store);
-        let message_map = Map::new(
-                |k| value_map.contains_key(k),
-                |k| Message::Define{value: value_map[k]});
-        let total_map = TotalKMMap(message_map); 
+        let total_map = Self::map_to_kmmap(value_map);
 //         assert( total_map.wf() );   // need to "totalize" the map
-        let store_stamped_map = StampedMap{value: total_map, seq_end: 0};
         let msg_history = self.journal@; // convert AJournal into MsgHistory
+        let store_stamped_map = StampedMap{value: total_map, seq_end: msg_history.seq_start};
         let final_stamped_map = msg_history.apply_to_stamped_map(store_stamped_map);
         let persistent_state = PersistentState{ appv: MapSpec::State{ kmmap: final_stamped_map.value}};
         Superblock{

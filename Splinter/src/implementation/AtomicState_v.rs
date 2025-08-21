@@ -141,7 +141,7 @@ impl AtomicState {
             let superblock = DiskLayout::spec_new().spec_parse(raw_page);
             post == Self{
                 recovery_state: RecoveryState::RecoveryComplete,
-                history: singleton_floating_seq(superblock.version_index, superblock.store.appv.kmmap),
+                history: superblock.initial_history(),
                 in_flight: None,
                 sync_req_map: Map::empty(),
             }

@@ -27,12 +27,6 @@ ensures out@ == spec_superblock_addr()
     IAddress{au: 0, page: 0}
 }
 
-pub open spec(checked) fn singleton_floating_seq(at_index: nat, kmmap: TotalKMMap) -> FloatingSeq<Version>
-{
-    FloatingSeq::new(at_index, at_index+1,
-          |i| Version{ appv: MapSpec::State{ kmmap } } )
-}
-
 pub struct DiskLayout {
     pub fmt: ISuperblockFormat,
 }
@@ -62,7 +56,8 @@ impl DiskLayout {
 
     // LEFT OFF: I think we need a proof obligation that all formatters are prefix-stable:
     // if you can parse a buffer, you can parse any extension of that buffer and get the
-    // same thing back.
+    // same thing back. NOPE, this eliminates vector formatters that unmarshall whatever you
+    // give them. We should pad the block to block size.
 
     pub fn marshall(&self, sb: &ISuperblock) -> (out: IPageData)
     requires

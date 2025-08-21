@@ -168,21 +168,6 @@ pub struct Implementation {
     sync_requests: SyncRequestBuffer,
 }
 
-// TODO: move somewhere if needed
-closed spec fn map_to_kmmap(m: Map<Key, Value>) -> TotalKMMap
-{
-    TotalKMMap(
-        Map::new(|k: Key| true,
-            |k: Key| 
-                if m.contains_key(k) {
-                    Message::Define{value: m[k]}
-                } else {
-                    Message::empty()
-                }
-        )
-    )
-}
-
 impl Implementation {
     closed spec(checked) fn view_as_kmmap(self) -> TotalKMMap
     {
@@ -371,7 +356,7 @@ impl Implementation {
             );
             self.model = Tracked(model);
 
-            assert( map_to_kmmap(self.store@) == self.view_as_kmmap() ); // trigger extn equality
+            assert( ASuperblock::map_to_kmmap(self.store@) == self.view_as_kmmap() ); // trigger extn equality
             api.send_reply(reply, Tracked(new_reply_token), true);
         },
             _ => unreached(),
@@ -936,65 +921,66 @@ impl Implementation {
             proof { tracked_swap(self.model.borrow_mut(), &mut model); }
 
             let layout = DiskLayout::new();
-            let superblock = layout.parse(&raw_page);
-            // assert( superblock.store.wf() ) by {
-            //     assume( false ); // LEFT OFF extract model invariant
-            // }
+            let superblock: ISuperblock = layout.parse(&raw_page);
+            assert( superblock.store.wf() ) by {
+                assume( false ); // LEFT OFF extract model invariant
+            }
+            assert( VecMap::unique_keys(superblock.store@) ) by {
+                assume( false ); // LEFT OFF extract model invariant
+            }
             // Record our learnings in the physical model.
-            // self.store = superblock.store;
+            self.store = VecMap::from_vec(superblock.store);
 
-            assume(false);
+            // Compute the next ghost model and transition our token
+//             let ghost superblock_version = superblock.journal@.seq_end;
+//             let ghost store_map = VecMap::seq_to_map(superblock.store@);
+//             let ghost post_superblock = superblock@;
+            let ghost post_state = ConcreteProgramModel{
+                state: AtomicState {
+                    recovery_state: RecoveryState::RecoveryComplete,
+                    history: superblock@.initial_history(),
+                    in_flight: None,
+                    persistent_version: superblock@.version_index,
+                    sync_req_map: Map::empty(),
+                }
+            };
 
-            // // Compute the next ghost model and transition our token
-            // let ghost post_state = ConcreteProgramModel{state: AtomicState {
-            //     recovery_state: RecoveryState::RecoveryComplete,
-            //     history: view_store_as_singleton_floating_seq(superblock.version_index as nat, superblock.store),
-            //     in_flight: None,
-            //     persistent_version: superblock.version_index as nat,
-            //     sync_req_map: Map::empty(),
-            // }};
+            let ghost disk_response_tuples = multiset_map_singleton(disk_req_id, i_disk_response@);
+            // proof { multiset_map_singleton_ensures(disk_req_id, i_disk_response@); }
 
-            // let ghost disk_response_tuples = multiset_map_singleton(disk_req_id, i_disk_response@);
-            // // proof { multiset_map_singleton_ensures(disk_req_id, i_disk_response@); }
+            let ghost disk_event = DiskEvent::CompleteRecovery{req_id: disk_req_id, raw_page: raw_page@};
+            // let ghost disk_lbl = AsyncDisk::Label::DiskOps{
+            //             requests: Map::empty(),
+            //             responses: Map::empty().insert(disk_req_id, i_disk_response@),
+            //         };
+            let ghost disk_request_tuples = Multiset::empty();
 
-            // let ghost disk_event = DiskEvent::CompleteRecovery{req_id: disk_req_id, raw_page: raw_page};
-            // // let ghost disk_lbl = AsyncDisk::Label::DiskOps{
-            // //             requests: Map::empty(),
-            // //             responses: Map::empty().insert(disk_req_id, i_disk_response@),
-            // //         };
-            // let ghost disk_request_tuples = Multiset::empty();
+            // extn; why isn't it triggered by requires in macro output?
+            // (Might also make a nice broadcast lemma, if that was usable.)
+            // assert( disk_lbl->requests == multiset_to_map(disk_request_tuples) );   // extn
+            proof {
+                // Something about constructing a ProgramDiskInfo object is necessary to trigger a
+                // pattern match in the disk_transitions preconditions below.
+                let info = ProgramDiskInfo{
+                    reqs: disk_request_tuples,
+                    resps: disk_response_tuples,
+                };
+                assert(AtomicState::disk_transition(
+                    pre_state.state, post_state.state, disk_event, info.reqs, info.resps)); // step witness
+            }
 
-            // // extn; why isn't it triggered by requires in macro output?
-            // // (Might also make a nice broadcast lemma, if that was usable.)
-            // // assert( disk_lbl->requests == multiset_to_map(disk_request_tuples) );   // extn
-            // proof {
-            //     let info = ProgramDiskInfo{
-            //         reqs: disk_request_tuples,
-            //         resps: disk_response_tuples,
-            //     };
-            //     // TODO: this is crazy, I have to use info.reqs otherwise it doesn't match for
-            //     // valid disk transition
-            //     multiset_map_singleton_ensures(disk_req_id, i_disk_response@);
-            //     assert(disk_response_token@.multiset().contains((disk_req_id, i_disk_response@))); //trigger
-            //                                                                                //
-            //     // assert( valid_checksum(raw_page) );
-            //     assert(AtomicState::disk_transition(
-            //         pre_state.state, post_state.state, disk_event, info.reqs, info.resps));
-            //     assert(ConcreteProgramModel::valid_disk_transition(pre_state, post_state, info));
-            //     assert(ConcreteProgramModel::next(pre_state, post_state, ProgramLabel::DiskIO{info}));
-            // }
-
-            // let tracked disk_request_tokens = self.instance.borrow().disk_transitions(
-            //     KVStoreTokenized::Label::DiskOp{
-            //         disk_request_tuples,
-            //         disk_response_tuples,
-            //     },
-            //     post_state,
-            //     &mut model,
-            //     disk_response_token.get(),
-            // );
-            // self.model = Tracked(model);
-            // self.version = superblock.version_index;
+            let tracked disk_request_tokens = self.instance.borrow().disk_transitions(
+                KVStoreTokenized::Label::DiskOp{
+                    disk_request_tuples,
+                    disk_response_tuples,
+                },
+                post_state,
+                &mut model,
+                disk_response_token.get(),
+            );
+            self.model = Tracked(model);
+//             self.version = superblock.version_index;// dead code, delete
+            assume( self.inv() );
         }
     }
 
