@@ -90,6 +90,7 @@ impl View for ASuperblock {
     }
 }
 
+#[derive(Debug)]
 pub struct ISuperblock {
     pub journal: Journal,
     pub store: RawStore,

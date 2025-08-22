@@ -963,13 +963,14 @@ impl Implementation {
                 }
             };
 
-            Self::debug_print_raw_page(&raw_page);
+//             Self::debug_print_raw_page(&raw_page);
 
             let tracked mut model = KVStoreTokenized::model::arbitrary();
             proof { tracked_swap(self.model.borrow_mut(), &mut model); }
 
             let layout = DiskLayout::new();
             let superblock: ISuperblock = layout.parse(&raw_page);
+            Self::debug_print(&superblock);
             assert( superblock.store.wf() ) by {
                 assume( false ); // LEFT OFF extract model invariant
             }
@@ -1052,7 +1053,7 @@ impl Implementation {
     ensures api == old(api) // liiiies
     {
         let raw_page = DiskLayout::new().exec_mkfs();
-        Self::debug_print_raw_page(&raw_page);
+//         Self::debug_print_raw_page(&raw_page);
         let disk_request = IDiskRequest::WriteReq{to: superblock_addr(), data: raw_page};
         let req_id_perm = Tracked( api.send_disk_request_predict_id() );
         let tracked new_reply_token = arbitrary();
@@ -1069,6 +1070,12 @@ impl Implementation {
     fn debug_print_raw_page(raw_page: &Vec<u8>)
     {
         println!("raw_page: {:?} (len {:?})", raw_page, raw_page.len());
+    }
+
+    #[verifier::external_body]
+    fn debug_print<T: std::fmt::Debug>(t: &T)
+    {
+        println!("{:?}", t);
     }
 }
 

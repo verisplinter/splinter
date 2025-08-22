@@ -50,6 +50,7 @@ impl Deepview<AJournal> for Journal {
     }
 }
 
+#[derive(Debug)]
 pub struct Journal {
     pub msg_history: Vec<KeyedMessage>,
     pub seq_start: ILsn,
