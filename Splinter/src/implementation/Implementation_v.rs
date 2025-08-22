@@ -150,14 +150,24 @@ pub fn convert_overflow_into_liveness_failure()
     loop {}
 }
 
+pub struct Inflight {
+    truncate: ILsn,
+    store: VecMap<Key, Value>,
+}
+
 // This struct supplies KVStoreTrait, which has both the entry point to the implementation and the
 // proof hooks to satisfy the refinement obligation trait.
 pub struct Implementation {
     store: VecMap<Key, Value>,
 
+    // starts at persistent_store.version, ends matching store
     journal: Journal,
 
-    inflight_truncate: Option<ILsn>,
+    inflight: Option<Inflight>,
+
+    // remember the actual persistent version on disk and
+    // its journal info, so we can interpret to the floating versions.
+    persistent_store: VecMap<Key, Value>,
 
     // token for the program model variable
     model: Tracked<ModelShard>,
@@ -169,10 +179,24 @@ pub struct Implementation {
 }
 
 impl Implementation {
+    //     TODO delete, replace with journal.seq_start
+//     closed spec(checked) fn persistent_version(self) -> nat
+//     {
+//         self.persistent_store@.seq_end
+//     }
+
     closed spec(checked) fn view_as_kmmap(self) -> TotalKMMap
     {
         map_to_kmmap(self.store@)
     }
+
+    // TODO delete this is nonsense now we have a real store
+//     broadcast proof fn view_as_kmmap_ensures(self)
+//         requires self.persistent_version() <= self.version(), self.journal.seq_start == 0
+//         ensures #[trigger] self.view_as_kmmap() =~= MsgHistory::map_plus_history(StampedMap_v::empty(), self.journal@).value
+//     { 
+//         assert(self.journal@.discard_recent((self.journal@.seq_end) as nat) =~= self.journal@);
+//     }
 
     pub closed spec fn i(self) -> AtomicState {
         self.state()
@@ -197,6 +221,7 @@ impl Implementation {
         &&& self.journal.inv()
         &&& self.model@.instance_id() == self.instance@.id()
         &&& state.recovery_state is RecoveryComplete
+
 
         // physical state consistent with model
         &&& state.mapspec().kmmap == self.view_as_kmmap()
@@ -562,9 +587,6 @@ impl Implementation {
             let pre_sb = self.state().ephemeral_sb();
             // assert(pre_sb.store == self.journal@);
             assert(pre_sb.version_index as nat == self.version()) by {
-
-                assume(false);
-                // self.view_as_kmmap_ensures();
                 self.journal@.apply_to_stamped_map_length_lemma(StampedMap_v::empty());
             }
             assert( disk_reqs == Multiset::singleton(
@@ -782,6 +804,8 @@ impl Implementation {
 
         let ghost new_persistent_version = pre_state.state.in_flight->0.version;
 
+        self.persistent_store = pre_state.state.history[pre_state.state.in_flight->0.version as int].appv.kmmap;
+
         // TODO: handle truncation
         let ghost post_state = ConcreteProgramModel{ state: AtomicState{
             in_flight: None,
@@ -980,7 +1004,8 @@ impl Implementation {
             );
             self.model = Tracked(model);
 //             self.version = superblock.version_index;// dead code, delete
-            assume( self.inv() );
+            assert( self.i().history == self.view_as_floating_versions() );
+            assert( self.inv() );
         }
     }
 

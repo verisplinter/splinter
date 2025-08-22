@@ -34,6 +34,20 @@ impl TotalKMMap {
         self.0[idx]
     }
 
+    pub open spec(checked) fn from_value_map(m: Map<Key, Value>) -> Self
+    {
+        Self(
+            Map::new(|k: Key| true,
+                |k: Key| 
+                    if m.contains_key(k) {
+                        Message::Define{value: m[k]}
+                    } else {
+                        Message::empty()
+                    }
+            )
+        )
+    }
+
     // pass through to Map :v/
     pub open spec(checked) fn insert(
         self,
