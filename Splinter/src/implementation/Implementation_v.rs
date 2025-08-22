@@ -20,11 +20,12 @@ use crate::spec::MapSpec_t::{ID, MapSpec, PersistentState};
 use crate::spec::TotalKMMap_t::*;
 use crate::spec::KeyType_t::*;
 use crate::spec::Messages_t::*;
-use crate::spec::FloatingSeq_t::*;
+// use crate::spec::FloatingSeq_t::*;
 use crate::abstract_system::StampedMap_v;
-use crate::abstract_system::StampedMap_v::{StampedMap};
-use crate::abstract_system::MsgHistory_v::{MsgHistory, KeyedMessage};
-use crate::abstract_system::AbstractCrashAwareSystemRefinement_v;
+// use crate::abstract_system::StampedMap_v::{StampedMap};
+// use crate::abstract_system::MsgHistory_v::MsgHistory;
+use crate::abstract_system::MsgHistory_v::KeyedMessage;
+// use crate::abstract_system::AbstractCrashAwareSystemRefinement_v;
 
 use crate::implementation::ModelRefinement_v::*;
 use crate::implementation::ConcreteProgramModel_v::*;
@@ -151,8 +152,9 @@ pub fn convert_overflow_into_liveness_failure()
 }
 
 pub struct Inflight {
-    truncate: ILsn,
-    store: VecMap<Key, Value>,
+    // Together this is the implementation of a StampedMap
+    truncate_version: ILsn,     // this will be the version of the new persistent map (when it lands)
+    store: VecMap<Key, Value>,  // this will be the new persistent map
 }
 
 // This struct supplies KVStoreTrait, which has both the entry point to the implementation and the
@@ -163,7 +165,7 @@ pub struct Implementation {
     // starts at persistent_store.version, ends matching store
     journal: Journal,
 
-    inflight: Option<Inflight>,
+    in_flight: Option<Inflight>,
 
     // remember the actual persistent version on disk and
     // its journal info, so we can interpret to the floating versions.
@@ -187,7 +189,7 @@ impl Implementation {
 
     closed spec(checked) fn view_as_kmmap(self) -> TotalKMMap
     {
-        map_to_kmmap(self.store@)
+        ASuperblock::map_to_kmmap(self.store@)
     }
 
     // TODO delete this is nonsense now we have a real store
@@ -229,6 +231,8 @@ impl Implementation {
         &&& state.history.len()-1 == self.version()
 
         &&& (state.in_flight is Some <==> self.sync_requests.in_flight())
+        &&& state.in_flight is Some <==> self.in_flight is Some
+
         &&& (state.in_flight is Some ==> {
             // The in-flight version stays active so get_suffix doesn't choke on it when it's time
             // to handle the disk response
@@ -238,11 +242,14 @@ impl Implementation {
             &&& self.sync_reqs_in_version(self.sync_requests.satisfied_reqs@, sync_version)
         })
 
-        &&& (self.inflight_truncate is Some ==> {
-            &&& state.in_flight is Some
-            &&& self.journal.seq_start < self.inflight_truncate.unwrap()
-            &&& self.inflight_truncate.unwrap() <= state.in_flight.unwrap().version
-        })
+        &&& match self.in_flight {
+            None => {true},
+            Some(in_flight) => {
+                &&& self.journal.seq_start < in_flight.truncate_version
+                &&& in_flight.truncate_version <= state.in_flight.unwrap().version
+                &&& ASuperblock::map_to_kmmap(in_flight.store@) == state.history.get(in_flight.truncate_version as int).appv.kmmap
+            }
+        }
 
         &&& self.sync_requests.wf(self.instance@.id())
         &&& self.sync_reqs_in_version(self.sync_requests.deferred_reqs@, self.version() as int)
@@ -804,9 +811,19 @@ impl Implementation {
 
         let ghost new_persistent_version = pre_state.state.in_flight->0.version;
 
-        self.persistent_store = pre_state.state.history[pre_state.state.in_flight->0.version as int].appv.kmmap;
+        let mut in_flight = None;
+        std::mem::swap(&mut self.in_flight, &mut in_flight);
+        if let Some(Inflight{truncate_version, store: persistent_store}) = in_flight {
+            self.persistent_store = persistent_store;
 
-        // TODO: handle truncation
+            if self.journal.seq_start != truncate_version {
+                api.log("missing code for journal truncation");
+                convert_overflow_into_liveness_failure();
+            }
+        } else {
+            assert(false);
+        }
+
         let ghost post_state = ConcreteProgramModel{ state: AtomicState{
             in_flight: None,
             ..pre_state.state
@@ -964,7 +981,6 @@ impl Implementation {
                     recovery_state: RecoveryState::RecoveryComplete,
                     history: superblock@.initial_history(),
                     in_flight: None,
-                    persistent_version: superblock@.version_index,
                     sync_req_map: Map::empty(),
                 }
             };
@@ -1004,7 +1020,6 @@ impl Implementation {
             );
             self.model = Tracked(model);
 //             self.version = superblock.version_index;// dead code, delete
-            assert( self.i().history == self.view_as_floating_versions() );
             assert( self.inv() );
         }
     }
@@ -1064,9 +1079,10 @@ impl KVStoreTrait for Implementation {
         ) = KVStoreTokenized::Instance::initialize(ConcreteProgramModel{state: AtomicState::init()});
 
         let selff = Implementation{
-            store: new_empty_hash_map(),
+            store: new_empty_vec_map(),
             journal: Journal::new_empty(),
-            inflight_truncate: None,
+            in_flight: None,
+            persistent_store: new_empty_vec_map(),
             model: Tracked(model),
             instance: Tracked(instance),
             sync_requests: SyncRequestBuffer::new_empty(),
@@ -1122,7 +1138,7 @@ impl KVStoreTrait for Implementation {
     }
 }
 
-pub fn new_empty_hash_map() -> (out: VecMap<Key,Value>)
+pub fn new_empty_vec_map() -> (out: VecMap<Key,Value>)
 ensures
     out.wf(),
     out@.is_empty(),
