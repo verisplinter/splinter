@@ -10,6 +10,9 @@ use crate::trusted::RefinementObligation_t::*;
 use crate::trusted::ClientAPI_t::*;
 use crate::trusted::KVStoreTokenized_t::*;
 use crate::trusted::SystemModel_t::*;
+use crate::spec::MapSpec_t::*;
+use crate::spec::AsyncDisk_t::*;
+use crate::implementation::MultisetMapRelation_v::multiset_map_singleton;
 
 verus!{
 
@@ -57,6 +60,26 @@ ensures
 {
     assume(false);
     arbitrary()
+}
+
+// The generic version handles multiple simultaneous responses in a single shard, but the ClientAPI
+// only ever supplies one at a time.
+pub proof fn open_system_invariant_disk_response_singleton<ProgramModel: ProgramModelTrait, Proof: RefinementObligation<ProgramModel>>(
+    model_token: Tracked<KVStoreTokenized::model<ProgramModel>>,
+    disk_responses_token: Tracked<KVStoreTokenized::disk_responses_multiset<ProgramModel>>,
+    id: ID,
+    disk_response: DiskResponse,
+    ) -> (model: SystemModel::State<ProgramModel>)
+requires
+    disk_responses_token@.multiset() == multiset_map_singleton(id, disk_response)
+ensures
+    Proof::inv(model),
+    model.program == model_token@.value(),
+    model.disk.responses.dom().contains(id),
+    model.disk.responses[id] == disk_response,
+{
+    assert( disk_responses_token@.multiset().contains((id, disk_response)) );
+    open_system_invariant_disk_response::<ProgramModel, Proof>(model_token, disk_responses_token)
 }
 
 pub proof fn open_system_invariant_user_request<ProgramModel: ProgramModelTrait, Proof: RefinementObligation<ProgramModel>>(

@@ -21,7 +21,7 @@ use crate::spec::TotalKMMap_t::*;
 use crate::spec::KeyType_t::*;
 use crate::spec::Messages_t::*;
 // use crate::spec::FloatingSeq_t::*;
-use crate::abstract_system::StampedMap_v;
+// use crate::abstract_system::StampedMap_v;
 // use crate::abstract_system::StampedMap_v::{StampedMap};
 // use crate::abstract_system::MsgHistory_v::MsgHistory;
 use crate::abstract_system::MsgHistory_v::KeyedMessage;
@@ -594,7 +594,7 @@ impl Implementation {
             let pre_sb = self.state().ephemeral_sb();
             // assert(pre_sb.store == self.journal@);
             assert(pre_sb.version_index as nat == self.version()) by {
-                self.journal@.apply_to_stamped_map_length_lemma(StampedMap_v::empty());
+//                 self.journal@.apply_to_stamped_map_length_lemma(StampedMap_v::empty());
             }
             assert( disk_reqs == Multiset::singleton(
                 (disk_event.arrow_ExecuteSyncBegin_req_id(),
@@ -803,13 +803,20 @@ impl Implementation {
 
         // we just took out all the in-flights; need to simultaneously change model.value().state to
         // restore self.inv
-        // TODO(jialin): why do these Noop requests have ids? :v/
-        let ghost req = Request{input: Input::NoopInput, id: 0};
-        let reply = Reply{output: Output::NoopOutput, id: 0};
+        // TODO(jialin): why do these Noop requests have ids? :v/ Because ... we have to know which
+        // Noop a reply is for? Obviously?
+//         let ghost req = Request{input: Input::NoopInput, id: 0};
+//         let reply = Reply{output: Output::NoopOutput, id: 0};
 
         let ghost pre_state = self.model@.value();
 
         let ghost new_persistent_version = pre_state.state.in_flight->0.version;
+
+        // Use existence of a response + system model invariant to learn that we must have
+        // known in_flight true when we got here.
+        assert( self.in_flight is Some ) by {
+            open_system_invariant_disk_response_singleton::<ConcreteProgramModel, RefinementProof>(self.model, response_shard, id, disk_response@);
+        }
 
         let mut in_flight = None;
         std::mem::swap(&mut self.in_flight, &mut in_flight);
@@ -969,8 +976,17 @@ impl Implementation {
             assert( VecMap::unique_keys(superblock.store@) ) by {
                 assume( false ); // LEFT OFF extract model invariant
             }
+            assert( superblock.journal.inv() ) by {
+                assume( false ); // LEFT OFF extract model invariant
+            }
+            if superblock.journal.msg_history.len() > 0 {
+                api.log("Unimplemented: non-empty journal on recover");
+                convert_overflow_into_liveness_failure();
+            }
+
             // Record our learnings in the physical model.
             self.store = VecMap::from_vec(superblock.store);
+            self.journal = superblock.journal;
 
             // Compute the next ghost model and transition our token
 //             let ghost superblock_version = superblock.journal@.seq_end;
@@ -1020,6 +1036,13 @@ impl Implementation {
             );
             self.model = Tracked(model);
 //             self.version = superblock.version_index;// dead code, delete
+
+            
+            assert( superblock.deepv().store_stamped_map().value == ASuperblock::map_to_kmmap(self.store@) );
+            assert( superblock.deepv().final_stamped_map().value == ASuperblock::map_to_kmmap(self.store@) );   // because the journal is assumed empty above
+            assert( post_state.state.mapspec().kmmap == self.view_as_kmmap() );
+            assert( self.in_flight is None );
+            assert( self.state().mapspec().kmmap == self.view_as_kmmap() );
             assert( self.inv() );
         }
     }
@@ -1056,6 +1079,7 @@ impl KVStoreTrait for Implementation {
     closed spec fn wf_init(self) -> bool {
         &&& self.model@.instance_id() == self.instance@.id()
         &&& self.model@.value().state.recovery_state is Begin
+        &&& self.in_flight is None
         &&& !self.sync_requests.in_flight()
         &&& self.sync_requests.deferred_reqs@.len() == 0
         &&& self.store.wf()

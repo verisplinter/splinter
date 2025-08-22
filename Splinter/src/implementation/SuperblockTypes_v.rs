@@ -63,6 +63,18 @@ impl ASuperblock {
             )
         )
     }
+
+    pub open spec fn store_stamped_map(self) -> StampedMap
+    {
+        let value_map = VecMap::seq_to_map(self.store);
+        let total_map = Self::map_to_kmmap(value_map);
+        StampedMap{value: total_map, seq_end: self.journal@.seq_start}
+    }
+
+    pub open spec fn final_stamped_map(self) -> StampedMap
+    {
+        self.journal@.apply_to_stamped_map(self.store_stamped_map())
+    }
 }
 
 impl View for ASuperblock {
@@ -70,16 +82,10 @@ impl View for ASuperblock {
 
     open spec fn view(&self) -> Self::V
     {
-        let value_map = VecMap::seq_to_map(self.store);
-        let total_map = Self::map_to_kmmap(value_map);
-//         assert( total_map.wf() );   // need to "totalize" the map
-        let msg_history = self.journal@; // convert AJournal into MsgHistory
-        let store_stamped_map = StampedMap{value: total_map, seq_end: msg_history.seq_start};
-        let final_stamped_map = msg_history.apply_to_stamped_map(store_stamped_map);
-        let persistent_state = PersistentState{ appv: MapSpec::State{ kmmap: final_stamped_map.value}};
+        let persistent_state = PersistentState{ appv: MapSpec::State{ kmmap: self.final_stamped_map().value}};
         Superblock{
             store: persistent_state,
-            version_index: final_stamped_map.seq_end,
+            version_index: self.final_stamped_map().seq_end,
         }
     }
 }
