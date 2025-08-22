@@ -31,9 +31,6 @@ pub struct AtomicState {
 
     pub history: FloatingSeq<PersistentState>,
 
-    // tells us what syncs can be replied
-    pub persistent_version: nat,
-
     // tells us what we can bump persistent_version when the disk response comes back.
     pub in_flight: Option<InflightInfo>,
 
@@ -76,8 +73,6 @@ impl AtomicState {
             &&& self.in_flight is Some ==> {
                 self.history.is_active(self.in_flight.unwrap().version as int)
             }
-            // &&& self.history.is_active(self.persistent_version as int)
-            &&& self.history.first_active_index() == self.persistent_version
         }
     }
 
@@ -87,7 +82,6 @@ impl AtomicState {
         AtomicState{
             recovery_state: RecoveryState::Begin,
             history: arbitrary(),
-            persistent_version: arbitrary(),  // unknown
             in_flight: arbitrary(),
             sync_req_map: arbitrary(),
         }
@@ -149,7 +143,6 @@ impl AtomicState {
                 recovery_state: RecoveryState::RecoveryComplete,
                 history: singleton_floating_seq(superblock.version_index, superblock.store.appv.kmmap),
                 in_flight: None,
-                persistent_version: superblock.version_index,
                 sync_req_map: Map::empty(),
             }
         }
@@ -186,7 +179,6 @@ impl AtomicState {
                 recovery_state: RecoveryState::RecoveryComplete,
                 history: pre.history.get_suffix(new_persistent_version as int),
                 in_flight: None,
-                persistent_version: new_persistent_version,
                 ..pre
             }
         }
@@ -261,7 +253,7 @@ impl AtomicState {
         self.wf(),
         self.client_ready(),
     {
-        self.sb_at(self.persistent_version as int)
+        self.sb_at(self.history.first_active_index() as int)
     }
 }
 

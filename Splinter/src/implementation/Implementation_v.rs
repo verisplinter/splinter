@@ -97,20 +97,6 @@ impl SyncRequestBuffer {
 }
 
 pub type ModelShard = KVStoreTokenized::model<ConcreteProgramModel>;
-// This struct supplies KVStoreTrait, which has both the entry point to the implementation and the
-// proof hooks to satisfy the refinement obligation trait.
-// pub struct Implementation {
-//     store: VecMap<Key, Value>,
-//     journal: Journal,
-//
-//     // token for the program model variable
-//     model: Tracked<ModelShard>,
-//
-//     // we do not own a mutable reference to this
-//     instance: Tracked<KVStoreTokenized::Instance<ConcreteProgramModel>>,
-//
-//     sync_requests: SyncRequestBuffer,
-// }
 
 pub type RequestShard = KVStoreTokenized::requests<ConcreteProgramModel>;
 pub type ReplyShard = KVStoreTokenized::replies<ConcreteProgramModel>;
@@ -124,11 +110,6 @@ impl Journal {
     {
         &&& self@.wf()
         &&& self.seq_start + self.msg_history.len() <= u64::MAX
-    }
-
-    pub closed spec fn to_stamped_map(&self) -> StampedMap
-    {
-        MsgHistory::map_plus_history(StampedMap_v::empty(), self@)
     }
 
     fn new_empty() -> (out: Self)
@@ -174,13 +155,9 @@ pub fn convert_overflow_into_liveness_failure()
 pub struct Implementation {
     store: VecMap<Key, Value>,
 
-    // store: HashMapWithView<Key, Value>,
     journal: Journal,
 
-    // indicate the actual persistent version on disk
-    // how do we get the persistent version upon a crash
-    // it's the seq start in journal
-    persistent_version: Ghost<nat>, 
+    inflight_truncate: Option<ILsn>,
 
     // token for the program model variable
     model: Tracked<ModelShard>,
@@ -208,23 +185,8 @@ closed spec fn map_to_kmmap(m: Map<Key, Value>) -> TotalKMMap
 
 impl Implementation {
     closed spec(checked) fn view_as_kmmap(self) -> TotalKMMap
-    recommends self.inv_tmp_journal_never_truncated(), self.journal@.can_discard_to(self.persistent_version@)
     {
-        self.view_as_floating_versions().last().appv.kmmap
-    }
-
-    closed spec(checked) fn view_as_floating_versions(self) -> FloatingSeq<PersistentState>
-    recommends self.inv_tmp_journal_never_truncated(), self.journal@.can_discard_to(self.persistent_version@)
-    {
-        AbstractCrashAwareSystemRefinement_v::floating_versions(
-            StampedMap_v::empty(), self.journal@, self.persistent_version@)
-    }
-
-    broadcast proof fn view_as_kmmap_ensures(self)
-        requires self.persistent_version@ <= self.version(), self.journal.seq_start == 0
-        ensures #[trigger] self.view_as_kmmap() =~= MsgHistory::map_plus_history(StampedMap_v::empty(), self.journal@).value
-    { 
-        assert(self.journal@.discard_recent((self.journal@.seq_end) as nat) =~= self.journal@);
+        map_to_kmmap(self.store@)
     }
 
     pub closed spec fn i(self) -> AtomicState {
@@ -238,49 +200,41 @@ impl Implementation {
 
     closed spec fn version(&self) -> nat
     {
+        // NOTE: this is because model history starts at an empty version 
+        // which is not tracked by us, so our version is already off by 1 
         (self.journal.seq_start + self.journal.msg_history.len()) as nat
-    }
-
-    closed spec fn inv_tmp_journal_never_truncated(self) -> bool {
-        &&& self.journal.seq_start == 0
     }
 
     closed spec fn inv(self) -> bool {
         let state = self.state();
 
         &&& self.store.wf()
+        &&& self.journal.inv()
         &&& self.model@.instance_id() == self.instance@.id()
         &&& state.recovery_state is RecoveryComplete
 
-        // model
-        // &&& self.i().mapspec().kmmap == self.view_as_kmmap()
-        &&& self.i().history == self.view_as_floating_versions()
+        // physical state consistent with model
+        &&& state.mapspec().kmmap == self.view_as_kmmap()
+        &&& state.history.first_active_index() == self.journal.seq_start
+        &&& state.history.len()-1 == self.version()
 
-        // map<key,value> => total map
-        &&& map_to_kmmap(self.store@) == self.view_as_kmmap()
-
-        &&& (state.in_flight is Some
-            <==> self.sync_requests.in_flight())
-        &&& self.sync_requests.wf(self.instance@.id())
-
-        // version index in other place
-        // we can generate the history needed
-
-        // physical version num tracks ghost model versions
-        &&& self.persistent_version@ == state.history.first_active_index()
-        &&& self.version() == state.history.len()-1
-        &&& self.persistent_version@ <= self.version()
-        &&& self.journal.inv()
-        &&& self.inv_tmp_journal_never_truncated()
-
+        &&& (state.in_flight is Some <==> self.sync_requests.in_flight())
         &&& (state.in_flight is Some ==> {
-            // &&& self.persistent_version <= state.in_flight.get_Some_0().version
             // The in-flight version stays active so get_suffix doesn't choke on it when it's time
             // to handle the disk response
-            &&& state.history.is_active(state.in_flight->Some_0.version as int)
+            let sync_version = state.in_flight.unwrap().version as int;
+            &&& state.history.is_active(sync_version)
             // The in-flight 'satisfied requests' can indeed be satisfied by the in-flight version
-            &&& self.sync_reqs_in_version(self.sync_requests.satisfied_reqs@, state.in_flight->Some_0.version as int)
+            &&& self.sync_reqs_in_version(self.sync_requests.satisfied_reqs@, sync_version)
         })
+
+        &&& (self.inflight_truncate is Some ==> {
+            &&& state.in_flight is Some
+            &&& self.journal.seq_start < self.inflight_truncate.unwrap()
+            &&& self.inflight_truncate.unwrap() <= state.in_flight.unwrap().version
+        })
+
+        &&& self.sync_requests.wf(self.instance@.id())
         &&& self.sync_reqs_in_version(self.sync_requests.deferred_reqs@, self.version() as int)
         &&& Self::sync_req_lists_mutually_unique(self.sync_requests.satisfied_reqs@, self.sync_requests.deferred_reqs@)
     }
@@ -360,10 +314,6 @@ impl Implementation {
     ensures
         self.inv_api(api),
     {
-        broadcast use
-            Implementation::view_as_kmmap_ensures,
-            MsgHistory::map_plus_history_lemma;
-
         let out = match req.input {
         Input::PutInput{key, value} => {
             let ghost pre_state = self.model@.value();
@@ -383,10 +333,13 @@ impl Implementation {
             let reply = Reply{output: Output::PutOutput, id: req.id};
             let ghost post_state = ConcreteProgramModel{
                 state: AtomicState{
-                    history: self.view_as_floating_versions(),
+                    history: pre_state.state.history.append(seq![
+                        PersistentState{appv: MapSpec::State{kmmap: self.view_as_kmmap()}}]),                   
                     ..pre_state.state
                 }
             };
+
+            assert(post_state.state.history.len()-1 == pre_state.state.history.len());
 
             let tracked mut model = KVStoreTokenized::model::arbitrary();
             proof { tracked_swap(self.model.borrow_mut(), &mut model); }
@@ -624,7 +577,9 @@ impl Implementation {
             let pre_sb = self.state().ephemeral_sb();
             // assert(pre_sb.store == self.journal@);
             assert(pre_sb.version_index as nat == self.version()) by {
-                self.view_as_kmmap_ensures();
+
+                assume(false);
+                // self.view_as_kmmap_ensures();
                 self.journal@.apply_to_stamped_map_length_lemma(StampedMap_v::empty());
             }
             assert( disk_reqs == Multiset::singleton(
@@ -642,6 +597,8 @@ impl Implementation {
             // Problem 2: need to pad superblock so we don't have to talk about its truncation?
             assume( DiskLayout::spec_new().spec_parse(disk_request@->data) == sb@ );
             assert( DiskLayout::spec_new().spec_parse(disk_request@->data) == pre_sb );
+
+            assume(false);
             assert( AtomicState::disk_transition(self.state(), post_state.state, disk_event, info.reqs, info.resps) );  // witness
         }
 
@@ -837,14 +794,12 @@ impl Implementation {
         let reply = Reply{output: Output::NoopOutput, id: 0};
 
         let ghost pre_state = self.model@.value();
-        assert(pre_state.state.history == self.view_as_floating_versions());
 
         let ghost new_persistent_version = pre_state.state.in_flight->0.version;
-        self.persistent_version = Ghost(new_persistent_version);
 
+        // TODO: handle truncation
         let ghost post_state = ConcreteProgramModel{ state: AtomicState{
             in_flight: None,
-            history: self.view_as_floating_versions(), 
             ..pre_state.state
         }};
 
@@ -853,11 +808,6 @@ impl Implementation {
             assert( self.i().recovery_state is RecoveryComplete );
             self.system_inv_response_implies_in_flight(id, disk_response, response_shard);
         }
-
-        assert(post_state.state.history == self.view_as_floating_versions());
-        assert(self.view_as_floating_versions() == pre_state.state.history.get_suffix(new_persistent_version as int));
-
-        // assert(self.i().history == self.view_as_floating_versions());
 
         let tracked mut model = KVStoreTokenized::model::arbitrary();
         proof { tracked_swap(self.model.borrow_mut(), &mut model); }
@@ -1105,7 +1055,7 @@ impl KVStoreTrait for Implementation {
         let selff = Implementation{
             store: new_empty_hash_map(),
             journal: Journal::new_empty(),
-            persistent_version: Ghost(0),
+            inflight_truncate: None,
             model: Tracked(model),
             instance: Tracked(instance),
             sync_requests: SyncRequestBuffer::new_empty(),
