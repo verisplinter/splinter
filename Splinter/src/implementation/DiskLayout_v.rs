@@ -14,6 +14,7 @@ use crate::marshalling::Marshalling_v::*;
 use crate::marshalling::Slice_v::*;
 use crate::trusted::ClientAPI_t::BLOCK_SIZE;
 use crate::marshalling::UniformSized_v::UniformSized;
+use crate::marshalling::UniformPairFormat_v::uniform_size_matches_spec_size;
 
 verus! {
 
@@ -41,7 +42,13 @@ ensures out.len() == s
 impl DiskLayout {
     pub closed spec fn wf(self) -> bool
     {
-        self.fmt.valid()
+        &&& self.fmt.valid()
+        &&& self.fmt.uniform_size() == BLOCK_SIZE
+    }
+
+    pub closed spec fn impl_inv(raw_page_0: RawPage) -> bool
+    {
+        true
     }
 
 //     pub closed spec fn spec_marshall(self, superblock: Superblock) -> (out: RawPage)
@@ -69,13 +76,19 @@ impl DiskLayout {
         assume( self.fmt.marshallable(sb.deepv()) );
 
         let ghost marshalled_size = self.fmt.uniform_size();
-        assert( marshalled_size == 408 );
-        assert( marshalled_size <= BLOCK_SIZE );
+        assert( marshalled_size == BLOCK_SIZE );
+//         assert( marshalled_size <= BLOCK_SIZE );
         let mut space = empty_vec_u8_with_size(BLOCK_SIZE);
         assert(0 as int + self.fmt.spec_size(sb.deepv()) as int <= space.len() );
         let end = self.fmt.exec_marshall(sb, &mut space, 0);
         assert( end == self.fmt.spec_size(sb.deepv()) );
+        assert( self.fmt.parse(space@.subrange(0, end as int)) == sb.deepv() );
+        proof{ self.fmt.uniform_size_matches_spec_size() }
+        assert( uniform_size_matches_spec_size(self.fmt) );
+        assert( self.fmt.spec_size(sb.deepv()) == self.fmt.uniform_size() );
+        assert( end as int == marshalled_size as int );
         assert( self.fmt.parse(space@.subrange(0, marshalled_size as int)) == sb.deepv() );
+        assert( space@.subrange(0, BLOCK_SIZE as int) == space@ );
         space
     }
 
@@ -85,7 +98,9 @@ impl DiskLayout {
     ensures
         out@ == self.spec_parse(raw_page@)
     {
-        assume( self.fmt.parsable(raw_page@) );  // TODO carry in from disk invariant
+        // TODO carry in from disk invariant -- except it's physical, not represented at the model level
+        assume( self.fmt.parsable(raw_page@) );
+
         let all_slice = Slice::all(raw_page);
         assert( all_slice@.i(raw_page@) == raw_page@ );
         let out = self.fmt.exec_parse(&all_slice, raw_page);

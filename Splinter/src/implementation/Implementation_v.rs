@@ -36,8 +36,7 @@ use crate::implementation::JournalTypes_v::*;
 use crate::implementation::SuperblockTypes_v::*;
 use crate::marshalling::Marshalling_v::Deepview;
 use crate::marshalling::WF_v::WF;
-use crate::marshalling::UniformSized_v::UniformSized;
-
+// use crate::marshalling::UniformSized_v::UniformSized;
 
 #[allow(unused_imports)]
 use vstd::multiset::*;
@@ -959,14 +958,9 @@ impl Implementation {
             let layout = DiskLayout::new();
             let superblock: ISuperblock = layout.parse(&raw_page);
             Self::debug_print(&superblock);
-            assert( superblock.store.wf() ) by {
-                assume( false ); // LEFT OFF extract model invariant
-            }
-            assert( VecMap::unique_keys(superblock.store@) ) by {
-                assume( false ); // LEFT OFF extract model invariant
-            }
-            assert( superblock.journal.inv() ) by {
-                assume( false ); // LEFT OFF extract model invariant
+            assert( superblock.wf() ) by {
+                open_system_invariant_disk_response_singleton::<ConcreteProgramModel, RefinementProof>(self.model, disk_response_token, disk_req_id, i_disk_response@);
+                assume( false );    // left off: use DiskLayout::impl_inv
             }
             if superblock.journal.msg_history.len() > 0 {
                 api.log("Unimplemented: non-empty journal on recover");

@@ -39,6 +39,9 @@ impl SystemModel::State<ConcreteProgramModel>  {
         &&& self.requests_replies_id_disjoint()
 
         &&& self.sync_requests_inv()
+
+        &&& DiskLayout::impl_inv(self.disk.content[spec_superblock_addr()])
+        &&& false
     }
 
     pub open spec fn in_flight_request_present(self) -> bool

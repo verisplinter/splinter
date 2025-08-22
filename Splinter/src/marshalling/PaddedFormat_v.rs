@@ -3,7 +3,9 @@
 use vstd::{prelude::*};
 use crate::marshalling::Slice_v::Slice;
 use crate::marshalling::UniformSized_v::UniformSized;
-use crate::marshalling::Marshalling_v::Marshal;
+use crate::marshalling::Marshalling_v::*;
+use crate::marshalling::WF_v::*;
+use crate::marshalling::UniformPairFormat_v::uniform_size_matches_spec_size;
 
 verus! {
 
@@ -12,27 +14,77 @@ pub struct PaddedFormat<F: Marshal + UniformSized> {
     pub pad_size: usize,
 }
 
+impl<F: Marshal + UniformSized> PaddedFormat<F> {
+    pub proof fn uniform_size_matches_spec_size(self)
+    requires self.valid()
+    ensures uniform_size_matches_spec_size(self)
+    {
+    }
+}
+
 impl<F: Marshal + UniformSized> Marshal for PaddedFormat<F> {
     type DV = F::DV;
     type U = F::U;
 
     open spec fn valid(&self) -> bool {
         &&& self.us_valid()
+        &&& self.format.valid()
     }
 
     open spec fn parsable(&self, data: Seq<u8>) -> bool
     {
-        self.format.parsable(data)
+        &&& self.uniform_size() <= data.len()
+        &&& self.format.parsable(data.subrange(0, self.format.uniform_size() as int))
     }
 
     open spec fn parse(&self, data: Seq<u8>) -> Self::DV
     {
-        self.format.parse(data)
+        self.format.parse(data.subrange(0, self.format.uniform_size() as int))
     }
 
     exec fn try_parse(&self, slice: &Slice, data: &Vec<u8>) -> (ov: Option<Self::U>)
     {
-        self.format.try_parse(slice, data)
+        if slice.len() < self.exec_uniform_size() {
+            // Can't even construct the subslice to exclude the padding.
+            assert( !self.parsable(slice@.i(data@)) );
+            return None;
+        }
+
+        assert( self.format.uniform_size() <= self.pad_size );
+        assert( self.uniform_size() == self.pad_size );
+        assert( self.format.uniform_size() <= slice@.len() );
+        let format_size = self.format.exec_uniform_size();
+        let subslice = slice.subslice(0, format_size);
+        let ov = self.format.try_parse(&subslice, data);
+        assert( format_size <= subslice@.len() );
+        assert( subslice@.valid(data@) );
+
+        assert( slice@.i(data@).subrange(0, self.format.uniform_size() as int) == subslice@.i(data@) );
+
+        proof {
+            assert( 
+                subslice@.i(data@) == slice@.i(data@).subrange(0, self.format.uniform_size() as int) );
+            let ghost ov = ov;
+            match ov {
+                Some(v) => {
+//                     assert( self.format.parsable(data@.subrange(0, self.format.uniform_size() as int)) );
+//                     assert( self.format.parsable(subslice@.i(data@)) );
+//                     assert( self.format.uniform_size() <= slice@.i(data@).len() );
+//                     assert( self.parsable(slice@.i(data@)) );
+                    assert( v.deepv() == self.format.parse(subslice@.i(data@)) );
+                    assert( v.deepv() == self.parse(slice@.i(data@)) );
+                    assert( v.wf() );
+                },
+                None => {
+                    assert( !self.format.parsable(subslice@.i(data@)) );
+// //                     assert( !self.format.parsable(data@.subrange(0, self.format.uniform_size() as int)) );
+//                     assert( !self.format.parsable(subslice@.i(data@)) );
+                    assert( !self.parsable(slice@.i(data@)) );
+                },
+            }
+        }
+//         assert( ov.unwrap().deepv() == self.parse(slice@.i(data@)) && ov.unwrap().wf() );
+        ov
     }
 
     open spec fn marshallable(&self, value: Self::DV) -> bool
@@ -42,16 +94,17 @@ impl<F: Marshal + UniformSized> Marshal for PaddedFormat<F> {
         
     open spec fn spec_size(&self, value: Self::DV) -> usize
     {
-        self.format.spec_size(value)
+        self.pad_size
     }
 
     exec fn exec_size(&self, value: &Self::U) -> (sz: usize)
     {
-        self.format.exec_size(value)
+        self.pad_size
     }
 
     exec fn exec_marshall(&self, value: &Self::U, data: &mut Vec<u8>, start: usize) -> (end: usize)
     {
+        assume(false);
         self.format.exec_marshall(value, data, start)
     }
 }
@@ -60,6 +113,7 @@ impl<F: Marshal + UniformSized> UniformSized for PaddedFormat<F> {
     open spec fn us_valid(&self) -> bool
     {
         &&& self.format.us_valid()
+        &&& uniform_size_matches_spec_size(self.format)
         &&& self.format.uniform_size() <= self.pad_size
     }
 
@@ -68,7 +122,9 @@ impl<F: Marshal + UniformSized> UniformSized for PaddedFormat<F> {
         self.pad_size
     }
 
-    proof fn uniform_size_ensures(&self) { }
+    proof fn uniform_size_ensures(&self) {
+        self.format.uniform_size_ensures();
+    }
 
     exec fn exec_uniform_size(&self) -> (sz: usize)
     {

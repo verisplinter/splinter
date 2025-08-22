@@ -7,6 +7,7 @@ use crate::spec::KeyType_t::*;
 use crate::spec::Messages_t::*;
 use crate::implementation::VecMap_v::*;
 use crate::marshalling::Marshalling_v::Deepview;
+use crate::marshalling::WF_v::WF;
 use crate::implementation::JournalTypes_v::*;
 use crate::spec::TotalKMMap_t::*;
 use crate::abstract_system::StampedMap_v::*;
@@ -96,6 +97,14 @@ pub struct ISuperblock {
     pub store: RawStore,
     // need version so recovery knows the shape of the (mostly-empty) history to reconstruct (the LSN)
     // pub version_index: u64,
+}
+
+impl ISuperblock {
+    pub open spec fn wf(self) -> bool {
+        &&& self.store.wf()
+        &&& self.journal.inv()
+        &&& VecMap::unique_keys(self.store@)
+    }
 }
 
 impl View for ISuperblock {
