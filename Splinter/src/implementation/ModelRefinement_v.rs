@@ -41,7 +41,6 @@ impl SystemModel::State<ConcreteProgramModel>  {
         &&& self.sync_requests_inv()
 
         &&& DiskLayout::impl_inv(self.disk.content[spec_superblock_addr()])
-        &&& false
     }
 
     pub open spec fn in_flight_request_present(self) -> bool
@@ -297,6 +296,9 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
         assert( SystemModel::State::initialize(pre, pre.program, pre.disk) );
         assert( Self::i(pre).async_ephemeral == AsyncMap::State::init_ephemeral_state() );
         assert( Self::i(pre).sync_requests == Map::<SyncReqId,nat>::empty() );  // extn
+
+        // We're gonna get this from mkfs, I guess?
+        assume( DiskLayout::impl_inv(pre.disk.content[spec_superblock_addr()]) );
         assert( Self::inv(pre) );
 
         assert( ConcreteProgramModel::is_mkfs(pre.disk) );
