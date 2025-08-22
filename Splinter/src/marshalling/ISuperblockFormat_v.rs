@@ -10,10 +10,11 @@ use crate::marshalling::WF_v::WF;
 use crate::marshalling::JournalFormat_v::*;
 use crate::marshalling::KeyValueFormat_v::*;
 use crate::marshalling::UniformSized_v::*;
+use crate::marshalling::PaddedFormat_v::*;
 use crate::marshalling::ResizableUniformSizedSeq_v::ResizableUniformSizedElementSeqFormat;
 use crate::implementation::JournalTypes_v::*;
 use crate::implementation::SuperblockTypes_v::*;
-// use crate::implementation::VecMap_v::*;
+use crate::trusted::ClientAPI_t::BLOCK_SIZE;
 
 verus! {
 
@@ -104,18 +105,25 @@ impl Wrappable for SuperblockJSWrappable {
     }
 }
 
-pub type ISuperblockFormat = WrappableFormat<SuperblockJSWrappable>;
+pub type ISuperblockFormat = PaddedFormat<WrappableFormat<SuperblockJSWrappable>>;
 
-// impl ISuperblockFormat {
-//     pub proof fn size_is(self)
-//         requires self.valid()
-//         ensures self.uniform_size() == 408
-//     {
-// //         assert( self.pair_fmt.a_fmt == JournalFormat::spec_new() );
-// //         assert( self.pair_fmt.a_fmt.uniform_size() == JOURNAL_CAPACITY + 8 );
-// //         assert( self.pair_fmt.b_fmt.uniform_size() == 200 );
-// //         assert( self.uniform_size() == self.pair_fmt.a_fmt.uniform_size() + self.pair_fmt.b_fmt.uniform_size() );
-//     }
-// }
+impl ISuperblockFormat {
+    pub open spec fn spec_new() -> (out: Self)
+    {
+        PaddedFormat{
+            format: WrappableFormat::<SuperblockJSWrappable>::spec_new(),
+            pad_size: BLOCK_SIZE
+        }
+    }
+
+    pub fn new() -> (out: Self)
+    ensures out == Self::spec_new()
+    {
+        PaddedFormat{
+            format: WrappableFormat::<SuperblockJSWrappable>::new(),
+            pad_size: BLOCK_SIZE
+        }
+    }
+}
 
 } //verus!

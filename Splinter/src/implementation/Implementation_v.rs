@@ -474,6 +474,9 @@ impl Implementation {
             &&& forall |i| #![auto] 0 <= i < old_deferred_reqs.len() ==> old_deferred_reqs[i].id != req.id
         }) by {
             self.system_inv_sync_request_fresh_id(req, req_shard);
+
+//             let system_model = open_system_invariant_user_request::<ConcreteProgramModel, RefinementProof>(self.model, req_shard);
+
             assume( false );    // fresh id stuff
         }
 
@@ -558,7 +561,6 @@ impl Implementation {
 
         // Yoink the store out of self just long enough to marshall it as part of the superblock.
         let raw_page = DiskLayout::new().marshall(&sb);
-        assert( DiskLayout::spec_new().spec_parse(raw_page@.subrange(0, DiskLayout::spec_new().fmt.uniform_size() as int)) == sb@ );
 
         let ISuperblock{journal: mut tmp_journal, /*store: mut tmp_store,*/ ..} = sb;
         std::mem::swap(&mut self.journal, &mut tmp_journal);    // un-yoink

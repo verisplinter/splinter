@@ -22,6 +22,7 @@ pub mod JournalFormat_v;
 pub mod ISuperblockFormat_v;
 pub mod VecMapFormat_v;
 pub mod Wrappable_v;
+pub mod PaddedFormat_v;
 
 // next steps:
 //
