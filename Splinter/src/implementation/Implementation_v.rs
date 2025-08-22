@@ -852,16 +852,8 @@ impl Implementation {
             let disk_event = DiskEvent::ExecuteSyncEnd{};
 
             assert( response_shard@.multiset() == Multiset::singleton((pre_state.state.in_flight->Some_0.req_id, DiskResponse::WriteResp{})) );    // extn
-
-            // must be receving superblock
-            // we want to show 
-
-            // state 
-            assume(false);
             assert( AtomicState::disk_transition(
                 pre_state.state, post_state.state, disk_event, info.reqs, info.resps) );    // witness
-//             assert( ConcreteProgramModel::next(pre_state, post_state,
-//                     ProgramLabel::DiskIO{ info }) );
         }
 
         let tracked empty_disk_requests = DiskReqShard::empty(self.instance_id());
@@ -874,12 +866,6 @@ impl Implementation {
             response_shard.get(),
         );
         self.model = Tracked(model);
-
-        // assert(self.i().history.start == 0);
- 
-        // assert(self.i().history == self.view_as_floating_versions());
-
-        // assume(false);
 
         self.deliver_inflight_replies(&mut ready_reqs, api);
 
