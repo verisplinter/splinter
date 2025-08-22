@@ -46,44 +46,23 @@ impl<F: Marshal + UniformSized> Marshal for PaddedFormat<F> {
     {
         if slice.len() < self.exec_uniform_size() {
             // Can't even construct the subslice to exclude the padding.
-            assert( !self.parsable(slice@.i(data@)) );
             return None;
         }
 
-        assert( self.format.uniform_size() <= self.pad_size );
-        assert( self.uniform_size() == self.pad_size );
-        assert( self.format.uniform_size() <= slice@.len() );
-        let format_size = self.format.exec_uniform_size();
-        let subslice = slice.subslice(0, format_size);
+        let subslice = slice.subslice(0, self.format.exec_uniform_size());
         let ov = self.format.try_parse(&subslice, data);
-        assert( format_size <= subslice@.len() );
-        assert( subslice@.valid(data@) );
 
-        assert( slice@.i(data@).subrange(0, self.format.uniform_size() as int) == subslice@.i(data@) );
+        assert( slice@.i(data@).subrange(0, self.format.uniform_size() as int) == subslice@.i(data@) ); // extn
 
         proof {
-            assert( 
-                subslice@.i(data@) == slice@.i(data@).subrange(0, self.format.uniform_size() as int) );
             let ghost ov = ov;
             match ov {
                 Some(v) => {
-//                     assert( self.format.parsable(data@.subrange(0, self.format.uniform_size() as int)) );
-//                     assert( self.format.parsable(subslice@.i(data@)) );
-//                     assert( self.format.uniform_size() <= slice@.i(data@).len() );
-//                     assert( self.parsable(slice@.i(data@)) );
-                    assert( v.deepv() == self.format.parse(subslice@.i(data@)) );
-                    assert( v.deepv() == self.parse(slice@.i(data@)) );
-                    assert( v.wf() );
+                    assert( v.deepv() == self.parse(slice@.i(data@)) ); // trigger
                 },
-                None => {
-                    assert( !self.format.parsable(subslice@.i(data@)) );
-// //                     assert( !self.format.parsable(data@.subrange(0, self.format.uniform_size() as int)) );
-//                     assert( !self.format.parsable(subslice@.i(data@)) );
-                    assert( !self.parsable(slice@.i(data@)) );
-                },
+                None => { },
             }
         }
-//         assert( ov.unwrap().deepv() == self.parse(slice@.i(data@)) && ov.unwrap().wf() );
         ov
     }
 
@@ -104,8 +83,11 @@ impl<F: Marshal + UniformSized> Marshal for PaddedFormat<F> {
 
     exec fn exec_marshall(&self, value: &Self::U, data: &mut Vec<u8>, start: usize) -> (end: usize)
     {
-        assume(false);
-        self.format.exec_marshall(value, data, start)
+        let format_end = self.format.exec_marshall(value, data, start);
+        let end = start + self.pad_size;
+        assert( self.valid() );
+        assert( data@.subrange(start as int, end as int).subrange(0, self.format.uniform_size() as int) == data@.subrange(start as int, format_end as int) );   // extn
+        end
     }
 }
 
