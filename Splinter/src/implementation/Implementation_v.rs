@@ -930,9 +930,6 @@ impl Implementation {
             self.journal = superblock.journal;
 
             // Compute the next ghost model and transition our token
-//             let ghost superblock_version = superblock.journal@@.seq_end;
-//             let ghost store_map = VecMap::seq_to_map(superblock.store@);
-//             let ghost post_superblock = superblock@;
             let ghost post_state = ConcreteProgramModel{
                 state: AtomicState {
                     recovery_state: RecoveryState::RecoveryComplete,
@@ -976,11 +973,9 @@ impl Implementation {
                 disk_response_token.get(),
             );
             self.model = Tracked(model);
-//             self.version = superblock.version_index;// dead code, delete
 
-            
             assert( superblock.parsedv().store_stamped_map().value == ASuperblock::map_to_kmmap(self.store@) );
-            assert( superblock.parsedv().final_stamped_map().value == ASuperblock::map_to_kmmap(self.store@) );   // because the journal is assumed empty above
+            assert( superblock.parsedv().final_stamped_map().value == ASuperblock::map_to_kmmap(self.store@) );   // because of the runtime test-and-hang for a non-empty journal above
             assert( post_state.state.mapspec().kmmap == self.view_as_kmmap() );
             assert( self.in_flight is None );
             assert( self.state().mapspec().kmmap == self.view_as_kmmap() );
