@@ -14,7 +14,7 @@ use crate::marshalling::Marshalling_v::*;
 use crate::marshalling::Slice_v::*;
 use crate::trusted::ClientAPI_t::BLOCK_SIZE;
 use crate::marshalling::UniformSized_v::UniformSized;
-use crate::marshalling::WF_v::WF;
+// use crate::marshalling::WF_v::WF;
 use crate::marshalling::UniformPairFormat_v::uniform_size_matches_spec_size;
 
 verus! {
@@ -43,21 +43,25 @@ ensures out.len() == s
 impl DiskLayout {
     pub closed spec fn wf(self) -> bool
     {
+        &&& self.fmt == Self::spec_new().fmt
         &&& self.fmt.valid()
         &&& self.fmt.uniform_size() == BLOCK_SIZE
     }
 
-    // LEFT OFF:
-    // Problem is that, right now, I have a 'wf' feature on ISuperblock, but that's only
-    // an exec type; we can't talk about it because the result of spec fn parse is a Superblock.
-    // Okay, maybe we should add these features to 'parsable', and make them a condition
-    // of ISuperblockFormat::marshall? Maybe a reasonable direction, but right now
-    // ISuperblockFormat is a type synonym for PaddedFormat. I'll need to construct a wrapper.
     pub closed spec fn impl_inv(raw_page_0: RawPage) -> bool
     {
-        true
-//         let sb: ISuperblock = Self::spec_new().spec_parse(raw_page_0);
-//         sb.wf()
+        Self::spec_new().spec_parse_inner(raw_page_0).wf()
+    }
+
+    pub proof fn invoke_impl_inv(self, raw_page: RawPage)
+    requires
+        self.wf(),
+        Self::impl_inv(raw_page)
+    ensures self.spec_parse_inner(raw_page).wf()
+    {
+//         assert( self.fmt == Self::spec_new().fmt );
+//         assert( self == Self::spec_new() );
+//         assert( self.spec_parse_inner(raw_page) == Self::spec_new().spec_parse_inner(raw_page) );
     }
 
 //     pub closed spec fn spec_marshall(self, superblock: Superblock) -> (out: RawPage)
@@ -65,9 +69,14 @@ impl DiskLayout {
 //         choose |out| #![auto] self.fmt.parse(out)@ == superblock
 //     }
 
-    pub closed spec fn spec_parse(self, raw_page: RawPage) -> (out: Superblock)
+    pub open spec fn spec_parse_inner(self, raw_page: RawPage) -> (out: ASuperblock)
     {
-        self.fmt.parse(raw_page)@
+        self.fmt.parse(raw_page)
+    }
+
+    pub open spec fn spec_parse(self, raw_page: RawPage) -> (out: Superblock)
+    {
+        self.spec_parse_inner(raw_page)@
     }
 
     // LEFT OFF: I think we need a proof obligation that all formatters are prefix-stable:
@@ -105,7 +114,7 @@ impl DiskLayout {
     requires
         self.wf(),
     ensures
-        out@@ == self.spec_parse(raw_page@)
+        out@ == self.spec_parse_inner(raw_page@)
     {
         // TODO carry in from disk invariant -- except it's physical, not represented at the model level
         assume( self.fmt.parsable(raw_page@) );

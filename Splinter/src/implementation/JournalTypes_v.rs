@@ -7,6 +7,9 @@ use crate::marshalling::IntegerMarshalling_v::IntFormat;
 use crate::marshalling::Marshalling_v::Parsedview;
 use crate::marshalling::ResizableUniformSizedSeq_v::ResizableUniformSizedElementSeqFormat;
 use crate::marshalling::KeyedMessageFormat_v::KeyedMessageFormat;
+use crate::spec::KeyType_t::*;
+use crate::spec::Messages_t::*;
+use crate::implementation::OverflowFiction_v::*;
 
 verus! {
 
@@ -22,7 +25,8 @@ pub struct AJournal {
 impl AJournal {
     pub open spec fn wf(self) -> bool
     {
-        forall |i| #![auto] 0 <= i < self.msg_history.len() ==> self.msg_history[i].message is Define
+        &&& self.seq_start + self.msg_history.len() <= u64::MAX
+        &&& forall |i| #![auto] 0 <= i < self.msg_history.len() ==> self.msg_history[i].message is Define
     }
 }
 
@@ -56,12 +60,44 @@ pub struct Journal {
     pub seq_start: ILsn,
 }
 
+impl Journal {
+    pub fn new_empty() -> (out: Self)
+        ensures out@@.wf(), out@@.is_empty(), out.seq_start == 0
+    {
+        Journal{ msg_history: vec![], seq_start:0 }
+    }
+
+    pub fn seq_end(&self) -> (out: ILsn)
+        requires self@.wf()
+        ensures self@@.seq_end == out
+    {
+        let out = self.seq_start + self.msg_history.len() as u64;
+        assert( self@@.seq_end == out );
+        out
+    }
+
+    pub fn insert(&mut self, key: Key, value: Value)
+        requires old(self)@.wf()
+        ensures
+            self@.wf(),
+            self@@.seq_start == old(self)@@.seq_start,
+            self@@.seq_end == old(self)@@.seq_end+1,
+            self@@.msgs =~= old(self)@@.msgs.insert(old(self)@@.seq_end,
+                KeyedMessage{key, message: Message::Define{value}}),
+    {
+        if self.seq_end() == u64::MAX {
+            convert_overflow_into_liveness_failure();
+        }
+        self.msg_history.push(KeyedMessage{key, message: Message::Define{value}});
+    }
+}
+
 impl View for Journal {
-    type V = MsgHistory;
+    type V = AJournal;
 
     open spec fn view(&self) -> Self::V
     {
-        self.parsedv()@
+        self.parsedv()
     }
 }
 

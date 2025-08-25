@@ -37,6 +37,7 @@ use crate::implementation::SuperblockTypes_v::*;
 use crate::marshalling::Marshalling_v::Parsedview;
 use crate::marshalling::WF_v::WF;
 // use crate::marshalling::UniformSized_v::UniformSized;
+use crate::implementation::OverflowFiction_v::*;
 
 #[allow(unused_imports)]
 use vstd::multiset::*;
@@ -104,52 +105,6 @@ pub type ReplyShard = KVStoreTokenized::replies<ConcreteProgramModel>;
 pub type DiskRespShard = KVStoreTokenized::disk_responses_multiset<ConcreteProgramModel>;
 pub type DiskReqShard = KVStoreTokenized::disk_requests_multiset<ConcreteProgramModel>;
 
-
-impl Journal {
-    pub open spec fn inv(self) -> bool
-    {
-        &&& self@.wf()
-        &&& self.seq_start + self.msg_history.len() <= u64::MAX
-    }
-
-    fn new_empty() -> (out: Self)
-        ensures out.inv(), out@.is_empty(), out.seq_start == 0
-    {
-        Journal{ msg_history: vec![], seq_start:0 }
-    }
-
-    fn seq_end(&self) -> (out: ILsn)
-        requires self.inv()
-        ensures self@.seq_end == out
-    {
-        let out = self.seq_start + self.msg_history.len() as u64;
-        assert( self@.seq_end == out );
-        out
-    }
-
-    fn insert(&mut self, key: Key, value: Value)
-        requires old(self).inv()
-        ensures
-            self.inv(),
-            self@.seq_start == old(self)@.seq_start,
-            self@.seq_end == old(self)@.seq_end+1,
-            self@.msgs =~= old(self)@.msgs.insert(old(self)@.seq_end,
-                KeyedMessage{key, message: Message::Define{value}}),
-    {
-        if self.seq_end() == u64::MAX {
-            convert_overflow_into_liveness_failure();
-        }
-        self.msg_history.push(KeyedMessage{key, message: Message::Define{value}});
-    }
-}
-
-#[verifier::exec_allows_no_decreases_clause]
-pub fn convert_overflow_into_liveness_failure()
-    ensures false
-{
-    loop {}
-}
-
 pub struct Inflight {
     // Together this is the implementation of a StampedMap
     truncate_version: ILsn,     // this will be the version of the new persistent map (when it lands)
@@ -194,9 +149,9 @@ impl Implementation {
     // TODO delete this is nonsense now we have a real store
 //     broadcast proof fn view_as_kmmap_ensures(self)
 //         requires self.persistent_version() <= self.version(), self.journal.seq_start == 0
-//         ensures #[trigger] self.view_as_kmmap() =~= MsgHistory::map_plus_history(StampedMap_v::empty(), self.journal@).value
+//         ensures #[trigger] self.view_as_kmmap() =~= MsgHistory::map_plus_history(StampedMap_v::empty(), self.journal@@).value
 //     { 
-//         assert(self.journal@.discard_recent((self.journal@.seq_end) as nat) =~= self.journal@);
+//         assert(self.journal@@.discard_recent((self.journal@@.seq_end) as nat) =~= self.journal@@);
 //     }
 
     pub closed spec fn i(self) -> AtomicState {
@@ -219,7 +174,7 @@ impl Implementation {
         let state = self.state();
 
         &&& self.store.wf()
-        &&& self.journal.inv()
+        &&& self.journal@.wf()
         &&& self.model@.instance_id() == self.instance@.id()
         &&& state.recovery_state is RecoveryComplete
 
@@ -337,10 +292,10 @@ impl Implementation {
             self.journal.insert(key.clone(), value);
             self.store.insert(key.clone(), value);
 
-            assert(self.journal@.msgs == old(self).journal@.msgs.insert(old(self).journal@.seq_end,
+            assert(self.journal@@.msgs == old(self).journal@@.msgs.insert(old(self).journal@@.seq_end,
                 KeyedMessage{key, message: Message::Define{value}}));
 
-            assert(self.journal@.msgs[old(self).journal@.seq_end].key == key);
+            assert(self.journal@@.msgs[old(self).journal@@.seq_end].key == key);
 
             assert(self.store@.contains_key(key));
 
@@ -367,8 +322,8 @@ impl Implementation {
                 reveal(MapSpec::State::next);
                 reveal(MapSpec::State::next_by);
 
-                assert forall |lsn| self.journal@.seq_start <= lsn <= old(self).journal@.seq_end
-                implies self.journal@.discard_recent(lsn) =~= old(self).journal@.discard_recent(lsn) by {}
+                assert forall |lsn| self.journal@@.seq_start <= lsn <= old(self).journal@@.seq_end
+                implies self.journal@@.discard_recent(lsn) =~= old(self).journal@@.discard_recent(lsn) by {}
 
                 assert(self.view_as_kmmap() =~= old(self).view_as_kmmap().insert(key, Message::Define{value}));
                 assert( MapSpec::State::next_by(pre_state.state.mapspec(), post_state.state.mapspec(), map_lbl, MapSpec::Step::put())); // witness to step
@@ -535,7 +490,8 @@ impl Implementation {
     {
         proof { self.system_inv_implies_atomic_state_wf(); }
 
-        assert( self.journal.inv() );
+        assert( self.journal@@.wf() );
+        assert( self.journal@.wf() );
         let version = self.journal.seq_end();
         // let ghost version_index = self.version();
 
@@ -593,9 +549,9 @@ impl Implementation {
 
         proof {
             let pre_sb = self.state().ephemeral_sb();
-            // assert(pre_sb.store == self.journal@);
+            // assert(pre_sb.store == self.journal@@);
             assert(pre_sb.version_index as nat == self.version()) by {
-//                 self.journal@.apply_to_stamped_map_length_lemma(StampedMap_v::empty());
+//                 self.journal@@.apply_to_stamped_map_length_lemma(StampedMap_v::empty());
             }
             assert( disk_reqs == Multiset::singleton(
                 (disk_event.arrow_ExecuteSyncBegin_req_id(),
@@ -610,10 +566,9 @@ impl Implementation {
             assume( sb@@.version_index == pre_sb.version_index );    // clone problem?
             assert( sb@@ == pre_sb );
             // Problem 2: need to pad superblock so we don't have to talk about its truncation?
-            assume( DiskLayout::spec_new().spec_parse(disk_request@->data) == sb@@ );
-            assert( DiskLayout::spec_new().spec_parse(disk_request@->data) == pre_sb );
+//             assert( DiskLayout::spec_new().spec_parse(disk_request@->data) == sb@@ );
+//             assert( DiskLayout::spec_new().spec_parse(disk_request@->data) == pre_sb );
 
-            assume(false);
             assert( AtomicState::disk_transition(self.state(), post_state.state, disk_event, info.reqs, info.resps) );  // witness
         }
 
@@ -631,6 +586,9 @@ impl Implementation {
 
         assert( new_reply_token.multiset() == multiset_map_singleton(req_id_perm@, disk_request@) );    // extn
         api.send_disk_request(disk_request, req_id_perm, Tracked(new_reply_token));
+
+        assert( self.state().in_flight is Some );
+        assume( self.in_flight is Some );   // we should probably update that, huh?
     }
 
     exec fn deliver_inflight_replies(&mut self, ready_reqs: &mut Vec<Request>, api: &mut ClientAPI<ConcreteProgramModel>)
@@ -958,9 +916,9 @@ impl Implementation {
             let layout = DiskLayout::new();
             let superblock: ISuperblock = layout.parse(&raw_page);
             Self::debug_print(&superblock);
-            assert( superblock.wf() ) by {
+            assert( superblock@.wf() ) by {
                 open_system_invariant_disk_response_singleton::<ConcreteProgramModel, RefinementProof>(self.model, disk_response_token, disk_req_id, i_disk_response@);
-                assume( false );    // left off: use DiskLayout::impl_inv
+                DiskLayout::spec_new().invoke_impl_inv(raw_page@);
             }
             if superblock.journal.msg_history.len() > 0 {
                 api.log("Unimplemented: non-empty journal on recover");
@@ -972,7 +930,7 @@ impl Implementation {
             self.journal = superblock.journal;
 
             // Compute the next ghost model and transition our token
-//             let ghost superblock_version = superblock.journal@.seq_end;
+//             let ghost superblock_version = superblock.journal@@.seq_end;
 //             let ghost store_map = VecMap::seq_to_map(superblock.store@);
 //             let ghost post_superblock = superblock@;
             let ghost post_state = ConcreteProgramModel{

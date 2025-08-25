@@ -4,7 +4,7 @@ use vstd::{prelude::*};
 use crate::marshalling::Slice_v::Slice;
 use crate::marshalling::UniformSized_v::UniformSized;
 use crate::marshalling::Marshalling_v::*;
-use crate::marshalling::WF_v::*;
+// use crate::marshalling::WF_v::*;
 use crate::marshalling::UniformPairFormat_v::uniform_size_matches_spec_size;
 
 verus! {

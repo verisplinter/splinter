@@ -73,15 +73,18 @@ impl SystemModel::State<ConcreteProgramModel>  {
         &&& {
             let sb : Superblock = DiskLayout::spec_new().spec_parse(self.disk.content[spec_superblock_addr()]);
             &&& sb.store.appv.invariant()
-            &&& self.program.state.client_ready() ==> {
-                // on disk sb either contains inflight sb or persistent sb
-                let in_flight = self.program.state.in_flight;
-                if in_flight is Some && self.disk.responses.contains_key(in_flight.unwrap().req_id) {
-                    sb == self.program.state.in_flight_sb()
+            &&& if self.program.state.client_ready() {
+                    // on disk sb either contains inflight sb or persistent sb
+                    let in_flight = self.program.state.in_flight;
+                    if in_flight is Some && self.disk.responses.contains_key(in_flight.unwrap().req_id) {
+                        sb == self.program.state.in_flight_sb()
+                    } else {
+                        sb == self.program.state.persistent_sb()
+                    }
                 } else {
-                    sb == self.program.state.persistent_sb()
+                    forall |id| #![auto] self.disk.responses.contains_key(id) ==>
+                        self.disk.responses[id] == DiskResponse::ReadResp{data: self.disk.content[spec_superblock_addr()]}
                 }
-            }
         }
     }
 
