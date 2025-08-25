@@ -108,12 +108,11 @@ impl ISuperblock {
 }
 
 impl View for ISuperblock {
-    type V = Superblock;
+    type V = ASuperblock;
 
     open spec fn view(&self) -> Self::V
     {
-        // promote to ASuperblock, thence to Superblock
-        self.parsedv()@
+        self.parsedv()
     }
 }
 

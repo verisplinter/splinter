@@ -79,7 +79,7 @@ impl DiskLayout {
     requires
         self.wf(),
     ensures
-        sb@ == self.spec_parse(out@),
+        sb@@ == self.spec_parse(out@),
     {
         assert( self.fmt.valid() );
         assume( self.fmt.marshallable(sb.parsedv()) );
@@ -105,7 +105,7 @@ impl DiskLayout {
     requires
         self.wf(),
     ensures
-        out@ == self.spec_parse(raw_page@)
+        out@@ == self.spec_parse(raw_page@)
     {
         // TODO carry in from disk invariant -- except it's physical, not represented at the model level
         assume( self.fmt.parsable(raw_page@) );
@@ -113,7 +113,7 @@ impl DiskLayout {
         let all_slice = Slice::all(raw_page);
         assert( all_slice@.i(raw_page@) == raw_page@ );
         let out = self.fmt.exec_parse(&all_slice, raw_page);
-        assert( out@ == self.spec_parse(raw_page@) );
+        assert( out@@ == self.spec_parse(raw_page@) );
         out
     }
 

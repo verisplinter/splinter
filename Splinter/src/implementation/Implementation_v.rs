@@ -604,13 +604,13 @@ impl Implementation {
 
             // Problem 1
             let asb: ASuperblock = sb.parsedv();
-            assert( asb@ == sb@ );
+            assert( asb@ == sb@@ );
 //             assert( sb@.store == VecMap::seq_to_map(pre_cloned_store@) );
-            assume( sb@.store == pre_sb.store );    // clone problem?
-            assume( sb@.version_index == pre_sb.version_index );    // clone problem?
-            assert( sb@ == pre_sb );
+            assume( sb@@.store == pre_sb.store );    // clone problem?
+            assume( sb@@.version_index == pre_sb.version_index );    // clone problem?
+            assert( sb@@ == pre_sb );
             // Problem 2: need to pad superblock so we don't have to talk about its truncation?
-            assume( DiskLayout::spec_new().spec_parse(disk_request@->data) == sb@ );
+            assume( DiskLayout::spec_new().spec_parse(disk_request@->data) == sb@@ );
             assert( DiskLayout::spec_new().spec_parse(disk_request@->data) == pre_sb );
 
             assume(false);
@@ -978,7 +978,7 @@ impl Implementation {
             let ghost post_state = ConcreteProgramModel{
                 state: AtomicState {
                     recovery_state: RecoveryState::RecoveryComplete,
-                    history: superblock@.initial_history(),
+                    history: superblock@@.initial_history(),
                     in_flight: None,
                     sync_req_map: Map::empty(),
                 }
