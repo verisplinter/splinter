@@ -501,7 +501,7 @@ impl Implementation {
         let mut tmp_journal = Journal::new_empty();
         std::mem::swap(&mut self.journal, &mut tmp_journal);
         let mut tmp_store = VecMap::new();
-        std::mem::swap(&mut self.store, &mut tmp_store);
+        std::mem::swap(&mut self.persistent_store, &mut tmp_store);
         // Why are we doing all this nonsense? Can't we just borrow this stuff immutably?
 
         let pre_cloned_store = tmp_store.borrow_vec();
@@ -519,7 +519,7 @@ impl Implementation {
 
         let ISuperblock{journal: mut tmp_journal, /*store: mut tmp_store,*/ ..} = sb;
         std::mem::swap(&mut self.journal, &mut tmp_journal);    // un-yoink
-        std::mem::swap(&mut self.store, &mut tmp_store);    // un-yoink
+        std::mem::swap(&mut self.persistent_store, &mut tmp_store);    // un-yoink
 
         let req_id_perm = Tracked( api.send_disk_request_predict_id() );
         let ghost disk_req_id = req_id_perm@;
