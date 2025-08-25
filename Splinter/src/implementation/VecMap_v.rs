@@ -6,6 +6,8 @@ use builtin_macros::*;
 use vstd::prelude::*;
 use crate::spec::injective_t::*;
 use crate::marshalling::WF_v::WF;
+use crate::spec::KeyType_t::Key;
+use crate::spec::Messages_t::Value;
 
 verus!{
 
@@ -316,20 +318,20 @@ where Key: View + Injective + Eq + Structural
     }
 }
 
-// We didn't want to clone this anyway. Huff.
-// impl<Key,Value> Clone for (Key,Value) {
-//     fn clone(&self) -> Self {
-//         return (self.0.clone(), self.1.clone())
-//     }
-// }
-// 
-// impl<Key, Value> Clone for VecMap<Key, Value>
-// where Key: View + Eq + Structural
-// {
-//     fn clone(&self) -> Self {
-//         VecMap{v: self.v.clone()}
-//     }
-// }
-
+impl<Key: Clone, Value: Clone> VecMap<Key,Value>
+where Key: View + Injective + Eq + Structural
+{
+    #[verifier::external_body]
+    pub fn clone(&self) -> (out: Self)
+        ensures out == self
+    {
+        // Argh, Tuple () isn't Clone!
+        let mut out = vec![];
+        for (key,value) in &self.v {
+            out.push((key.clone(), value.clone()));
+        }
+        VecMap{v: out}
+    }
+}
 
 }

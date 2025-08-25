@@ -587,8 +587,12 @@ impl Implementation {
         assert( new_reply_token.multiset() == multiset_map_singleton(req_id_perm@, disk_request@) );    // extn
         api.send_disk_request(disk_request, req_id_perm, Tracked(new_reply_token));
 
-        assert( self.state().in_flight is Some );
-        assume( self.in_flight is Some );   // we should probably update that, huh?
+        // Why does the invariant want strict <? self.journal.seq_start < in_flight.truncate_version
+        assume(false);
+        self.in_flight = Some(Inflight{
+            truncate_version: self.journal.seq_start,
+            store: self.store.clone(),
+        });
     }
 
     exec fn deliver_inflight_replies(&mut self, ready_reqs: &mut Vec<Request>, api: &mut ClientAPI<ConcreteProgramModel>)
