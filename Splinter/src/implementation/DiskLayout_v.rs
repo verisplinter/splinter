@@ -14,6 +14,7 @@ use crate::marshalling::Marshalling_v::*;
 use crate::marshalling::Slice_v::*;
 use crate::trusted::ClientAPI_t::BLOCK_SIZE;
 use crate::marshalling::UniformSized_v::UniformSized;
+use crate::marshalling::WF_v::WF;
 use crate::marshalling::UniformPairFormat_v::uniform_size_matches_spec_size;
 
 verus! {
@@ -46,9 +47,17 @@ impl DiskLayout {
         &&& self.fmt.uniform_size() == BLOCK_SIZE
     }
 
+    // LEFT OFF:
+    // Problem is that, right now, I have a 'wf' feature on ISuperblock, but that's only
+    // an exec type; we can't talk about it because the result of spec fn parse is a Superblock.
+    // Okay, maybe we should add these features to 'parsable', and make them a condition
+    // of ISuperblockFormat::marshall? Maybe a reasonable direction, but right now
+    // ISuperblockFormat is a type synonym for PaddedFormat. I'll need to construct a wrapper.
     pub closed spec fn impl_inv(raw_page_0: RawPage) -> bool
     {
         true
+//         let sb: ISuperblock = Self::spec_new().spec_parse(raw_page_0);
+//         sb.wf()
     }
 
 //     pub closed spec fn spec_marshall(self, superblock: Superblock) -> (out: RawPage)
