@@ -11,17 +11,17 @@ use crate::marshalling::WF_v::WF;
 
 verus! {
 
-pub trait Deepview<DV> {
+pub trait Parsedview<DV> {
     //type DV = DV;
 
     spec fn deepv(&self) -> DV;
 }
 
 // VSE == ViewSeqElt
-// If you have an Elt type that implements Deepview<DVE>,
-// you may have a Vec<Elt> that implements Deepview<Seq<DVE>>.
-impl<DVE, Elt: Deepview<DVE>> Deepview<Seq<DVE>> for Vec<Elt> {
-    //type DV = Seq<<T as Deepview>::DV>;
+// If you have an Elt type that implements Parsedview<DVE>,
+// you may have a Vec<Elt> that implements Parsedview<Seq<DVE>>.
+impl<DVE, Elt: Parsedview<DVE>> Parsedview<Seq<DVE>> for Vec<Elt> {
+    //type DV = Seq<<T as Parsedview>::DV>;
 
     open spec fn deepv(&self) -> Seq<DVE> {
         Seq::new(self.len() as nat, |i: int| self[i].deepv())
@@ -42,7 +42,7 @@ impl<DVE, Elt: Deepview<DVE>> Deepview<Seq<DVE>> for Vec<Elt> {
 //
 pub trait Marshal {
     type DV;                // The view (spec) type
-    type U: WF + Deepview<Self::DV>;    // The runtime type
+    type U: WF + Parsedview<Self::DV>;    // The runtime type
 
     spec fn valid(&self) -> bool;
 

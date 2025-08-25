@@ -3,7 +3,7 @@
 use vstd::{prelude::*};
 use crate::abstract_system::MsgHistory_v::KeyedMessage;
 use crate::marshalling::Marshalling_v::Marshal;
-use crate::marshalling::Marshalling_v::Deepview;
+use crate::marshalling::Marshalling_v::Parsedview;
 use crate::marshalling::IntegerMarshalling_v::*;
 use crate::marshalling::ResizableUniformSizedSeq_v::ResizableUniformSizedElementSeqFormat;
 use crate::marshalling::KeyedMessageFormat_v::KeyedMessageFormat;
@@ -15,7 +15,7 @@ use crate::marshalling::WF_v::WF;
 verus! {
 
 // Move to KeyedMessage?
-impl Deepview<KeyedMessage> for KeyedMessage {
+impl Parsedview<KeyedMessage> for KeyedMessage {
     open spec fn deepv(&self) -> KeyedMessage { *self }
 }
 

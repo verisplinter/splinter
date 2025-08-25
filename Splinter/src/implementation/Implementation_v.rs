@@ -34,7 +34,7 @@ use crate::implementation::MultisetMapRelation_v::*;
 use crate::implementation::VecMap_v::*;
 use crate::implementation::JournalTypes_v::*;
 use crate::implementation::SuperblockTypes_v::*;
-use crate::marshalling::Marshalling_v::Deepview;
+use crate::marshalling::Marshalling_v::Parsedview;
 use crate::marshalling::WF_v::WF;
 // use crate::marshalling::UniformSized_v::UniformSized;
 

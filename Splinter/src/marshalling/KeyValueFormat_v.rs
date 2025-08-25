@@ -3,7 +3,7 @@
 use vstd::{prelude::*};
 use crate::spec::KeyType_t::*;
 use crate::spec::Messages_t::*;
-use crate::marshalling::Marshalling_v::Deepview;
+use crate::marshalling::Marshalling_v::Parsedview;
 use crate::marshalling::IntegerMarshalling_v::IntFormat;
 use crate::marshalling::Wrappable_v::*;
 use crate::marshalling::WF_v::WF;
@@ -67,7 +67,7 @@ impl Wrappable for KeyValueFormatWrappable {
 
 pub type KeyValueFormat = WrappableFormat<KeyValueFormatWrappable>;
 
-impl Deepview<(Key,Value)> for (Key,Value) {
+impl Parsedview<(Key,Value)> for (Key,Value) {
     open spec fn deepv(&self) -> (Key,Value) { (self.0, self.1) }
 }
 

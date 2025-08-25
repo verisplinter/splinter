@@ -18,7 +18,7 @@ use crate::trusted::ClientAPI_t::BLOCK_SIZE;
 
 verus! {
 
-impl Deepview<ASuperblock> for ISuperblock {
+impl Parsedview<ASuperblock> for ISuperblock {
     open spec fn deepv(&self) -> ASuperblock {
         ASuperblock{
             journal: self.journal.deepv(),

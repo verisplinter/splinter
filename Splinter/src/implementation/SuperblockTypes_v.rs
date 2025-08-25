@@ -6,7 +6,7 @@ use crate::spec::FloatingSeq_t::*;
 use crate::spec::KeyType_t::*;
 use crate::spec::Messages_t::*;
 use crate::implementation::VecMap_v::*;
-use crate::marshalling::Marshalling_v::Deepview;
+use crate::marshalling::Marshalling_v::Parsedview;
 use crate::marshalling::WF_v::WF;
 use crate::implementation::JournalTypes_v::*;
 use crate::spec::TotalKMMap_t::*;

@@ -71,12 +71,12 @@ where KMarshal::U : Eq + Hash
 }
 
 // impl<KMarshal: Marshal + Eq + Hash, VMarshal: Marshal>
-// Deepview<Map<KMarshal::DV, VMarshal::DV>> for HashMapWithView<KMarshal::U, VMarshal::U> {
+// Parsedview<Map<KMarshal::DV, VMarshal::DV>> for HashMapWithView<KMarshal::U, VMarshal::U> {
 // impl<KDV,KU,VDV,VU>
-// Deepview<Map<KDV,VDV>> for HashMapWithView<KU,VU>
+// Parsedview<Map<KDV,VDV>> for HashMapWithView<KU,VU>
 // where
-//     KU : View<V = KDV> + Deepview<KDV> + Eq + Hash,
-//     VU : View<V = VDV> + Deepview<VDV>,
+//     KU : View<V = KDV> + Parsedview<KDV> + Eq + Hash,
+//     VU : View<V = VDV> + Parsedview<VDV>,
 // //     KDV = <KU as View>::V,
 // //     VDV = <VU as View>::V,
 // {
@@ -326,7 +326,7 @@ spec fn view_injective<T: View>() -> bool
     forall |e1: T, e2: T| e1@==e2@ ==> e1==e2
 }
 
-// spec fn view_is_deepview<T: View + Deepview<<T as View>::V>>() -> bool
+// spec fn view_is_deepview<T: View + Parsedview<<T as View>::V>>() -> bool
 // {
 //     forall |e: T| #![auto] e@ == e.deepv()
 // }
@@ -335,7 +335,7 @@ impl<KMarshal: Marshal + UniformSized, VMarshal: Marshal + UniformSized>
 HashMapFormat<KMarshal, VMarshal>
 where
     <KMarshal as Marshal>::U : View + Eq + Hash,
-    HashMapWithView<KMarshal::U, VMarshal::U>: Deepview<Map<KMarshal::DV, VMarshal::DV>>
+    HashMapWithView<KMarshal::U, VMarshal::U>: Parsedview<Map<KMarshal::DV, VMarshal::DV>>
 // where
 //     <KMarshal as Marshal>::U : View<V = <KMarshal as Marshal>::DV> + Eq + Hash,
 //     <VMarshal as Marshal>::U : View<V = <VMarshal as Marshal>::DV>,
@@ -413,7 +413,7 @@ impl<KMarshal: Marshal + UniformSized, VMarshal: Marshal + UniformSized>
 Marshal for HashMapFormat<KMarshal, VMarshal>
 where
     <KMarshal as Marshal>::U : View + Eq + Hash,
-    HashMapWithView<KMarshal::U, VMarshal::U>: Deepview<Map<KMarshal::DV, VMarshal::DV>>
+    HashMapWithView<KMarshal::U, VMarshal::U>: Parsedview<Map<KMarshal::DV, VMarshal::DV>>
 // This type-equality constraint is here because we're trying to relate the View
 // of HashMapWithView to the result of the Marshaling library taking the deepv()
 // of the same thing. Maybe it would be easier to simply demand a deepv on

@@ -4,7 +4,7 @@ use vstd::{prelude::*};
 use crate::spec::KeyType_t::*;
 use crate::spec::Messages_t::*;
 use crate::marshalling::Marshalling_v::Marshal;
-use crate::marshalling::Marshalling_v::Deepview;
+use crate::marshalling::Marshalling_v::Parsedview;
 use crate::marshalling::Slice_v::Slice;
 use crate::marshalling::WF_v::WF;
 use crate::marshalling::KeyValueFormat_v::*;
@@ -13,7 +13,7 @@ use crate::implementation::VecMap_v::*;
 
 verus! {
 
-impl Deepview<Map<Key, Value>> for VecMap<Key,Value> {
+impl Parsedview<Map<Key, Value>> for VecMap<Key,Value> {
     open spec fn deepv(&self) -> Map<Key, Value> {
         self@
     }

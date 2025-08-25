@@ -4,7 +4,7 @@ use vstd::{prelude::*};
 use crate::abstract_system::MsgHistory_v::{MsgHistory, KeyedMessage};
 use crate::abstract_system::StampedMap_v::*;
 use crate::marshalling::IntegerMarshalling_v::IntFormat;
-use crate::marshalling::Marshalling_v::Deepview;
+use crate::marshalling::Marshalling_v::Parsedview;
 use crate::marshalling::ResizableUniformSizedSeq_v::ResizableUniformSizedElementSeqFormat;
 use crate::marshalling::KeyedMessageFormat_v::KeyedMessageFormat;
 
@@ -44,7 +44,7 @@ impl View for AJournal
 
 // The deepview only takes us up to AJournal, so that the marshalling spec fns talk
 // about Seq<KeyedMessage>, not the Map-shaped MsgHistory object.
-impl Deepview<AJournal> for Journal {
+impl Parsedview<AJournal> for Journal {
     open spec fn deepv(&self) -> AJournal {
         AJournal{msg_history: self.msg_history@, seq_start: self.seq_start}
     }

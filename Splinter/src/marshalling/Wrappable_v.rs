@@ -2,14 +2,14 @@
 // SPDX-License-Identifier: BSD-2-Clause
 use vstd::{prelude::*};
 use crate::marshalling::Slice_v::Slice;
-use crate::marshalling::Marshalling_v::{Marshal, Deepview};
+use crate::marshalling::Marshalling_v::{Marshal, Parsedview};
 use crate::marshalling::UniformPairFormat_v::*;
 use crate::marshalling::UniformSized_v::UniformSized;
 use crate::marshalling::WF_v::WF;
 
 verus! {
 
-impl<ADV,AU:Deepview<ADV>,BDV,BU:Deepview<BDV>> Deepview<(ADV,BDV)> for (AU,BU)
+impl<ADV,AU:Parsedview<ADV>,BDV,BU:Parsedview<BDV>> Parsedview<(ADV,BDV)> for (AU,BU)
 {
     open spec fn deepv(&self) -> (ADV,BDV) { (self.0.deepv(), self.1.deepv()) }
 }
@@ -21,7 +21,7 @@ pub trait Wrappable {
     type AF: Marshal + UniformSized;
     type BF: Marshal + UniformSized;
     type DV;
-    type U: WF + Deepview<Self::DV>;
+    type U: WF + Parsedview<Self::DV>;
 
     spec fn value_marshallable(value: Self::DV) -> bool
     ;

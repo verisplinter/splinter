@@ -20,7 +20,7 @@ verus! {
 
 // An int type T can be IntFormat<T> if we know these things about it:
 
-pub trait IntFormattable : WF + Deepview<int> + builtin::Integer + Sized + SpecOrd + Copy + StaticallySized
+pub trait IntFormattable : WF + Parsedview<int> + builtin::Integer + Sized + SpecOrd + Copy + StaticallySized
 {
     // generic wrappers over vstd::bytes, which should probably be rewritten this way.
     spec fn spec_from_le_bytes(s: Seq<u8>) -> Self
@@ -105,7 +105,7 @@ pub trait IntFormattable : WF + Deepview<int> + builtin::Integer + Sized + SpecO
 // u8
 //////////////////////////////////////////////////////////////////////////////
 
-impl Deepview<int> for u8 {
+impl Parsedview<int> for u8 {
     //type DV = int;
     open spec fn deepv(&self) -> int { *self as int }
 }
@@ -185,7 +185,7 @@ impl IntFormattable for u8 {
 // u16
 //////////////////////////////////////////////////////////////////////////////
 
-impl Deepview<int> for u16 {
+impl Parsedview<int> for u16 {
     //type DV = int;
     open spec fn deepv(&self) -> int { *self as int }
 }
@@ -257,7 +257,7 @@ impl IntFormattable for u16 {
 // u32
 //////////////////////////////////////////////////////////////////////////////
 
-impl Deepview<int> for u32 {
+impl Parsedview<int> for u32 {
     //type DV = int;
     open spec fn deepv(&self) -> int { *self as int }
 }
@@ -329,7 +329,7 @@ impl IntFormattable for u32 {
 // u64
 //////////////////////////////////////////////////////////////////////////////
 
-impl Deepview<int> for u64 {
+impl Parsedview<int> for u64 {
     //type DV = int;
     open spec fn deepv(&self) -> int { *self as int }
 }

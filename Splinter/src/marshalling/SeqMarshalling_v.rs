@@ -22,7 +22,7 @@ verus! {
 
 pub trait SeqMarshal {
     type DVElt;                         // The view (spec) type of each element
-    type Elt: WF + Deepview<Self::DVElt>;    // The runtime type of each element
+    type Elt: WF + Parsedview<Self::DVElt>;    // The runtime type of each element
 
     spec fn seq_valid(&self) -> bool;
 

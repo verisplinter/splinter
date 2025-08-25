@@ -19,7 +19,7 @@ use vstd::{prelude::*};
 
 verus! {
 
-// impl Deepview<Superblock> for ISuperblock {
+// impl Parsedview<Superblock> for ISuperblock {
 //     open spec fn deepv(&self) -> Superblock {
 //         self@
 //     }

@@ -34,9 +34,9 @@ pub struct KVPair<K, V> {
 
 pub trait KVTrait {
 //     type KDV;
-//     type K: Deepview<Self::KDV>;
+//     type K: Parsedview<Self::KDV>;
 //     type VDV;
-//     type V: Deepview<Self::VDV>;
+//     type V: Parsedview<Self::VDV>;
 
     // This trait bundles both the deepv relationships
     // (above) and the formatter decisions (below).
@@ -50,10 +50,10 @@ pub trait KVTrait {
     exec fn value_format(&self) -> &Self::ValueFormat;
 }
 
-// TODO: Generalize from Vec<u8> to some Deepviewable types.
-impl<KDV, VDV, KU, VU> Deepview<SpecKVPair<KDV,VDV>> for KVPair<KU,VU>
-where KU: Deepview<KDV>,
-      VU: Deepview<VDV>,
+// TODO: Generalize from Vec<u8> to some Parsedviewable types.
+impl<KDV, VDV, KU, VU> Parsedview<SpecKVPair<KDV,VDV>> for KVPair<KU,VU>
+where KU: Parsedview<KDV>,
+      VU: Parsedview<VDV>,
 {
     open spec fn deepv(&self) -> SpecKVPair<KDV, VDV>
     {

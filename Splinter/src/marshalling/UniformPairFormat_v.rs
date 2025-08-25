@@ -3,7 +3,7 @@
 use vstd::{prelude::*};
 use crate::marshalling::Slice_v::Slice;
 use crate::marshalling::WF_v::WF;
-use crate::marshalling::Marshalling_v::{Marshal, Deepview};
+use crate::marshalling::Marshalling_v::{Marshal, Parsedview};
 use crate::marshalling::UniformSized_v::UniformSized;
 
 verus! {
@@ -32,7 +32,7 @@ pub open spec fn uniform_size_matches_spec_size<F: Marshal + UniformSized>(fmt: 
 }
 
 impl<AF: Marshal + UniformSized, BF: Marshal + UniformSized> Marshal for UniformPairFormat<AF, BF>
-    where (AF::U, BF::U): Deepview<(AF::DV, BF::DV)> 
+    where (AF::U, BF::U): Parsedview<(AF::DV, BF::DV)> 
 {
     type DV = (AF::DV, BF::DV);
     type U = (AF::U, BF::U);
