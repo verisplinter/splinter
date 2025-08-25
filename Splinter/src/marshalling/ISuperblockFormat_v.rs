@@ -19,9 +19,9 @@ use crate::trusted::ClientAPI_t::BLOCK_SIZE;
 verus! {
 
 impl Parsedview<ASuperblock> for ISuperblock {
-    open spec fn deepv(&self) -> ASuperblock {
+    open spec fn parsedv(&self) -> ASuperblock {
         ASuperblock{
-            journal: self.journal.deepv(),
+            journal: self.journal.parsedv(),
             store: self.store@,
         }
     }
@@ -64,7 +64,7 @@ impl Wrappable for SuperblockJSWrappable {
         // TODO(jonh): why aren't we getting a clone spec?
         assume( journal_clone == value.journal );
         assume( store_clone == value.store );
-        assert( Self::to_pair((*value).deepv()) == pair.deepv() );  // verus #1534
+        assert( Self::to_pair((*value).parsedv()) == pair.parsedv() );  // verus #1534
         assume( pair.wf() );    // TODO(jonh)
         pair
     }
@@ -72,8 +72,8 @@ impl Wrappable for SuperblockJSWrappable {
     exec fn exec_from_pair(pair: (Journal, Vec<(Key, Value)>)) -> (u: Self::U)
     {
         let u = Self::U{ journal: pair.0, store: pair.1 };
-        assert( u.deepv().store == Self::from_pair(pair.deepv()).store );   // extn
-//         assert( u.deepv() == Self::from_pair(pair.deepv()) );
+        assert( u.parsedv().store == Self::from_pair(pair.parsedv()).store );   // extn
+//         assert( u.parsedv() == Self::from_pair(pair.parsedv()) );
         u
     }
 

@@ -38,7 +38,7 @@ pub trait KVTrait {
 //     type VDV;
 //     type V: Parsedview<Self::VDV>;
 
-    // This trait bundles both the deepv relationships
+    // This trait bundles both the parsedv relationships
     // (above) and the formatter decisions (below).
     // I'm okay with that, because I don't think we're ever
     // going to care to decouple those decisions.
@@ -55,9 +55,9 @@ impl<KDV, VDV, KU, VU> Parsedview<SpecKVPair<KDV,VDV>> for KVPair<KU,VU>
 where KU: Parsedview<KDV>,
       VU: Parsedview<VDV>,
 {
-    open spec fn deepv(&self) -> SpecKVPair<KDV, VDV>
+    open spec fn parsedv(&self) -> SpecKVPair<KDV, VDV>
     {
-        SpecKVPair{key: self.key.deepv(), value: self.value.deepv()}
+        SpecKVPair{key: self.key.parsedv(), value: self.value.parsedv()}
     }
 }
 
@@ -287,7 +287,7 @@ impl<KVTypes: KVTrait> Marshal for KVPairFormat<KVTypes> {
             // trigger slice extn equality
             assert( value_slice@.i(data@)
                 == self.get_value_subslice(SpecSlice::all(idata), keylen as int).i(idata) );
-            assert( kvpair.deepv() == self.parse(idata) );  // extn
+            assert( kvpair.parsedv() == self.parse(idata) );  // extn
         }
 
         Some(kvpair)
@@ -326,7 +326,7 @@ impl<KVTypes: KVTrait> Marshal for KVPairFormat<KVTypes> {
 
             // goal
 //             assert( self.value_fmt.parse(self.get_key_slice(self.get_keylen_elt(data_after_key)).i(data_after_key)) ==
-//                 kvpair.key.deepv() );
+//                 kvpair.key.parsedv() );
         }
 
         // ** Marshall the value
@@ -346,7 +346,7 @@ impl<KVTypes: KVTrait> Marshal for KVPairFormat<KVTypes> {
                 self.get_value_subslice(SpecSlice::all(data_after_value), keylen).i(data_after_value) );
 
             // goal
-//             assert( self.parse(data@.subrange(start as int, end as int)) == kvpair.deepv() );
+//             assert( self.parse(data@.subrange(start as int, end as int)) == kvpair.parsedv() );
         }
         end
     }

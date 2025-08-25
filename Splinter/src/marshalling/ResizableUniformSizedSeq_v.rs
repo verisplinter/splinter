@@ -182,7 +182,7 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
             // Took way too long to track down this lemma call. Decent automation would have been nice.
             assert( dslice@.subslice(0, self.lenf.uniform_size() as int).i(data@)
                     == dslice@.i(data@).subrange(0, self.size_of_length_field() as int) );   // subrange trigger
-            LenType::deepv_is_as_int(parsed_len);
+            LenType::parsedv_is_as_int(parsed_len);
 
             self.length_ensures(dslice@.i(data@));  // trigger for lengthable LenType::max() conjunct
             // goal
@@ -317,7 +317,7 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
             &&& idx < self.max_length
             &&& sz == self.eltf.exec_uniform_size()
         };
-        assert( s == self.settable(dslice@.i(data@), idx as int, value.deepv()) );
+        assert( s == self.settable(dslice@.i(data@), idx as int, value.parsedv()) );
         s
     }
 
@@ -351,7 +351,7 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
         }
             
         // postcondition goal
-        // assert( self.sets(dslice@.i(old(data)@), idx as int, value.deepv(), dslice@.i(data@)) );
+        // assert( self.sets(dslice@.i(old(data)@), idx as int, value.parsedv(), dslice@.i(data@)) );
 
         assume(false);  // TODO proof rot
         proof {
@@ -389,7 +389,7 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
         let length_end = self.lenf.exec_marshall(&length_val, data, dslice.start);
 
         proof {
-            LenType::deepv_is_as_int(length_val);
+            LenType::parsedv_is_as_int(length_val);
 
             let sdata_old = dslice@.i(old(data)@);
             let sdata_new = dslice@.i(data@);
@@ -558,7 +558,7 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
                     result.len() == i,
                     forall |j| 0<=j<i as nat ==> self.gettable(dslice@.i(data@), j),
                     forall |j| 0<=j<i as nat ==> self.elt_parsable(dslice@.i(data@), j),
-                    forall |j| #![auto] 0<=j<i as nat ==> result[j].deepv() == self.get_elt(dslice@.i(data@), j),
+                    forall |j| #![auto] 0<=j<i as nat ==> result[j].parsedv() == self.get_elt(dslice@.i(data@), j),
                 decreases len-i,
                 {
                     assume(false); // proof rotted
@@ -571,7 +571,7 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
                 }
                 // Looks like this wants extensionality, but no ~! Not sure why it's needed.
                 // TODO(verus): Oh maybe it's the trait-ensures-don't-trigger bug?
-                assert( result.deepv() == self.parse(dslice@.i(data@)) );    // trigger.
+                assert( result.parsedv() == self.parse(dslice@.i(data@)) );    // trigger.
                 Some(result)
             }
         }
@@ -606,7 +606,7 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
         proof { length_val.always_wf(); }
         let length_end = self.lenf.exec_marshall(&length_val, data, start);
         proof {
-            LenType::deepv_is_as_int(length_val);
+            LenType::parsedv_is_as_int(length_val);
             // trigger: Extensional equality between the thing we know holds length_val and the self.length defn
             assert( slice@.i(data@).subrange(0, self.size_of_length_field() as int)
                     == SpecSlice{start: start as int, end: length_end as int}.i(data@) );
@@ -622,8 +622,8 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
                 self.eltf.uniform_size() as int);
         }
         
-        assert forall |j| #![auto] 0 <= j < value.len() implies self.settable(slice@.i(data@), j, value[j].deepv()) by {
-            assert( self.marshallable_at(value.deepv(), j) );   // trigger
+        assert forall |j| #![auto] 0 <= j < value.len() implies self.settable(slice@.i(data@), j, value[j].parsedv()) by {
+            assert( self.marshallable_at(value.parsedv(), j) );   // trigger
         }
 
         while i < value.len()
@@ -633,7 +633,7 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
             forall |j| end as int <= j < old(data)@.len() ==> data@[j] == old(data)@[j],
             self.length(slice@.i(data@)) == value.len(),
             forall |j| 0 <= j < i ==> self.elt_parsable(slice@.i(data@), j),
-            forall |j| #![auto] 0 <= j < i ==> self.get_elt(slice@.i(data@), j) == value[j].deepv(),
+            forall |j| #![auto] 0 <= j < i ==> self.get_elt(slice@.i(data@), j) == value[j].parsedv(),
         decreases value.len() - i,
         {
             assume( false );    // proof rotted
@@ -641,7 +641,7 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
             let ghost old_i = i;
             proof {
                 self.eltf.uniform_size_ensures();
-                assert( self.marshallable_at(value.deepv(), i as int) );
+                assert( self.marshallable_at(value.parsedv(), i as int) );
             }
             self.exec_set(&slice, data, i, &value[i]);
             i += 1;
@@ -652,7 +652,7 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
                         assert( self.preserves_entry( slice@.i(prev_data), j, slice@.i(data@)) );    // trigger
                     }
                 }
-                assert forall |j| #![auto] 0 <= j < i implies self.get_elt(slice@.i(data@), j) == value[j].deepv() by {
+                assert forall |j| #![auto] 0 <= j < i implies self.get_elt(slice@.i(data@), j) == value[j].parsedv() by {
                     if j < old_i {
                         assert( self.preserves_entry( slice@.i(prev_data), j, slice@.i(data@)) );    // trigger
                     }
@@ -660,7 +660,7 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
             }
         }
         // TODO(verus): This is just a postcondition; why wasn't it automatically triggered?
-        assert( self.parse(data@.subrange(start as int, end as int)) == value.deepv() );
+        assert( self.parse(data@.subrange(start as int, end as int)) == value.parsedv() );
         end
     }
 }

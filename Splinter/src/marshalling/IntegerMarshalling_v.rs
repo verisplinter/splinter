@@ -52,14 +52,14 @@ pub trait IntFormattable : WF + Parsedview<int> + builtin::Integer + Sized + Spe
           s.len() == Self::uniform_size() ==> #[trigger] Self::spec_to_le_bytes(Self::spec_from_le_bytes(s)) == s
     ;
 
-    proof fn deepv_is_as_int(v: Self)
-    ensures v.deepv() == v as int;
+    proof fn parsedv_is_as_int(v: Self)
+    ensures v.parsedv() == v as int;
 
-    proof fn deepv_is_as_int_forall()
-    ensures forall |v: Self| #[trigger] v.deepv() == v as int
+    proof fn parsedv_is_as_int_forall()
+    ensures forall |v: Self| #[trigger] v.parsedv() == v as int
     {
-        assert forall |v: Self| #[trigger] v.deepv() == v as int by {
-            Self::deepv_is_as_int(v);
+        assert forall |v: Self| #[trigger] v.parsedv() == v as int by {
+            Self::parsedv_is_as_int(v);
         }
     }
 
@@ -107,7 +107,7 @@ pub trait IntFormattable : WF + Parsedview<int> + builtin::Integer + Sized + Spe
 
 impl Parsedview<int> for u8 {
     //type DV = int;
-    open spec fn deepv(&self) -> int { *self as int }
+    open spec fn parsedv(&self) -> int { *self as int }
 }
 
 impl StaticallySized for u8 {
@@ -162,7 +162,7 @@ impl IntFormattable for u8 {
         }
     }
 
-    proof fn deepv_is_as_int(v: Self) {}
+    proof fn parsedv_is_as_int(v: Self) {}
 
     open spec fn max() -> (m: usize) { Self::MAX as usize }
 
@@ -187,7 +187,7 @@ impl IntFormattable for u8 {
 
 impl Parsedview<int> for u16 {
     //type DV = int;
-    open spec fn deepv(&self) -> int { *self as int }
+    open spec fn parsedv(&self) -> int { *self as int }
 }
 
 impl StaticallySized for u16 {
@@ -234,7 +234,7 @@ impl IntFormattable for u16 {
         }
     }
 
-    proof fn deepv_is_as_int(v: Self) {}
+    proof fn parsedv_is_as_int(v: Self) {}
 
     open spec fn max() -> (m: usize) { Self::MAX as usize }
 
@@ -259,7 +259,7 @@ impl IntFormattable for u16 {
 
 impl Parsedview<int> for u32 {
     //type DV = int;
-    open spec fn deepv(&self) -> int { *self as int }
+    open spec fn parsedv(&self) -> int { *self as int }
 }
 
 impl StaticallySized for u32 {
@@ -306,7 +306,7 @@ impl IntFormattable for u32 {
         }
     }
 
-    proof fn deepv_is_as_int(v: Self) {}
+    proof fn parsedv_is_as_int(v: Self) {}
 
     open spec fn max() -> (m: usize) { Self::MAX as usize }
 
@@ -331,7 +331,7 @@ impl IntFormattable for u32 {
 
 impl Parsedview<int> for u64 {
     //type DV = int;
-    open spec fn deepv(&self) -> int { *self as int }
+    open spec fn parsedv(&self) -> int { *self as int }
 }
 
 impl StaticallySized for u64 {
@@ -375,7 +375,7 @@ impl IntFormattable for u64 {
         lemma_auto_spec_u64_to_from_le_bytes();
     }
 
-    proof fn deepv_is_as_int(v: Self) {}
+    proof fn parsedv_is_as_int(v: Self) {}
 
     open spec fn max() -> (m: usize) { Self::MAX as usize }
 
@@ -527,7 +527,7 @@ impl<T: IntFormattable> Marshal for IntFormat<T>
             let sr = slice_subrange(data.as_slice(), slice.start, slice.start+T::exec_uniform_size());
             let parsed = T::from_le_bytes(sr);
             assert( sr@ == slice@.i(data@).subrange(0, T::uniform_size() as int) ); // trigger
-            proof { T::deepv_is_as_int(parsed); }
+            proof { T::parsedv_is_as_int(parsed); }
             Some(parsed)
         } else {
             assert( !self.parsable(slice@.i(data@)) );
@@ -540,7 +540,7 @@ impl<T: IntFormattable> Marshal for IntFormat<T>
         let sr = slice_subrange(data.as_slice(), slice.start, slice.start+T::exec_uniform_size());
         assert( sr@ == slice@.i(data@).subrange(0, T::uniform_size() as int) ); // trigger
         let value = T::from_le_bytes(sr);
-        proof { T::deepv_is_as_int(value); }
+        proof { T::parsedv_is_as_int(value); }
         assume( false ); // flaky?
         value
     }
@@ -555,7 +555,7 @@ impl<T: IntFormattable> Marshal for IntFormat<T>
         assert( T::spec_from_le_bytes(T::spec_to_le_bytes(*value)) == *value )
             by { T::lemma_auto_spec_to_from_le_bytes(); }
 
-        proof { T::deepv_is_as_int(*value); }
+        proof { T::parsedv_is_as_int(*value); }
         end
     }
 }

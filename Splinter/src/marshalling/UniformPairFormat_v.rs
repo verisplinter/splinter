@@ -48,8 +48,8 @@ impl<AF: Marshal + UniformSized, BF: Marshal + UniformSized> Marshal for Uniform
         &&& uniform_size_matches_spec_size(self.a_fmt)
         &&& uniform_size_matches_spec_size(self.b_fmt)
 
-        // deepv of pair is pair of deepvs
-        &&& forall |pair: (AF::U, BF::U)| #![auto] ( pair.0.deepv() == pair.deepv().0 && pair.1.deepv() == pair.deepv().1 )
+        // parsedv of pair is pair of parsedvs
+        &&& forall |pair: (AF::U, BF::U)| #![auto] ( pair.0.parsedv() == pair.parsedv().0 && pair.1.parsedv() == pair.parsedv().1 )
     }
 
     open spec fn parsable(&self, data: Seq<u8>) -> bool
@@ -98,9 +98,9 @@ impl<AF: Marshal + UniformSized, BF: Marshal + UniformSized> Marshal for Uniform
             proof {
                 // extn: subrange transitivity
                 let idata = slice@.i(data@);
-//                 assert( pair_value.0.deepv() == self.a_fmt.parse(idata.subrange(0, bdy0)) );
-                assert( pair_value.1.deepv() == self.b_fmt.parse(idata.subrange(bdy0, bdy1)) );
-                assert( pair_value.deepv() == self.parse(idata) );   // extn
+//                 assert( pair_value.0.parsedv() == self.a_fmt.parse(idata.subrange(0, bdy0)) );
+                assert( pair_value.1.parsedv() == self.b_fmt.parse(idata.subrange(bdy0, bdy1)) );
+                assert( pair_value.parsedv() == self.parse(idata) );   // extn
                 assert( pair_value.wf() );  // trigger ensures?
             }
             Some(pair_value)
@@ -125,7 +125,7 @@ impl<AF: Marshal + UniformSized, BF: Marshal + UniformSized> Marshal for Uniform
 
     exec fn exec_marshall(&self, value: &Self::U, data: &mut Vec<u8>, start: usize) -> (end: usize)
     {
-        assert( self.a_fmt.marshallable(value.0.deepv()) );
+        assert( self.a_fmt.marshallable(value.0.parsedv()) );
         let a_end = self.a_fmt.exec_marshall(&value.0, data, start);
 
         let ghost mid_data = data@;
@@ -143,7 +143,7 @@ impl<AF: Marshal + UniformSized, BF: Marshal + UniformSized> Marshal for Uniform
             assert( data@.subrange(start as int, end as int).subrange(bdy0, bdy1)
                     == data@.subrange(a_end as int, end as int) );
 
-            assert( end == start + self.spec_size(value.deepv()) );
+            assert( end == start + self.spec_size(value.parsedv()) );
             assert( self.parsable(data@.subrange(start as int, end as int)) );
         }
         end

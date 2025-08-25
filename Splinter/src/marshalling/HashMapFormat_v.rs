@@ -81,7 +81,7 @@ where KMarshal::U : Eq + Hash
 // //     VDV = <VU as View>::V,
 // {
 //     // TODO Our "deep" view of the keys & values is only a View. Hrrm.
-//     open spec fn deepv(&self) -> Map<KDV, VDV>
+//     open spec fn parsedv(&self) -> Map<KDV, VDV>
 //     {
 //         Map::new(|k| self@.dom().contains(k), |k| self@[k]@)
 //     }
@@ -326,9 +326,9 @@ spec fn view_injective<T: View>() -> bool
     forall |e1: T, e2: T| e1@==e2@ ==> e1==e2
 }
 
-// spec fn view_is_deepview<T: View + Parsedview<<T as View>::V>>() -> bool
+// spec fn view_is_parsedview<T: View + Parsedview<<T as View>::V>>() -> bool
 // {
-//     forall |e: T| #![auto] e@ == e.deepv()
+//     forall |e: T| #![auto] e@ == e.parsedv()
 // }
 
 impl<KMarshal: Marshal + UniformSized, VMarshal: Marshal + UniformSized>
@@ -345,38 +345,38 @@ where
     requires
         obeys_key_model::<<KMarshal as Marshal>::U>(),
         view_injective::<<KMarshal as Marshal>::U>(),
-//         view_is_deepview::<<KMarshal as Marshal>::U>(),
-//         view_is_deepview::<<VMarshal as Marshal>::U>(),
-    ensures out.deepv() == pair_seq_to_map(pair_vec.deepv())
+//         view_is_parsedview::<<KMarshal as Marshal>::U>(),
+//         view_is_parsedview::<<VMarshal as Marshal>::U>(),
+    ensures out.parsedv() == pair_seq_to_map(pair_vec.parsedv())
     {
-        let ghost orig_pair_vec = pair_vec.deepv();
+        let ghost orig_pair_vec = pair_vec.parsedv();
 
         let mut hm = HashMapWithView::new();
         let ghost count = 0;
 
         // TODO(verus): this extn equality didn't trigger itself in the invariant context;
         // had to utter it out loud to get it to go.
-        // TODO assume wip due to removal of view_is_deepview
-        assume( hm.deepv() == pair_seq_to_map(orig_pair_vec.take(count)) ); // extn
+        // TODO assume wip due to removal of view_is_parsedview
+        assume( hm.parsedv() == pair_seq_to_map(orig_pair_vec.take(count)) ); // extn
         assert( orig_pair_vec == orig_pair_vec.subrange(count, orig_pair_vec.len() as int) ); // extn
 
         while 0 < pair_vec.len()
         invariant
             count == orig_pair_vec.len() - pair_vec.len(),
             0 <= count <= orig_pair_vec.len(),
-            hm.deepv() == pair_seq_to_map(orig_pair_vec.take(count)),
-            pair_vec.deepv() == orig_pair_vec.subrange(count, orig_pair_vec.len() as int),
+            hm.parsedv() == pair_seq_to_map(orig_pair_vec.take(count)),
+            pair_vec.parsedv() == orig_pair_vec.subrange(count, orig_pair_vec.len() as int),
         decreases pair_vec.len(),
         {
             let ghost prev_count = count;
-            let ghost prev_pair_vec = pair_vec.deepv();
+            let ghost prev_pair_vec = pair_vec.parsedv();
 
             assert( 0 < pair_vec.len() );
 
             let pair = pair_vec.remove(0);
 
-            // trigger via deepv/@ equivalence
-            assert( pair_vec.deepv() == prev_pair_vec.remove(0 as int) );
+            // trigger via parsedv/@ equivalence
+            assert( pair_vec.parsedv() == prev_pair_vec.remove(0 as int) );
 
             hm.insert(pair.key, pair.value);
             proof {
@@ -389,11 +389,11 @@ where
                 // extn
                 assert( orig_pair_vec.take(prev_count) == oc.drop_last() );
                 // extn
-                // TODO assume wip due to removal of view_is_deepview
-                assume( hm.deepv() == pair_seq_to_map(oc.drop_last()).insert(last.key, last.value) );
+                // TODO assume wip due to removal of view_is_parsedview
+                assume( hm.parsedv() == pair_seq_to_map(oc.drop_last()).insert(last.key, last.value) );
 
                 // loop invariant extn trigger failure
-                assert( pair_vec.deepv() == orig_pair_vec.subrange(count, orig_pair_vec.len() as int) );
+                assert( pair_vec.parsedv() == orig_pair_vec.subrange(count, orig_pair_vec.len() as int) );
             }
         }
         hm
@@ -401,10 +401,10 @@ where
 
     exec fn hash_map_to_pair_vec(m: &HashMapWithView<<KMarshal as Marshal>::U, <VMarshal as Marshal>::U>)
         -> (out: Vec<KVPair<<KMarshal as Marshal>::U, <VMarshal as Marshal>::U>>)
-    ensures out.deepv() == map_to_pair_seq(m.deepv())
+    ensures out.parsedv() == map_to_pair_seq(m.parsedv())
     {
         let out = vec!(); // TODO
-        assume( out.deepv() == map_to_pair_seq(m.deepv()) );    // LEFT OFF
+        assume( out.parsedv() == map_to_pair_seq(m.parsedv()) );    // LEFT OFF
         out
     }
 }
@@ -415,8 +415,8 @@ where
     <KMarshal as Marshal>::U : View + Eq + Hash,
     HashMapWithView<KMarshal::U, VMarshal::U>: Parsedview<Map<KMarshal::DV, VMarshal::DV>>
 // This type-equality constraint is here because we're trying to relate the View
-// of HashMapWithView to the result of the Marshaling library taking the deepv()
-// of the same thing. Maybe it would be easier to simply demand a deepv on
+// of HashMapWithView to the result of the Marshaling library taking the parsedv()
+// of the same thing. Maybe it would be easier to simply demand a parsedv on
 // HashMapWithView and make any further relation the caller's problem?
 // where
 //     <KMarshal as Marshal>::U : View<V = <KMarshal as Marshal>::DV> + Eq + Hash,
@@ -429,8 +429,8 @@ where
     {
         &&& obeys_key_model::<<KMarshal as Marshal>::U>()
         &&& view_injective::<<KMarshal as Marshal>::U>()
-//         &&& view_is_deepview::<<KMarshal as Marshal>::U>()   // TODO remove view_is_deepview
-//         &&& view_is_deepview::<<VMarshal as Marshal>::U>()
+//         &&& view_is_parsedview::<<KMarshal as Marshal>::U>()   // TODO remove view_is_parsedview
+//         &&& view_is_parsedview::<<VMarshal as Marshal>::U>()
         &&& self.kvpair_format.valid()
     }
 
@@ -494,15 +494,15 @@ where
     exec fn exec_marshall(&self, value: &Self::U, data: &mut Vec<u8>, start: usize) -> (end: usize)
     {
         let pair_vec = &Self::hash_map_to_pair_vec(value);
-        assert( pair_vec.deepv() == map_to_pair_seq(value.deepv()) );
+        assert( pair_vec.parsedv() == map_to_pair_seq(value.parsedv()) );
         let end = self.kvpair_format.exec_marshall(pair_vec, data, start);
         let ghost bytes = data@.subrange(start as int, end as int);
-        proof { pair_seq_map_equiv(value.deepv()) };
-        assert( self.kvpair_format.parse(bytes) == pair_vec.deepv() );
+        proof { pair_seq_map_equiv(value.parsedv()) };
+        assert( self.kvpair_format.parse(bytes) == pair_vec.parsedv() );
         assert( self.parse(bytes) == pair_seq_to_map(self.kvpair_format.parse(bytes)) );
-        assert( pair_seq_to_map(map_to_pair_seq(value.deepv())) == value.deepv() );
-        assert( value.deepv() == pair_seq_to_map(pair_vec.deepv()) );
-        assert( self.parse(bytes) == value.deepv() );
+        assert( pair_seq_to_map(map_to_pair_seq(value.parsedv())) == value.parsedv() );
+        assert( value.parsedv() == pair_seq_to_map(pair_vec.parsedv()) );
+        assert( self.parse(bytes) == value.parsedv() );
         end
     }
 }

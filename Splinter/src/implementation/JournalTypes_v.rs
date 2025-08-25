@@ -42,10 +42,10 @@ impl View for AJournal
     }
 }
 
-// The deepview only takes us up to AJournal, so that the marshalling spec fns talk
+// The parsedview only takes us up to AJournal, so that the marshalling spec fns talk
 // about Seq<KeyedMessage>, not the Map-shaped MsgHistory object.
 impl Parsedview<AJournal> for Journal {
-    open spec fn deepv(&self) -> AJournal {
+    open spec fn parsedv(&self) -> AJournal {
         AJournal{msg_history: self.msg_history@, seq_start: self.seq_start}
     }
 }
@@ -61,7 +61,7 @@ impl View for Journal {
 
     open spec fn view(&self) -> Self::V
     {
-        self.deepv()@
+        self.parsedv()@
     }
 }
 

@@ -113,7 +113,7 @@ impl View for ISuperblock {
     open spec fn view(&self) -> Self::V
     {
         // promote to ASuperblock, thence to Superblock
-        self.deepv()@
+        self.parsedv()@
     }
 }
 

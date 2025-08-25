@@ -14,7 +14,7 @@ use crate::implementation::VecMap_v::*;
 verus! {
 
 impl Parsedview<Map<Key, Value>> for VecMap<Key,Value> {
-    open spec fn deepv(&self) -> Map<Key, Value> {
+    open spec fn parsedv(&self) -> Map<Key, Value> {
         self@
     }
 }
@@ -58,7 +58,7 @@ impl Marshal for VecMapFormat {
                 if !VecMap::exec_unique_keys(&v) { None }
                 else {
                     let v = VecMap::from_vec(v);
-                    assert( self.parse(slice@.i(data@)) == v.deepv() ); // trigger trait ensures
+                    assert( self.parse(slice@.i(data@)) == v.parsedv() ); // trigger trait ensures
                     assert(v.wf()); // trigger trait ensures
                     Some(v)
                 } 
@@ -74,7 +74,7 @@ impl Marshal for VecMapFormat {
         assert( v@ == self.seq_fmt.parse(idata) );  // trigger something?
 //         assert( VecMap::unique_keys(v@) );
         let value = VecMap::from_vec(v);
-//         assert( value.deepv() == self.parse(idata) );
+//         assert( value.parsedv() == self.parse(idata) );
         value
     }
 

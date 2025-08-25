@@ -166,7 +166,7 @@ impl<EltFormat: Marshal + UniformSized>
                 }
                 let oelt = self.eltf.try_parse(&eslice, data);
 
-                assert( oelt is Some ==> oelt.unwrap().deepv() == self.get_elt(dslice@.i(data@), idx as int) ); // TODO(verus): failure to trigger ensures
+                assert( oelt is Some ==> oelt.unwrap().parsedv() == self.get_elt(dslice@.i(data@), idx as int) ); // TODO(verus): failure to trigger ensures
                 oelt
             }
         }
@@ -252,7 +252,7 @@ impl<EltFormat: Marshal + UniformSized>
             assert forall |i| i!=(idx) implies self.preserves_entry(dslice@.i(old(data)@), i, dslice@.i(data@)) by {}
         }
 
-        assert( self.sets(dslice@.i(olddata), idx as int, value.deepv(), dslice@.i(data@)) );
+        assert( self.sets(dslice@.i(olddata), idx as int, value.parsedv(), dslice@.i(data@)) );
     }
 
     /////////////////////////////////////////////////////////////////////////
@@ -352,7 +352,7 @@ impl<EltFormat: Marshal + UniformSized>
                     i <= len,
                     result.len() == i,
                     forall |j| 0<=j<i as nat ==> self.elt_parsable(dslice@.i(data@), j),
-                    forall |j| #![auto] 0<=j<i as nat ==> result[j].deepv() == self.get_elt(dslice@.i(data@), j),
+                    forall |j| #![auto] 0<=j<i as nat ==> result[j].parsedv() == self.get_elt(dslice@.i(data@), j),
                     forall |j| #![auto] 0<=j<i as nat ==> result[j].wf(),
                 decreases len-i,
                 {
@@ -366,7 +366,7 @@ impl<EltFormat: Marshal + UniformSized>
                     i += 1;
                 }
 
-                assert( result.deepv() == self.parse(dslice@.i(data@)) );    // trigger.
+                assert( result.parsedv() == self.parse(dslice@.i(data@)) );    // trigger.
                 assert( result.wf() );  // trigger trait ensures
                 return Some(result);
             }
@@ -398,7 +398,7 @@ impl<EltFormat: Marshal + UniformSized>
             self.eltf.uniform_size_ensures();
 
             // trigger extn equality
-            assert( self.parse(data@.subrange(start as int, end as int)) == value.deepv().subrange(0, i as int) );
+            assert( self.parse(data@.subrange(start as int, end as int)) == value.parsedv().subrange(0, i as int) );
         }
 
         while i < value.len()
@@ -409,12 +409,12 @@ impl<EltFormat: Marshal + UniformSized>
             forall |j| 0 <= j < start ==> data@[j] == old(data)@[j],
             forall |j| end as int <= j < old(data)@.len() ==> data@[j] == old(data)@[j],
             self.parsable(data@.subrange(start as int, end as int)),
-            self.parse(data@.subrange(start as int, end as int)) == value.deepv().subrange(0, i as int),
+            self.parse(data@.subrange(start as int, end as int)) == value.parsedv().subrange(0, i as int),
         decreases value.len()-i,
         {
             assume( false ); // proof rotted
             let ghost oldend = end;
-            assert( oldend as int == start as int + self.spec_size(value.deepv().subrange(0, i as int)) as int );   // trigger
+            assert( oldend as int == start as int + self.spec_size(value.parsedv().subrange(0, i as int)) as int );   // trigger
             let ghost olddata = data@.subrange(start as int, end as int);
             let ghost oldi = i;
 
@@ -424,13 +424,13 @@ impl<EltFormat: Marshal + UniformSized>
                 }
                 distribute_left(i as int, 1, self.eltf.uniform_size() as int);
 
-                let esz = self.eltf.spec_size(value.deepv()[i as int]) as int;
+                let esz = self.eltf.spec_size(value.parsedv()[i as int]) as int;
                 assert( esz == self.eltf.uniform_size() ) by {
-                    assert( self.marshallable_at(value.deepv(), i as int) );    // trigger
+                    assert( self.marshallable_at(value.parsedv(), i as int) );    // trigger
                 }
             }
 
-            assert( self.marshallable_at(value.deepv(), i as int) );     // de-flake trigger
+            assert( self.marshallable_at(value.parsedv(), i as int) );     // de-flake trigger
             end = self.eltf.exec_marshall(&value[i], data, end);
             i += 1;
 
@@ -441,8 +441,8 @@ impl<EltFormat: Marshal + UniformSized>
 
                 let odata = data@.subrange(start as int, oldend as int);
                 let sdata = data@.subrange(start as int, end as int);
-                let osubv = value.deepv().subrange(0, oldi as int);
-                let subv = value.deepv().subrange(0, i as int);
+                let osubv = value.parsedv().subrange(0, oldi as int);
+                let subv = value.parsedv().subrange(0, i as int);
 
                 assert( i == self.length(sdata) ) by { div_plus_one(oldi as int, oldend-start, u); }
 
@@ -473,7 +473,7 @@ impl<EltFormat: Marshal + UniformSized>
                 }
             }
         }
-        assert( self.parse(data@.subrange(start as int, end as int)) == value.deepv() );    // trigger extn equality
+        assert( self.parse(data@.subrange(start as int, end as int)) == value.parsedv() );    // trigger extn equality
         end
     }
 }

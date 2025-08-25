@@ -127,7 +127,7 @@ impl<T: IntFormattable> LengthField for IntFormat<T> {
                 let v = T::to_usize(t);
                 let ov = Some(v);
                 proof {
-                    T::deepv_is_as_int(t);
+                    T::parsedv_is_as_int(t);
                     assert( ov.unwrap() as int == LengthField::parse(self, slice@.i(data@)) );  // trigger
                 }
                 ov
@@ -155,7 +155,7 @@ impl<T: IntFormattable> LengthField for IntFormat<T> {
         let v = T::from_usize(value);
         let end = Marshal::exec_marshall(self, &v, data, start);
 
-        proof { T::deepv_is_as_int(v); }
+        proof { T::parsedv_is_as_int(v); }
         end
     }
 }

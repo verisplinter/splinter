@@ -58,7 +58,7 @@ impl<F: Marshal + UniformSized> Marshal for PaddedFormat<F> {
             let ghost ov = ov;
             match ov {
                 Some(v) => {
-                    assert( v.deepv() == self.parse(slice@.i(data@)) ); // trigger
+                    assert( v.parsedv() == self.parse(slice@.i(data@)) ); // trigger
                 },
                 None => { },
             }

@@ -11,7 +11,7 @@ verus! {
 
 impl<ADV,AU:Parsedview<ADV>,BDV,BU:Parsedview<BDV>> Parsedview<(ADV,BDV)> for (AU,BU)
 {
-    open spec fn deepv(&self) -> (ADV,BDV) { (self.0.deepv(), self.1.deepv()) }
+    open spec fn parsedv(&self) -> (ADV,BDV) { (self.0.parsedv(), self.1.parsedv()) }
 }
 
 // A Wrappable struct explains how a type can be represented as a pair of other marshallable items.
@@ -38,16 +38,16 @@ pub trait Wrappable {
     ;
 
     exec fn exec_to_pair(value: &Self::U) -> (pair: (<Self::AF as Marshal>::U, <Self::BF as Marshal>::U))
-    requires Self::value_marshallable((*value).deepv())
-    ensures Self::to_pair((*value).deepv()) == pair.deepv(),
+    requires Self::value_marshallable((*value).parsedv())
+    ensures Self::to_pair((*value).parsedv()) == pair.parsedv(),
         pair.wf(),
     ;
 
     exec fn exec_from_pair(pair: (<Self::AF as Marshal>::U, <Self::BF as Marshal>::U)) -> (value: Self::U)
     requires pair.wf()
     ensures
-        value.deepv() == Self::from_pair(pair.deepv()),
-        Self::to_pair(value.deepv()) == pair.deepv(),
+        value.parsedv() == Self::from_pair(pair.parsedv()),
+        Self::to_pair(value.parsedv()) == pair.parsedv(),
         value.wf(),
     ;
 
@@ -144,8 +144,8 @@ impl<W: Wrappable> Marshal for WrappableFormat<W> {
             None => None,
             Some(pair) => {
                 let v = W::exec_from_pair(pair);
-                assert( W::to_pair(v.deepv()) == pair.deepv() );
-                assert( v.deepv() == self.parse(slice@.i(data@)) );
+                assert( W::to_pair(v.parsedv()) == pair.parsedv() );
+                assert( v.parsedv() == self.parse(slice@.i(data@)) );
                 Some(v)
             },
         }

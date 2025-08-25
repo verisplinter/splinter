@@ -82,21 +82,21 @@ impl DiskLayout {
         sb@ == self.spec_parse(out@),
     {
         assert( self.fmt.valid() );
-        assume( self.fmt.marshallable(sb.deepv()) );
+        assume( self.fmt.marshallable(sb.parsedv()) );
 
         let ghost marshalled_size = self.fmt.uniform_size();
         assert( marshalled_size == BLOCK_SIZE );
 //         assert( marshalled_size <= BLOCK_SIZE );
         let mut space = empty_vec_u8_with_size(BLOCK_SIZE);
-        assert(0 as int + self.fmt.spec_size(sb.deepv()) as int <= space.len() );
+        assert(0 as int + self.fmt.spec_size(sb.parsedv()) as int <= space.len() );
         let end = self.fmt.exec_marshall(sb, &mut space, 0);
-        assert( end == self.fmt.spec_size(sb.deepv()) );
-        assert( self.fmt.parse(space@.subrange(0, end as int)) == sb.deepv() );
+        assert( end == self.fmt.spec_size(sb.parsedv()) );
+        assert( self.fmt.parse(space@.subrange(0, end as int)) == sb.parsedv() );
         proof{ self.fmt.uniform_size_matches_spec_size() }
         assert( uniform_size_matches_spec_size(self.fmt) );
-        assert( self.fmt.spec_size(sb.deepv()) == self.fmt.uniform_size() );
+        assert( self.fmt.spec_size(sb.parsedv()) == self.fmt.uniform_size() );
         assert( end as int == marshalled_size as int );
-        assert( self.fmt.parse(space@.subrange(0, marshalled_size as int)) == sb.deepv() );
+        assert( self.fmt.parse(space@.subrange(0, marshalled_size as int)) == sb.parsedv() );
         assert( space@.subrange(0, BLOCK_SIZE as int) == space@ );
         space
     }

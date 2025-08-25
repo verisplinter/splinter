@@ -189,7 +189,7 @@ pub trait SeqMarshal {
                 &&& self.gettable(dslice@.i(data@), idx as int)
                 &&& self.elt_parsable(dslice@.i(data@), idx as int)
         },
-        oelt is Some ==> oelt.unwrap().deepv() == self.get_elt(dslice@.i(data@), idx as int)
+        oelt is Some ==> oelt.unwrap().parsedv() == self.get_elt(dslice@.i(data@), idx as int)
     // This can't be provided as a default trait (where the Dafny version had a default impl)
     // because we need the definition of elt_parsable to be fixed. We can supply a default,
     // but the proof of this default method doesn't know that the impl keeps that default.
@@ -202,7 +202,7 @@ pub trait SeqMarshal {
         self.elt_parsable(dslice@.i(data@), idx as int),
         dslice@.valid(data@),
     ensures
-        elt.deepv() == self.get_elt(dslice@.i(data@), idx as int)
+        elt.parsedv() == self.get_elt(dslice@.i(data@), idx as int)
     // TODO the implementations of this method could be factored out into a default method here
     // if we had a way of talking about eltm and its type in this trait.
     ;
@@ -253,9 +253,9 @@ pub trait SeqMarshal {
         self.seq_valid(),
         value.wf(),
         dslice@.valid(data@),
-        self.elt_marshallable(value.deepv()),
+        self.elt_marshallable(value.parsedv()),
     ensures
-        s == self.settable(dslice@.i(data@), idx as int, value.deepv())
+        s == self.settable(dslice@.i(data@), idx as int, value.parsedv())
     ;
 
     exec fn exec_set(&self, dslice: &Slice, data: &mut Vec<u8>, idx: usize, value: &Self::Elt)
@@ -263,11 +263,11 @@ pub trait SeqMarshal {
         self.seq_valid(),
         value.wf(),
         dslice@.valid(old(data)@),
-        self.elt_marshallable(value.deepv()),
-        self.settable(dslice@.i(old(data)@), idx as int, value.deepv()),
+        self.elt_marshallable(value.parsedv()),
+        self.settable(dslice@.i(old(data)@), idx as int, value.parsedv()),
     ensures
         dslice@.agree_beyond_slice(old(data)@, data@),
-        self.sets(dslice@.i(old(data)@), idx as int, value.deepv(), dslice@.i(data@)),
+        self.sets(dslice@.i(old(data)@), idx as int, value.parsedv(), dslice@.i(data@)),
     ;
 
     /////////////////////////////////////////////////////////////////////////
@@ -350,9 +350,9 @@ pub trait SeqMarshal {
         value.wf(),
         dslice@.valid(data@),
         self.well_formed(dslice@.i(data@)),
-        self.elt_marshallable(value.deepv()),
+        self.elt_marshallable(value.parsedv()),
     ensures
-        r == self.appendable(dslice@.i(data@), value.deepv())
+        r == self.appendable(dslice@.i(data@), value.parsedv())
     ;
 
     exec fn exec_append(&self, dslice: &Slice, data: &mut Vec<u8>, value: &Self::Elt)
@@ -361,12 +361,12 @@ pub trait SeqMarshal {
         value.wf(),
         dslice@.valid(old(data)@),
         self.well_formed(dslice@.i(old(data)@)),
-        self.elt_marshallable(value.deepv()),
-        self.appendable(dslice@.i(old(data)@), value.deepv()),
+        self.elt_marshallable(value.parsedv()),
+        self.appendable(dslice@.i(old(data)@), value.parsedv()),
     ensures
         data@.len() == old(data)@.len(),
         dslice@.agree_beyond_slice(old(data)@, data@),
-        self.appends(dslice@.i(old(data)@), value.deepv(), dslice@.i(data@))
+        self.appends(dslice@.i(old(data)@), value.parsedv(), dslice@.i(data@))
     ;
 
     /////////////////////////////////////////////////////////////////////////

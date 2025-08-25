@@ -603,7 +603,7 @@ impl Implementation {
             );   // extn
 
             // Problem 1
-            let asb: ASuperblock = sb.deepv();
+            let asb: ASuperblock = sb.parsedv();
             assert( asb@ == sb@ );
 //             assert( sb@.store == VecMap::seq_to_map(pre_cloned_store@) );
             assume( sb@.store == pre_sb.store );    // clone problem?
@@ -1021,8 +1021,8 @@ impl Implementation {
 //             self.version = superblock.version_index;// dead code, delete
 
             
-            assert( superblock.deepv().store_stamped_map().value == ASuperblock::map_to_kmmap(self.store@) );
-            assert( superblock.deepv().final_stamped_map().value == ASuperblock::map_to_kmmap(self.store@) );   // because the journal is assumed empty above
+            assert( superblock.parsedv().store_stamped_map().value == ASuperblock::map_to_kmmap(self.store@) );
+            assert( superblock.parsedv().final_stamped_map().value == ASuperblock::map_to_kmmap(self.store@) );   // because the journal is assumed empty above
             assert( post_state.state.mapspec().kmmap == self.view_as_kmmap() );
             assert( self.in_flight is None );
             assert( self.state().mapspec().kmmap == self.view_as_kmmap() );

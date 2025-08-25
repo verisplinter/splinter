@@ -51,7 +51,7 @@ impl Wrappable for KeyedMessageFormatWrappable {
             Message::Update{delta: Delta(_)} => { assert(false); 0 },
         };
         let pair = (value.key.0, message_data);
-        assert( Self::to_pair(value.deepv()) == pair.deepv() );  // verus #1534
+        assert( Self::to_pair(value.parsedv()) == pair.parsedv() );  // verus #1534
         pair
     }
 

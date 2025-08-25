@@ -16,7 +16,7 @@ verus! {
 
 // Move to KeyedMessage?
 impl Parsedview<KeyedMessage> for KeyedMessage {
-    open spec fn deepv(&self) -> KeyedMessage { *self }
+    open spec fn parsedv(&self) -> KeyedMessage { *self }
 }
 
 impl WF for Journal { }
@@ -85,7 +85,7 @@ impl Wrappable for JournalFormatWrappable {
         let mhclone = value.msg_history.clone();
         assume( mhclone == value.msg_history ); // TODO: hmm, Verus can't see the equality from clone?
         let pair = (mhclone, value.seq_start);
-        assert( Self::to_pair(value.deepv()).0 == pair.deepv().0 ); // extn
+        assert( Self::to_pair(value.parsedv()).0 == pair.parsedv().0 ); // extn
         assume( pair.wf() );    // TODO(jonh)
         pair
     }
@@ -93,7 +93,7 @@ impl Wrappable for JournalFormatWrappable {
     exec fn exec_from_pair(pair: (Vec<KeyedMessage>, ILsn)) -> (j: Journal)
     {
         let j = Journal{msg_history: pair.0, seq_start: pair.1};
-        assert( j.deepv().msg_history == pair.0.deepv() );  // extn
+        assert( j.parsedv().msg_history == pair.0.parsedv() );  // extn
         j
     }
 

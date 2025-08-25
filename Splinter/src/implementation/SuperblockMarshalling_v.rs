@@ -20,7 +20,7 @@ use vstd::{prelude::*};
 verus! {
 
 // impl Parsedview<Superblock> for ISuperblock {
-//     open spec fn deepv(&self) -> Superblock {
+//     open spec fn parsedv(&self) -> Superblock {
 //         self@
 //     }
 // }
@@ -135,8 +135,8 @@ verus! {
 // 
 //         let version_index = self.version_format.exec_parse(slice, data);
 //         let sb = ISuperblock{ store: Self::vec_kvpair_as_hashmap(kvdata.unwrap()), version_index };
-//         assume( sb.deepv().store == self.parse(slice@.i(data@)).store ); // see parse().lie
-//         assert( sb.deepv() == self.parse(slice@.i(data@)) );
+//         assume( sb.parsedv().store == self.parse(slice@.i(data@)).store ); // see parse().lie
+//         assert( sb.parsedv() == self.parse(slice@.i(data@)) );
 //         Some( sb )
 //     }
 // 

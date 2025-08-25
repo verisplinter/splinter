@@ -14,7 +14,7 @@ verus! {
 pub trait Parsedview<DV> {
     //type DV = DV;
 
-    spec fn deepv(&self) -> DV;
+    spec fn parsedv(&self) -> DV;
 }
 
 // VSE == ViewSeqElt
@@ -23,8 +23,8 @@ pub trait Parsedview<DV> {
 impl<DVE, Elt: Parsedview<DVE>> Parsedview<Seq<DVE>> for Vec<Elt> {
     //type DV = Seq<<T as Parsedview>::DV>;
 
-    open spec fn deepv(&self) -> Seq<DVE> {
-        Seq::new(self.len() as nat, |i: int| self[i].deepv())
+    open spec fn parsedv(&self) -> Seq<DVE> {
+        Seq::new(self.len() as nat, |i: int| self[i].parsedv())
     }
 }
 
@@ -66,7 +66,7 @@ pub trait Marshal {
         slice@.valid(data@),
     ensures
         self.parsable(slice@.i(data@)) <==> ov is Some,
-        self.parsable(slice@.i(data@)) ==> ov.unwrap().deepv() == self.parse(slice@.i(data@)) && ov.unwrap().wf()
+        self.parsable(slice@.i(data@)) ==> ov.unwrap().parsedv() == self.parse(slice@.i(data@)) && ov.unwrap().wf()
     ;
 
     exec fn exec_parsable(&self, slice: &Slice, data: &Vec<u8>) -> (p: bool)
@@ -87,7 +87,7 @@ pub trait Marshal {
         self.parsable(slice@.i(data@)),
     ensures
         value.wf(),
-        value.deepv() == self.parse(slice@.i(data@)),
+        value.parsedv() == self.parse(slice@.i(data@)),
     {
         self.try_parse(slice, data).unwrap()
     }
@@ -109,24 +109,24 @@ pub trait Marshal {
     requires
         self.valid(),
         value.wf(),
-        self.marshallable(value.deepv()),
+        self.marshallable(value.parsedv()),
     ensures
-        sz == self.spec_size(value.deepv())
+        sz == self.spec_size(value.parsedv())
     ;
 
     exec fn exec_marshall(&self, value: &Self::U, data: &mut Vec<u8>, start: usize) -> (end: usize)
     requires
         self.valid(),
         value.wf(),
-        self.marshallable(value.deepv()),
-        start as int + self.spec_size(value.deepv()) as int <= old(data).len(),
+        self.marshallable(value.parsedv()),
+        start as int + self.spec_size(value.parsedv()) as int <= old(data).len(),
     ensures
-        end == start + self.spec_size(value.deepv()),
+        end == start + self.spec_size(value.parsedv()),
         data.len() == old(data).len(),
         forall |i| 0 <= i < start ==> data[i] == old(data)[i],
         forall |i| end <= i < data.len() ==> data[i] == old(data)[i],
         self.parsable(data@.subrange(start as int, end as int)),
-        self.parse(data@.subrange(start as int, end as int)) == value.deepv()
+        self.parse(data@.subrange(start as int, end as int)) == value.parsedv()
     ;
 }
 

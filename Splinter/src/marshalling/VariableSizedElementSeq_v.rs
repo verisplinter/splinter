@@ -144,7 +144,7 @@ impl <
         start as int == self.element_data_begin(dslice@.i(data@), idx as int),
     {
         let istart: BdyType = self.bdyf.exec_get_elt(dslice, data, idx);
-        proof { BdyType::deepv_is_as_int_forall(); }
+        proof { BdyType::parsedv_is_as_int_forall(); }
         BdyType::to_usize(istart)
     }
 
@@ -166,7 +166,7 @@ impl <
     {
         if 0 < idx {
             let iend = self.bdyf.exec_get_elt(dslice, data, idx - 1);
-            proof { BdyType::deepv_is_as_int_forall(); }
+            proof { BdyType::parsedv_is_as_int_forall(); }
             BdyType::to_usize(iend)
         } else {
             self.exec_total_size()
@@ -252,7 +252,7 @@ impl <
         len_and_bound.0 == self.length(dslice@.i(data@)),
         len_and_bound.1 == self.elements_start(dslice@.i(data@)),
     {
-        proof { BdyType::deepv_is_as_int_forall(); }
+        proof { BdyType::parsedv_is_as_int_forall(); }
         let len = self.exec_length(dslice, data);
 
         let upper_bound =
@@ -611,7 +611,7 @@ impl <
     exec fn exec_well_formed(&self, dslice: &Slice, data: &Vec<u8>) -> (w: bool) {
         let ghost idata = dslice@.i(data@);
         proof {
-            BdyType::deepv_is_as_int_forall();
+            BdyType::parsedv_is_as_int_forall();
         }
 
         match self.bdyf.try_parse(dslice, data) {
@@ -673,7 +673,7 @@ impl <
         let ghost idata = dslice@.i(data@);
         proof {
             self.bdyf.parsable_length_bounds(idata);
-            BdyType::deepv_is_as_int_forall();
+            BdyType::parsedv_is_as_int_forall();
         }
         let size_of_length_field = LenType::exec_uniform_size();
         let size_of_boundary_entry = BdyType::exec_uniform_size();
@@ -688,12 +688,12 @@ impl <
     ensures
         // bonus layer-violating ensures
         self.free_space(dslice@.i(data@)) == self.free_space(dslice@.i(old(data)@))
-            - (self.size_of_boundary_entry() + self.eltf.spec_size(value.deepv())),
+            - (self.size_of_boundary_entry() + self.eltf.spec_size(value.parsedv())),
     {
         let ghost idata = dslice@.i(data@);
         proof {
-            BdyType::deepv_is_as_int_forall();
-            self.appendable_implies_bdyf_appendable(idata, value.deepv());
+            BdyType::parsedv_is_as_int_forall();
+            self.appendable_implies_bdyf_appendable(idata, value.parsedv());
             SpecSlice::all_ensures::<u8>(); // sigh
         }
         let (len, upper_bound) = self.exec_length_and_upper_bound(dslice, data);
@@ -742,7 +742,7 @@ impl <
 //             (self.bdyf.total_size - self.bdyf.size_of_length_field()) as usize / self.bdyf.eltf.uniform_size() );
 // 
 //         assert( self.bdyf.length(idata) < self.bdyf.spec_max_length() );
-//         assert( self.bdyf.appendable(idata, self.append_offset(idata, value.deepv())) );
+//         assert( self.bdyf.appendable(idata, self.append_offset(idata, value.parsedv())) );
 
         self.bdyf.exec_append(dslice, data, &new_bdy);
 
