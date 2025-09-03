@@ -4,7 +4,7 @@
 use vstd::prelude::*;
 
 use crate::abstract_system::AbstractCrashAwareJournal_v;
-use crate::abstract_system::AbstractCrashAwareJournal_v::CrashTolerantJournal;
+use crate::abstract_system::AbstractCrashAwareJournal_v::AbstractCrashAwareJournal;
 use crate::abstract_system::AbstractJournal_v::AbstractJournal;
 use crate::abstract_system::MsgHistory_v::*;
 use crate::allocation_layer::AllocationCrashAwareJournal_v::*;
@@ -104,38 +104,38 @@ impl Ephemeral{
 }
 
 impl AllocationCrashAwareJournal::Label{
-    pub open spec fn i(self) -> CrashTolerantJournal::Label
+    pub open spec fn i(self) -> AbstractCrashAwareJournal::Label
     {
         match self {
             Self::LoadEphemeralFromPersistent => 
-                CrashTolerantJournal::Label::LoadEphemeralFromPersistentLabel,
+                AbstractCrashAwareJournal::Label::LoadEphemeralFromPersistentLabel,
             Self::ReadForRecovery{records} =>
-                CrashTolerantJournal::Label::ReadForRecoveryLabel{records},
+                AbstractCrashAwareJournal::Label::ReadForRecoveryLabel{records},
             Self::QueryEndLsn{end_lsn} =>
-                CrashTolerantJournal::Label::QueryEndLsnLabel{end_lsn},
+                AbstractCrashAwareJournal::Label::QueryEndLsnLabel{end_lsn},
             Self::Put{records} =>
-                CrashTolerantJournal::Label::PutLabel{records},
+                AbstractCrashAwareJournal::Label::PutLabel{records},
             Self::Internal{allocs, deallocs} =>
-                CrashTolerantJournal::Label::InternalLabel,
+                AbstractCrashAwareJournal::Label::InternalLabel,
             Self::QueryLsnPersistence{sync_lsn} =>
-                CrashTolerantJournal::Label::QueryLsnPersistenceLabel{sync_lsn},
+                AbstractCrashAwareJournal::Label::QueryLsnPersistenceLabel{sync_lsn},
             Self::CommitStart{ new_boundary_lsn, max_lsn } =>
-                CrashTolerantJournal::Label::CommitStartLabel{new_boundary_lsn, max_lsn},
+                AbstractCrashAwareJournal::Label::CommitStartLabel{new_boundary_lsn, max_lsn},
             Self::CommitComplete{ require_end, discarded } =>
-                CrashTolerantJournal::Label::CommitCompleteLabel{require_end},
-            Self::Crash{ keep_in_flight } => CrashTolerantJournal::Label::CrashLabel{ keep_in_flight },
+                AbstractCrashAwareJournal::Label::CommitCompleteLabel{require_end},
+            Self::Crash{ keep_in_flight } => AbstractCrashAwareJournal::Label::CrashLabel{ keep_in_flight },
         }
     }
 }
 
 impl AllocationCrashAwareJournal::State{
-    pub open spec fn i(self) -> CrashTolerantJournal::State 
+    pub open spec fn i(self) -> AbstractCrashAwareJournal::State 
     {
         let i_in_flight = 
             if self.inflight is None { None }
             else { Some(self.inflight.unwrap().i()) };
 
-        CrashTolerantJournal::State{
+        AbstractCrashAwareJournal::State{
             persistent: self.persistent.i(),
             ephemeral: self.ephemeral.i(),
             in_flight: i_in_flight,
@@ -149,10 +149,10 @@ impl AllocationCrashAwareJournal::State{
         post.inv(),
         Self::load_ephemeral_from_persistent(self, post, lbl, new_journal)
     ensures
-        CrashTolerantJournal::State::next_by(self.i(), post.i(), lbl.i(), 
-            CrashTolerantJournal::Step::load_ephemeral_from_persistent(new_journal.i_abstract()))
+        AbstractCrashAwareJournal::State::next_by(self.i(), post.i(), lbl.i(), 
+            AbstractCrashAwareJournal::Step::load_ephemeral_from_persistent(new_journal.i_abstract()))
     {
-        reveal(CrashTolerantJournal::State::next_by);
+        reveal(AbstractCrashAwareJournal::State::next_by);
         reveal(AbstractJournal::State::init_by);
 
         new_journal.init_refines_abstract(new_journal.journal, self.persistent);
@@ -165,9 +165,9 @@ impl AllocationCrashAwareJournal::State{
         post.inv(),
         Self::read_for_recovery(self, post, lbl)
     ensures
-        CrashTolerantJournal::State::next_by(self.i(), post.i(), lbl.i(), CrashTolerantJournal::Step::read_for_recovery())
+        AbstractCrashAwareJournal::State::next_by(self.i(), post.i(), lbl.i(), AbstractCrashAwareJournal::Step::read_for_recovery())
     {
-        reveal(CrashTolerantJournal::State::next_by);
+        reveal(AbstractCrashAwareJournal::State::next_by);
 
         let aj = self.ephemeral->v;
         let alloc_lbl = AllocationJournal::Label::ReadForRecovery{messages: lbl.arrow_ReadForRecovery_records()};
@@ -180,9 +180,9 @@ impl AllocationCrashAwareJournal::State{
         post.inv(),
         Self::query_end_lsn(self, post, lbl)
     ensures
-        CrashTolerantJournal::State::next_by(self.i(), post.i(), lbl.i(), CrashTolerantJournal::Step::query_end_lsn())
+        AbstractCrashAwareJournal::State::next_by(self.i(), post.i(), lbl.i(), AbstractCrashAwareJournal::Step::query_end_lsn())
     {
-        reveal(CrashTolerantJournal::State::next_by);
+        reveal(AbstractCrashAwareJournal::State::next_by);
 
         let aj = self.ephemeral->v;
         let alloc_lbl = AllocationJournal::Label::QueryEndLsn{end_lsn: lbl->end_lsn };
@@ -196,10 +196,10 @@ impl AllocationCrashAwareJournal::State{
         post.inv(),
         Self::put(self, post, lbl, new_journal)
     ensures
-        CrashTolerantJournal::State::next_by(self.i(), post.i(), lbl.i(), 
-            CrashTolerantJournal::Step::put(new_journal.i_abstract()))
+        AbstractCrashAwareJournal::State::next_by(self.i(), post.i(), lbl.i(), 
+            AbstractCrashAwareJournal::Step::put(new_journal.i_abstract()))
     {
-        reveal(CrashTolerantJournal::State::next_by);
+        reveal(AbstractCrashAwareJournal::State::next_by);
 
         let aj = self.ephemeral->v;
         let alloc_lbl = AllocationJournal::Label::Put{messages: lbl.arrow_Put_records() };
@@ -213,10 +213,10 @@ impl AllocationCrashAwareJournal::State{
         post.inv(),
         Self::internal(self, post, lbl, new_journal)
     ensures
-        CrashTolerantJournal::State::next_by(self.i(), post.i(), lbl.i(), 
-            CrashTolerantJournal::Step::internal(new_journal.i_abstract()))
+        AbstractCrashAwareJournal::State::next_by(self.i(), post.i(), lbl.i(), 
+            AbstractCrashAwareJournal::Step::internal(new_journal.i_abstract()))
     {
-        reveal(CrashTolerantJournal::State::next_by);
+        reveal(AbstractCrashAwareJournal::State::next_by);
 
         let aj = self.ephemeral->v;
         let alloc_lbl = AllocationJournal::Label::InternalAllocations{
@@ -233,10 +233,10 @@ impl AllocationCrashAwareJournal::State{
         post.inv(),
         Self::commit_start(self, post, lbl, frozen_journal)
     ensures
-        CrashTolerantJournal::State::next_by(self.i(), post.i(), lbl.i(), 
-            CrashTolerantJournal::Step::commit_start(frozen_journal.i()))
+        AbstractCrashAwareJournal::State::next_by(self.i(), post.i(), lbl.i(), 
+            AbstractCrashAwareJournal::Step::commit_start(frozen_journal.i()))
     {
-        reveal(CrashTolerantJournal::State::next_by);
+        reveal(AbstractCrashAwareJournal::State::next_by);
 
         assert(self.i().ephemeral is Known);
         assert(self.i().in_flight is None);
@@ -259,10 +259,10 @@ impl AllocationCrashAwareJournal::State{
         post.inv(),
         Self::commit_complete(self, post, lbl, new_journal)
     ensures
-        CrashTolerantJournal::State::next_by(self.i(), post.i(), lbl.i(), 
-            CrashTolerantJournal::Step::commit_complete(new_journal.i_abstract()))
+        AbstractCrashAwareJournal::State::next_by(self.i(), post.i(), lbl.i(), 
+            AbstractCrashAwareJournal::Step::commit_complete(new_journal.i_abstract()))
     {
-        reveal(CrashTolerantJournal::State::next_by);
+        reveal(AbstractCrashAwareJournal::State::next_by);
 
         self.inflight.unwrap().tj.iwf();
         JournalRecord::i_lemma_forall();
@@ -284,12 +284,12 @@ impl AllocationCrashAwareJournal::State{
         post.inv(),
         Self::next(self, post, lbl)
     ensures
-        CrashTolerantJournal::State::next(self.i(), post.i(), lbl.i())
+        AbstractCrashAwareJournal::State::next(self.i(), post.i(), lbl.i())
     {
         reveal(AllocationCrashAwareJournal::State::next_by);  // unfortunate defaults
         reveal(AllocationCrashAwareJournal::State::next);
-        reveal(CrashTolerantJournal::State::next_by);
-        reveal(CrashTolerantJournal::State::next);
+        reveal(AbstractCrashAwareJournal::State::next_by);
+        reveal(AbstractCrashAwareJournal::State::next);
 
         let step = choose |step| AllocationCrashAwareJournal::State::next_by(self, post, lbl, step);
         match step {
@@ -309,8 +309,8 @@ impl AllocationCrashAwareJournal::State{
                 self.internal_refines(post, lbl, new_journal);
             },
             AllocationCrashAwareJournal::Step::query_lsn_persistence() => {
-                assert( CrashTolerantJournal::State::next_by(self.i(), post.i(), lbl.i(), 
-                    CrashTolerantJournal::Step::query_lsn_persistence()) ); // witness
+                assert( AbstractCrashAwareJournal::State::next_by(self.i(), post.i(), lbl.i(), 
+                    AbstractCrashAwareJournal::Step::query_lsn_persistence()) ); // witness
             },
             AllocationCrashAwareJournal::Step::commit_start(frozen_journal) => {
                 self.commit_start_refines(post, lbl, frozen_journal);
@@ -319,8 +319,8 @@ impl AllocationCrashAwareJournal::State{
                 self.commit_complete_refines(post, lbl, new_journal);
             },
             AllocationCrashAwareJournal::Step::crash() => {
-                assert( CrashTolerantJournal::State::next_by(self.i(), post.i(), lbl.i(), 
-                    CrashTolerantJournal::Step::crash()) ); // witness
+                assert( AbstractCrashAwareJournal::State::next_by(self.i(), post.i(), lbl.i(), 
+                    AbstractCrashAwareJournal::Step::crash()) ); // witness
             },
             _ => {
                 assert(false);
@@ -330,7 +330,7 @@ impl AllocationCrashAwareJournal::State{
 
     pub proof fn init_refines(self)
     requires Self::initialize(self)
-    ensures CrashTolerantJournal::State::initialize(self.i())
+    ensures AbstractCrashAwareJournal::State::initialize(self.i())
     {
         TruncatedJournal::mkfs_ensures();
     }

@@ -31,10 +31,10 @@ impl Ephemeral
     }
 }
 
-// CrashTolerantJournal represents an infinite MsgHistory with a persisted
+// AbstractCrashAwareJournal represents an infinite MsgHistory with a persisted
 // version as well as an ephemeral (in-memory) version. The Journal is
 // able to crash and recover. A crash-aware version of AbstractJournal.
-state_machine!{ CrashTolerantJournal {
+state_machine!{ AbstractCrashAwareJournal {
     fields {
         /// The persisted snapshot of the journal (stores a MsgHistory directly).
         pub persistent: StoreImage,

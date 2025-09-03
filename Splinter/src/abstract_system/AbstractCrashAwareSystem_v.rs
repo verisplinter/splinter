@@ -52,10 +52,10 @@ type Ephemeral = Option<Known>;
 state_machine!{ CoordinationSystem {
   fields {
     /// The state of the journal in our system.
-    pub journal: CrashTolerantJournal::State,
+    pub journal: AbstractCrashAwareJournal::State,
 
     /// State of the map backing our system.
-    pub mapadt: CrashTolerantMap::State,
+    pub mapadt: AbstractCrashAwareMap::State,
 
     /// The ephemeral state of the coordination system tracks the outstanding
     /// requests and replies for map operations, as well as the set of outstanding
@@ -100,9 +100,9 @@ state_machine!{ CoordinationSystem {
 
   init! {
     // Raise the non-determinism to the caller level (functional style)
-    // initialize(j: CrashTolerantJournal::State, m: CrashTolerantMap::State) {
-    //   require CrashTolerantJournal::State::initialize(j);
-    //   require CrashTolerantMap::State::initialize(m)
+    // initialize(j: AbstractCrashAwareJournal::State, m: AbstractCrashAwareMap::State) {
+    //   require AbstractCrashAwareJournal::State::initialize(j);
+    //   require AbstractCrashAwareMap::State::initialize(m)
     //   init journal = j;
     //   init mapadt = m;
     //   init ephemeral = Ephemeral::Unknown;
@@ -115,8 +115,8 @@ state_machine!{ CoordinationSystem {
       // Issue is that this would just allow any arbitrary journal and
       // mapadt past, but we only want journals and mapadts that meet
       // a certain condition. How to do that?
-      require CrashTolerantJournal::State::init(state.journal);
-      require CrashTolerantMap::State::init(state.mapadt);
+      require AbstractCrashAwareJournal::State::init(state.journal);
+      require AbstractCrashAwareMap::State::init(state.mapadt);
       init journal = state.journal;
       init mapadt = state.mapadt;
       init ephemeral = None;
@@ -129,22 +129,22 @@ state_machine!{ CoordinationSystem {
     // state (just a direct copy)
     load_ephemeral_from_persistent(
       label: Label,
-      new_journal: CrashTolerantJournal::State,
-      new_mapadt: CrashTolerantMap::State,
+      new_journal: AbstractCrashAwareJournal::State,
+      new_mapadt: AbstractCrashAwareMap::State,
       map_lsn: LSN,
     ) {
       require let Label::Label{ ctam_label: CrashTolerantAsyncMap::Label::Noop } = label;
       
-      require CrashTolerantJournal::State::next(
+      require AbstractCrashAwareJournal::State::next(
         pre.journal,
         new_journal,
-        CrashTolerantJournal::Label::LoadEphemeralFromPersistentLabel
+        AbstractCrashAwareJournal::Label::LoadEphemeralFromPersistentLabel
       );
 
-      require CrashTolerantMap::State::next(
+      require AbstractCrashAwareMap::State::next(
         pre.mapadt,
         new_mapadt,
-        CrashTolerantMap::Label::LoadEphemeralFromPersistentLabel{ end_lsn: map_lsn }
+        AbstractCrashAwareMap::Label::LoadEphemeralFromPersistentLabel{ end_lsn: map_lsn }
       );
 
       // Solving the "initial" state problem is weird. Inherently we want a function
@@ -169,8 +169,8 @@ state_machine!{ CoordinationSystem {
     // map is still behind.
     recover(
       label: Label,
-      new_journal: CrashTolerantJournal::State,
-      new_mapadt: CrashTolerantMap::State,
+      new_journal: AbstractCrashAwareJournal::State,
+      new_mapadt: AbstractCrashAwareMap::State,
       records: MsgHistory,
     ) {
       require let Label::Label{ ctam_label: CrashTolerantAsyncMap::Label::Noop } = label;
@@ -178,16 +178,16 @@ state_machine!{ CoordinationSystem {
       require pre.ephemeral is Some;
       require records.wf();
 
-      require CrashTolerantJournal::State::next(
+      require AbstractCrashAwareJournal::State::next(
         pre.journal,
         new_journal,
-        CrashTolerantJournal::Label::ReadForRecoveryLabel{ records }
+        AbstractCrashAwareJournal::Label::ReadForRecoveryLabel{ records }
       );
 
-      require CrashTolerantMap::State::next(
+      require AbstractCrashAwareMap::State::next(
         pre.mapadt,
         new_mapadt,
-        CrashTolerantMap::Label::PutRecordsLabel{ records }
+        AbstractCrashAwareMap::Label::PutRecordsLabel{ records }
       );
 
       update ephemeral = Some(
@@ -259,8 +259,8 @@ state_machine!{ CoordinationSystem {
     // Execute a previously requested query on the kv-store.
     query(
       label: Label,
-      new_journal: CrashTolerantJournal::State,
-      new_mapadt: CrashTolerantMap::State,
+      new_journal: AbstractCrashAwareJournal::State,
+      new_mapadt: AbstractCrashAwareMap::State,
     ) {
       // State must be known
       require pre.ephemeral is Some;
@@ -289,16 +289,16 @@ state_machine!{ CoordinationSystem {
 
       require !pre_ephemeral.progress.replies.contains(reply);
 
-      require CrashTolerantJournal::State::next(
+      require AbstractCrashAwareJournal::State::next(
         pre.journal,
         new_journal,
-        CrashTolerantJournal::Label::QueryEndLsnLabel{end_lsn: pre_ephemeral.map_lsn},
+        AbstractCrashAwareJournal::Label::QueryEndLsnLabel{end_lsn: pre_ephemeral.map_lsn},
       );
 
-      require CrashTolerantMap::State::next(
+      require AbstractCrashAwareMap::State::next(
         pre.mapadt,
         new_mapadt,
-        CrashTolerantMap::Label::QueryLabel{
+        AbstractCrashAwareMap::Label::QueryLabel{
           end_lsn: pre_ephemeral.map_lsn,
           key: key,
           value: value,
@@ -324,8 +324,8 @@ state_machine!{ CoordinationSystem {
   transition! {
     put(
       label: Label,
-      new_journal: CrashTolerantJournal::State,
-      new_mapadt: CrashTolerantMap::State,
+      new_journal: AbstractCrashAwareJournal::State,
+      new_mapadt: AbstractCrashAwareMap::State,
     ) {
       require pre.ephemeral is Some;
       let pre_ephemeral = pre.ephemeral->Some_0;
@@ -365,16 +365,16 @@ state_machine!{ CoordinationSystem {
       // TODO: let singleton: MsgHistory = <something>;
       let singleton = MsgHistory::singleton_at(pre_ephemeral.map_lsn, keyed_message);
 
-      require CrashTolerantJournal::State::next(
+      require AbstractCrashAwareJournal::State::next(
         pre.journal,
         new_journal,
-        CrashTolerantJournal::Label::PutLabel{ records: singleton },
+        AbstractCrashAwareJournal::Label::PutLabel{ records: singleton },
       );
 
-      require CrashTolerantMap::State::next(
+      require AbstractCrashAwareMap::State::next(
         pre.mapadt,
         new_mapadt,
-        CrashTolerantMap::Label::PutRecordsLabel{ records: singleton },
+        AbstractCrashAwareMap::Label::PutRecordsLabel{ records: singleton },
       );
 
       update ephemeral = Some(
@@ -422,7 +422,7 @@ state_machine!{ CoordinationSystem {
   transition! {
     journal_internal(
       label: Label,
-      new_journal: CrashTolerantJournal::State,
+      new_journal: AbstractCrashAwareJournal::State,
     ) {
       require pre.ephemeral is Some;
       let pre_ephemeral = pre.ephemeral->Some_0;
@@ -430,10 +430,10 @@ state_machine!{ CoordinationSystem {
       let ctam_label = label->ctam_label;
       require ctam_label is Noop;
 
-      require CrashTolerantJournal::State::next(
+      require AbstractCrashAwareJournal::State::next(
         pre.journal,
         new_journal,
-        CrashTolerantJournal::Label::InternalLabel,
+        AbstractCrashAwareJournal::Label::InternalLabel,
       );
 
       update journal = new_journal;
@@ -443,7 +443,7 @@ state_machine!{ CoordinationSystem {
   transition! {
     map_internal(
       label: Label,
-      new_mapadt: CrashTolerantMap::State,
+      new_mapadt: AbstractCrashAwareMap::State,
     ) {
       require pre.ephemeral is Some;
       let pre_ephemeral = pre.ephemeral->Some_0;
@@ -451,10 +451,10 @@ state_machine!{ CoordinationSystem {
       let ctam_label = label->ctam_label;
       require ctam_label is Noop;
 
-      require CrashTolerantMap::State::next(
+      require AbstractCrashAwareMap::State::next(
         pre.mapadt,
         new_mapadt,
-        CrashTolerantMap::Label::InternalLabel,
+        AbstractCrashAwareMap::Label::InternalLabel,
       );
 
       update mapadt = new_mapadt;
@@ -464,7 +464,7 @@ state_machine!{ CoordinationSystem {
   transition! {
     req_sync(
       label: Label,
-      new_journal: CrashTolerantJournal::State,
+      new_journal: AbstractCrashAwareJournal::State,
     ) {
       require pre.ephemeral is Some;
       let pre_ephemeral = pre.ephemeral->Some_0;
@@ -475,10 +475,10 @@ state_machine!{ CoordinationSystem {
       let sync_req_id = ctam_label.arrow_ReqSyncOp_sync_req_id();
       require !pre_ephemeral.sync_reqs.dom().contains(sync_req_id);
       
-      require CrashTolerantJournal::State::next(
+      require AbstractCrashAwareJournal::State::next(
         pre.journal,
         new_journal,
-        CrashTolerantJournal::Label::QueryEndLsnLabel{ end_lsn: pre_ephemeral.map_lsn },
+        AbstractCrashAwareJournal::Label::QueryEndLsnLabel{ end_lsn: pre_ephemeral.map_lsn },
       );
 
       update journal = new_journal;
@@ -494,7 +494,7 @@ state_machine!{ CoordinationSystem {
   transition! {
     reply_sync(
       label: Label,
-      new_journal: CrashTolerantJournal::State,
+      new_journal: AbstractCrashAwareJournal::State,
     ) {
       require pre.ephemeral is Some;
       let pre_ephemeral = pre.ephemeral->Some_0;
@@ -505,10 +505,10 @@ state_machine!{ CoordinationSystem {
       let sync_req_id = ctam_label.arrow_ReplySyncOp_sync_req_id();
       require pre_ephemeral.sync_reqs.dom().contains(sync_req_id);
 
-      require CrashTolerantJournal::State::next(
+      require AbstractCrashAwareJournal::State::next(
         pre.journal,
         new_journal,
-        CrashTolerantJournal::Label::QueryLsnPersistenceLabel{
+        AbstractCrashAwareJournal::Label::QueryLsnPersistenceLabel{
           sync_lsn: pre_ephemeral.sync_reqs[sync_req_id],
         }
       );
@@ -534,19 +534,19 @@ state_machine!{ CoordinationSystem {
       let ctam_label = label->ctam_label;
       require ctam_label is Noop;
 
-      require CrashTolerantJournal::State::next(
+      require AbstractCrashAwareJournal::State::next(
         pre.journal,
         pre.journal,
-        CrashTolerantJournal::Label::CommitStartLabel {
+        AbstractCrashAwareJournal::Label::CommitStartLabel {
           new_boundary_lsn: new_boundary_lsn,
           max_lsn: pre_ephemeral.map_lsn,
         }
       );
 
-      require CrashTolerantMap::State::next(
+      require AbstractCrashAwareMap::State::next(
         pre.mapadt,
         pre.mapadt,
-        CrashTolerantMap::Label::CommitStartLabel {
+        AbstractCrashAwareMap::Label::CommitStartLabel {
           new_boundary_lsn: new_boundary_lsn,
         }
       );
@@ -575,8 +575,8 @@ state_machine!{ CoordinationSystem {
   transition! {
     commit_complete(
       label: Label,
-      new_mapadt: CrashTolerantMap::State,
-      new_journal: CrashTolerantJournal::State,
+      new_mapadt: AbstractCrashAwareMap::State,
+      new_journal: AbstractCrashAwareJournal::State,
     ) {
       // The only way we could possibly learn that a commit has completed is if the superblock that
       // was in-flight to the disk landed, since that write reply is the commit-complete
@@ -588,20 +588,20 @@ state_machine!{ CoordinationSystem {
       let ctam_label = label->ctam_label;
       require ctam_label is Noop;
 
-      // CrashTolerantJournal commit complete truncates the old
+      // AbstractCrashAwareJournal commit complete truncates the old
       // part of ephemeral journal that's now saved on disk
-      require CrashTolerantJournal::State::next(
+      require AbstractCrashAwareJournal::State::next(
         pre.journal,
         new_journal,
-        CrashTolerantJournal::Label::CommitCompleteLabel {
+        AbstractCrashAwareJournal::Label::CommitCompleteLabel {
           require_end: pre_ephemeral.map_lsn,
         },
       );
 
-      require CrashTolerantMap::State::next(
+      require AbstractCrashAwareMap::State::next(
         pre.mapadt,
         new_mapadt,
-        CrashTolerantMap::Label::CommitCompleteLabel,
+        AbstractCrashAwareMap::Label::CommitCompleteLabel,
       );
 
       update journal = new_journal;
@@ -613,8 +613,8 @@ state_machine!{ CoordinationSystem {
   transition! {
     crash(
       label: Label,
-      new_journal: CrashTolerantJournal::State,
-      new_mapadt: CrashTolerantMap::State,
+      new_journal: AbstractCrashAwareJournal::State,
+      new_mapadt: AbstractCrashAwareMap::State,
     ) {
       // TODO (travis/jonh): Figure out a way to gracefully handle state machines
       // that only have one possible label (or a way to suppress the warning about
@@ -636,16 +636,16 @@ state_machine!{ CoordinationSystem {
       // in flight, so don't let that case confuse you.
       let keep_in_flight = pre.journal.in_flight is Some && !pre.superblock_in_flight;
 
-      require CrashTolerantJournal::State::next(
+      require AbstractCrashAwareJournal::State::next(
         pre.journal,
         new_journal,
-        CrashTolerantJournal::Label::CrashLabel{ keep_in_flight }
+        AbstractCrashAwareJournal::Label::CrashLabel{ keep_in_flight }
       );
 
-      require CrashTolerantMap::State::next(
+      require AbstractCrashAwareMap::State::next(
         pre.mapadt,
         new_mapadt,
-        CrashTolerantMap::Label::CrashLabel{ keep_in_flight }
+        AbstractCrashAwareMap::Label::CrashLabel{ keep_in_flight }
       );
 
       update journal = new_journal;

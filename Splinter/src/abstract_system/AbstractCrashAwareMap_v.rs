@@ -31,7 +31,7 @@ pub enum Ephemeral {
     Known{ v: AbstractMap::State },
 }
 
-state_machine!{ CrashTolerantMap {
+state_machine!{ AbstractCrashAwareMap {
     fields {
         /// The persistent view of the map. (Just a StampedMap, so a pure map
         /// data structure). Only modified during commit_complete transitions

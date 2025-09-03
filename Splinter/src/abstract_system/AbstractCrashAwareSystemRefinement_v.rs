@@ -28,7 +28,7 @@ use crate::abstract_system::MsgHistory_v::{KeyedMessage, MsgHistory};
 use crate::abstract_system::StampedMap_v::*;
 
 verus! {
-    impl CrashTolerantJournal::State
+    impl AbstractCrashAwareJournal::State
     {
         pub open spec(checked) fn i(self) -> MsgHistory
             recommends
@@ -45,7 +45,7 @@ verus! {
         }
     }
 
-    impl CrashTolerantMap::State
+    impl AbstractCrashAwareMap::State
     {
         pub open spec(checked) fn i(self) -> StampedMap
             recommends
@@ -465,7 +465,7 @@ verus! {
         // doesn't provide any guarantees)
         // Also I've noticed that these spec(checked) functions which we are calling are all
         // opaque, which might be cause for concern...
-        // assert(CrashTolerantJournal::State::init(v.journal));
+        // assert(AbstractCrashAwareJournal::State::init(v.journal));
 
         // Found this in Slack history:
         // https://github.com/verus-lang/verus/blob/b990f436ef3ffa3a4078bdb6ee0aa7b05c46c5a7/source/rust_verify/example/state_machines/refinement.rs#L112
@@ -475,10 +475,10 @@ verus! {
 
         reveal(CoordinationSystem::State::init);
         reveal(CoordinationSystem::State::init_by);
-        reveal(CrashTolerantJournal::State::init);
-        reveal(CrashTolerantJournal::State::init_by);
-        reveal(CrashTolerantMap::State::init);
-        reveal(CrashTolerantMap::State::init_by);
+        reveal(AbstractCrashAwareJournal::State::init);
+        reveal(AbstractCrashAwareJournal::State::init_by);
+        reveal(AbstractCrashAwareMap::State::init);
+        reveal(AbstractCrashAwareMap::State::init_by);
 
         match choose |config: CoordinationSystem::Config|
             CoordinationSystem::State::init_by(v, config)
@@ -527,10 +527,10 @@ verus! {
     {
         reveal(CoordinationSystem::State::next);
         reveal(CoordinationSystem::State::next_by);
-        reveal(CrashTolerantJournal::State::next);
-        reveal(CrashTolerantJournal::State::next_by);
-        reveal(CrashTolerantMap::State::next);
-        reveal(CrashTolerantMap::State::next_by);
+        reveal(AbstractCrashAwareJournal::State::next);
+        reveal(AbstractCrashAwareJournal::State::next_by);
+        reveal(AbstractCrashAwareMap::State::next);
+        reveal(AbstractCrashAwareMap::State::next_by);
         reveal(AbstractJournal::State::next);
         reveal(AbstractJournal::State::next_by);
 
@@ -538,7 +538,7 @@ verus! {
         assert(v.ephemeral is Some);
         assert(v.journal.ephemeral is Known);
 
-        assert(CrashTolerantJournal::State::next(v.journal, vp.journal, CrashTolerantJournal::Label::CommitCompleteLabel {
+        assert(AbstractCrashAwareJournal::State::next(v.journal, vp.journal, AbstractCrashAwareJournal::Label::CommitCompleteLabel {
             require_end: v.ephemeral->Some_0.map_lsn,
         }));
 
@@ -649,12 +649,12 @@ verus! {
     {
         reveal(CoordinationSystem::State::next);
         reveal(CoordinationSystem::State::next_by);
-        reveal(CrashTolerantJournal::State::next);
-        reveal(CrashTolerantJournal::State::next_by);
+        reveal(AbstractCrashAwareJournal::State::next);
+        reveal(AbstractCrashAwareJournal::State::next_by);
         reveal(AbstractJournal::State::next);
         reveal(AbstractJournal::State::next_by);
-        reveal(CrashTolerantMap::State::next);
-        reveal(CrashTolerantMap::State::next_by);
+        reveal(AbstractCrashAwareMap::State::next);
+        reveal(AbstractCrashAwareMap::State::next_by);
         reveal(AbstractMap::State::next);
         reveal(AbstractMap::State::next_by);
 
@@ -683,7 +683,7 @@ verus! {
 
         let singleton = MsgHistory::singleton_at(v.ephemeral->Some_0.map_lsn, keyed_message);
 
-        assert(CrashTolerantJournal::State::next(v.journal, vp.journal, CrashTolerantJournal::Label::PutLabel{ records: singleton }));
+        assert(AbstractCrashAwareJournal::State::next(v.journal, vp.journal, AbstractCrashAwareJournal::Label::PutLabel{ records: singleton }));
 
         journal_associativity(v.mapadt.persistent, v.journal.i(), singleton);
 
@@ -730,12 +730,12 @@ verus! {
         // The classic preamble for revealing all nested transitions we rely on
         reveal(CoordinationSystem::State::next);
         reveal(CoordinationSystem::State::next_by);
-        reveal(CrashTolerantJournal::State::next);
-        reveal(CrashTolerantJournal::State::next_by);
+        reveal(AbstractCrashAwareJournal::State::next);
+        reveal(AbstractCrashAwareJournal::State::next_by);
         reveal(AbstractJournal::State::next);
         reveal(AbstractJournal::State::next_by);
-        reveal(CrashTolerantMap::State::next);
-        reveal(CrashTolerantMap::State::next_by);
+        reveal(AbstractCrashAwareMap::State::next);
+        reveal(AbstractCrashAwareMap::State::next_by);
         // reveal(AbstractMap::State::next);
         // reveal(AbstractMap::State::next_by);
     }
@@ -756,12 +756,12 @@ verus! {
     {
         reveal(CoordinationSystem::State::next);
         reveal(CoordinationSystem::State::next_by);
-        reveal(CrashTolerantJournal::State::next);
-        reveal(CrashTolerantJournal::State::next_by);
+        reveal(AbstractCrashAwareJournal::State::next);
+        reveal(AbstractCrashAwareJournal::State::next_by);
         reveal(AbstractJournal::State::next);
         reveal(AbstractJournal::State::next_by);
-        reveal(CrashTolerantMap::State::next);
-        reveal(CrashTolerantMap::State::next_by);
+        reveal(AbstractCrashAwareMap::State::next);
+        reveal(AbstractCrashAwareMap::State::next_by);
         reveal(AbstractMap::State::next);
         reveal(AbstractMap::State::next_by);
 
@@ -823,18 +823,18 @@ verus! {
     {
         reveal(CoordinationSystem::State::next);
         reveal(CoordinationSystem::State::next_by);
-        reveal(CrashTolerantJournal::State::next);
-        reveal(CrashTolerantJournal::State::next_by);
+        reveal(AbstractCrashAwareJournal::State::next);
+        reveal(AbstractCrashAwareJournal::State::next_by);
         reveal(AbstractJournal::State::next);
         reveal(AbstractJournal::State::next_by);
-        reveal(CrashTolerantMap::State::next);
-        reveal(CrashTolerantMap::State::next_by);
+        reveal(AbstractCrashAwareMap::State::next);
+        reveal(AbstractCrashAwareMap::State::next_by);
         reveal(AbstractMap::State::next);
         reveal(AbstractMap::State::next_by);
 
         // Be careful to reveal init and init_by transitions as well!
-        reveal(CrashTolerantJournal::State::init);
-        reveal(CrashTolerantJournal::State::init_by);
+        reveal(AbstractCrashAwareJournal::State::init);
+        reveal(AbstractCrashAwareJournal::State::init_by);
         // No direct dependencies on init()
         // reveal(AbstractJournal::State::init);
         reveal(AbstractJournal::State::init_by);
@@ -951,18 +951,18 @@ verus! {
     {
         reveal(CoordinationSystem::State::next);
         reveal(CoordinationSystem::State::next_by);
-        reveal(CrashTolerantJournal::State::next);
-        reveal(CrashTolerantJournal::State::next_by);
+        reveal(AbstractCrashAwareJournal::State::next);
+        reveal(AbstractCrashAwareJournal::State::next_by);
         reveal(AbstractJournal::State::next);
         reveal(AbstractJournal::State::next_by);
-        reveal(CrashTolerantMap::State::next);
-        reveal(CrashTolerantMap::State::next_by);
+        reveal(AbstractCrashAwareMap::State::next);
+        reveal(AbstractCrashAwareMap::State::next_by);
         reveal(AbstractMap::State::next);
         reveal(AbstractMap::State::next_by);
 
         // Be careful to reveal init and init_by transitions as well!
-        reveal(CrashTolerantJournal::State::init);
-        reveal(CrashTolerantJournal::State::init_by);
+        reveal(AbstractCrashAwareJournal::State::init);
+        reveal(AbstractCrashAwareJournal::State::init_by);
         // No direct dependencies on init()
         // reveal(AbstractJournal::State::init);
         reveal(AbstractJournal::State::init_by);
@@ -1143,18 +1143,18 @@ verus! {
     {
         reveal(CoordinationSystem::State::next);
         reveal(CoordinationSystem::State::next_by);
-        reveal(CrashTolerantJournal::State::next);
-        reveal(CrashTolerantJournal::State::next_by);
+        reveal(AbstractCrashAwareJournal::State::next);
+        reveal(AbstractCrashAwareJournal::State::next_by);
         reveal(AbstractJournal::State::next);
         reveal(AbstractJournal::State::next_by);
-        reveal(CrashTolerantMap::State::next);
-        reveal(CrashTolerantMap::State::next_by);
+        reveal(AbstractCrashAwareMap::State::next);
+        reveal(AbstractCrashAwareMap::State::next_by);
         reveal(AbstractMap::State::next);
         reveal(AbstractMap::State::next_by);
 
         // Be careful to reveal init and init_by transitions as well!
-        reveal(CrashTolerantJournal::State::init);
-        reveal(CrashTolerantJournal::State::init_by);
+        reveal(AbstractCrashAwareJournal::State::init);
+        reveal(AbstractCrashAwareJournal::State::init_by);
         // No direct dependencies on init()
         // reveal(AbstractJournal::State::init);
         reveal(AbstractJournal::State::init_by);
@@ -1219,18 +1219,18 @@ verus! {
     {
         reveal(CoordinationSystem::State::next);
         reveal(CoordinationSystem::State::next_by);
-        reveal(CrashTolerantJournal::State::next);
-        reveal(CrashTolerantJournal::State::next_by);
+        reveal(AbstractCrashAwareJournal::State::next);
+        reveal(AbstractCrashAwareJournal::State::next_by);
         reveal(AbstractJournal::State::next);
         reveal(AbstractJournal::State::next_by);
-        reveal(CrashTolerantMap::State::next);
-        reveal(CrashTolerantMap::State::next_by);
+        reveal(AbstractCrashAwareMap::State::next);
+        reveal(AbstractCrashAwareMap::State::next_by);
         reveal(AbstractMap::State::next);
         reveal(AbstractMap::State::next_by);
 
         // Be careful to reveal init and init_by transitions as well!
-        reveal(CrashTolerantJournal::State::init);
-        reveal(CrashTolerantJournal::State::init_by);
+        reveal(AbstractCrashAwareJournal::State::init);
+        reveal(AbstractCrashAwareJournal::State::init_by);
         // No direct dependencies on init()
         // reveal(AbstractJournal::State::init);
         reveal(AbstractJournal::State::init_by);
@@ -1273,14 +1273,14 @@ verus! {
 
         let keep_in_flight = v.journal.in_flight is Some && !v.superblock_in_flight;
 
-        assert( CrashTolerantJournal::State::next(
+        assert( AbstractCrashAwareJournal::State::next(
             v.journal,
             vp.journal,
-            CrashTolerantJournal::Label::CrashLabel{ keep_in_flight }) );
-        assert( CrashTolerantMap::State::next(
+            AbstractCrashAwareJournal::Label::CrashLabel{ keep_in_flight }) );
+        assert( AbstractCrashAwareMap::State::next(
             v.mapadt,
             vp.mapadt,
-            CrashTolerantMap::Label::CrashLabel{ keep_in_flight }) );
+            AbstractCrashAwareMap::Label::CrashLabel{ keep_in_flight }) );
 
         if v.ephemeral is None || !(v.ephemeral.unwrap() is Known) {
             assert(vp.i().versions =~~= v.i().versions.get_prefix(v.i().stable_index() + 1));
@@ -1335,18 +1335,18 @@ verus! {
     {
         reveal(CoordinationSystem::State::next);
         reveal(CoordinationSystem::State::next_by);
-        reveal(CrashTolerantJournal::State::next);
-        reveal(CrashTolerantJournal::State::next_by);
+        reveal(AbstractCrashAwareJournal::State::next);
+        reveal(AbstractCrashAwareJournal::State::next_by);
         reveal(AbstractJournal::State::next);
         reveal(AbstractJournal::State::next_by);
-        reveal(CrashTolerantMap::State::next);
-        reveal(CrashTolerantMap::State::next_by);
+        reveal(AbstractCrashAwareMap::State::next);
+        reveal(AbstractCrashAwareMap::State::next_by);
         reveal(AbstractMap::State::next);
         reveal(AbstractMap::State::next_by);
 
         // Be careful to reveal init and init_by transitions as well!
-        reveal(CrashTolerantJournal::State::init);
-        reveal(CrashTolerantJournal::State::init_by);
+        reveal(AbstractCrashAwareJournal::State::init);
+        reveal(AbstractCrashAwareJournal::State::init_by);
         // No direct dependencies on init()
         // reveal(AbstractJournal::State::init);
         reveal(AbstractJournal::State::init_by);
@@ -1394,18 +1394,18 @@ verus! {
     {
         reveal(CoordinationSystem::State::next);
         reveal(CoordinationSystem::State::next_by);
-        reveal(CrashTolerantJournal::State::next);
-        reveal(CrashTolerantJournal::State::next_by);
+        reveal(AbstractCrashAwareJournal::State::next);
+        reveal(AbstractCrashAwareJournal::State::next_by);
         reveal(AbstractJournal::State::next);
         reveal(AbstractJournal::State::next_by);
-        reveal(CrashTolerantMap::State::next);
-        reveal(CrashTolerantMap::State::next_by);
+        reveal(AbstractCrashAwareMap::State::next);
+        reveal(AbstractCrashAwareMap::State::next_by);
         reveal(AbstractMap::State::next);
         reveal(AbstractMap::State::next_by);
 
         // Be careful to reveal init and init_by transitions as well!
-        reveal(CrashTolerantJournal::State::init);
-        reveal(CrashTolerantJournal::State::init_by);
+        reveal(AbstractCrashAwareJournal::State::init);
+        reveal(AbstractCrashAwareJournal::State::init_by);
         // No direct dependencies on init()
         // reveal(AbstractJournal::State::init);
         reveal(AbstractJournal::State::init_by);
@@ -1501,18 +1501,18 @@ verus! {
     {
         reveal(CoordinationSystem::State::next);
         reveal(CoordinationSystem::State::next_by);
-        reveal(CrashTolerantJournal::State::next);
-        reveal(CrashTolerantJournal::State::next_by);
+        reveal(AbstractCrashAwareJournal::State::next);
+        reveal(AbstractCrashAwareJournal::State::next_by);
         reveal(AbstractJournal::State::next);
         reveal(AbstractJournal::State::next_by);
-        reveal(CrashTolerantMap::State::next);
-        reveal(CrashTolerantMap::State::next_by);
+        reveal(AbstractCrashAwareMap::State::next);
+        reveal(AbstractCrashAwareMap::State::next_by);
         reveal(AbstractMap::State::next);
         reveal(AbstractMap::State::next_by);
 
         // Be careful to reveal init and init_by transitions as well!
-        reveal(CrashTolerantJournal::State::init);
-        reveal(CrashTolerantJournal::State::init_by);
+        reveal(AbstractCrashAwareJournal::State::init);
+        reveal(AbstractCrashAwareJournal::State::init_by);
         // No direct dependencies on init()
         // reveal(AbstractJournal::State::init);
         reveal(AbstractJournal::State::init_by);
@@ -1598,18 +1598,18 @@ verus! {
     {
         reveal(CoordinationSystem::State::next);
         reveal(CoordinationSystem::State::next_by);
-        reveal(CrashTolerantJournal::State::next);
-        reveal(CrashTolerantJournal::State::next_by);
+        reveal(AbstractCrashAwareJournal::State::next);
+        reveal(AbstractCrashAwareJournal::State::next_by);
         reveal(AbstractJournal::State::next);
         reveal(AbstractJournal::State::next_by);
-        reveal(CrashTolerantMap::State::next);
-        reveal(CrashTolerantMap::State::next_by);
+        reveal(AbstractCrashAwareMap::State::next);
+        reveal(AbstractCrashAwareMap::State::next_by);
         reveal(AbstractMap::State::next);
         reveal(AbstractMap::State::next_by);
 
         // Be careful to reveal init and init_by transitions as well!
-        reveal(CrashTolerantJournal::State::init);
-        reveal(CrashTolerantJournal::State::init_by);
+        reveal(AbstractCrashAwareJournal::State::init);
+        reveal(AbstractCrashAwareJournal::State::init_by);
         // No direct dependencies on init()
         // reveal(AbstractJournal::State::init);
         reveal(AbstractJournal::State::init_by);
