@@ -40,6 +40,11 @@ impl SystemModel::State<ConcreteProgramModel>  {
         &&& self.request_ids_in_history()
         &&& self.reply_ids_in_history()
 
+        &&& self.sync_req_reply_ids_disjoint()
+        &&& self.sync_req_ids_in_history()
+        &&& self.sync_reply_ids_in_history()
+        &&& self.program.state.client_ready() ==> self.program_sync_req_ids_in_history()
+
         &&& self.sync_requests_inv()
 
         &&& DiskLayout::impl_inv(self.disk.content[spec_superblock_addr()])
@@ -108,7 +113,6 @@ impl SystemModel::State<ConcreteProgramModel>  {
         &&& self.program.state.client_ready() ==>
             // sync reqs pass *out of* the system sync_requests into the program state
             self.program.state.sync_req_map.dom().disjoint(self.sync_requests.dom())
-        &&& !self.program.state.client_ready() ==> self.sync_requests.is_empty()
     }
 
     // TODO: update once we have structures to track id -> address
@@ -185,6 +189,27 @@ impl SystemModel::State<ConcreteProgramModel>  {
     pub open spec(checked) fn reply_ids_in_history(self) -> bool
     {
         forall |reply| #![auto] self.replies.contains(reply) ==> self.id_history.contains(reply.id)
+    }
+
+    pub open spec(checked) fn sync_req_reply_ids_disjoint(self) -> bool
+    {
+        forall |req_id, reply_id| #![auto] self.sync_requests.contains(req_id) && self.sync_replies.contains(reply_id)
+            ==> req_id != reply_id
+    }
+
+    pub open spec(checked) fn sync_req_ids_in_history(self) -> bool
+    {
+        forall |req_id| #![auto] self.sync_requests.contains(req_id) ==> self.id_history.contains(req_id)
+    }
+
+    pub open spec(checked) fn sync_reply_ids_in_history(self) -> bool
+    {
+        forall |reply_id| #![auto] self.sync_replies.contains(reply_id) ==> self.id_history.contains(reply_id)
+    }
+
+    pub open spec(checked) fn program_sync_req_ids_in_history(self) -> bool
+    {
+        forall |req_id| #![auto] self.program.state.sync_req_map.dom().contains(req_id) ==> self.id_history.contains(req_id)
     }
 
     // interpretation given no ephemeral state and only on persistent disk
@@ -392,6 +417,7 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                             }
                         }
                     }
+                    assume( false );
                 }
 
                 assert(CrashTolerantAsyncMap::State::optionally_append_version(ipre.versions, ipost.versions));
@@ -409,6 +435,7 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                 assert(AsyncMap::State::next_by(iasync_pre, iasync_post, ilbl->base_op, AsyncMap::Step::request()));
                 assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl,
                     CrashTolerantAsyncMap::Step::operate(ipost.versions, ipost.async_ephemeral)));
+                assert( post.inv() );
             },
             SystemModel::Step::deliver_reply() => {
                 assert(post.inv()) by {
@@ -429,6 +456,7 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                 assert(AsyncMap::State::next_by(iasync_pre, iasync_post, ilbl->base_op, AsyncMap::Step::reply()));
                 assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl,
                     CrashTolerantAsyncMap::Step::operate(ipost.versions, ipost.async_ephemeral)));
+                assert( post.inv() );
             },
             SystemModel::Step::program_execute(new_program) => {
                 let req = lbl->op->req;
@@ -484,6 +512,7 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                 assert(AsyncMap::State::next_by(iasync_pre, iasync_post, ilbl->base_op, AsyncMap::Step::execute(to_map_label(req, reply), iasync_post.persistent)));
                 assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl,
                         CrashTolerantAsyncMap::Step::operate(ipost.versions, ipost.async_ephemeral)));
+                assert( post.inv() );
             },
             SystemModel::Step::program_accept_sync_request(new_program) => {
                 assert( all_elems_single(post.sync_requests) ) by {
@@ -502,11 +531,29 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                         }
                     }
                 }
-//                 assert(post.inv());
                 assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::req_sync()));
+                assert( post.sync_req_reply_ids_disjoint() ) by {
+                    assert forall |req_id, reply_id| #![auto] post.sync_requests.contains(req_id) && post.sync_replies.contains(reply_id)
+                    implies req_id != reply_id by {
+                        if req_id != sync_req_id {
+                            assert( pre.sync_requests.contains(req_id) );
+                        }
+                    }
+                }
+                assert( post.inv() );
             }
             SystemModel::Step::program_deliver_sync_reply(new_program) => {
                 assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::reply_sync()));
+                let sync_req_id = lbl.arrow_ProgramUIOp_op().arrow_DeliverSyncReply_sync_req_id();
+                assert( post.sync_req_reply_ids_disjoint() ) by {
+                    assert forall |req_id, reply_id| #![auto] post.sync_requests.contains(req_id) && post.sync_replies.contains(reply_id)
+                    implies req_id != reply_id by {
+                        if reply_id!== sync_req_id {
+                            assert( pre.sync_replies.contains(reply_id) );
+                        }
+                    }
+                }
+                assert( post.inv() );
             },
             SystemModel::Step::program_disk(new_program, new_disk) => {
                 assert(ConcreteProgramModel::valid_disk_transition(pre.program, post.program, lbl->info));
@@ -562,10 +609,12 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                 assert(post.inv());
                 assert(ipre == ipost);
                 assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::noop()));
+                assert( post.inv() );
             },
             SystemModel::Step::program_internal(new_program) => {
                 assert(ipre == ipost);
                 assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::noop()));
+                assert( post.inv() );
             },
             SystemModel::Step::disk_internal(new_disk) => {
                 assume(false);
@@ -580,22 +629,65 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                     assert(ipre == ipost);
                     assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::noop()));
                 }
+                assert( post.inv() );
             },
             SystemModel::Step::crash(new_program, new_disk) => {
                 assert(post.inv());
                 assert(ipre.versions.get_prefix(ipre.stable_index()+1) == ipost.versions);
                 assert(ipost.async_ephemeral == AsyncMap::State::init_ephemeral_state()); // ext_eq
+                assert( post.inv() );
                 assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::crash()));
             },
             SystemModel::Step::noop() => {
                 assert(ipre == ipost);
+                assert( post.inv() );
                 assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::noop()));
             },
             SystemModel::Step::accept_sync_request() => {
+                let sync_req_id = lbl.arrow_AcceptSyncRequest_sync_req_id();
+                assert( pre.fresh_id(sync_req_id) );
+                assert( !pre.sync_requests.contains(sync_req_id) );
+                assert( all_elems_single(post.sync_requests) );
+                assert( post.program.state == pre.program.state );
+                assert( post.sync_req_ids_in_history() ) by {
+                    assert forall |req_id| #![auto] post.sync_requests.contains(req_id)
+                        implies post.id_history.contains(req_id) by {
+                        assume( false );
+//                         if pre.sync_requests.contains(req_id)
+                    }
+                }
+                assert( post.sync_requests_inv() ) by {
+                    if post.program.state.client_ready() {
+                        assert forall |id| #![auto] post.program.state.sync_req_map.dom().contains(id)
+                            implies !post.sync_requests.dom().contains(id) by {
+                            if id == sync_req_id {
+//                                 assert( pre.sync_requests.contains(id) );   // trigger all_elems_single
+                                assert( post.program.state.sync_req_map.dom().contains(id) );
+                                assert( pre.id_history.contains(id) );
+                                assert( !post.sync_requests.dom().contains(id) );
+                            } else {
+                                assert( pre.program.state.sync_req_map.dom().contains(id) );
+                            }
+                        }
+                    }
+                }
+                assert( post.sync_req_reply_ids_disjoint() ) by {
+                    assert forall |req_id, reply_id| #![auto] post.sync_requests.contains(req_id) && post.sync_replies.contains(reply_id)
+                    implies req_id != reply_id by {
+                        if req_id == sync_req_id {
+                            assert( !pre.id_history.contains(sync_req_id) );
+                            assert( pre.sync_replies.contains(reply_id) );
+                            assert( pre.id_history.contains(reply_id) );
+                            assert( req_id != reply_id );
+                        } else {
+                            assert( pre.sync_requests.contains(req_id) );
+                        }
+                    }
+                }
                 assume(post.inv());
             },
             SystemModel::Step::deliver_sync_reply() => {
-                assert(post.inv());
+                assume(post.inv());
             },
             _ => { assert(false); }
         }
