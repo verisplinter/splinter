@@ -45,6 +45,8 @@ impl SystemModel::State<ConcreteProgramModel>  {
         &&& self.sync_reply_ids_in_history()
         &&& self.program.state.client_ready() ==> self.program_sync_req_ids_in_history()
 
+        &&& self.superblock_writes_inv()
+
         &&& self.sync_requests_inv()
 
         &&& DiskLayout::impl_inv(self.disk.content[spec_superblock_addr()])
@@ -210,6 +212,14 @@ impl SystemModel::State<ConcreteProgramModel>  {
     pub open spec(checked) fn program_sync_req_ids_in_history(self) -> bool
     {
         forall |req_id| #![auto] self.program.state.sync_req_map.dom().contains(req_id) ==> self.id_history.contains(req_id)
+    }
+
+    // TODO this is too specialized. It should probably become some indirection to a broad disk
+    // invariant provided by the program.
+    pub open spec(checked) fn superblock_writes_inv(self) -> bool
+    {
+        forall |id| #![auto] self.disk.requests.contains_key(id) && self.disk.requests[id] is WriteReq && self.disk.requests[id]->to == spec_superblock_addr()
+            ==> DiskLayout::impl_inv(self.disk.requests[id]->data)
     }
 
     // interpretation given no ephemeral state and only on persistent disk
@@ -417,7 +427,8 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                             }
                         }
                     }
-                    assume( false );
+                    // prove program_sync_req_ids_in_history()
+                    assert( forall |id| pre.id_history.contains(id) ==> post.id_history.contains(id) );
                 }
 
                 assert(CrashTolerantAsyncMap::State::optionally_append_version(ipre.versions, ipost.versions));
@@ -575,6 +586,14 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                         assert(AtomicState::initiate_recovery(pre.program.state, post.program.state, reqs, resps, req_id));
                         assert(post.program.state.wf());
                         multiset_map_singleton_ensures(req_id, DiskRequest::ReadReq{from: spec_superblock_addr()});
+
+                        assert( post.superblock_writes_inv() ) by {
+                            // The disk request buffer changed, but only by the addition of a read request
+                            assert forall |id| #![auto] post.disk.requests.contains_key(id) && post.disk.requests[id] is WriteReq && post.disk.requests[id]->to == spec_superblock_addr()
+                                implies DiskLayout::impl_inv(post.disk.requests[id]->data) by {
+                                assert( pre.disk.requests.contains_key(id) );
+                            }
+                        }
                     },
                     DiskEvent::CompleteRecovery{req_id, raw_page} => {
                         assert(AtomicState::complete_recovery(pre.program.state, post.program.state, reqs, resps, req_id, raw_page));
@@ -590,11 +609,22 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                         assert(superblock.store.appv.invariant());
                         assert(post.program.state.wf());
                         assert(post.sync_requests_inv());
+                        assert( post.superblock_writes_inv() );
                     },
                     DiskEvent::ExecuteSyncBegin{req_id, req} => {
                         AtomicState::execute_sync_begin(pre.program.state, post.program.state, req_id, req, reqs, resps);
                         let sb = pre.program.state.ephemeral_sb();
                         multiset_map_membership(reqs, req_id, req);
+
+                        // We get this from AtomicState
+                        assert( DiskLayout::spec_new().spec_parse(req->data) == sb );
+                        // This is what impl_inv is gonna need; how would we show it here? It's
+                        // going down the stack to ASuperblock
+                        assume( DiskLayout::spec_new().spec_parse_inner(req->data).wf() );
+                        // This definition is closed and there's no provision yet for establishing
+                        // it.
+                        assume( DiskLayout::impl_inv(req->data) );
+                        assert( post.superblock_writes_inv() );
                     },
                     DiskEvent::ExecuteSyncEnd{} => {
                         AtomicState::execute_sync_end(pre.program.state, post.program.state, reqs, resps);
@@ -604,7 +634,8 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                         assert(forall |i| #[trigger] post.program.state.history.is_active(i)
                             ==> pre.program.state.history.is_active(i)); // trigger
                         assert(post.program.state.wf());
-                    }
+                        assert( post.superblock_writes_inv() );
+                    },
                 }
                 assert(post.inv());
                 assert(ipre == ipost);
@@ -617,12 +648,12 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                 assert( post.inv() );
             },
             SystemModel::Step::disk_internal(new_disk) => {
-                assume(false);
                 if pre.sb_landed(post) {
-                    assert(post.inv());
+//                     assert( DiskLayout::impl_inv(post.disk.content[spec_superblock_addr()]) );
+//                     assert(post.inv());
                     let info = pre.program.state.in_flight.unwrap();
-                    assert(ipre.stable_index() <= info.version < ipre.versions.len());
-                    assert(ipost.versions == ipre.versions.get_suffix(info.version as int));
+//                     assert(ipre.stable_index() <= info.version < ipre.versions.len());
+//                     assert(ipost.versions == ipre.versions.get_suffix(info.version as int));
                     assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::sync(info.version as int)));
                 } else {
                     assert(post.inv());
