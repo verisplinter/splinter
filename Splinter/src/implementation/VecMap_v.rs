@@ -6,8 +6,6 @@ use builtin_macros::*;
 use vstd::prelude::*;
 use crate::spec::injective_t::*;
 use crate::marshalling::WF_v::WF;
-use crate::spec::KeyType_t::Key;
-use crate::spec::Messages_t::Value;
 
 verus!{
 
@@ -59,6 +57,8 @@ where Key: View + Injective + Eq + Structural
     pub fn exec_unique_keys(v: &Vec<(Key, Value)>) -> (out: bool)
     ensures out == Self::unique_keys(v@)
     {
+        // The code for this would need to put keys in a HashSet, requiring the keys to be Hash.
+        // Maybe there should be a way to declare we aren't implementing try_parse?
         assume(false);  // TODO(jonh): write some code. Only relevant on the try_parse path.
         true
     }
@@ -86,7 +86,8 @@ where Key: View + Injective + Eq + Structural
     requires Self::unique_keys(s),
     ensures
         Self::seq_to_map(s).dom().finite(),
-        Self::seq_to_map(s) == Self::seq_to_map_r(s)
+        Self::seq_to_map(s) == Self::seq_to_map_r(s),
+        Self::seq_to_map(s).len() == s.len(),
     decreases s.len()
     {
         // TODO(jonh): ensmallify proof
@@ -151,6 +152,7 @@ where Key: View + Injective + Eq + Structural
             &&& Self::unique_keys(s)
             &&& forall |i| #![auto] 0<=i<s.len() ==> m.contains_key(s[i].0)
             &&& forall |k| m.contains_key(k) ==> exists |i| 0 <= i < s.len() && s[i]==(k, m[k])
+            &&& m.len() == s.len()
         }),
     decreases m.dom().len()
     {
@@ -215,13 +217,16 @@ where Key: View + Injective + Eq + Structural
         Self{v}
     }
 
+    pub closed spec fn as_seq(&self) -> (out: Seq<(Key, Value)>)
+    {
+        self.v@
+    }
+
     pub fn borrow_vec<'a>(&'a self) -> (out: &'a Vec<(Key, Value)>)
         ensures
-            Self::map_to_seq(self@) == (*out)@,
-//             (*out)@ == Self::map_to_seq(self@),
+            Self::seq_to_map((*out)@) == self@,
+            out@ == self.as_seq(),
     {
-        assume(false);  // left off here
-//         proof { Self::seq_to_map_inverse(self.v@); }
         &self.v
     }
     

@@ -567,6 +567,11 @@ impl <
         self.eltf.marshallable(elt)
     }
 
+    open spec fn impl_elt_marshallable(&self, elt: Self::Elt) -> bool
+    {
+        self.eltf.impl_marshallable(elt)
+    }
+
     open spec fn settable(&self, data: Seq<u8>, idx: int, value: EltFormat::DV) -> bool
     {false}
 

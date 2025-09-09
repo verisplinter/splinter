@@ -112,6 +112,12 @@ impl<AF: Marshal + UniformSized, BF: Marshal + UniformSized> Marshal for Uniform
         &&& self.a_fmt.marshallable(value.0)
         &&& self.b_fmt.marshallable(value.1)
     }
+
+    open spec fn impl_marshallable(&self, impl_value: Self::U) -> bool
+    {
+        &&& self.a_fmt.impl_marshallable(impl_value.0)
+        &&& self.b_fmt.impl_marshallable(impl_value.1)
+    }
         
     open spec fn spec_size(&self, value: Self::DV) -> usize
     {

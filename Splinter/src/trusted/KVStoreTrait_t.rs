@@ -58,8 +58,7 @@ ensures
     forall |id,disk_response| #[trigger] disk_responses_token@.multiset().contains((id, disk_response))
         ==> (model.disk.responses.dom().contains(id) && model.disk.responses[id] == disk_response),
 {
-    assume(false);
-    arbitrary()
+    assume(false); arbitrary()  // trusted auditor promise
 }
 
 // The generic version handles multiple simultaneous responses in a single shard, but the ClientAPI
@@ -91,8 +90,7 @@ ensures
     model.program == model_token@.value(),
     model.sync_requests.dom().contains(user_request_token@.element().id),
 {
-    assume(false);
-    arbitrary()
+    assume(false); arbitrary()  // trusted auditor promise
 }
 
 

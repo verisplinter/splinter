@@ -300,6 +300,11 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
         self.eltf.marshallable(elt)
     }
 
+    open spec fn impl_elt_marshallable(&self, elt: Self::Elt) -> bool
+    {
+        self.eltf.impl_marshallable(elt)
+    }
+
     open spec fn settable(&self, data: Seq<u8>, idx: int, value: EltFormat::DV) -> bool
     {
         &&& self.lengthable(data)
@@ -581,8 +586,12 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
     {
         &&& forall |i| 0 <= i < value.len() ==> self.marshallable_at(value, i)
         &&& value.len() as int <= LenType::max()
+        &&& value.len() <= self.max_length
+    }
 
-        &&& self.size_of_length_field() + value.len() * self.eltf.uniform_size() <= self.total_size
+    open spec fn impl_marshallable(&self, impl_value: Vec<EltFormat::U>) -> bool
+    {
+        forall |i| #![auto] 0<=i<impl_value.len() ==> self.eltf.impl_marshallable(impl_value[i])
     }
 
     open spec fn spec_size(&self, value: Seq<EltFormat::DV>) -> usize

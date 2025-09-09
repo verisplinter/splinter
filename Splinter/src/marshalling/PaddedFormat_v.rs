@@ -71,6 +71,11 @@ impl<F: Marshal + UniformSized> Marshal for PaddedFormat<F> {
         self.format.marshallable(value)
     }
         
+    open spec fn impl_marshallable(&self, impl_value: Self::U) -> bool
+    {
+        self.format.impl_marshallable(impl_value)
+    }
+
     open spec fn spec_size(&self, value: Self::DV) -> usize
     {
         self.pad_size

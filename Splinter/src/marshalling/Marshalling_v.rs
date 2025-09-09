@@ -99,6 +99,11 @@ pub trait Marshal {
     spec fn marshallable(&self, value: Self::DV) -> bool
     ;
 
+    open spec fn impl_marshallable(&self, impl_value: Self::U) -> bool
+    {
+        true
+    }
+
     spec fn spec_size(&self, value: Self::DV) -> usize
     recommends
         self.valid(),
@@ -110,6 +115,7 @@ pub trait Marshal {
         self.valid(),
         value.wf(),
         self.marshallable(value.parsedv()),
+        self.impl_marshallable(*value),
     ensures
         sz == self.spec_size(value.parsedv())
     ;
@@ -120,6 +126,7 @@ pub trait Marshal {
         value.wf(),
         self.marshallable(value.parsedv()),
         start as int + self.spec_size(value.parsedv()) as int <= old(data).len(),
+        self.impl_marshallable(*value),
     ensures
         end == start + self.spec_size(value.parsedv()),
         data.len() == old(data).len(),

@@ -214,6 +214,9 @@ pub trait SeqMarshal {
     spec fn elt_marshallable(&self, elt: Self::DVElt) -> bool
         ;
 
+    spec fn impl_elt_marshallable(&self, elt: Self::Elt) -> bool
+        ;
+
     spec fn settable(&self, data: Seq<u8>, idx: int, value: Self::DVElt) -> bool
     recommends
         self.seq_valid(),
@@ -254,6 +257,7 @@ pub trait SeqMarshal {
         value.wf(),
         dslice@.valid(data@),
         self.elt_marshallable(value.parsedv()),
+        self.impl_elt_marshallable(*value),
     ensures
         s == self.settable(dslice@.i(data@), idx as int, value.parsedv())
     ;
@@ -264,6 +268,7 @@ pub trait SeqMarshal {
         value.wf(),
         dslice@.valid(old(data)@),
         self.elt_marshallable(value.parsedv()),
+        self.impl_elt_marshallable(*value),
         self.settable(dslice@.i(old(data)@), idx as int, value.parsedv()),
     ensures
         dslice@.agree_beyond_slice(old(data)@, data@),
@@ -351,6 +356,7 @@ pub trait SeqMarshal {
         dslice@.valid(data@),
         self.well_formed(dslice@.i(data@)),
         self.elt_marshallable(value.parsedv()),
+        self.impl_elt_marshallable(*value),
     ensures
         r == self.appendable(dslice@.i(data@), value.parsedv())
     ;
@@ -362,6 +368,7 @@ pub trait SeqMarshal {
         dslice@.valid(old(data)@),
         self.well_formed(dslice@.i(old(data)@)),
         self.elt_marshallable(value.parsedv()),
+        self.impl_elt_marshallable(*value),
         self.appendable(dslice@.i(old(data)@), value.parsedv()),
     ensures
         data@.len() == old(data)@.len(),

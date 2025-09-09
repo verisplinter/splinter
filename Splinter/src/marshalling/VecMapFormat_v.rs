@@ -7,7 +7,9 @@ use crate::marshalling::Marshalling_v::Marshal;
 use crate::marshalling::Marshalling_v::Parsedview;
 use crate::marshalling::Slice_v::Slice;
 use crate::marshalling::WF_v::WF;
+use crate::marshalling::SeqMarshalling_v::*;
 use crate::marshalling::KeyValueFormat_v::*;
+use crate::marshalling::UniformSized_v::*;
 use crate::marshalling::ResizableUniformSizedSeq_v::ResizableUniformSizedElementSeqFormat;
 use crate::implementation::VecMap_v::*;
 
@@ -22,6 +24,13 @@ impl Parsedview<Map<Key, Value>> for VecMap<Key,Value> {
 struct VecMapFormat
 {
     seq_fmt: ResizableUniformSizedElementSeqFormat<KeyValueFormat, u8>,
+}
+
+impl VecMapFormat {
+    pub closed spec fn max_length(self) -> usize
+    {
+        self.seq_fmt.max_length
+    }
 }
 
 impl Marshal for VecMapFormat {
@@ -87,6 +96,13 @@ impl Marshal for VecMapFormat {
         &&& self.seq_fmt.marshallable(VecMap::map_to_seq(value))
     }
 
+    open spec fn impl_marshallable(&self, impl_value: Self::U) -> bool
+    {
+        &&& VecMap::unique_keys(impl_value.as_seq())
+        &&& impl_value.as_seq().len() <= u8::MAX
+        &&& impl_value.as_seq().len() <= self.max_length()
+    }
+
     closed spec fn spec_size(&self, value: Self::DV) -> usize
     {
         self.seq_fmt.spec_size(VecMap::map_to_seq(value))
@@ -95,18 +111,38 @@ impl Marshal for VecMapFormat {
     exec fn exec_size(&self, value: &Self::U) -> (sz: usize)
     {
         let rv = value.borrow_vec();
+        let ghost pv: Seq<(Key, Value)>  = rv.parsedv();
+        // pv might not have unique_keys
+        // except that's not the assertion complaint
+        // and yeah we have marshallable of map_to_seq
+        // Ah, but we have lost the fact that seq_to_map preserves the count and vice versa
+        let ghost mv = VecMap::seq_to_map(pv);
+        proof {
+            assert( pv == value.as_seq() );
+            assert( VecMap::unique_keys(value.as_seq()) );
+            assert( VecMap::unique_keys(pv) );
+            VecMap::seq_to_map_ensures(pv);
+            assert( pv == rv@ );
+            assert( pv.len() == rv@.len() );
+            assert(pv.len() == VecMap::seq_to_map(rv@).len() );
+            VecMap::map_to_seq_contents(mv);
+            assert( VecMap::map_to_seq(mv).len() == mv.len() );
+            assert( mv.len() == pv.len() );
+        };
+        let ghost qv = VecMap::map_to_seq(VecMap::seq_to_map(rv@));
+        assert( qv == VecMap::map_to_seq(mv) );
+        assert( qv.len() == pv.len() );
+        assert( self.seq_fmt.marshallable(rv.parsedv()) );
         self.seq_fmt.exec_size(rv)
     }
 
     exec fn exec_marshall(&self, value: &Self::U, data: &mut Vec<u8>, start: usize) -> (end: usize)
     {
-        let end = self.seq_fmt.exec_marshall(value.borrow_vec(), data, start);
+        let bv = value.borrow_vec();
+        let end = self.seq_fmt.exec_marshall(bv, data, start);
         proof {
-            let dsr = data@.subrange(start as int, end as int);
-            assert( self.seq_fmt.parse(dsr) == VecMap::map_to_seq(value@) );    // extn
+            assert( bv@ == bv.parsedv() );  // extn
             value.view_ensures();
-            VecMap::map_to_seq_contents(value@);
-            VecMap::seq_to_map_inverse(value@);
         }
         end
     }
