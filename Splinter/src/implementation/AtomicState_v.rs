@@ -113,8 +113,10 @@ impl AtomicState {
     pub open spec fn deliver_sync_reply(pre: Self, post: Self, sync_req_id: SyncReqId) -> bool
     {
         &&& pre.client_ready()
+        // The request with this id was once made and is still outstanding
         &&& pre.sync_req_map.contains_key(sync_req_id)
-            ==> pre.sync_req_map[sync_req_id] <=  pre.history.first_active_index()
+        // The request has been satisfied by a disk sync that got completed
+        &&& pre.sync_req_map[sync_req_id] <= pre.history.first_active_index()
         &&& post == Self{
             sync_req_map: pre.sync_req_map.remove(sync_req_id),
             ..pre

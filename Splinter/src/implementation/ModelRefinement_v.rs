@@ -506,9 +506,6 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                 assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::req_sync()));
             }
             SystemModel::Step::program_deliver_sync_reply(new_program) => {
-                assume( false );
-                assert(forall |req| #[trigger] post.sync_requests.contains(req) ==> pre.sync_requests.contains(req));
-                assert(post.inv());
                 assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::reply_sync()));
             },
             SystemModel::Step::program_disk(new_program, new_disk) => {
