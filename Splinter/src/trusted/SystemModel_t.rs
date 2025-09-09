@@ -133,6 +133,10 @@ state_machine!{ SystemModel<ProgramModel: ProgramModelTrait> {
         require let ProgramUserOp::AcceptSyncRequest{sync_req_id} = lbl->op;
 
         require ProgramModel::next(pre.program, new_program, ProgramLabel::UserIO{op: lbl->op});
+
+        // There's a trap here! 'update remove' requires contains for sharded state machines,
+        // but not for ordinary ones. TODO(verus): tell Travis
+        require pre.sync_requests.contains(sync_req_id);
         update program = new_program;
         update sync_requests = pre.sync_requests.remove(sync_req_id);
     }}

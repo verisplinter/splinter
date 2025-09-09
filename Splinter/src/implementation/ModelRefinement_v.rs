@@ -57,13 +57,13 @@ impl SystemModel::State<ConcreteProgramModel>  {
                     &&& self.disk.requests[id]->to == spec_superblock_addr()
                     &&& DiskLayout::spec_new().spec_parse(self.disk.requests[id]->data) == self.program.state.in_flight_sb()
                     }
-                &&& self.disk.responses.contains_key(id) ==> 
+                &&& self.disk.responses.contains_key(id) ==>
                     self.disk.responses[id] == DiskResponse::WriteResp{}
             }
             &&& in_flight is None ==> {
                 &&& forall |id| #[trigger] self.disk.requests.contains_key(id) //&& self.disk.requests[id] is WriteReq
                     ==> self.disk.requests[id].addr() != spec_superblock_addr()
-                &&& forall |id| #[trigger] self.disk.responses.contains_key(id) 
+                &&& forall |id| #[trigger] self.disk.responses.contains_key(id)
                     ==> self.addr_for_id(id) != spec_superblock_addr()
             }
         }
@@ -90,7 +90,7 @@ impl SystemModel::State<ConcreteProgramModel>  {
         }
     }
 
-    // NOTE: 
+    // NOTE:
     // pre recovery state constraint
     pub open spec fn no_writes_till_recovery_complete(self) -> bool
     {
@@ -105,20 +105,21 @@ impl SystemModel::State<ConcreteProgramModel>  {
     pub open spec fn sync_requests_inv(self) -> bool
     {
         &&& all_elems_single(self.sync_requests)
-        &&& self.program.state.client_ready() ==>   
-            self.program.state.sync_req_map.dom() =~= self.sync_requests.dom()
+        &&& self.program.state.client_ready() ==>
+            // sync reqs pass *out of* the system sync_requests into the program state
+            self.program.state.sync_req_map.dom().disjoint(self.sync_requests.dom())
         &&& !self.program.state.client_ready() ==> self.sync_requests.is_empty()
     }
 
     // TODO: update once we have structures to track id -> address
     pub open spec fn addr_for_id(self, id: ID) -> Address
     {
-        spec_superblock_addr() 
+        spec_superblock_addr()
     }
 
-    // This restricts the reads we can have 
-    // TODO: write responses must guarantee that the content on disk is the same as 
-    pub open spec fn responses_consistent_with_disk(self) -> bool 
+    // This restricts the reads we can have
+    // TODO: write responses must guarantee that the content on disk is the same as
+    pub open spec fn responses_consistent_with_disk(self) -> bool
     {
         forall |id| #[trigger] self.disk.responses.contains_key(id)
         ==> {
@@ -130,7 +131,7 @@ impl SystemModel::State<ConcreteProgramModel>  {
         }
     }
 
-    // for request, we only make one request at a time, losing the addr makes it hard 
+    // for request, we only make one request at a time, losing the addr makes it hard
     // when we only have reply and can't restrict additional requests for an addr is present in the request queue
     // right now this is fine because the only I/O is writing to superblock
     pub open spec fn at_most_one_oustanding_request_per_address(self) -> bool
@@ -138,52 +139,52 @@ impl SystemModel::State<ConcreteProgramModel>  {
         // TODO: temporary restriction only valid for the simple model
         &&& forall |id| #[trigger] self.disk.requests.contains_key(id) ==>
                 self.disk.requests[id].addr() == spec_superblock_addr()
-    
+
         // no concurrent requests on the same address
-        &&& forall |id1, id2| #[trigger] self.disk.requests.contains_key(id1) && #[trigger] self.disk.requests.contains_key(id2) 
+        &&& forall |id1, id2| #[trigger] self.disk.requests.contains_key(id1) && #[trigger] self.disk.requests.contains_key(id2)
             && id1 != id2 ==> self.disk.requests[id1].addr() != self.disk.requests[id2].addr()
 
         // no concurrent responses on the same address
-        &&& forall |id1, id2| #[trigger] self.disk.responses.contains_key(id1) && #[trigger] self.disk.responses.contains_key(id2) 
+        &&& forall |id1, id2| #[trigger] self.disk.responses.contains_key(id1) && #[trigger] self.disk.responses.contains_key(id2)
             && id1 != id2 ==> self.addr_for_id(id1) != self.addr_for_id(id2)
 
         // no concurrent request response on the same address
-        &&& forall |id1, id2| #[trigger] self.disk.requests.contains_key(id1) && #[trigger] self.disk.responses.contains_key(id2) 
+        &&& forall |id1, id2| #[trigger] self.disk.requests.contains_key(id1) && #[trigger] self.disk.responses.contains_key(id2)
             ==> self.disk.requests[id1].addr() != self.addr_for_id(id2)
     }
 
-    pub open spec(checked) fn requests_have_unique_ids(self) -> bool 
+    pub open spec(checked) fn requests_have_unique_ids(self) -> bool
     {
         &&& all_elems_single(self.requests)
-        &&& forall |req1, req2| self.requests.contains(req1) 
+        &&& forall |req1, req2| self.requests.contains(req1)
             && self.requests.contains(req2)
             && req1 != req2
             ==> #[trigger] req1.id != #[trigger] req2.id
     }
 
-    pub open spec(checked) fn replies_have_unique_ids(self) -> bool 
+    pub open spec(checked) fn replies_have_unique_ids(self) -> bool
     {
         &&& all_elems_single(self.replies)
-        &&& forall |reply1, reply2| self.replies.contains(reply1) 
-            && self.replies.contains(reply2) 
+        &&& forall |reply1, reply2| self.replies.contains(reply1)
+            && self.replies.contains(reply2)
             && reply1 != reply2
             ==> #[trigger] reply1.id != #[trigger] reply2.id
     }
 
-    pub open spec(checked) fn requests_replies_id_disjoint(self) -> bool 
+    pub open spec(checked) fn requests_replies_id_disjoint(self) -> bool
     {
-        forall |req, reply| self.requests.contains(req) && self.replies.contains(reply) 
+        forall |req, reply| self.requests.contains(req) && self.replies.contains(reply)
             ==> #[trigger] req.id != #[trigger] reply.id
     }
 
-    pub open spec(checked) fn request_ids_in_history(self) -> bool 
+    pub open spec(checked) fn request_ids_in_history(self) -> bool
     {
-        forall |req| #![auto] self.requests.contains(req) ==> self.id_history.contains(req.id) 
+        forall |req| #![auto] self.requests.contains(req) ==> self.id_history.contains(req.id)
     }
 
-    pub open spec(checked) fn reply_ids_in_history(self) -> bool 
+    pub open spec(checked) fn reply_ids_in_history(self) -> bool
     {
-        forall |reply| #![auto] self.replies.contains(reply) ==> self.id_history.contains(reply.id) 
+        forall |reply| #![auto] self.replies.contains(reply) ==> self.id_history.contains(reply.id)
     }
 
     // interpretation given no ephemeral state and only on persistent disk
@@ -205,17 +206,17 @@ impl SystemModel::State<ConcreteProgramModel>  {
 
     // ephemeral depends on whether things have landed on disk
     closed spec(checked) fn i_ephemeral(self) -> (mapspec: CrashTolerantAsyncMap::State)
-    recommends 
+    recommends
         self.program.state.wf(),
-        self.program.state.client_ready(), 
+        self.program.state.client_ready(),
     {
         let model = self.program.state;
-        let actual_versions = 
-            if model.in_flight is Some 
-                && self.disk.responses.contains_key(model.in_flight.unwrap().req_id) 
+        let actual_versions =
+            if model.in_flight is Some
+                && self.disk.responses.contains_key(model.in_flight.unwrap().req_id)
             {
                 model.history.get_suffix(model.in_flight.unwrap().version as int)
-            } else { 
+            } else {
                 model.history
             };
 
@@ -248,7 +249,7 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
         model.inv()
     }
 
-    // interpretation depends on pre and post 
+    // interpretation depends on pre and post
     closed spec fn i(model: SystemModel::State<ConcreteProgramModel>) -> (mapspec: CrashTolerantAsyncMap::State)
     {
         if model.program.state.client_ready() {
@@ -295,7 +296,7 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
             },
             SystemModel::Label::Crash =>
                 CrashTolerantAsyncMap::Label::CrashOp{},
-            _ => 
+            _ =>
                 CrashTolerantAsyncMap::Label::Noop{},
         }
     }
@@ -351,29 +352,29 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
             SystemModel::Step::accept_request() => {
                 let new_id = lbl->req.id;
                 assert(post.inv()) by {
-                    assert forall |req1, req2| #[trigger] post.requests.contains(req1) 
-                        && #[trigger] post.requests.contains(req2) && req1 != req2
-                    implies req1.id != req2.id 
-                    by {
-                        if req1.id == req2.id {
-                            if req1.id == new_id {
-                                assert(pre.requests.contains(req1) || pre.requests.contains(req2));
-                            } else {
-                                assert(pre.requests.contains(req1) && pre.requests.contains(req2));
+                    assert( post.requests_have_unique_ids() ) by {
+                        assert forall |req1, req2| #[trigger] post.requests.contains(req1)
+                            && #[trigger] post.requests.contains(req2) && req1 != req2
+                        implies req1.id != req2.id
+                        by {
+                            if req1.id == req2.id {
+                                if req1.id == new_id {
+                                    assert(pre.requests.contains(req1) || pre.requests.contains(req2));
+                                } else {
+                                    assert(pre.requests.contains(req1) && pre.requests.contains(req2));
+                                }
+                                assert(false);
                             }
-                            assert(false);
                         }
                     }
-                    assert forall |req| #[trigger] post.requests.contains(req) implies post.requests.count(req) == 1 by {
-                        if pre.requests.contains(req) {
-                            assert( post.requests.count(req) == 1 );
-                        } else {
-                            assert( post.requests.count(req) == 1 );
+                    assert( all_elems_single(post.requests) ) by {
+                        assert forall |req| #[trigger] post.requests.contains(req) implies post.requests.count(req) == 1 by {
+                            if pre.requests.contains(req) {
+                                assert( post.requests.count(req) == 1 );
+                            }
                         }
                     }
-                    assert( all_elems_single(post.requests) );
-                    assert( post.requests_have_unique_ids() );
-                    assert forall |req, reply| post.requests.contains(req) && post.replies.contains(reply) 
+                    assert forall |req, reply| post.requests.contains(req) && post.replies.contains(reply)
                         implies #[trigger] req.id != #[trigger] reply.id
                     by {
                         assert( pre.replies.contains(reply) );
@@ -406,7 +407,7 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                 let iasync_pre = AsyncMap::State { persistent: ipre.versions.last(), ephemeral: ipre.async_ephemeral };
                 let iasync_post = AsyncMap::State { persistent: ipost.versions.last(), ephemeral: ipost.async_ephemeral };
                 assert(AsyncMap::State::next_by(iasync_pre, iasync_post, ilbl->base_op, AsyncMap::Step::request()));
-                assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, 
+                assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl,
                     CrashTolerantAsyncMap::Step::operate(ipost.versions, ipost.async_ephemeral)));
             },
             SystemModel::Step::deliver_reply() => {
@@ -426,7 +427,7 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                 let iasync_pre = AsyncMap::State { persistent: ipre.versions.last(), ephemeral: ipre.async_ephemeral };
                 let iasync_post = AsyncMap::State { persistent: ipost.versions.last(), ephemeral: ipost.async_ephemeral };
                 assert(AsyncMap::State::next_by(iasync_pre, iasync_post, ilbl->base_op, AsyncMap::Step::reply()));
-                assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, 
+                assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl,
                     CrashTolerantAsyncMap::Step::operate(ipost.versions, ipost.async_ephemeral)));
             },
             SystemModel::Step::program_execute(new_program) => {
@@ -434,7 +435,7 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                 let reply = lbl->op->reply;
 
                 assert(AtomicState::map_transition(pre.program.state, post.program.state, req, reply));
-        
+
                 assert forall |i| #[trigger] post.program.state.history.is_active(i)
                 implies post.program.state.history[i].appv.invariant()
                 by {
@@ -465,7 +466,7 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                     }
                 }
 
-                assert(post.inv()); 
+                assert(post.inv());
 
                 assert(ipost.async_ephemeral.requests =~= ipre.async_ephemeral.requests.remove(lbl->op->req));
                 assert(ipost.async_ephemeral.replies =~= ipre.async_ephemeral.replies.insert(lbl->op->reply));
@@ -480,13 +481,28 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
 
                 let iasync_pre = AsyncMap::State { persistent: ipre.versions.last(), ephemeral: ipre.async_ephemeral };
                 let iasync_post = AsyncMap::State { persistent: ipost.versions.last(), ephemeral: ipost.async_ephemeral };
-                assert(AsyncMap::State::next_by(iasync_pre, iasync_post, ilbl->base_op, AsyncMap::Step::execute(to_map_label(req, reply), iasync_post.persistent)));                        
-                assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, 
+                assert(AsyncMap::State::next_by(iasync_pre, iasync_post, ilbl->base_op, AsyncMap::Step::execute(to_map_label(req, reply), iasync_post.persistent)));
+                assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl,
                         CrashTolerantAsyncMap::Step::operate(ipost.versions, ipost.async_ephemeral)));
             },
             SystemModel::Step::program_accept_sync_request(new_program) => {
-                assume( false );
-                assert(post.inv());
+                assert( all_elems_single(post.sync_requests) ) by {
+                    assert forall |req| #[trigger] post.sync_requests.contains(req) implies post.sync_requests.count(req) == 1 by {
+                        if pre.sync_requests.contains(req) {
+                            assert( post.sync_requests.count(req) == 1 );
+                        }
+                    }
+                }
+                let sync_req_id = lbl.arrow_ProgramUIOp_op().arrow_AcceptSyncRequest_sync_req_id();
+                assert(post.sync_requests_inv()) by {
+                    assert forall |sr| #![auto] post.program.state.sync_req_map.dom().contains(sr)
+                        implies !(post.sync_requests.dom().contains(sr)) by {
+                        if sr == sync_req_id {
+                            assert( pre.sync_requests.contains(sync_req_id) );  // trigger all_elems_single
+                        }
+                    }
+                }
+//                 assert(post.inv());
                 assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::req_sync()));
             }
             SystemModel::Step::program_deliver_sync_reply(new_program) => {
@@ -526,12 +542,12 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                         assert(pre.disk.responses.contains_key(req_id));
                         assert(raw_page == pre.disk.content[spec_superblock_addr()]);
 
-                        let superblock = DiskLayout::spec_new().spec_parse(raw_page); 
+                        let superblock = DiskLayout::spec_new().spec_parse(raw_page);
                         assert(superblock.store.appv.invariant());
                         assert(post.program.state.wf());
                         assert(post.sync_requests_inv());
                     },
-                    DiskEvent::ExecuteSyncBegin{req_id, req} => {    
+                    DiskEvent::ExecuteSyncBegin{req_id, req} => {
                         AtomicState::execute_sync_begin(pre.program.state, post.program.state, req_id, req, reqs, resps);
                         let sb = pre.program.state.ephemeral_sb();
                         multiset_map_membership(reqs, req_id, req);
@@ -541,7 +557,7 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                         let info = pre.program.state.in_flight.unwrap();
                         multiset_map_membership(resps, info.req_id, DiskResponse::WriteResp{});
 
-                        assert(forall |i| #[trigger] post.program.state.history.is_active(i) 
+                        assert(forall |i| #[trigger] post.program.state.history.is_active(i)
                             ==> pre.program.state.history.is_active(i)); // trigger
                         assert(post.program.state.wf());
                     }
@@ -570,7 +586,7 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
             },
             SystemModel::Step::crash(new_program, new_disk) => {
                 assert(post.inv());
-                assert(ipre.versions.get_prefix(ipre.stable_index()+1) == ipost.versions); 
+                assert(ipre.versions.get_prefix(ipre.stable_index()+1) == ipost.versions);
                 assert(ipost.async_ephemeral == AsyncMap::State::init_ephemeral_state()); // ext_eq
                 assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::crash()));
             },
