@@ -9,13 +9,9 @@ use crate::marshalling::ResizableUniformSizedSeq_v::ResizableUniformSizedElement
 use crate::marshalling::KeyedMessageFormat_v::KeyedMessageFormat;
 use crate::spec::KeyType_t::*;
 use crate::spec::Messages_t::*;
-// use crate::implementation::OverflowFiction_v::*;
+use crate::implementation::OverflowFiction_v::*;
 
 verus! {
-
-pub fn convert_overflow_into_liveness_failure() {
-    loop {}
-}
 
 pub type ILsn = u64;
 
