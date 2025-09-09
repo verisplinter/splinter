@@ -99,7 +99,7 @@ impl View for ASuperblock {
 #[derive(Debug)]
 pub struct ISuperblock {
     pub journal: Journal,
-    pub store: RawStore,
+    pub store: RawStore,  // TODO: try
     // need version so recovery knows the shape of the (mostly-empty) history to reconstruct (the LSN)
     // pub version_index: u64,
 }

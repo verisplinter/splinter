@@ -22,7 +22,7 @@ ensures
 pub struct VecMap<Key,Value>
 where Key: View + Injective + Eq + Structural
 {
-    v: Vec<(Key,Value)>
+    pub v: Vec<(Key,Value)>
 }
 
 impl<Key,Value> WF for VecMap<Key,Value>

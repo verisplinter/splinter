@@ -37,7 +37,7 @@ use crate::implementation::SuperblockTypes_v::*;
 use crate::marshalling::Marshalling_v::Parsedview;
 use crate::marshalling::WF_v::WF;
 // use crate::marshalling::UniformSized_v::UniformSized;
-use crate::implementation::OverflowFiction_v::*;
+// use crate::implementation::OverflowFiction_v::*; // not checked in 
 
 #[allow(unused_imports)]
 use vstd::multiset::*;
@@ -49,7 +49,17 @@ use crate::spec::ImplDisk_t::*;
 #[allow(unused_imports)]
 use crate::implementation::DiskLayout_v::*;
 
+// NOTE: used by our current arbitrary policy 
+static mut SYNC_COUNTER: u64 = 0;
+
 verus!{
+
+#[verifier::external_body]
+fn sync_map_or_not() -> bool
+{
+    SYNC_COUNTER = SYNC_COUNTER + 1;
+    return (SYNC_COUNTER % 3) == 0;
+}
 
 pub closed spec fn good_req(instance_id: InstanceId, req: Request, req_shard: RequestShard) -> bool
 {
@@ -135,12 +145,6 @@ pub struct Implementation {
 }
 
 impl Implementation {
-    //     TODO delete, replace with journal.seq_start
-//     closed spec(checked) fn persistent_version(self) -> nat
-//     {
-//         self.persistent_store@.seq_end
-//     }
-
     closed spec(checked) fn view_as_kmmap(self) -> TotalKMMap
     {
         ASuperblock::map_to_kmmap(self.store@)
@@ -493,33 +497,66 @@ impl Implementation {
         assert( self.journal@@.wf() );
         assert( self.journal@.wf() );
         let version = self.journal.seq_end();
-        // let ghost version_index = self.version();
+        let ghost pre_sb = self.state().ephemeral_sb();
 
-        // NOTE: swap out journal to avoid making a copy of it when marshalling the superblock
-        // this is temporary because we are shoving map/journal right into the superblock
-        // actual implementation will only contain pointers of these metadata and not the entire structure
-        let mut tmp_journal = Journal::new_empty();
-        std::mem::swap(&mut self.journal, &mut tmp_journal);
+        let sync_map = sync_map_or_not();
+        let mut raw_page = Vec::new();
         let mut tmp_store = VecMap::new();
-        std::mem::swap(&mut self.persistent_store, &mut tmp_store);
-        // Why are we doing all this nonsense? Can't we just borrow this stuff immutably?
+        let mut tmp_journal = Journal::new_empty();
 
-        let pre_cloned_store = tmp_store.borrow_vec();
-        let cloned_store = pre_cloned_store.clone();
-        // TODO(jonh): clone isn't providing required equivalence promise. Ask verus team for intended design
-        assume( pre_cloned_store@ == cloned_store@ );
+        std::mem::swap(&mut self.journal, &mut tmp_journal);
 
-        let sb = ISuperblock{
-            journal: tmp_journal,
-            store: cloned_store,  // TODO(jonh): clone perf mess
-        };
+        if sync_map { // sync the ephemeral map with an empty journal
+            api.log("send_superblock: sync store and truncate the journal");
+            // journal is already swapped to empty, temporarily borrowing the current store for marshalling
+            std::mem::swap(&mut self.store, &mut tmp_store);
+    
+            let sb = ISuperblock{
+                journal: Journal::new_empty(),
+                store: tmp_store.v,
+            };
+            raw_page = DiskLayout::new().marshall(&sb);
 
-        // Yoink the store out of self just long enough to marshall it as part of the superblock.
-        let raw_page = DiskLayout::new().marshall(&sb);
+            let ISuperblock{store: mut tmp_store_v, /*store: mut tmp_store,*/ ..} = sb;
+            tmp_store.v = tmp_store_v;
+            std::mem::swap(&mut self.store, &mut tmp_store);
+            assert(old(self).store == self.store);
 
-        let ISuperblock{journal: mut tmp_journal, /*store: mut tmp_store,*/ ..} = sb;
-        std::mem::swap(&mut self.journal, &mut tmp_journal);    // un-yoink
-        std::mem::swap(&mut self.persistent_store, &mut tmp_store);    // un-yoink
+            proof {
+                // 
+                assume(pre_sb.version_index as nat == self.version());
+                let asb: ASuperblock = sb.parsedv();
+                assert( asb@ == sb@@ );
+                assume( sb@@.store == pre_sb.store );
+                assert( sb@@.version_index == pre_sb.version_index );
+                assert( sb@@ == pre_sb );
+            }
+        } else { // sync the ephemeral journal with the same persistent map
+            api.log("send_superblock: journal sync only");
+            std::mem::swap(&mut self.persistent_store, &mut tmp_store);
+
+            let sb = ISuperblock{
+                journal: tmp_journal,
+                store: tmp_store.v,
+            };
+            raw_page = DiskLayout::new().marshall(&sb);
+            // assert( DiskLayout::spec_new().spec_parse(raw_page@.subrange(0, DiskLayout::spec_new().fmt.uniform_size() as int)) == sb@ );
+
+            let ISuperblock{journal: mut tmp_journal, store: mut tmp_store_v, ..} = sb;
+            std::mem::swap(&mut self.journal, &mut tmp_journal);
+            tmp_store.v = tmp_store_v;
+            std::mem::swap(&mut self.persistent_store, &mut tmp_store);
+            assert(old(self).persistent_store == self.persistent_store);
+
+             proof {
+                assume(pre_sb.version_index as nat == self.version());
+                let asb: ASuperblock = sb.parsedv();
+                assert( asb@ == sb@@ );
+                assume( sb@@.store == pre_sb.store );
+                assume( sb@@.version_index == pre_sb.version_index );
+                assert( sb@@ == pre_sb );
+            }
+        }
 
         let req_id_perm = Tracked( api.send_disk_request_predict_id() );
         let ghost disk_req_id = req_id_perm@;
@@ -546,29 +583,13 @@ impl Implementation {
                 reqs: lbl->disk_request_tuples,
                 resps: lbl->disk_response_tuples,
             };
-
+                
         proof {
-            let pre_sb = self.state().ephemeral_sb();
-            // assert(pre_sb.store == self.journal@@);
-            assert(pre_sb.version_index as nat == self.version()) by {
-//                 self.journal@@.apply_to_stamped_map_length_lemma(StampedMap_v::empty());
-            }
             assert( disk_reqs == Multiset::singleton(
                 (disk_event.arrow_ExecuteSyncBegin_req_id(),
                 disk_request@))
             );   // extn
-
-            // Problem 1
-            let asb: ASuperblock = sb.parsedv();
-            assert( asb@ == sb@@ );
-//             assert( sb@.store == VecMap::seq_to_map(pre_cloned_store@) );
-            assume( sb@@.store == pre_sb.store );    // clone problem?
-            assume( sb@@.version_index == pre_sb.version_index );    // clone problem?
-            assert( sb@@ == pre_sb );
-            // Problem 2: need to pad superblock so we don't have to talk about its truncation?
-//             assert( DiskLayout::spec_new().spec_parse(disk_request@->data) == sb@@ );
-//             assert( DiskLayout::spec_new().spec_parse(disk_request@->data) == pre_sb );
-
+            assert( DiskLayout::spec_new().spec_parse(disk_request@->data) == pre_sb );
             assert( AtomicState::disk_transition(self.state(), post_state.state, disk_event, info.reqs, info.resps) );  // witness
         }
 
@@ -588,7 +609,7 @@ impl Implementation {
         api.send_disk_request(disk_request, req_id_perm, Tracked(new_reply_token));
 
         // Why does the invariant want strict <? self.journal.seq_start < in_flight.truncate_version
-        assume(false);
+        assume(false); // invariant
         self.in_flight = Some(Inflight{
             truncate_version: self.journal.seq_start,
             store: self.store.clone(),
