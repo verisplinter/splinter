@@ -683,20 +683,16 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                 assert( post.sync_req_ids_in_history() ) by {
                     assert forall |req_id| #![auto] post.sync_requests.contains(req_id)
                         implies post.id_history.contains(req_id) by {
-                        assume( false );
-//                         if pre.sync_requests.contains(req_id)
+                        if req_id != sync_req_id {
+                            assert( pre.id_history.contains(req_id) );
+                        }
                     }
                 }
                 assert( post.sync_requests_inv() ) by {
                     if post.program.state.client_ready() {
                         assert forall |id| #![auto] post.program.state.sync_req_map.dom().contains(id)
                             implies !post.sync_requests.dom().contains(id) by {
-                            if id == sync_req_id {
-//                                 assert( pre.sync_requests.contains(id) );   // trigger all_elems_single
-                                assert( post.program.state.sync_req_map.dom().contains(id) );
-                                assert( pre.id_history.contains(id) );
-                                assert( !post.sync_requests.dom().contains(id) );
-                            } else {
+                            if id != sync_req_id {
                                 assert( pre.program.state.sync_req_map.dom().contains(id) );
                             }
                         }
@@ -715,14 +711,30 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                         }
                     }
                 }
-                assume(post.inv());
+                // prove program_sync_req_ids_in_history
+                if post.program.state.client_ready() {
+                    assert( forall |id| pre.id_history.contains(id) ==> post.id_history.contains(id) );
+                }
+                assert(post.inv());
+                assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::noop()));
             },
             SystemModel::Step::deliver_sync_reply() => {
-                assume(post.inv());
+                let sync_req_id = lbl.arrow_DeliverSyncReply_sync_req_id();
+                assert( post.sync_req_reply_ids_disjoint() ) by {
+                    assert forall |req_id, reply_id| #![auto] post.sync_requests.contains(req_id) && post.sync_replies.contains(reply_id)
+                    implies req_id != reply_id by {
+                        if req_id != sync_req_id {
+                            assert( pre.sync_requests.contains(req_id) );
+                            assert( pre.sync_replies.contains(reply_id) );
+                        }
+                    }
+                }
+                assert(post.inv());
+                assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::noop()));
             },
             _ => { assert(false); }
         }
-        assume( CrashTolerantAsyncMap::State::next(ipre, ipost, ilbl) );    // flakin
+        assert( CrashTolerantAsyncMap::State::next(ipre, ipost, ilbl) );
     }
 }
 
