@@ -9,7 +9,6 @@ pub mod CachedJournal_v;
 pub mod JournalModel_v; // copy of LikesJournal_v
 pub mod JournalCoordinationSystem_v;
 pub mod JournalCoordinationRefinement_v;
-pub mod SuperblockMarshalling_v;
 pub mod VecMap_v;
 pub mod JournalTypes_v;
 pub mod SuperblockTypes_v;
