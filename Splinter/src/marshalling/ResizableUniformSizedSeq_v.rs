@@ -12,6 +12,7 @@ use crate::marshalling::IntegerMarshalling_v::*;
 use crate::marshalling::SeqMarshalling_v::*;
 use crate::marshalling::UniformSized_v::*;
 use crate::marshalling::math_v::*;
+use crate::marshalling::WF_v::*;
 
 verus! {
 
@@ -163,7 +164,6 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
 
     exec fn try_length(&self, dslice: &Slice, data: &Vec<u8>) -> (out: Option<usize>)
     {
-        assume(false);  // TODO proof rot
         if (dslice.len() as usize) < self.total_size {
             assert( !self.lengthable(dslice@.i(data@)) );
             return None;    // lengthable first conjunct is false
@@ -175,7 +175,7 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
         // mentioning it completes the proof.
 //         assert( self.lenf.parsable(sslice@.i(data@)) );
 
-        assume( self.lenf.parsable(sslice@.i(data@)) ); // TODO proof rotted
+//         assert( self.lenf.parsable(sslice@.i(data@)) ); // TODO proof rotted
         let parsed_len = self.lenf.exec_parse(&sslice, data);
 
         proof {
@@ -217,7 +217,6 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
 
     proof fn get_ensures(&self, dslice: SpecSlice, data: Seq<u8>, idx: int)
     {
-        assume(false);  // TODO proof rot
         self.index_bounds_facts(idx as int);
     }
 
@@ -233,7 +232,6 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
 
     exec fn try_get(&self, dslice: &Slice, data: &Vec<u8>, idx: usize) -> (oeslice: Option<Slice>)
     {
-        assume(false);  // TODO proof rot
         // gettable requires lengthable, so I guess we better go check
         let olen = self.try_length(dslice, data);
         if olen.is_none() { return None; }
@@ -253,7 +251,6 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
 
     exec fn exec_get(&self, dslice: &Slice, data: &Vec<u8>, idx: usize) -> (eslice: Slice)
     {
-        assume(false);  // TODO proof rot
         proof { self.index_bounds_facts(idx as int); }
         let eslice = dslice.subslice(
             self.exec_size_of_length_field() + (idx as usize) * self.eltf.exec_uniform_size(),
@@ -263,7 +260,6 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
 
     exec fn try_get_elt(&self, dslice: &Slice, data: &Vec<u8>, idx: usize) -> (oelt: Option<EltFormat::U>)
     {
-        assume(false);  // TODO proof rot
         let oeslice = self.try_get(dslice, data, idx);
         match oeslice {
             None => None,
@@ -358,7 +354,6 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
         // postcondition goal
         // assert( self.sets(dslice@.i(old(data)@), idx as int, value.parsedv(), dslice@.i(data@)) );
 
-        assume(false);  // TODO proof rot
         proof {
             let len = self.length(dslice@.i(data@));
             if idx < len {
@@ -418,7 +413,6 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
 
             // goal
 //             assert( self.resizes(dslice@.i(old(data)@), newlen as int, dslice@.i(data@)) );
-            assume(false);  // TODO proof rot
         }
     }
 
@@ -465,7 +459,6 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
         let ghost sliced_middle = dslice@.i(data@);
         self.exec_set(dslice, data, len, value);
 
-        assume(false);  // TODO proof rot
         assert( self.preserves_entry(sliced_begin, len as int, sliced_middle) );   // trigger
         assert forall |i| i != len implies self.preserves_entry(dslice@.i(old(data)@), i, dslice@.i(data@)) by {
             assert( self.preserves_entry(dslice@.i(old(data)@), i, sliced_middle) );   // trigger
@@ -551,9 +544,10 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
 
     exec fn try_parse(&self, dslice: &Slice, data: &Vec<u8>) -> (ovalue: Option<Vec<EltFormat::U>>)
     {
-        assume(false);  // TODO proof rot
         match self.try_length(dslice, data) {
-            None => { None },
+            None => {
+                return None;
+            },
             Some(len) => {
                 let mut i: usize = 0;
                 let mut result:Vec<EltFormat::U> = Vec::with_capacity(len);
@@ -564,9 +558,9 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
                     forall |j| 0<=j<i as nat ==> self.gettable(dslice@.i(data@), j),
                     forall |j| 0<=j<i as nat ==> self.elt_parsable(dslice@.i(data@), j),
                     forall |j| #![auto] 0<=j<i as nat ==> result[j].parsedv() == self.get_elt(dslice@.i(data@), j),
+                    forall |j| #![auto] 0<=j<i as nat ==> result[j].wf(),
                 decreases len-i,
                 {
-                    assume(false); // proof rotted
                     let oelt = self.try_get_elt(dslice, data, i);
                     if oelt.is_none() {
                         return None;
@@ -577,7 +571,8 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
                 // Looks like this wants extensionality, but no ~! Not sure why it's needed.
                 // TODO(verus): Oh maybe it's the trait-ensures-don't-trigger bug?
                 assert( result.parsedv() == self.parse(dslice@.i(data@)) );    // trigger.
-                Some(result)
+                assert( result.wf() );  // trigger
+                return Some(result);
             }
         }
     }
@@ -645,17 +640,21 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
             forall |j| #![auto] 0 <= j < i ==> self.get_elt(slice@.i(data@), j) == value[j].parsedv(),
         decreases value.len() - i,
         {
-            assume( false );    // proof rotted
             let ghost prev_data = data@;
             let ghost old_i = i;
             proof {
                 self.eltf.uniform_size_ensures();
                 assert( self.marshallable_at(value.parsedv(), i as int) );
             }
+            assert( value[i as int].wf() );
             self.exec_set(&slice, data, i, &value[i]);
             i += 1;
 
             proof {
+                assert forall |j| 0 <= j < start implies data@[j] == old(data)@[j] by {
+                }
+                assert forall |j| end as int <= j < old(data)@.len() implies data@[j] == old(data)@[j] by {
+                }
                 assert forall |j| 0 <= j < i implies self.elt_parsable(slice@.i(data@), j) by {
                     if j < old_i {
                         assert( self.preserves_entry( slice@.i(prev_data), j, slice@.i(data@)) );    // trigger

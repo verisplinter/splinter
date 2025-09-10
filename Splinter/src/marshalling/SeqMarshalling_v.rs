@@ -189,6 +189,7 @@ pub trait SeqMarshal {
                 &&& self.gettable(dslice@.i(data@), idx as int)
                 &&& self.elt_parsable(dslice@.i(data@), idx as int)
         },
+        oelt is Some ==> oelt.unwrap().wf(),
         oelt is Some ==> oelt.unwrap().parsedv() == self.get_elt(dslice@.i(data@), idx as int)
     // This can't be provided as a default trait (where the Dafny version had a default impl)
     // because we need the definition of elt_parsable to be fixed. We can supply a default,

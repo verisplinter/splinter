@@ -1,3 +1,6 @@
+#![verifier::loop_isolation(false)]
+#![allow(non_snake_case)]   // we should probably fix up the module names to be rust-snakey
+
 pub mod spec;
 pub mod trusted;
 pub mod implementation;
