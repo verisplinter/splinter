@@ -49,17 +49,7 @@ use crate::spec::ImplDisk_t::*;
 #[allow(unused_imports)]
 use crate::implementation::DiskLayout_v::*;
 
-// NOTE: used by our current arbitrary policy 
-static mut SYNC_COUNTER: u64 = 0;
-
 verus!{
-
-#[verifier::external_body]
-fn sync_map_or_not() -> bool
-{
-    SYNC_COUNTER = SYNC_COUNTER + 1;
-    return (SYNC_COUNTER % 3) == 0;
-}
 
 pub closed spec fn good_req(instance_id: InstanceId, req: Request, req_shard: RequestShard) -> bool
 {
@@ -115,21 +105,25 @@ pub type ReplyShard = KVStoreTokenized::replies<ConcreteProgramModel>;
 pub type DiskRespShard = KVStoreTokenized::disk_responses_multiset<ConcreteProgramModel>;
 pub type DiskReqShard = KVStoreTokenized::disk_requests_multiset<ConcreteProgramModel>;
 
-pub struct Inflight {
+// Truncate 
+pub struct InFlight {
     // Together this is the implementation of a StampedMap
-    truncate_version: ILsn,     // this will be the version of the new persistent map (when it lands)
-    store: VecMap<Key, Value>,  // this will be the new persistent map
+    new_seq_start: ILsn,     // this will be the version of the new persistent map (when it lands)
+    new_store: VecMap<Key, Value>,  // this will be the new persistent map
 }
 
 // This struct supplies KVStoreTrait, which has both the entry point to the implementation and the
 // proof hooks to satisfy the refinement obligation trait.
 pub struct Implementation {
+    sync_counter: u64,
+
     store: VecMap<Key, Value>,
 
     // starts at persistent_store.version, ends matching store
     journal: Journal,
 
-    in_flight: Option<Inflight>,
+    // this is a truncate in flight, only set when a truncation is occuring
+    in_flight: Option<InFlight>,
 
     // remember the actual persistent version on disk and
     // its journal info, so we can interpret to the floating versions.
@@ -158,6 +152,14 @@ impl Implementation {
 //         assert(self.journal@@.discard_recent((self.journal@@.seq_end) as nat) =~= self.journal@@);
 //     }
 
+    closed spec(checked) fn persistent_map_plus_journal(self) -> TotalKMMap
+    {
+        let sb = ISuperblock { journal: self.journal, store: self.persistent_store.v };
+        sb@@.store.appv.kmmap
+    }
+
+    // view as floating version should be maintained the same
+
     pub closed spec fn i(self) -> AtomicState {
         self.state()
     }
@@ -180,13 +182,14 @@ impl Implementation {
         &&& self.store.wf()
         &&& self.journal@.wf()
         &&& self.model@.instance_id() == self.instance@.id()
-        &&& state.recovery_state is RecoveryComplete
-
+        &&& self.persistent_map_plus_journal() == self.view_as_kmmap()
 
         // physical state consistent with model
+        &&& state.recovery_state is RecoveryComplete
         &&& state.mapspec().kmmap == self.view_as_kmmap()
         &&& state.history.first_active_index() == self.journal.seq_start
         &&& state.history.len()-1 == self.version()
+        &&& state.history.get(self.journal.seq_start as int).appv.kmmap == ASuperblock::map_to_kmmap(self.persistent_store@)
 
         &&& (state.in_flight is Some <==> self.sync_requests.in_flight())
         &&& state.in_flight is Some <==> self.in_flight is Some
@@ -203,9 +206,11 @@ impl Implementation {
         &&& match self.in_flight {
             None => {true},
             Some(in_flight) => {
-                &&& self.journal.seq_start < in_flight.truncate_version
-                &&& in_flight.truncate_version <= state.in_flight.unwrap().version
-                &&& ASuperblock::map_to_kmmap(in_flight.store@) == state.history.get(in_flight.truncate_version as int).appv.kmmap
+                // requires that persistent map does not fall backward
+                &&& self.journal.seq_start <= in_flight.new_seq_start
+                // requires that persistent map does not go beyond the persistent journal
+                &&& in_flight.new_seq_start <= state.in_flight.unwrap().version
+                &&& ASuperblock::map_to_kmmap(in_flight.new_store@) == state.history.get(in_flight.new_seq_start as int).appv.kmmap
             }
         }
 
@@ -336,6 +341,9 @@ impl Implementation {
                 assert( AtomicState::map_transition(pre_state.state, post_state.state, map_req, map_reply) );
                 assert( ConcreteProgramModel::next(pre_state, post_state,
                     ProgramLabel::UserIO{op: ProgramUserOp::Execute{req: map_req, reply: map_reply}}) );
+
+                // TODO(Jialin)
+                assume( self.persistent_map_plus_journal() == self.view_as_kmmap() ); 
             }
 
              let tracked new_reply_token = self.instance.borrow().execute_transition(
@@ -498,21 +506,28 @@ impl Implementation {
         assert( self.journal@.wf() );
         let version = self.journal.seq_end();
         let ghost pre_sb = self.state().ephemeral_sb();
+        assert(pre_sb.version_index == self.version());
 
-        let sync_map = sync_map_or_not();
+        // sync/truncate policy
+        if self.sync_counter < 3 {
+            self.sync_counter = self.sync_counter + 1;
+        } else {
+            self.sync_counter = 1;
+        }
+        // persist map if the counter says so and if there's actually journal messages to apply
+        let sync_map = (self.sync_counter % 3) == 0 && self.journal.msg_history.len() > 0;
+
         let mut raw_page = Vec::new();
         let mut tmp_store = VecMap::new();
         let mut tmp_journal = Journal::new_empty();
 
-        std::mem::swap(&mut self.journal, &mut tmp_journal);
-
         if sync_map { // sync the ephemeral map with an empty journal
             api.log("send_superblock: sync store and truncate the journal");
-            // journal is already swapped to empty, temporarily borrowing the current store for marshalling
+            tmp_journal.seq_start = version;
             std::mem::swap(&mut self.store, &mut tmp_store);
     
             let sb = ISuperblock{
-                journal: Journal::new_empty(),
+                journal: tmp_journal,
                 store: tmp_store.v,
             };
             raw_page = DiskLayout::new().marshall(&sb);
@@ -520,19 +535,15 @@ impl Implementation {
             let ISuperblock{store: mut tmp_store_v, /*store: mut tmp_store,*/ ..} = sb;
             tmp_store.v = tmp_store_v;
             std::mem::swap(&mut self.store, &mut tmp_store);
-            assert(old(self).store == self.store);
+            assert( sb@@ == pre_sb );
 
-            proof {
-                // 
-                assume(pre_sb.version_index as nat == self.version());
-                let asb: ASuperblock = sb.parsedv();
-                assert( asb@ == sb@@ );
-                assume( sb@@.store == pre_sb.store );
-                assert( sb@@.version_index == pre_sb.version_index );
-                assert( sb@@ == pre_sb );
-            }
+            self.in_flight = Some(InFlight{
+                new_seq_start: version,
+                new_store: self.store.clone(),
+            });
         } else { // sync the ephemeral journal with the same persistent map
             api.log("send_superblock: journal sync only");
+            std::mem::swap(&mut self.journal, &mut tmp_journal);
             std::mem::swap(&mut self.persistent_store, &mut tmp_store);
 
             let sb = ISuperblock{
@@ -540,22 +551,19 @@ impl Implementation {
                 store: tmp_store.v,
             };
             raw_page = DiskLayout::new().marshall(&sb);
-            // assert( DiskLayout::spec_new().spec_parse(raw_page@.subrange(0, DiskLayout::spec_new().fmt.uniform_size() as int)) == sb@ );
 
             let ISuperblock{journal: mut tmp_journal, store: mut tmp_store_v, ..} = sb;
             std::mem::swap(&mut self.journal, &mut tmp_journal);
             tmp_store.v = tmp_store_v;
             std::mem::swap(&mut self.persistent_store, &mut tmp_store);
-            assert(old(self).persistent_store == self.persistent_store);
 
-             proof {
-                assume(pre_sb.version_index as nat == self.version());
-                let asb: ASuperblock = sb.parsedv();
-                assert( asb@ == sb@@ );
-                assume( sb@@.store == pre_sb.store );
-                assume( sb@@.version_index == pre_sb.version_index );
-                assert( sb@@ == pre_sb );
+            proof {
+                sb@.final_stamped_map_ensures();
             }
+            self.in_flight = Some(InFlight{
+                new_seq_start: self.journal.seq_start,
+                new_store: self.persistent_store.clone(),
+            });
         }
 
         let req_id_perm = Tracked( api.send_disk_request_predict_id() );
@@ -583,7 +591,7 @@ impl Implementation {
                 reqs: lbl->disk_request_tuples,
                 resps: lbl->disk_response_tuples,
             };
-                
+
         proof {
             assert( disk_reqs == Multiset::singleton(
                 (disk_event.arrow_ExecuteSyncBegin_req_id(),
@@ -607,13 +615,6 @@ impl Implementation {
 
         assert( new_reply_token.multiset() == multiset_map_singleton(req_id_perm@, disk_request@) );    // extn
         api.send_disk_request(disk_request, req_id_perm, Tracked(new_reply_token));
-
-        // Why does the invariant want strict <? self.journal.seq_start < in_flight.truncate_version
-        assume(false); // invariant
-        self.in_flight = Some(Inflight{
-            truncate_version: self.journal.seq_start,
-            store: self.store.clone(),
-        });
     }
 
     exec fn deliver_inflight_replies(&mut self, ready_reqs: &mut Vec<Request>, api: &mut ClientAPI<ConcreteProgramModel>)
@@ -700,6 +701,9 @@ impl Implementation {
 
         let tracked mut model = KVStoreTokenized::model::arbitrary();
         proof { tracked_swap(self.model.borrow_mut(), &mut model); }
+
+        // TODO(Jialin): deliver sync reply failing to satisfy this:
+        assume(old(self).state().sync_req_map.contains_key(req.id));
 
         let tracked reply_shard = self.instance.borrow().deliver_sync_reply(
             KVStoreTokenized::Label::ReplySyncOp{sync_req_id: req.id},
@@ -804,16 +808,19 @@ impl Implementation {
 
         let mut in_flight = None;
         std::mem::swap(&mut self.in_flight, &mut in_flight);
-        if let Some(Inflight{truncate_version, store: persistent_store}) = in_flight {
+        if let Some(InFlight{new_seq_start, new_store: persistent_store}) = in_flight {
             self.persistent_store = persistent_store;
 
-            if self.journal.seq_start != truncate_version {
+            if self.journal.seq_start != new_seq_start {
+                // TODO(Jialin)
                 api.log("missing code for journal truncation");
                 convert_overflow_into_liveness_failure();
             }
         } else {
             assert(false);
         }
+
+        assume(false);
 
         let ghost post_state = ConcreteProgramModel{ state: AtomicState{
             in_flight: None,
@@ -1004,6 +1011,10 @@ impl Implementation {
             assert( post_state.state.mapspec().kmmap == self.view_as_kmmap() );
             assert( self.in_flight is None );
             assert( self.state().mapspec().kmmap == self.view_as_kmmap() );
+
+            // TODO(Jialin)
+            assume( self.persistent_map_plus_journal() == self.view_as_kmmap() );
+
             assert( self.inv() );
         }
     }
@@ -1070,6 +1081,7 @@ impl KVStoreTrait for Implementation {
         ) = KVStoreTokenized::Instance::initialize(ConcreteProgramModel{state: AtomicState::init()});
 
         let selff = Implementation{
+            sync_counter: 0,
             store: new_empty_vec_map(),
             journal: Journal::new_empty(),
             in_flight: None,

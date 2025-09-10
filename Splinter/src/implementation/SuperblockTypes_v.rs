@@ -81,6 +81,12 @@ impl ASuperblock {
     {
         self.journal@.apply_to_stamped_map(self.store_stamped_map())
     }
+
+    pub proof fn final_stamped_map_ensures(self)
+        ensures self.final_stamped_map().seq_end == self.journal@.seq_end
+    {
+        self.journal@.apply_to_stamped_map_length_lemma(self.store_stamped_map());
+    }
 }
 
 impl View for ASuperblock {

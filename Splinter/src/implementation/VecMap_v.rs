@@ -365,7 +365,7 @@ where Key: View + Injective + Eq + Structural + Clone
 {
     type V = Map<Key, Value>;
 
-    closed spec fn view(&self) -> Self::V
+    open spec fn view(&self) -> Self::V
     {
         VecMap::seq_to_map(self.v@)
     }
