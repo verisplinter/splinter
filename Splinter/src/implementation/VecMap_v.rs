@@ -64,25 +64,64 @@ where Key: View + Injective + Eq + Structural + Clone
         let mut x_idx = 0usize;
         while x_idx < len
         invariant
+            len == v.len(), // bah
             0 <= x_idx <= len,
             // every key before x_idx is unique
             forall |xl, xo| 0 <= xl < x_idx && 0 <= xo < len && v[xl].0 == v[xo].0 ==> xl == xo,
+        decreases len-x_idx
         {
             let kx = v[x_idx].0.clone();
+            assume( kx == v[x_idx as int].0 );  // clone trouble
             let mut y_idx = x_idx + 1;
             while y_idx < len
             invariant
+                // bah, outer invariants
+                len == v.len(), // bah
+                0 <= x_idx <= len,
+                forall |xl, xo| 0 <= xl < x_idx && 0 <= xo < len && v[xl].0 == v[xo].0 ==> xl == xo,
+                kx == v[x_idx as int].0,
+
                 x_idx < y_idx <= len,
                 // x_idx is unique wrt every index before y
                 forall |yy| 0 <= yy < y_idx && v[x_idx as int].0 == v[yy].0 ==> x_idx == yy,
+            decreases len-y_idx
             {
                 let ky = v[y_idx].0.clone();
+                assume( ky == v[y_idx as int].0 );  // clone trouble
                 if Self::compare_keys(&kx, &ky) {
+                    proof {
+                        let s = v@;
+                        let i = x_idx as int;
+                        let j = y_idx as int;
+                        assert( 0<=i<s.len() && 0<=j<s.len() && s[i].0@ == s[j].0@ && i != j );
+                    }
                     return false;
                 }
+                let ghost old_y_idx = y_idx;
                 y_idx += 1;
+                assert forall |yy| 0 <= yy < y_idx && v[x_idx as int].0 == v[yy].0 implies x_idx == yy by {
+                    if yy < old_y_idx { assert( x_idx == yy ); }
+                    else {
+                        assert( yy == old_y_idx );
+                        assert( v[yy].0 == ky );
+                        assert( v[yy].0 != kx );
+                        assert( x_idx == yy );
+                    }
+                }
             }
             x_idx += 1;
+        }
+        proof {
+            assert( forall |xl, xo| 0 <= xl < x_idx && 0 <= xo < len && v[xl].0 == v[xo].0 ==> xl == xo );
+            let s = v@;
+            assert forall |i,j| #![auto] 0<=i<s.len() && 0<=j<s.len() && s[i].0@ == s[j].0@ implies i == j by {
+                let (xl,xo) = if i < j { (i,j) } else { (j,i) };
+                assert( s[xl].0@ == s[xo].0@ );
+                assume( false );
+//                 assert( s[xl].0@ == v[xl].0 ); // need to apply injectiveness
+                assert( 0 <= xl < x_idx && 0 <= xo < len && v[xl].0 == v[xo].0 );
+                assert( xl == xo );
+            }
         }
         return true;
     }
@@ -271,19 +310,24 @@ where Key: View + Injective + Eq + Structural + Clone
         self.wf(),
         self@ == old(self)@.insert(k, v),
     {
-        let idx:usize = 0;
+        assume( false );    // TODO jonh left off
+        let mut idx:usize = 0;
         let test_k = k.clone();
         let write_k = k;
+        let len = self.v.len();
         // look for an existing element to replace. Yay linear search.
-        while idx < self.v.len()
+        while idx < len
         invariant
+            false, // hah hah
             self.wf(),
             idx <= self.v.len(),
             forall |i| 0 <= i < idx ==> self.v[i].0 != k,
+        decreases len - idx
         {
             if Self::compare_keys(&self.v[idx].0, &test_k) {
                 break;
             }
+            idx += 1;
         }
         if idx < self.v.len() {
             self.v[idx] = (write_k,v);
