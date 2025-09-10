@@ -26,7 +26,7 @@ where Key: View + Injective + Eq + Structural
 }
 
 impl<Key,Value> WF for VecMap<Key,Value>
-where Key: View + Injective + Eq + Structural
+where Key: View + Injective + Eq + Structural + Clone
 {
     closed spec fn wf(&self) -> bool
     {
@@ -47,7 +47,7 @@ where Key: View + Injective + Eq + Structural
 // }
 
 impl<Key,Value> VecMap<Key,Value>
-where Key: View + Injective + Eq + Structural
+where Key: View + Injective + Eq + Structural + Clone
 {
     pub open spec fn unique_keys(s: Seq<(Key, Value)>) -> bool
     {
@@ -229,6 +229,14 @@ where Key: View + Injective + Eq + Structural
     {
         &self.v
     }
+
+    pub fn compare_keys(k1: &Key, k2: &Key) -> (out: bool)
+    ensures (*k1 == *k2) <==> out
+    {
+        // *k1 == *k2
+        assume(false);  // TODO I don't understand rust
+        false
+    }
     
     pub fn insert(&mut self, k: Key, v: Value)
     requires
@@ -237,10 +245,25 @@ where Key: View + Injective + Eq + Structural
         self.wf(),
         self@ == old(self)@.insert(k, v),
     {
-        // TODO: this is trash, should remove duplicate, not sure if needed for actual ds
-        self.v.insert(0, (k, v));
-        // need to look for an existing element
-        assume( false );
+        let idx:usize = 0;
+        let test_k = k.clone();
+        let write_k = k;
+        // look for an existing element to replace. Yay linear search.
+        while idx < self.v.len()
+        invariant
+            self.wf(),
+            idx <= self.v.len(),
+            forall |i| 0 <= i < idx ==> self.v[i].0 != k,
+        {
+            if Self::compare_keys(&self.v[idx].0, &test_k) {
+                break;
+            }
+        }
+        if idx < self.v.len() {
+            self.v[idx] = (write_k,v);
+        } else {
+            self.v.insert(0, (write_k, v));
+        }
     }
 
     pub fn get<'a>(&'a self, k: &Key) -> (result: Option<&'a Value>)
@@ -260,7 +283,6 @@ where Key: View + Injective + Eq + Structural
             self.wf(),  // gaaah irritating loop isolation default
         decreases self.v.len() - i,
         {
-//             if self.v[i].0.eq(k) {
             if structural_equal(&self.v[i].0, k) {
                 let out = &self.v[i].1;
                 proof {
@@ -313,7 +335,7 @@ where Key: View + Injective + Eq + Structural
 }
 
 impl<Key, Value> View for VecMap<Key, Value>
-where Key: View + Injective + Eq + Structural
+where Key: View + Injective + Eq + Structural + Clone
 {
     type V = Map<Key, Value>;
 
