@@ -59,8 +59,32 @@ where Key: View + Injective + Eq + Structural + Clone
     {
         // The code for this would need to put keys in a HashSet, requiring the keys to be Hash.
         // Maybe there should be a way to declare we aren't implementing try_parse?
-        assume(false);  // TODO(jonh): write some code. Only relevant on the try_parse path.
-        true
+        // Dumb quadratic algorithm.
+        let len = v.len();
+        let mut x_idx = 0usize;
+        while x_idx < len
+        invariant
+            0 <= x_idx <= len,
+            // every key before x_idx is unique
+            forall |xl, xo| 0 <= xl < x_idx && 0 <= xo < len && v[xl].0 == v[xo].0 ==> xl == xo,
+        {
+            let kx = v[x_idx].0.clone();
+            let mut y_idx = x_idx + 1;
+            while y_idx < len
+            invariant
+                x_idx < y_idx <= len,
+                // x_idx is unique wrt every index before y
+                forall |yy| 0 <= yy < y_idx && v[x_idx as int].0 == v[yy].0 ==> x_idx == yy,
+            {
+                let ky = v[y_idx].0.clone();
+                if Self::compare_keys(&kx, &ky) {
+                    return false;
+                }
+                y_idx += 1;
+            }
+            x_idx += 1;
+        }
+        return true;
     }
 
     pub closed spec fn seq_to_map_r(s: Seq<(Key, Value)>) -> Map<Key, Value>
