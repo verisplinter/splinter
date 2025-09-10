@@ -661,7 +661,8 @@ impl Implementation {
 
     closed spec fn sync_req_in_version(&self, id: ID, version_num: int) -> bool
     {
-        self.state().sync_req_map[id] <= version_num
+        &&& self.state().sync_req_map.contains_key(id)
+        &&& self.state().sync_req_map[id] <= version_num
     }
 
     closed spec fn sync_req_lists_mutually_unique(listi: Seq<Request>, listj: Seq<Request>) -> bool
@@ -693,6 +694,7 @@ impl Implementation {
     {
         // Convert the model state back into a shard
         let ghost pre_state = self.model@.value();
+        
         let ghost post_state = ConcreteProgramModel {
             state: AtomicState{
                 sync_req_map: pre_state.state.sync_req_map.remove(req.id),
@@ -701,9 +703,6 @@ impl Implementation {
 
         let tracked mut model = KVStoreTokenized::model::arbitrary();
         proof { tracked_swap(self.model.borrow_mut(), &mut model); }
-
-        // TODO(Jialin): deliver sync reply failing to satisfy this:
-        assume(old(self).state().sync_req_map.contains_key(req.id));
 
         let tracked reply_shard = self.instance.borrow().deliver_sync_reply(
             KVStoreTokenized::Label::ReplySyncOp{sync_req_id: req.id},
