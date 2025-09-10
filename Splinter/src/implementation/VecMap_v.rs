@@ -67,7 +67,7 @@ where Key: View + Injective + Eq + Structural + Clone
             len == v.len(), // bah
             0 <= x_idx <= len,
             // every key before x_idx is unique
-            forall |xl, xo| 0 <= xl < x_idx && 0 <= xo < len && v[xl].0 == v[xo].0 ==> xl == xo,
+            forall |xl, xo| #![auto] 0 <= xl < x_idx && 0 <= xo < len && v[xl].0 == v[xo].0 ==> xl == xo,
         decreases len-x_idx
         {
             let kx = v[x_idx].0.clone();
@@ -78,12 +78,12 @@ where Key: View + Injective + Eq + Structural + Clone
                 // bah, outer invariants
                 len == v.len(), // bah
                 0 <= x_idx <= len,
-                forall |xl, xo| 0 <= xl < x_idx && 0 <= xo < len && v[xl].0 == v[xo].0 ==> xl == xo,
+                forall |xl, xo| #![auto] 0 <= xl < x_idx && 0 <= xo < len && v[xl].0 == v[xo].0 ==> xl == xo,
                 kx == v[x_idx as int].0,
 
                 x_idx < y_idx <= len,
                 // x_idx is unique wrt every index before y
-                forall |yy| 0 <= yy < y_idx && v[x_idx as int].0 == v[yy].0 ==> x_idx == yy,
+                forall |yy| #![auto] 0 <= yy < y_idx && v[x_idx as int].0 == v[yy].0 ==> x_idx == yy,
             decreases len-y_idx
             {
                 let ky = v[y_idx].0.clone();
@@ -99,7 +99,7 @@ where Key: View + Injective + Eq + Structural + Clone
                 }
                 let ghost old_y_idx = y_idx;
                 y_idx += 1;
-                assert forall |yy| 0 <= yy < y_idx && v[x_idx as int].0 == v[yy].0 implies x_idx == yy by {
+                assert forall |yy| #![auto] 0 <= yy < y_idx && v[x_idx as int].0 == v[yy].0 implies x_idx == yy by {
                     if yy < old_y_idx { assert( x_idx == yy ); }
                     else {
                         assert( yy == old_y_idx );
@@ -112,12 +112,12 @@ where Key: View + Injective + Eq + Structural + Clone
             x_idx += 1;
         }
         proof {
-            assert( forall |xl, xo| 0 <= xl < x_idx && 0 <= xo < len && v[xl].0 == v[xo].0 ==> xl == xo );
+            assert( forall |xl, xo| #![auto] 0 <= xl < x_idx && 0 <= xo < len && v[xl].0 == v[xo].0 ==> xl == xo );
             let s = v@;
             assert forall |i,j| #![auto] 0<=i<s.len() && 0<=j<s.len() && s[i].0@ == s[j].0@ implies i == j by {
                 let (xl,xo) = if i < j { (i,j) } else { (j,i) };
                 assert( s[xl].0@ == s[xo].0@ );
-                assume( false );
+                Key::lemma_injective(); // needed to prove unique_keys, since it's over key views
 //                 assert( s[xl].0@ == v[xl].0 ); // need to apply injectiveness
                 assert( 0 <= xl < x_idx && 0 <= xo < len && v[xl].0 == v[xo].0 );
                 assert( xl == xo );
@@ -176,8 +176,6 @@ where Key: View + Injective + Eq + Structural + Clone
                     assert(rm.contains_key(k));
                 }
             }
-//             assert forall |k| rmi.contains_key(k) implies ms.contains_key(k) by {
-//             }
             assert forall |k| #![auto] rmi.contains_key(k) implies rmi[k] == ms[k] by {
                 let i = choose |i| #![auto] 0<=i<s.len() && s[i].0 == k;
                 assert(ms[k] == s[i].1);
@@ -195,6 +193,26 @@ where Key: View + Injective + Eq + Structural + Clone
             assert( Self::seq_to_map(s).dom().finite() );
             assert( Self::seq_to_map(s) == Self::seq_to_map_r(s) );
         }
+    }
+
+    // pretty accessor to seq_to_map ctor.
+    pub proof fn index_in_seq(s: Seq<(Key, Value)>, k: Key) -> (idx: int)
+    requires
+        Self::seq_to_map(s).contains_key(k),
+    ensures
+        0<=idx<s.len(),
+        s[idx].0 == k,
+    {
+        choose |i| #![auto] 0<=i<s.len() && s[i].0 == k
+    }
+
+    // unneeded
+    pub proof fn seq_to_map_index(s: Seq<(Key, Value)>, i: int)
+    requires
+        Self::unique_keys(s),
+        0<=i<s.len(),
+    ensures Self::seq_to_map(s)[s[i].0] == s[i].1
+    {
     }
 
     pub closed spec fn map_to_seq(m: Map<Key, Value>) -> (s: Seq<(Key, Value)>)
@@ -310,29 +328,64 @@ where Key: View + Injective + Eq + Structural + Clone
         self.wf(),
         self@ == old(self)@.insert(k, v),
     {
-        assume( false );    // TODO jonh left off
+        proof { Key::lemma_injective(); }
+
         let mut idx:usize = 0;
         let test_k = k.clone();
+        assume( test_k == k );  // clone!
         let write_k = k;
         let len = self.v.len();
         // look for an existing element to replace. Yay linear search.
         while idx < len
         invariant
-            false, // hah hah
             self.wf(),
-            idx <= self.v.len(),
-            forall |i| 0 <= i < idx ==> self.v[i].0 != k,
+            len == self.v.len(),
+            idx <= len,
+            test_k == k,
+            write_k == k,
+            forall |i| #![auto] 0 <= i < idx ==> self.v[i].0 != k,
+            old(self) == self,
         decreases len - idx
         {
             if Self::compare_keys(&self.v[idx].0, &test_k) {
-                break;
+                // replace existing key case
+                let ghost os = self.v@;
+                let ghost iidx = idx as int;
+                self.v[idx] = (write_k,v);
+
+                assert( self@ == old(self)@.insert(k, v) ) by {
+                    assert forall |kk| #![auto] old(self)@.insert(k,v).contains_key(kk)
+                        implies self@.contains_key(kk) by {
+                        if k == kk {
+                            Self::seq_to_map_index(self.v@, iidx);
+                        } else {
+                            let kki = Self::index_in_seq(os, kk);
+                            Self::seq_to_map_index(self.v@, kki);
+                        }
+                    }
+                    assert( self@ == old(self)@.insert(k, v) ); // verus failure to trigger extn on assert-by
+                }
+                return;
             }
             idx += 1;
         }
-        if idx < self.v.len() {
-            self.v[idx] = (write_k,v);
-        } else {
-            self.v.insert(0, (write_k, v));
+
+        // push case
+        let ghost os = self.v@;
+        self.v.push((write_k, v));
+        let ghost s = self.v@;
+        assert( self@ == old(self)@.insert(k, v) ) by {
+            let ghost iidx = idx as int;
+            assert forall |kk| #![auto] old(self)@.insert(k,v).contains_key(kk)
+                implies self@.contains_key(kk) by {
+                if k == kk {
+                    Self::seq_to_map_index(self.v@, iidx);
+                } else {
+                    let kki = Self::index_in_seq(os, kk);
+                    Self::seq_to_map_index(self.v@, kki);
+                }
+            }
+            assert( self@ == old(self)@.insert(k, v) ); // verus failure to trigger extn on assert-by
         }
     }
 
