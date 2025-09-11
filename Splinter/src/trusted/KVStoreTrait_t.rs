@@ -1,5 +1,5 @@
-use builtin_macros::*;
-use builtin::*;
+use verus_builtin_macros::*;
+use verus_builtin::*;
 use vstd::prelude::arbitrary;
 use vstd::prelude::ValueToken;
 use vstd::prelude::ElementToken;

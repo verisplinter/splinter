@@ -5,10 +5,10 @@
 ///
 /// This is the final refinement layer before the top level trusted spec.
 
-use builtin::*;
+use verus_builtin::*;
 
-use builtin_macros::*;
-use state_machines_macros::state_machine;
+use verus_builtin_macros::*;
+use verus_state_machines_macros::state_machine;
 use vstd::prelude::*;
 
 use crate::spec::Messages_t::*;

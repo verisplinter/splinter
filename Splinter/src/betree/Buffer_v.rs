@@ -1,6 +1,6 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
-use builtin_macros::*;
+use verus_builtin_macros::*;
 use vstd::{map::*,set::*};
 use crate::spec::KeyType_t::*;
 use crate::spec::Messages_t::*;

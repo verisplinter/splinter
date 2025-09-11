@@ -1,6 +1,6 @@
-use builtin::*;
-use builtin_macros::*;
-use state_machines_macros::state_machine;
+use verus_builtin::*;
+use verus_builtin_macros::*;
+use verus_state_machines_macros::state_machine;
 
 use vstd::{set::*, multiset::Multiset};
 use crate::Bank_v::Bank;

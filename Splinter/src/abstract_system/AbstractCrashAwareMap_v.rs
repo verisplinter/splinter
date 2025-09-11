@@ -5,10 +5,10 @@
 /// CrashAwareJournal in the coordination layer in our refinement proof.
 
 #[allow(unused_imports)]
-use builtin::*;
+use verus_builtin::*;
 
-use builtin_macros::*;
-use state_machines_macros::state_machine;
+use verus_builtin_macros::*;
+use verus_state_machines_macros::state_machine;
 #[allow(unused_imports)]
 use vstd::{map::*};
 

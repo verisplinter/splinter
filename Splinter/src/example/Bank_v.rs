@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use vstd::{prelude::*, map::*, multiset::*};
 use vstd::pervasive::print_u64;
-use state_machines_macros::tokenized_state_machine;
+use verus_state_machines_macros::tokenized_state_machine;
 use crate::BankSpec_t::{Request, Reply, Input, Output, ReqID};
 
 verus! {

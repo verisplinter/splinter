@@ -1,11 +1,11 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
 //
-use builtin::*;
+use verus_builtin::*;
 use vstd::math;
 use vstd::prelude::*;
 
-use state_machines_macros::state_machine;
+use verus_state_machines_macros::state_machine;
 
 use crate::abstract_system::MsgHistory_v::*;
 use crate::abstract_system::StampedMap_v::LSN;

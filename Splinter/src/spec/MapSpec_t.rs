@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: BSD-2-Clause
 // TODO _t and _s enforcement in the build system? Gasp, don't know how to thing about
 // approaching/modifying/enhancing crate build...?
-use builtin::*;
-use builtin_macros::*;
+use verus_builtin::*;
+use verus_builtin_macros::*;
 use vstd::{map::*, set::*};
 
 use crate::spec::FloatingSeq_t::*;
@@ -11,7 +11,7 @@ use crate::spec::KeyType_t::*;
 use crate::spec::Messages_t::*;
 use crate::spec::TotalKMMap_t::*;
 
-use state_machines_macros::state_machine;
+use verus_state_machines_macros::state_machine;
 
 // TODO (tenzin): break out everything in this file into separate files/modules
 // (cleaner logical breaks)

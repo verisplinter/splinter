@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: BSD-2-Clause
 //
 #![allow(unused_imports)]
-use builtin::*;
+use verus_builtin::*;
 use vstd::prelude::*;
 use vstd::{map::*,set::*,set_lib::*};
 use vstd::math;
 
-use builtin_macros::*;
-use state_machines_macros::state_machine;
+use verus_builtin_macros::*;
+use verus_state_machines_macros::state_machine;
 
 use crate::spec::AsyncDisk_t::*;
 use crate::spec::MapSpec_t::{ID};
