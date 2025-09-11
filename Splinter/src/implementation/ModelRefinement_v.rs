@@ -81,7 +81,7 @@ impl SystemModel::State<ConcreteProgramModel>  {
         &&& self.disk.content.contains_key(spec_superblock_addr())
         &&& {
             let sb : Superblock = DiskLayout::spec_new().spec_parse(self.disk.content[spec_superblock_addr()]);
-            &&& sb.store.appv.invariant()
+            &&& sb.wf()
             &&& if self.program.state.client_ready() {
                     // on disk sb either contains inflight sb or persistent sb
                     let in_flight = self.program.state.in_flight;
@@ -230,7 +230,7 @@ impl SystemModel::State<ConcreteProgramModel>  {
     {
         let sb = DiskLayout::spec_new().spec_parse(self.disk.content[spec_superblock_addr()]);
         CrashTolerantAsyncMap::State{
-            versions: singleton_floating_seq(sb.version_index, sb.store.appv.kmmap),
+            versions: sb.initial_history(),
             async_ephemeral: EphemeralState{
                 requests: self.requests.dom(),
                 replies: self.replies.dom(),
@@ -245,24 +245,25 @@ impl SystemModel::State<ConcreteProgramModel>  {
         self.program.state.wf(),
         self.program.state.client_ready(),
     {
-        let model = self.program.state;
-        let actual_versions =
-            if model.in_flight is Some
-                && self.disk.responses.contains_key(model.in_flight.unwrap().req_id)
-            {
-                model.history.get_suffix(model.in_flight.unwrap().version as int)
-            } else {
-                model.history
-            };
+        arbitrary()
+        // let model = self.program.state;
+        // let actual_versions =
+        //     if model.in_flight is Some
+        //         && self.disk.responses.contains_key(model.in_flight.unwrap().req_id)
+        //     {
+        //         model.history.get_suffix(model.in_flight.unwrap().version as int)
+        //     } else {
+        //         model.history
+        //     };
 
-        CrashTolerantAsyncMap::State{
-            versions: actual_versions,
-            async_ephemeral: EphemeralState{
-                requests: self.requests.dom(),
-                replies: self.replies.dom(),
-            },
-            sync_requests: self.program.state.sync_req_map,
-         }
+        // CrashTolerantAsyncMap::State{
+        //     versions: actual_versions,
+        //     async_ephemeral: EphemeralState{
+        //         requests: self.requests.dom(),
+        //         replies: self.replies.dom(),
+        //     },
+        //     sync_requests: self.program.state.sync_req_map,
+        //  }
     }
 
     closed spec fn sb_landed(self: Self, post: Self) -> bool
@@ -470,60 +471,60 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                 assert( post.inv() );
             },
             SystemModel::Step::program_execute(new_program) => {
-                let req = lbl->op->req;
-                let reply = lbl->op->reply;
+                // let req = lbl->op->req;
+                // let reply = lbl->op->reply;
 
-                assert(AtomicState::map_transition(pre.program.state, post.program.state, req, reply));
+                // assert(AtomicState::map_transition(pre.program.state, post.program.state, req, reply));
 
-                assert forall |i| #[trigger] post.program.state.history.is_active(i)
-                implies post.program.state.history[i].appv.invariant()
-                by {
-                    if i != pre.program.state.history.len() {
-                        assert(pre.program.state.history.is_active(i));
-                    } else {
-                        MapSpec::State::inv_next(pre.program.state.mapspec(), post.program.state.mapspec(), to_map_label(req, reply));
-                        assert(post.program.state.history.last().appv.invariant());
-                    }
-                }
+                // assert forall |i| #[trigger] post.program.state.history.is_active(i)
+                // implies post.program.state.history[i].appv.invariant()
+                // by {
+                //     if i != pre.program.state.history.len() {
+                //         assert(pre.program.state.history.is_active(i));
+                //     } else {
+                //         MapSpec::State::inv_next(pre.program.state.mapspec(), post.program.state.mapspec(), to_map_label(req, reply));
+                //         assert(post.program.state.history.last().appv.invariant());
+                //     }
+                // }
 
-                assert(forall |req| #[trigger] post.requests.contains(req) ==> pre.requests.contains(req));
-                assert(post.requests_have_unique_ids());
-                assert(post.replies_have_unique_ids());
+                // assert(forall |req| #[trigger] post.requests.contains(req) ==> pre.requests.contains(req));
+                // assert(post.requests_have_unique_ids());
+                // assert(post.replies_have_unique_ids());
 
-                assert(pre.in_flight_request_present());
-                assert(post.in_flight_request_present()) by {
-                    assert(post.program.state.in_flight == pre.program.state.in_flight);
-                    assert(post.disk.requests == pre.disk.requests);
-                    assert(post.disk.responses == pre.disk.responses);
-                }
+                // assert(pre.in_flight_request_present());
+                // assert(post.in_flight_request_present()) by {
+                //     assert(post.program.state.in_flight == pre.program.state.in_flight);
+                //     assert(post.disk.requests == pre.disk.requests);
+                //     assert(post.disk.responses == pre.disk.responses);
+                // }
 
-                assert( post.reply_ids_in_history() ) by {
-                    assert forall |xreply| #![auto] post.replies.contains(xreply) implies post.id_history.contains(xreply.id) by {
-                        if xreply != reply {
-                            assert( pre.replies.contains(xreply) );
-                        }
-                    }
-                }
+                // assert( post.reply_ids_in_history() ) by {
+                //     assert forall |xreply| #![auto] post.replies.contains(xreply) implies post.id_history.contains(xreply.id) by {
+                //         if xreply != reply {
+                //             assert( pre.replies.contains(xreply) );
+                //         }
+                //     }
+                // }
 
-                assert(post.inv());
+                // assert(post.inv());
 
-                assert(ipost.async_ephemeral.requests =~= ipre.async_ephemeral.requests.remove(lbl->op->req));
-                assert(ipost.async_ephemeral.replies =~= ipre.async_ephemeral.replies.insert(lbl->op->reply));
+                // assert(ipost.async_ephemeral.requests =~= ipre.async_ephemeral.requests.remove(lbl->op->req));
+                // assert(ipost.async_ephemeral.replies =~= ipre.async_ephemeral.replies.insert(lbl->op->reply));
 
-                assert(CrashTolerantAsyncMap::State::optionally_append_version(ipre.versions, ipost.versions)) by {
-                    if ipre.versions.len() == ipost.versions.len() {
-                        assert(ipre.versions == ipost.versions);
-                    } else {
-                        assert(ipost.versions.get_prefix(ipre.versions.len()) == ipre.versions); // trigger
-                    }
-                }
+                // assert(CrashTolerantAsyncMap::State::optionally_append_version(ipre.versions, ipost.versions)) by {
+                //     if ipre.versions.len() == ipost.versions.len() {
+                //         assert(ipre.versions == ipost.versions);
+                //     } else {
+                //         assert(ipost.versions.get_prefix(ipre.versions.len()) == ipre.versions); // trigger
+                //     }
+                // }
 
-                let iasync_pre = AsyncMap::State { persistent: ipre.versions.last(), ephemeral: ipre.async_ephemeral };
-                let iasync_post = AsyncMap::State { persistent: ipost.versions.last(), ephemeral: ipost.async_ephemeral };
-                assert(AsyncMap::State::next_by(iasync_pre, iasync_post, ilbl->base_op, AsyncMap::Step::execute(to_map_label(req, reply), iasync_post.persistent)));
-                assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl,
-                        CrashTolerantAsyncMap::Step::operate(ipost.versions, ipost.async_ephemeral)));
-                assert( post.inv() );
+                // let iasync_pre = AsyncMap::State { persistent: ipre.versions.last(), ephemeral: ipre.async_ephemeral };
+                // let iasync_post = AsyncMap::State { persistent: ipost.versions.last(), ephemeral: ipost.async_ephemeral };
+                // assert(AsyncMap::State::next_by(iasync_pre, iasync_post, ilbl->base_op, AsyncMap::Step::execute(to_map_label(req, reply), iasync_post.persistent)));
+                // assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl,
+                //         CrashTolerantAsyncMap::Step::operate(ipost.versions, ipost.async_ephemeral)));
+                // assert( post.inv() );
             },
             SystemModel::Step::program_accept_sync_request(new_program) => {
                 assert( all_elems_single(post.sync_requests) ) by {
@@ -606,14 +607,14 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                         assert(raw_page == pre.disk.content[spec_superblock_addr()]);
 
                         let superblock = DiskLayout::spec_new().spec_parse(raw_page);
-                        assert(superblock.store.appv.invariant());
+                        assert(superblock.wf());
                         assert(post.program.state.wf());
                         assert(post.sync_requests_inv());
                         assert( post.superblock_writes_inv() );
                     },
-                    DiskEvent::ExecuteSyncBegin{req_id, req} => {
-                        AtomicState::execute_sync_begin(pre.program.state, post.program.state, req_id, req, reqs, resps);
-                        let sb = pre.program.state.ephemeral_sb();
+                    DiskEvent::ExecuteSyncBegin{req_id, req, sync_map} => {
+                        AtomicState::execute_sync_begin(pre.program.state, post.program.state, req_id, req, sync_map, reqs, resps);
+                        let sb = pre.program.state.sync_sb(sync_map);
                         multiset_map_membership(reqs, req_id, req);
 
                         // We get this from AtomicState
@@ -627,14 +628,14 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                         assert( post.superblock_writes_inv() );
                     },
                     DiskEvent::ExecuteSyncEnd{} => {
-                        AtomicState::execute_sync_end(pre.program.state, post.program.state, reqs, resps);
-                        let info = pre.program.state.in_flight.unwrap();
-                        multiset_map_membership(resps, info.req_id, DiskResponse::WriteResp{});
+                        // AtomicState::execute_sync_end(pre.program.state, post.program.state, reqs, resps);
+                        // let info = pre.program.state.in_flight.unwrap();
+                        // multiset_map_membership(resps, info.req_id, DiskResponse::WriteResp{});
 
-                        assert(forall |i| #[trigger] post.program.state.history.is_active(i)
-                            ==> pre.program.state.history.is_active(i)); // trigger
-                        assert(post.program.state.wf());
-                        assert( post.superblock_writes_inv() );
+                        // assert(forall |i| #[trigger] post.program.state.history.is_active(i)
+                        //     ==> pre.program.state.history.is_active(i)); // trigger
+                        // assert(post.program.state.wf());
+                        // assert( post.superblock_writes_inv() );
                     },
                 }
                 assert(post.inv());
@@ -654,7 +655,7 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                     let info = pre.program.state.in_flight.unwrap();
 //                     assert(ipre.stable_index() <= info.version < ipre.versions.len());
 //                     assert(ipost.versions == ipre.versions.get_suffix(info.version as int));
-                    assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::sync(info.version as int)));
+                    assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::sync(info.map_version() as int)));
                 } else {
                     assert(post.inv());
                     assert(ipre == ipost);

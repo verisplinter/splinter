@@ -10,6 +10,7 @@ use crate::marshalling::Marshalling_v::Parsedview;
 // use crate::marshalling::WF_v::WF;
 use crate::implementation::JournalTypes_v::*;
 use crate::spec::TotalKMMap_t::*;
+use crate::abstract_system::MsgHistory_v::MsgHistory;
 use crate::abstract_system::StampedMap_v::*;
 
 verus! {
@@ -24,9 +25,8 @@ pub type RawStore = Vec<(Key, Value)>;
 // }
 
 pub struct Superblock {
-    pub store: PersistentState, // mapspec
-    // need version so recovery knows the shape of the (mostly-empty) history to reconstruct (the LSN)
-    pub version_index: nat,
+    pub store: StampedMap,
+    pub journal: MsgHistory,
 }
 
 pub open spec(checked) fn singleton_floating_seq(at_index: nat, kmmap: TotalKMMap) -> FloatingSeq<Version>
@@ -36,15 +36,27 @@ pub open spec(checked) fn singleton_floating_seq(at_index: nat, kmmap: TotalKMMa
 }
 
 impl Superblock {
+    pub open spec fn wf(self) -> bool
+    {
+        &&& self.store.seq_end == self.journal.seq_start
+        &&& self.journal.wf()
+    }
+
     pub open spec fn initial_history(self) -> FloatingSeq<PersistentState>
     {
-        singleton_floating_seq(self.version_index, self.store.appv.kmmap)
+        let sm = self.journal.apply_to_stamped_map(self.store);
+        singleton_floating_seq(sm.seq_end, sm.value)
+    }
+
+    pub open spec fn version_index(self) -> LSN
+    {
+        self.journal.seq_end
     }
 }
 
 pub struct ASuperblock {
-    pub journal: AJournal,
     pub store: ARawStore,
+    pub journal: AJournal,
     // need version so recovery knows the shape of the (mostly-empty) history to reconstruct (the LSN)
     // Wait no this is dumb; the journal contains its start LSN, which must match the store's LSN.
 //     pub version_index: u64,
@@ -77,16 +89,17 @@ impl ASuperblock {
         StampedMap{value: total_map, seq_end: self.journal@.seq_start}
     }
 
-    pub open spec fn final_stamped_map(self) -> StampedMap
-    {
-        self.journal@.apply_to_stamped_map(self.store_stamped_map())
-    }
-
-    pub proof fn final_stamped_map_ensures(self)
-        ensures self.final_stamped_map().seq_end == self.journal@.seq_end
-    {
-        self.journal@.apply_to_stamped_map_length_lemma(self.store_stamped_map());
-    }
+    // TODO dead code
+//     pub open spec fn final_stamped_map(self) -> StampedMap
+//     {
+//         self.journal@.apply_to_stamped_map(self.store_stamped_map())
+//     }
+// 
+//     pub proof fn final_stamped_map_ensures(self)
+//         ensures self.final_stamped_map().seq_end == self.journal@.seq_end
+//     {
+//         self.journal@.apply_to_stamped_map_length_lemma(self.store_stamped_map());
+//     }
 }
 
 impl View for ASuperblock {
@@ -94,10 +107,9 @@ impl View for ASuperblock {
 
     open spec fn view(&self) -> Self::V
     {
-        let persistent_state = PersistentState{ appv: MapSpec::State{ kmmap: self.final_stamped_map().value}};
         Superblock{
-            store: persistent_state,
-            version_index: self.final_stamped_map().seq_end,
+            store: self.store_stamped_map(),
+            journal: self.journal@,
         }
     }
 }

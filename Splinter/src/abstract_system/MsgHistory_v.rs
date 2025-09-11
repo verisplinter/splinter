@@ -254,6 +254,7 @@ impl MsgHistory {
     MsgHistory{ msgs: keepMap, seq_start: lsn, seq_end: self.seq_end }
   }
 
+  // TODO: a silly shorthand. Replace it.
   pub open spec(checked) fn _do(self, lsn: LSN) -> MsgHistory
     recommends self.can_discard_to(lsn)
   {

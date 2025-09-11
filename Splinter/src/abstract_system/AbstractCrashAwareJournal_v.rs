@@ -48,7 +48,7 @@ state_machine!{ AbstractCrashAwareJournal {
     }
 
     init!{
-        initialize() {
+        initialize() {  // mkfs -- notice empty persistent
             init persistent = MsgHistory{ msgs: Map::empty(), seq_start: 0, seq_end: 0};
             init ephemeral = Ephemeral::Unknown;
             init in_flight = Option::None;
