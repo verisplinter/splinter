@@ -542,8 +542,10 @@ impl<T: IntFormattable> Marshal for IntFormat<T>
         let sr = slice_subrange(data.as_slice(), slice.start, slice.start+T::exec_uniform_size());
         assert( sr@ == slice@.i(data@).subrange(0, T::uniform_size() as int) ); // trigger
         let value = T::from_le_bytes(sr);
-        proof { T::parsedv_is_as_int(value); }
-        assume( false ); // flaky?
+        proof {
+            T::parsedv_is_as_int(value);
+            value.always_wf();
+        }
         value
     }
 
