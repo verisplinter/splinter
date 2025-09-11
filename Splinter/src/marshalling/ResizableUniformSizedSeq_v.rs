@@ -60,7 +60,7 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
 
     pub open spec fn spec_max_length(&self) -> usize
     {
-        // Why does subtraction of usizes produce an int?
+        // Why does subtraction of usizes produce an int? I guess because we're in spec-land
         (self.total_size - self.size_of_length_field()) as usize / self.eltf.uniform_size()
     }
 
@@ -427,11 +427,19 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
     proof fn well_formed_ensures(&self, data: Seq<u8>) {}
 
     open spec fn appendable(&self, data: Seq<u8>, value: EltFormat::DV) -> bool {
+        // marshalled length field isn't nonsense and has room for one more
         &&& self.length(data) < self.spec_max_length() as nat
+        // spec size matches uniform size
         &&& self.eltf.spec_size(value) == self.eltf.uniform_size()
 
+        // increasing the length field wouldn't overflow.
         // dafny does this computation in a u64; why is it okay with overflow!?
         &&& self.length(data) + 1 <= LenType::max()
+
+        // Note that we don't actually test the length of the data seq itself.
+        // That's because anyone that needs appendable also needs lengthable, and
+        // lengthable doesn't even let you peek at the length field if the data
+        // seq isn't as long as this formatter instance's total_size.
     }
 
     exec fn exec_well_formed(&self, dslice: &Slice, data: &Vec<u8>) -> (w: bool) {
