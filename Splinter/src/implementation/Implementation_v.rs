@@ -26,6 +26,8 @@ use crate::spec::Messages_t::*;
 // use crate::abstract_system::MsgHistory_v::MsgHistory;
 use crate::abstract_system::MsgHistory_v::KeyedMessage;
 // use crate::abstract_system::AbstractCrashAwareSystemRefinement_v;
+use crate::abstract_system::AbstractJournal_v::AbstractJournal;
+use crate::abstract_system::AbstractMap_v::AbstractMap;
 
 use crate::implementation::ModelRefinement_v::*;
 use crate::implementation::ConcreteProgramModel_v::*;
@@ -975,10 +977,10 @@ impl Implementation {
                 state: AtomicState {
                     recovery_state: RecoveryState::RecoveryComplete,
                     // TODO made a mess here
-                    journal: arbitrary(),
-                    map: arbitrary(),
-                    persistent_map: arbitrary(),
-                    persistent_journal_seq_end: arbitrary(),
+                    journal: AbstractJournal::State { journal: superblock@@.journal },
+                    map: AbstractMap::State { stamped_map: superblock@@.journal.apply_to_stamped_map(superblock@@.store) },
+                    persistent_map: superblock@@.store,
+                    persistent_journal_seq_end: superblock@@.journal.seq_end,
                     in_flight: None,
                     sync_req_map: Map::empty(),
                 }
@@ -1004,6 +1006,7 @@ impl Implementation {
                     reqs: disk_request_tuples,
                     resps: disk_response_tuples,
                 };
+                let sb = DiskLayout::spec_new().spec_parse(disk_event->raw_page);
                 assert(AtomicState::disk_transition(
                     pre_state.state, post_state.state, disk_event, info.reqs, info.resps)); // step witness
             }
