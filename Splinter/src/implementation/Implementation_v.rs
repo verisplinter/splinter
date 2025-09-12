@@ -643,7 +643,7 @@ impl Implementation {
         loop
         invariant
             self.inv_api(api),
-            // self.sync_reqs_in_version(ready_reqs@, self.state().history.first_active_index()),
+            self.sync_reqs_in_version(ready_reqs@, old(self).state().persistent_map.seq_end as int),
             self.sync_requests.satisfied_reqs@.len()==0,
             ready_reqs@.len() <= old(ready_reqs)@.len(),
             old(self).sync_requests.deferred_reqs@ == self.sync_requests.deferred_reqs@,
@@ -655,6 +655,7 @@ impl Implementation {
             {
                 Some(req) => {
                     assert( ready_reqs@ == old(ready_reqs)@.take(ready_reqs@.len() as int) );   // extn
+                    assert( self.sync_req_in_version(req.id, self.state().persistent_map.seq_end as int) );
                     self.send_sync_response(req, api)
                 },
                 None => break,
@@ -692,7 +693,7 @@ impl Implementation {
     requires
         old(self).inv_api(old(api)),
         req.input is SyncInput,
-        // old(self).sync_req_in_version(req.id, old(self).state().history.first_active_index()),
+        old(self).sync_req_in_version(req.id, old(self).state().persistent_map.seq_end as int),
         old(self).no_matching_sync_req_id(req.id),
     ensures
         self.inv_api(api),
@@ -716,6 +717,11 @@ impl Implementation {
         let tracked mut model = KVStoreTokenized::model::arbitrary();
         proof { tracked_swap(self.model.borrow_mut(), &mut model); }
 
+        assert(ConcreteProgramModel::next(pre_state, post_state,
+                ProgramLabel::UserIO{
+                    op: ProgramUserOp::DeliverSyncReply{sync_req_id: req.id}
+                }
+                ));
         let tracked reply_shard = self.instance.borrow().deliver_sync_reply(
             KVStoreTokenized::Label::ReplySyncOp{sync_req_id: req.id},
             post_state,
