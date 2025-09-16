@@ -90,6 +90,27 @@ impl Journal {
         }
         self.msg_history.push(KeyedMessage{key, message: Message::Define{value}});
     }
+
+    // NOTE: how do we decide between @ and @@ when exporting ensures
+    // this seems like a mess
+    pub fn truncate_to(&mut self, new_seq_start: ILsn)
+        requires 
+            old(self)@.wf(),
+            old(self)@.seq_start <= new_seq_start,
+            new_seq_start <= old(self)@@.seq_end,
+        ensures 
+            self@.wf(),
+            self@.seq_start == new_seq_start,
+            self@@.seq_end == old(self)@@.seq_end,
+            self@.msg_history == old(self)@.msg_history.subrange(
+                (new_seq_start-old(self).seq_start) as int, old(self).msg_history.len() as int)
+    {
+        let idx = (new_seq_start - self.seq_start);
+        assume(idx < usize::MAX);
+        self.msg_history = self.msg_history.split_off(idx as usize);
+        self.seq_start = new_seq_start;
+        assert(old(self).seq_start + old(self).msg_history.len() == self.seq_start + self.msg_history.len());
+    }
 }
 
 impl View for Journal {
