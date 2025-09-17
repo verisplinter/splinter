@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: BSD-2-Clause
 //
 // #![allow(unused_imports)]
-use builtin::*;
+use verus_builtin::*;
 use vstd::prelude::*;
 
 use crate::abstract_system::StampedMap_v::LSN;

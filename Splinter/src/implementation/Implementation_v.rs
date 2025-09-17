@@ -1,8 +1,8 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
 
-use builtin::*;
-use builtin_macros::*;
+use verus_builtin::*;
+use verus_builtin_macros::*;
 use vstd::pervasive::*;
 use vstd::prelude::*;
 use vstd::modes::*;
@@ -26,6 +26,8 @@ use crate::abstract_system::StampedMap_v::{StampedMap};
 use crate::abstract_system::MsgHistory_v::MsgHistory;
 use crate::abstract_system::MsgHistory_v::KeyedMessage;
 // use crate::abstract_system::AbstractCrashAwareSystemRefinement_v;
+use crate::abstract_system::AbstractJournal_v::AbstractJournal;
+use crate::abstract_system::AbstractMap_v::AbstractMap;
 
 use crate::implementation::ModelRefinement_v::*;
 use crate::implementation::ConcreteProgramModel_v::*;
@@ -276,10 +278,10 @@ impl Implementation {
                     let ghost map_lbl = MapSpec::Label::Noop{input: map_req.input, output: map_reply.output};
                     reveal(MapSpec::State::next);
                     reveal(MapSpec::State::next_by);
-                    assert( MapSpec::State::next_by(post_state.state.history.last().appv, post_state.state.history.last().appv,
-                            map_lbl, MapSpec::Step::noop())); // witness to step
-                    assert( post_state.state.history.get_prefix(pre_state.state.history.len()) == pre_state.state.history );  // extn
-                    assert( AtomicState::map_transition(pre_state.state, post_state.state, map_req, map_reply) );
+                    // assert( MapSpec::State::next_by(post_state.state.history.last().appv, post_state.state.history.last().appv,
+                    //         map_lbl, MapSpec::Step::noop())); // witness to step
+                    // assert( post_state.state.history.get_prefix(pre_state.state.history.len()) == pre_state.state.history );  // extn
+                    assert( AtomicState::execute_transition(pre_state.state, post_state.state, map_req, map_reply) );
                     assert( ConcreteProgramModel::next(pre_state, post_state,
                         ProgramLabel::UserIO{op: ProgramUserOp::Execute{req: map_req, reply: map_reply}}) );
                 }
@@ -326,7 +328,7 @@ impl Implementation {
                 }
             };
 
-            assert(post_state.state.history.len()-1 == pre_state.state.history.len());
+            // assert(post_state.state.history.len()-1 == pre_state.state.history.len());
 
             let tracked mut model = KVStoreTokenized::model::arbitrary();
             proof { tracked_swap(self.model.borrow_mut(), &mut model); }
@@ -344,8 +346,8 @@ impl Implementation {
                 assert(view_as_kmmap(self.store) =~= view_as_kmmap(old(self).store).insert(key, Message::Define{value}));
                 assert( MapSpec::State::next_by(pre_state.state.mapspec(), post_state.state.mapspec(), map_lbl, MapSpec::Step::put())); // witness to step
 
-                assert( post_state.state.history.get_prefix(pre_state.state.history.len()) =~= pre_state.state.history );  // extn
-                assert( AtomicState::map_transition(pre_state.state, post_state.state, map_req, map_reply) );
+                // assert( post_state.state.history.get_prefix(pre_state.state.history.len()) =~= pre_state.state.history );  // extn
+                assert( AtomicState::execute_transition(pre_state.state, post_state.state, map_req, map_reply) );
                 assert( ConcreteProgramModel::next(pre_state, post_state,
                     ProgramLabel::UserIO{op: ProgramUserOp::Execute{req: map_req, reply: map_reply}}) );
 
@@ -431,7 +433,7 @@ impl Implementation {
                 reveal(MapSpec::State::next_by);
                 assert( MapSpec::State::next_by(pre_state.state.mapspec(), post_state.state.mapspec(),
                         map_lbl, MapSpec::Step::query())); // witness to step
-                assert( post_state.state.history.get_prefix(pre_state.state.history.len()) == pre_state.state.history );  // extn
+                // assert( post_state.state.history.get_prefix(pre_state.state.history.len()) == pre_state.state.history );  // extn
 //                 assert( ConcreteProgramModel::next(pre_state, post_state,
 //                     ProgramLabel::UserIO{op: ProgramUserOp::Execute{req: map_req, reply: map_reply}}) );
             }
@@ -469,7 +471,8 @@ impl Implementation {
 
         // Consume the shard to convert into model state
         let ghost pre_state = self.model@.value();
-        let ghost version = (pre_state.state.history.len()-1) as nat;
+        // let ghost version = (pre_state.state.history.len()-1) as nat;
+        let ghost version = arbitrary();
         let ghost post_state = ConcreteProgramModel {
             state: AtomicState{
                 sync_req_map: pre_state.state.sync_req_map.insert(req.id, version),
@@ -538,17 +541,19 @@ impl Implementation {
         }
         // persist map if the counter says so and if there's actually journal messages to apply
         let sync_map = (self.sync_counter % 3) == 0 && self.journal.msg_history.len() > 0;
+        let ghost pre_sb = self.state().sync_sb(sync_map);
 
         let mut raw_page = Vec::new();
         let mut tmp_store = VecMap::new();
         let mut tmp_journal = Journal::new_empty();
 
+        let mut sb;
         if sync_map { // sync the ephemeral map with an empty journal
             api.log("send_superblock: sync store and truncate the journal");
             tmp_journal.seq_start = version;
             std::mem::swap(&mut self.store, &mut tmp_store);
     
-            let sb = ISuperblock{
+            sb = ISuperblock{
                 journal: tmp_journal,
                 store: tmp_store.v,
             };
@@ -568,7 +573,7 @@ impl Implementation {
             std::mem::swap(&mut self.journal, &mut tmp_journal);
             std::mem::swap(&mut self.persistent_store, &mut tmp_store);
 
-            let sb = ISuperblock{
+            sb = ISuperblock{
                 journal: tmp_journal,
                 store: tmp_store.v,
             };
@@ -579,9 +584,9 @@ impl Implementation {
             tmp_store.v = tmp_store_v;
             std::mem::swap(&mut self.persistent_store, &mut tmp_store);
 
-            proof {
-                sb@.final_stamped_map_ensures();
-            }
+//             proof {
+//                 sb@.final_stamped_map_ensures();
+//             }
             self.in_flight = Some(InFlight{
                 new_seq_start: self.journal.seq_start,
                 new_store: self.persistent_store.clone(),
@@ -590,15 +595,21 @@ impl Implementation {
             assert(self.journal@@.discard_recent(version as nat).discard_old(self.journal.seq_start as nat) 
                 == self.journal@@.discard_recent(version as nat)); // ext_eq
         }
+        let ghost new_persistent_map = sb.store@;
 
         let req_id_perm = Tracked( api.send_disk_request_predict_id() );
         let ghost disk_req_id = req_id_perm@;
         let disk_request = IDiskRequest::WriteReq{to: superblock_addr(), data: raw_page};
-        let ghost disk_event = DiskEvent::ExecuteSyncBegin{req: disk_request@, req_id: disk_req_id};
+        let ghost disk_event = DiskEvent::ExecuteSyncBegin{req: disk_request@, req_id: disk_req_id, sync_map};
         let ghost disk_reqs = multiset_map_singleton(disk_req_id, disk_request@);
         let ghost info = ProgramDiskInfo{ reqs: disk_reqs, resps: Multiset::empty() };
 
-        let ghost inflight_info = InflightInfo{version: version as nat, req_id: disk_req_id};
+        let ghost inflight_info = InflightInfo{
+//             new_persistent_map: ASuperblock::map_to_kmmap(new_persistent_map),
+            new_persistent_map: arbitrary(),
+            journal_version: version as nat,
+            req_id: disk_req_id
+        };
         let ghost post_state = ConcreteProgramModel {
             state: AtomicState{
                 in_flight: Some(inflight_info),
@@ -645,7 +656,7 @@ impl Implementation {
     exec fn deliver_inflight_replies(&mut self, ready_reqs: &mut Vec<Request>, api: &mut ClientAPI<ConcreteProgramModel>)
     requires
         old(self).inv_api(old(api)),
-        old(self).sync_reqs_in_version(old(ready_reqs)@, old(self).state().history.first_active_index()),
+        // old(self).sync_reqs_in_version(old(ready_reqs)@, old(self).state().history.first_active_index()),
         // can't break in-flight inv because there aren't any satisfied_reqs during this call
         old(self).sync_requests.satisfied_reqs@.len()==0,
         Self::sync_req_lists_mutually_unique(old(ready_reqs)@, old(self).sync_requests.deferred_reqs@),
@@ -656,7 +667,7 @@ impl Implementation {
         loop
         invariant
             self.inv_api(api),
-            self.sync_reqs_in_version(ready_reqs@, self.state().history.first_active_index()),
+            self.sync_reqs_in_version(ready_reqs@, old(self).state().persistent_map.seq_end as int),
             self.sync_requests.satisfied_reqs@.len()==0,
             ready_reqs@.len() <= old(ready_reqs)@.len(),
             old(self).sync_requests.deferred_reqs@ == self.sync_requests.deferred_reqs@,
@@ -668,6 +679,7 @@ impl Implementation {
             {
                 Some(req) => {
                     assert( ready_reqs@ == old(ready_reqs)@.take(ready_reqs@.len() as int) );   // extn
+                    assert( self.sync_req_in_version(req.id, self.state().persistent_map.seq_end as int) );
                     self.send_sync_response(req, api)
                 },
                 None => break,
@@ -705,7 +717,7 @@ impl Implementation {
     requires
         old(self).inv_api(old(api)),
         req.input is SyncInput,
-        old(self).sync_req_in_version(req.id, old(self).state().history.first_active_index()),
+        old(self).sync_req_in_version(req.id, old(self).state().persistent_map.seq_end as int),
         old(self).no_matching_sync_req_id(req.id),
     ensures
         self.inv_api(api),
@@ -729,6 +741,11 @@ impl Implementation {
         let tracked mut model = KVStoreTokenized::model::arbitrary();
         proof { tracked_swap(self.model.borrow_mut(), &mut model); }
 
+        assert(ConcreteProgramModel::next(pre_state, post_state,
+                ProgramLabel::UserIO{
+                    op: ProgramUserOp::DeliverSyncReply{sync_req_id: req.id}
+                }
+                ));
         let tracked reply_shard = self.instance.borrow().deliver_sync_reply(
             KVStoreTokenized::Label::ReplySyncOp{sync_req_id: req.id},
             post_state,
@@ -1043,7 +1060,11 @@ impl Implementation {
             let ghost post_state = ConcreteProgramModel{
                 state: AtomicState {
                     recovery_state: RecoveryState::RecoveryComplete,
-                    history: superblock@@.initial_history(),
+                    // TODO made a mess here
+                    journal: AbstractJournal::State { journal: superblock@@.journal },
+                    map: AbstractMap::State { stamped_map: superblock@@.journal.apply_to_stamped_map(superblock@@.store) },
+                    persistent_map: superblock@@.store,
+                    persistent_journal_seq_end: superblock@@.journal.seq_end,
                     in_flight: None,
                     sync_req_map: Map::empty(),
                 }
@@ -1070,6 +1091,7 @@ impl Implementation {
                     reqs: disk_request_tuples,
                     resps: disk_response_tuples,
                 };
+                let sb = DiskLayout::spec_new().spec_parse(disk_event->raw_page);
                 assert(AtomicState::disk_transition(
                     pre_state.state, post_state.state, disk_event, info.reqs, info.resps)); // step witness
             }
@@ -1152,7 +1174,7 @@ impl KVStoreTrait for Implementation {
             Tracked(instance),
             Tracked(model),         // non sharded model
             Tracked(requests),      // request perm map (multiset), empty
-            Tracked(replies),       // reply perm map (multiset), empty\
+            Tracked(replies),       // reply perm map (multiset), empty
             Tracked(disk_requests),
             Tracked(disk_responses),
         ) = KVStoreTokenized::Instance::initialize(ConcreteProgramModel{state: AtomicState::init()});

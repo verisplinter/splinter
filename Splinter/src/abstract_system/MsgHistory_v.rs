@@ -1,7 +1,7 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
-use builtin_macros::*;
-use builtin::*;
+use verus_builtin_macros::*;
+use verus_builtin::*;
 use vstd::{map::*,set::*};
 
 use crate::spec::KeyType_t::*;
@@ -254,6 +254,7 @@ impl MsgHistory {
     MsgHistory{ msgs: keepMap, seq_start: lsn, seq_end: self.seq_end }
   }
 
+  // TODO: a silly shorthand. Replace it.
   pub open spec(checked) fn _do(self, lsn: LSN) -> MsgHistory
     recommends self.can_discard_to(lsn)
   {

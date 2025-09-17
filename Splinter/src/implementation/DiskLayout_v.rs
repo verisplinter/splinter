@@ -14,6 +14,8 @@ use crate::marshalling::Marshalling_v::*;
 use crate::marshalling::Slice_v::*;
 use crate::trusted::ClientAPI_t::BLOCK_SIZE;
 use crate::marshalling::UniformSized_v::UniformSized;
+use crate::abstract_system::StampedMap_v;
+use crate::abstract_system::MsgHistory_v::{MsgHistory};
 // use crate::marshalling::WF_v::WF;
 use crate::marshalling::UniformPairFormat_v::uniform_size_matches_spec_size;
 
@@ -130,8 +132,8 @@ impl DiskLayout {
     {
         &&& disk.contains_key(spec_superblock_addr())
         &&& Superblock{
-                store: PersistentState{ appv: my_init() },
-                version_index: 0,
+            store: StampedMap_v::empty(),
+            journal: MsgHistory::empty_history_at(StampedMap_v::empty().seq_end),
             } == self.spec_parse(disk[spec_superblock_addr()])
     }
 

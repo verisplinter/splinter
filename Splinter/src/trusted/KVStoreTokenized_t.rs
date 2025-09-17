@@ -1,7 +1,7 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
 use vstd::{prelude::*, multiset::*};
-use state_machines_macros::tokenized_state_machine;
+use verus_state_machines_macros::tokenized_state_machine;
 use crate::spec::AsyncDisk_t::*;
 use crate::spec::MapSpec_t::{ID, SyncReqId};
 use crate::trusted::ProgramModelTrait_t::*;

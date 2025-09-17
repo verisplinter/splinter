@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: BSD-2-Clause
 
 #![allow(unused_imports)]
-use builtin::*;
+use verus_builtin::*;
 
-use builtin_macros::*;
-use state_machines_macros::state_machine;
+use verus_builtin_macros::*;
+use verus_state_machines_macros::state_machine;
 use vstd::prelude::*;
 use vstd::{map::*, seq::*, bytes::*, set::*, multiset::*};
 

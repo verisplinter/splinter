@@ -1,7 +1,7 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
-use builtin::*;
-use builtin_macros::*;
+use verus_builtin::*;
+use verus_builtin_macros::*;
 
 use vstd::prelude::*;
 use vstd::bytes::*;
@@ -20,7 +20,7 @@ verus! {
 
 // An int type T can be IntFormat<T> if we know these things about it:
 
-pub trait IntFormattable : WF + Parsedview<int> + builtin::Integer + Sized + SpecOrd + Copy + StaticallySized
+pub trait IntFormattable : WF + Parsedview<int> + verus_builtin::Integer + Sized + SpecOrd + Copy + StaticallySized
 {
     // generic wrappers over vstd::bytes, which should probably be rewritten this way.
     spec fn spec_from_le_bytes(s: Seq<u8>) -> Self
@@ -522,12 +522,14 @@ impl<T: IntFormattable> Marshal for IntFormat<T>
 
     exec fn try_parse(&self, slice: &Slice, data: &Vec<u8>) -> (ov: Option<T>)
     {
-        assume( false ); // TODO rotted
         if T::exec_uniform_size() <= slice.len() {
             let sr = slice_subrange(data.as_slice(), slice.start, slice.start+T::exec_uniform_size());
             let parsed = T::from_le_bytes(sr);
             assert( sr@ == slice@.i(data@).subrange(0, T::uniform_size() as int) ); // trigger
-            proof { T::parsedv_is_as_int(parsed); }
+            proof {
+                T::parsedv_is_as_int(parsed);
+                parsed.always_wf();
+            }
             Some(parsed)
         } else {
             assert( !self.parsable(slice@.i(data@)) );
@@ -540,8 +542,10 @@ impl<T: IntFormattable> Marshal for IntFormat<T>
         let sr = slice_subrange(data.as_slice(), slice.start, slice.start+T::exec_uniform_size());
         assert( sr@ == slice@.i(data@).subrange(0, T::uniform_size() as int) ); // trigger
         let value = T::from_le_bytes(sr);
-        proof { T::parsedv_is_as_int(value); }
-        assume( false ); // flaky?
+        proof {
+            T::parsedv_is_as_int(value);
+            value.always_wf();
+        }
         value
     }
 

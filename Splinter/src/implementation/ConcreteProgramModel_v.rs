@@ -1,5 +1,5 @@
 #[allow(unused_imports)]    // lost in erasure
-use builtin::*;
+use verus_builtin::*;
 use vstd::prelude::*;
 
 use crate::spec::AsyncDisk_t::*;
@@ -42,8 +42,8 @@ impl ProgramModelTrait for ConcreteProgramModel {
             ProgramLabel::UserIO{op} => {
                 match op {
                     ProgramUserOp::Execute{req, reply} => {
-                        // translate it into the other request and reply
-                        AtomicState::map_transition(pre.state, post.state, req, reply)
+                        exists |program_event| AtomicState::execute_transition(
+                            pre.state, post.state, req, reply, program_event)
                     },
                     ProgramUserOp::AcceptSyncRequest{sync_req_id} => {
                         AtomicState::accept_sync_request(pre.state, post.state, sync_req_id)

@@ -1,10 +1,10 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
 #[allow(unused_imports)]
-use builtin::*;
+use verus_builtin::*;
 
-use builtin_macros::*;
-use state_machines_macros::state_machine;
+use verus_builtin_macros::*;
+use verus_state_machines_macros::state_machine;
 #[allow(unused_imports)]
 use vstd::{map::*};
 
@@ -48,7 +48,7 @@ state_machine!{ AbstractCrashAwareJournal {
     }
 
     init!{
-        initialize() {
+        initialize() {  // mkfs -- notice empty persistent
             init persistent = MsgHistory{ msgs: Map::empty(), seq_start: 0, seq_end: 0};
             init ephemeral = Ephemeral::Unknown;
             init in_flight = Option::None;

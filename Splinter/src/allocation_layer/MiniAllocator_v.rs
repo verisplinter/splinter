@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: BSD-2-Clause
 //
 #![allow(unused_imports)]
-use builtin::*;
-use builtin_macros::*;
+use verus_builtin::*;
+use verus_builtin_macros::*;
 use vstd::prelude::*;
 use crate::disk::GenericDisk_v::*;
 

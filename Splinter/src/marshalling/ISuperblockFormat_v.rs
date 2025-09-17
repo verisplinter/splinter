@@ -65,7 +65,7 @@ impl Wrappable for SuperblockJSWrappable {
         assume( journal_clone == value.journal );
         assume( store_clone == value.store );
         assert( Self::to_pair((*value).parsedv()) == pair.parsedv() );  // verus #1534
-        assume( pair.wf() );    // TODO(jonh)
+        assume( pair.wf() );    // TODO(jonh) need to plumb an obligation through the trait? Maybe a custom pair type?
         pair
     }
 

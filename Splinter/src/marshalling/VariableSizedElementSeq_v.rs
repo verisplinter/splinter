@@ -1,7 +1,7 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
-use builtin::*;
-use builtin_macros::*;
+use verus_builtin::*;
+use verus_builtin_macros::*;
 
 use vstd::prelude::*;
 use vstd::seq_lib::*;
@@ -323,16 +323,27 @@ impl <
         */
 
 
-        assume( false ); // LEFT OFF HERE
-        assert( self.size_of_table(self.length(data)) == self.bdyf.length(data) );
-        assert( self.elements_start(data) <= self.bdyf.total_size );
+//         assert( self.size_of_table(self.length(data)) == self.bdyf.length(data) );
+//         assert( self.elements_start(data) <= self.bdyf.total_size );
+// 
 
+
+        // Appendable, to bdyf, means
+        // - the length doesn't outgrow the pre-computed max length (count of elts)
+        // - value spec size matches uniform size (easy)
+        // - growing the length won't blow out length field max value
+
+        // What we know from self.appendable is:
+//         BdyType::uniform_size() + self.eltf.spec_size(value) as nat
+//             <= self.free_space(data)
+        // and free_space is
+//         == self.elements_start(data) - self.size_of_table(self.length(data))
+
+        assume( false ); // TODO(jonh): left off
         assert( self.bdyf.length(data) < self.bdyf.spec_max_length() as nat );
-
-        assume( self.bdyf.length(data) + 1 <= LenType::max() );
+        assert( self.bdyf.length(data) + 1 <= LenType::max() );
 
         // Discuss with Rob why these proofs weren't needed in Dafny?
-        // TODO(jonh): urgent fix assumes
         assert( self.bdyf.appendable(data, self.append_offset(data, value)) );
     }
 
@@ -658,7 +669,6 @@ impl <
                     forall |ip, jp| 0 <= ip <= jp <= i ==> #[trigger] tbl[jp] as int <= #[trigger] tbl[ip] as int
                 decreases len-i,
                 {
-                    assume( false ); // proof rotted
                     assert( tbl[i as int] as int == self.table(idata)[i as int] );  // trigger
                     assert( tbl[i as int + 1] as int == self.table(idata)[i as int +1] );   // trigger
                     if BdyType::to_usize(tbl[i]) < BdyType::to_usize(tbl[i+1]) {
@@ -739,7 +749,7 @@ impl <
         // then length(idata) == 9
         // then LenType::max() == 65536
         // 19 < (25 - 2) / bdy2
-//         assume( self.bdyf.length(idata) + 1 <= LenType::max() );
+//         ass-ume( self.bdyf.length(idata) + 1 <= LenType::max() );
 // 
 // //         assert( self.bdyf.size_of_length_field() == LenType::uniform_size() );
 // 

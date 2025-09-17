@@ -9,9 +9,9 @@
 // contain sequences of their children (i.e.: in a concrete implementation its one massive nested data structure, instead
 // of using pointers). AKA it's a "functional" tree (immutable, defined).
 
-use builtin::*;
+use verus_builtin::*;
 
-use builtin_macros::*;
+use verus_builtin_macros::*;
 
 use vstd::prelude::*;
 use crate::spec::KeyType_t::*;
