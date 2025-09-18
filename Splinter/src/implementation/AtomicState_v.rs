@@ -22,41 +22,32 @@ pub enum RecoveryState {
     Begin,
     // We've sent the superblock read request; better not send any more! Still can't do user IO.
     AwaitingSuperblock,
+    // now we can load the journal pages into the cache
+    SuperblockAvailable,
+    // journal index is built, time to update map with journal records
+    JournalIndexComplete,
     // System can now operate
     RecoveryComplete,
 }
 
 pub struct InflightInfo {
-    pub new_persistent_map: StampedMap,
     pub journal_version: LSN,
     pub req_id: ID,
-}
-
-impl InflightInfo {
-    pub open spec fn wf(self) -> bool
-    {
-        self.new_persistent_map.seq_end <= self.journal_version
-    }
-
-    pub open spec fn map_version(self) -> LSN
-    {
-        self.new_persistent_map.seq_end
-    }
 }
 
 #[verifier::ext_equal]
 pub struct AtomicState {
     pub recovery_state: RecoveryState,
 
-    pub journal: AbstractJournal::State, // ephemeral
-    pub map: AbstractMap::State, // ephemeral
+    // msg history seq start
+    // pub journal: AbstractJournal::State, // ephemeral
+    pub journal: CachedJournal::State,
+    pub cache: Cache::State,
 
-    // The view of the disk's map that we learn (ghostily) on recovery.
-    pub persistent_map: StampedMap,
+    // crash aware map
+    pub store: AbstractCrashAwareMap::State, // covers ephemeral, in_flight map, plus a persistent map
+
     pub persistent_journal_seq_end: LSN,
-
-    // pub journal: CachedJournal::State,
-    // pub cache: Cache::State,
 
     // tells us what we can bump persistent_version when the disk response comes back.
     pub in_flight: Option<InflightInfo>,
@@ -66,10 +57,19 @@ pub struct AtomicState {
 }
 
 pub enum DiskEvent{
+    // superblock read 
     InitiateRecovery{req_id: ID},
-    CompleteRecovery{req_id: ID, raw_page: RawPage},
+    SuperblockRecovery{req_id: ID, raw_page: RawPage},
+    // superblock write
     ExecuteSyncBegin{req_id: ID, req: DiskRequest, sync_map: bool},
     ExecuteSyncEnd{},
+    // other I/Os
+    CacheIOBegin{req_map: Map<ID, DiskRequest>},
+    CacheIOEnd{resp_map: Map<ID, DiskResponse>},
+    // CacheReadBegin{req_map: Map<ID, addr: Address>},
+    // CacheReadEnd{resp_map: Map<ID, raw_page: RawPage>},
+    // CacheWriteBegin{req_map: Map<ID, info: (Address, RawPage)>},
+    // CacheWriteEnd{resp_map: Set<ID>},
 }
 
 // labels
@@ -104,34 +104,49 @@ impl AtomicState {
         self.recovery_state is RecoveryComplete
     }
 
-    pub open spec fn persistent_map_version(self) -> LSN
+    // Duck tape: directly accessing submodule state...
+    pub open spec(checked) fn ephemeral_map(self) -> StampedMap
+        recommends self.store.ephemeral is Known
     {
-        self.persistent_map.seq_end
+        self.store.ephemeral->v.stamped_map
+    }
+
+    pub open spec(checked) fn in_flight_map(self) -> StampedMap
+        recommends self.store.in_flight is Some
+    {
+        self.store.in_flight.unwrap()
+    }
+
+    pub open spec fn persistent_map(self) -> StampedMap
+    {
+        self.store.persistent
     }
 
     pub open spec fn wf(self) -> bool {
         &&& self.client_ready() ==> {
             &&& self.journal.wf()
             // persistent map lines up with ephemeral journal
-            &&& self.journal.journal.seq_start == self.persistent_map.seq_end
+            &&& self.journal.journal.seq_start == self.persistent_map()
             // ephemeral map = persistent map + ephemeral journal
-            &&& self.map.stamped_map == self.journal.journal.apply_to_stamped_map(self.persistent_map)
+            &&& self.store.ephemeral is Some 
+            &&& self.ephemeral_map() == self.journal.journal.apply_to_stamped_map(self.persistent_map())
+            &&& self.store.in_flight is Some <==> self.in_flight is Some
             &&& if let Some(ifl) = self.in_flight {
-                &&& ifl.wf()
-                &&& self.persistent_map_version() <= ifl.map_version()
-                &&& self.map.stamped_map == self.journal.journal
-                        .discard_old(ifl.map_version())
-                        .apply_to_stamped_map(ifl.new_persistent_map)
-            } else { true }
+                &&& self.persistent_map() <= self.in_flight_map().seq_end
+                &&& self.ephemeral_map() == self.journal.journal
+                        .discard_old(self.in_flight_map().seq_end)
+                        .apply_to_stamped_map(self.in_flight_map())
+                } else { true }
         }
     }
 
     // this is process init, which should do filesystem recovery before operation
-    pub open spec fn init() -> Self
+    pub open spec fn init(cache_slots: nat) -> Self
     {
         AtomicState{
             recovery_state: RecoveryState::Begin,
             journal: arbitrary(),
+            cache: Cache::State::initialize(cache_slots),
             map: arbitrary(),
             persistent_map: arbitrary(),
             persistent_journal_seq_end: arbitrary(),
@@ -200,23 +215,111 @@ impl AtomicState {
         &&& post == Self{ recovery_state: RecoveryState::AwaitingSuperblock, ..pre }
     }
 
-    pub open spec fn complete_recovery(pre: Self, post: Self, reqs: Multiset<(ID, DiskRequest)>, resps: Multiset<(ID, DiskResponse)>, req_id: ID, raw_page: RawPage) -> bool
+    pub open spec fn superblock_recovery(pre: Self, post: Self, reqs: Multiset<(ID, DiskRequest)>, resps: Multiset<(ID, DiskResponse)>, req_id: ID, raw_page: RawPage) -> bool
     {
         &&& pre.recovery_state is AwaitingSuperblock // can prove this by invariant
         &&& reqs.is_empty()
         &&& resps == Multiset::empty().insert((req_id, DiskResponse::ReadResp{data: raw_page}))
-        // &&& valid_checksum(raw_page)
+        // &&& valid_checksum(raw_page) 
         &&& {
             let superblock = DiskLayout::spec_new().spec_parse(raw_page);
-            post == Self{
-                recovery_state: RecoveryState::RecoveryComplete,
-                persistent_map: superblock.store,
-                persistent_journal_seq_end: superblock.journal.seq_end,
-                journal: AbstractJournal::State{ journal: superblock.journal },
-                map: AbstractMap::State{ stamped_map: superblock.journal.apply_to_stamped_map(superblock.store) },
+            &&& post == Self{
+                recovery_state: RecoveryState::SuperblockAvailable,
+                journal: CachedJournal::State::initialize(superblock.journal),
+                // duck tape
+                store: AbstractCrashAwareMap::State{
+                    persistent: superblock.store,
+                    ephemeral: Ephemeral::Known{v: superblock.store},
+                    in_flight: None,
+                },
+                persistent_journal_seq_end: arbitrary(), // do not know yet
                 in_flight: None,
                 sync_req_map: Map::empty(),
+                ..pre
             }
+        }
+    }
+
+    pub open spec fn journal_recovery(pre: Self, post: Self, reads: reads: Map<Address, RawPage>)
+    {
+        &&& pre.recovery_state is SuperblockAvailable
+        let cache_lbl = Cache::Label::Access{reads: reads, writes: Map::empty()};
+        &&& Cache::State::next(pre.cache, post.cache, cache_lbl)
+        let journal_lbl = CachedJournal::Label::LoadIndex{reads: to_journal_reads(reads)};
+        &&& CachedJournal::State::next(pre.journal, post.journal, journal_lbl)
+        &&& post == Self{
+            recovery_state: RecoveryState::JournalIndexComplete,
+            cache: post.cache,
+            journal: post.journal,
+            ..pre
+        }
+    }
+
+    // update map to the journal
+    pub open spec fn map_recovery(pre: Self, post: Self, records: MsgHistory, reads: Map<Address, RawPage>)
+    {
+        &&& pre.recovery_state is JournalIndexComplete
+
+        let map_lbl = AbstractCrashAwareMap::Label::PutRecordsLabel{records};
+        let journal_lbl = CachedJournal::Label::ReadForRecovery{messages: messages, reads: to_journal_reads(reads)};
+        let cache_lbl = Cache::Label::Access{reads: reads, writes: Map::empty()};
+
+        &&& Cache::State::next(pre.cache, post.cache, cache_lbl)
+        &&& CachedJournal::State::next(pre.journal, post.journal, journal_lbl)
+        &&& AbstractCrashAwareMap::State::next(pre.store, post.store, map_lbl)
+
+        &&& post == Self{
+            cache: post.cache,
+            journal: post.journal,
+            store: post.store
+            ..pre
+        }
+    }
+
+    pub open spec fn recovery_complete(pre: Self, post: Self)
+    {
+        &&& pre.recovery_state is JournalIndexComplete
+
+        let end_lsn = pre.ephemeral_map().seq_end;
+        let journal_lbl = CachedJournal::Label::QueryEndLsn{end_lsn: end_lsn};
+        &&& CachedJournal::State::next(pre.journal, post.journal, journal_lbl)
+        &&& post == Self {
+            recovery_state: RecoveryState::RecoveryComplete,
+            persistent_journal_seq_end: end_lsn,
+            ..pre
+        }
+    }
+
+    pub open spec fn cache_internal(pre: Self, post: Self) -> bool
+    {
+        &&& Cache::State::next(pre.cache, post.cache, Cache::Label::Internal{})
+        &&& post == Self {
+            cache: post.cache,
+            ..pre
+        }
+    }
+
+    pub open spec fn cache_io_begin(pre: Self, post: Self, req_map: Map<ID, DiskRequest>, reqs: Multiset<(ID, DiskRequest)>, resps: Multiset<(ID, DiskResponse)>) -> bool
+    {
+        &&& Cache::State::next(pre.cache, post.cache, Cache::Label::DiskOps{requests: req_map, responses: Map::empty()})
+        // TODO: doesn't exist
+        &&& req_map.to_multiset() == reqs
+        &&& resps.is_empty()
+        &&& post == Self {
+            cache: post.cache,
+            ..pre
+        }
+    }
+
+    pub open spec fn cache_io_end(pre: Self, post: Self, resp_map: Map<ID, DiskResponse>, reqs: Multiset<(ID, DiskRequest)>, resps: Multiset<(ID, DiskResponse)>) -> bool
+    {
+        &&& Cache::State::next(pre.cache, post.cache, Cache::Label::DiskOps{requests: Map::empty(), responses: resp_map})
+        // TODO: doesn't exist
+        &&& resp_map.to_multiset() == resps
+        &&& reqs.is_empty()
+        &&& post == Self {
+            cache: post.cache,
+            ..pre
         }
     }
 
@@ -231,6 +334,9 @@ impl AtomicState {
 
         &&& pre.client_ready()
         &&& pre.in_flight is None
+
+        // requirement in checking freeze as
+        // TODO
 
         &&& req is WriteReq
         &&& req->to == spec_superblock_addr()
@@ -268,6 +374,8 @@ impl AtomicState {
             DiskEvent::CompleteRecovery{req_id, raw_page} => Self::complete_recovery(pre, post, reqs, resps, req_id, raw_page),
             DiskEvent::ExecuteSyncBegin{req_id, req, sync_map} => Self::execute_sync_begin(pre, post, req_id, req, sync_map, reqs, resps),
             DiskEvent::ExecuteSyncEnd{} => Self::execute_sync_end(pre, post, reqs, resps),
+            DiskEvent::CacheIOBegin{req_map} => Self::cache_io_begin(pre, post, req_map, reqs, resps),
+            DiskEvent::CacheIOEnd{resp_map} => Self::cache_io_end(pre, post, resp_map, reqs, resps),
         }
     }
 

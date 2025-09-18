@@ -6,6 +6,7 @@ use crate::spec::FloatingSeq_t::*;
 use crate::spec::KeyType_t::*;
 use crate::spec::Messages_t::*;
 use crate::implementation::VecMap_v::*;
+use crate::implementation::CachedJournal_v;
 use crate::marshalling::Marshalling_v::Parsedview;
 // use crate::marshalling::WF_v::WF;
 use crate::implementation::JournalTypes_v::*;
@@ -26,7 +27,7 @@ pub type RawStore = Vec<(Key, Value)>;
 
 pub struct Superblock {
     pub store: StampedMap,
-    pub journal: MsgHistory,
+    pub journal: CachedJournal_v::JournalSnapShot,
 }
 
 pub open spec(checked) fn singleton_floating_seq(at_index: nat, kmmap: TotalKMMap) -> FloatingSeq<Version>
