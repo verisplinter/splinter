@@ -63,6 +63,7 @@ state_machine!{ AbstractCrashAwareJournal {
         InternalLabel,
         QueryLsnPersistenceLabel{ sync_lsn: LSN },
         CommitStartLabel{ new_boundary_lsn: LSN, max_lsn: LSN },
+        // TODO(remove require_end)???
         CommitCompleteLabel{ require_end: LSN },
 
         // NB a modeling design choice:

@@ -139,6 +139,15 @@ state_machine!{ AbstractCrashAwareMap {
     }
 
     transition!{
+        freeze_persistent_internal(lbl: Label) {
+            require lbl is InternalLabel;
+            require pre.ephemeral is Known;
+            require pre.in_flight is None;
+            update in_flight = Option::Some(pre.persistent);            
+        }
+    }
+
+    transition!{
         ephemeral_internal(lbl: Label, new_map: AbstractMap::State) {
             require lbl is InternalLabel;
             require pre.ephemeral is Known;

@@ -30,6 +30,7 @@ state_machine!{ AbstractJournal {
         FreezeForCommitLabel{ frozen_journal: MsgHistory},
         QueryEndLsnLabel{ end_lsn: LSN },
         PutLabel{ messages: MsgHistory },
+        // TODO(JL): require_end might not be necessary
         DiscardOldLabel{ start_lsn: LSN, require_end: LSN},
         // TODO(jonh): see corresonding todo in dafny "datatype TransitionLabel"
         InternalLabel,
