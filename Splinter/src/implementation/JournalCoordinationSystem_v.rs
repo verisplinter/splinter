@@ -27,23 +27,10 @@ pub closed spec fn record_to_raw_page(record: JournalRecord) -> (out: RawPage)
     arbitrary()
 }
 
-pub closed spec fn raw_page_to_record(raw_page: RawPage) -> (out: JournalRecord)
-{
-    arbitrary()
-}
-
 pub broadcast proof fn journal_unmarshall_marshall(record: JournalRecord)
     ensures record == #[trigger] raw_page_to_record(record_to_raw_page(record))
 {
     assume(false);
-}
-
-pub open spec fn to_journal_reads(reads: Map<Address, RawPage>) -> Map<Address, JournalRecord>
-{
-    Map::new(
-        |addr| reads.contains_key(addr), 
-        |addr| raw_page_to_record(reads[addr])
-    )
 }
 
 pub open spec fn to_cache_writes(writes: Map<Address, JournalRecord>) -> Map<Address, RawPage>

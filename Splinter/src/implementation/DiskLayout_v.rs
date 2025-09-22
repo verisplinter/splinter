@@ -9,6 +9,7 @@ use crate::spec::ImplDisk_t::*;
 // use crate::spec::FloatingSeq_t::*;
 use crate::implementation::SuperblockTypes_v::*;
 use crate::implementation::JournalTypes_v::*;
+use crate::implementation::CachedJournal_v::JournalSnapShot;
 use crate::marshalling::ISuperblockFormat_v::*;
 use crate::marshalling::Marshalling_v::*;
 use crate::marshalling::Slice_v::*;
@@ -133,7 +134,10 @@ impl DiskLayout {
         &&& disk.contains_key(spec_superblock_addr())
         &&& Superblock{
             store: StampedMap_v::empty(),
-            journal: MsgHistory::empty_history_at(StampedMap_v::empty().seq_end),
+            journal: JournalSnapShot{
+                boundary_lsn: 0,
+                freshest_rec: None,
+            },
             } == self.spec_parse(disk[spec_superblock_addr()])
     }
 

@@ -8,8 +8,13 @@ use crate::spec::Messages_t::*;
 use crate::spec::MapSpec_t::*;
 use crate::spec::FloatingSeq_t::*;
 use crate::spec::AsyncDisk_t::*;
+use crate::abstract_system::AbstractCrashAwareMap_v::*;
 use crate::implementation::DiskLayout_v::*;
 use crate::implementation::SuperblockTypes_v::*;
+use crate::implementation::Cache_v::*;
+use crate::implementation::CachedJournal_v::*;
+use crate::journal::LinkedJournal_v::{JournalRecord};
+
 use crate::abstract_system::AbstractJournal_v::*;
 use crate::abstract_system::AbstractMap_v::*;
 use crate::abstract_system::StampedMap_v::*;
@@ -61,8 +66,9 @@ pub enum DiskEvent{
     InitiateRecovery{req_id: ID},
     SuperblockRecovery{req_id: ID, raw_page: RawPage},
     // superblock write
-    ExecuteSyncBegin{req_id: ID, req: DiskRequest, sync_map: bool},
-    ExecuteSyncEnd{},
+    ExecuteSyncBegin{req_id: ID, req: DiskRequest, frozen_journal: JournalSnapShot, 
+        frozen_seq_end: LSN, frozen_domain: Set<Address>, reads: Map<Address, RawPage>},
+    ExecuteSyncEnd{discard_addrs: Set<Address>},
     // other I/Os
     CacheIOBegin{req_map: Map<ID, DiskRequest>},
     CacheIOEnd{resp_map: Map<ID, DiskResponse>},
@@ -98,6 +104,25 @@ pub open spec(checked) fn to_map_label(req: Request, reply: Reply) -> MapSpec::L
     }
 }
 
+pub open spec fn map_to_multiset<K,V>(m: Map<K,V>) -> Multiset<(K,V)>
+{
+    m.kv_pairs().to_multiset()
+}
+
+// TODO: not sure where 
+pub closed spec fn raw_page_to_record(raw_page: RawPage) -> (out: JournalRecord)
+{
+    arbitrary()
+}
+
+pub open spec fn to_journal_reads(reads: Map<Address, RawPage>) -> Map<Address, JournalRecord>
+{
+    Map::new(
+        |addr| reads.contains_key(addr), 
+        |addr| raw_page_to_record(reads[addr])
+    )
+}
+
 impl AtomicState {
     pub open spec fn client_ready(self) -> bool
     {
@@ -126,16 +151,18 @@ impl AtomicState {
         &&& self.client_ready() ==> {
             &&& self.journal.wf()
             // persistent map lines up with ephemeral journal
-            &&& self.journal.journal.seq_start == self.persistent_map()
+            &&& self.journal.snapshot.boundary_lsn == self.persistent_map().seq_end
             // ephemeral map = persistent map + ephemeral journal
-            &&& self.store.ephemeral is Some 
-            &&& self.ephemeral_map() == self.journal.journal.apply_to_stamped_map(self.persistent_map())
+            // TODO(move into inv)
+            // &&& self.ephemeral_map() == self.journal.journal.apply_to_stamped_map(self.persistent_map())
             &&& self.store.in_flight is Some <==> self.in_flight is Some
+
             &&& if let Some(ifl) = self.in_flight {
-                &&& self.persistent_map() <= self.in_flight_map().seq_end
-                &&& self.ephemeral_map() == self.journal.journal
-                        .discard_old(self.in_flight_map().seq_end)
-                        .apply_to_stamped_map(self.in_flight_map())
+                &&& self.persistent_map().seq_end <= self.in_flight_map().seq_end
+                // TODO(move into inv)
+                // &&& self.ephemeral_map() == self.journal.journal
+                //         .discard_old(self.in_flight_map().seq_end)
+                //         .apply_to_stamped_map(self.in_flight_map())
                 } else { true }
         }
     }
@@ -146,25 +173,33 @@ impl AtomicState {
         AtomicState{
             recovery_state: RecoveryState::Begin,
             journal: arbitrary(),
-            cache: Cache::State::initialize(cache_slots),
-            map: arbitrary(),
-            persistent_map: arbitrary(),
+            cache: Cache::State::empty(cache_slots),
+            store: arbitrary(), 
             persistent_journal_seq_end: arbitrary(),
             in_flight: arbitrary(),
             sync_req_map: arbitrary(),
         }
     }
 
-    pub open spec fn execute_put(pre: Self, post: Self, req: Request, reply: Reply, puts: MsgHistory) -> bool
+    pub open spec fn execute_put(pre: Self, post: Self, req: Request, reply: Reply, records: MsgHistory) -> bool
     {
-        &&& AbstractMap::State::next(pre.map, post.map, AbstractMap::Label::PutLabel{puts})
-        &&& AbstractJournal::State::next(pre.journal, post.journal, AbstractJournal::Label::PutLabel{messages: puts})
-    }   
+        &&& AbstractCrashAwareMap::State::next(pre.store, post.store, AbstractCrashAwareMap::Label::PutRecordsLabel{records})
+        &&& CachedJournal::State::next(pre.journal, post.journal, CachedJournal::Label::Put{messages: records})
+        &&& post == Self{
+                journal: post.journal,
+                store: post.store,
+                ..pre
+            }
+    }
 
     pub open spec fn execute_query(pre: Self, post: Self, req: Request, reply: Reply, end_lsn: LSN, key: Key, value: Value) -> bool
     {
-        &&& AbstractMap::State::next(pre.map, post.map, AbstractMap::Label::QueryLabel{end_lsn, key, value})
-    }   
+        &&& AbstractCrashAwareMap::State::next(pre.store, post.store, AbstractCrashAwareMap::Label::QueryLabel{end_lsn, key, value})
+        &&& post == Self{
+                store: post.store,
+                ..pre
+            }
+    }
 
     pub open spec fn execute_transition(pre: Self, post: Self, req: Request, reply: Reply, event: ProgramEvent) -> bool
     {
@@ -175,11 +210,15 @@ impl AtomicState {
             ProgramEvent::Query{end_lsn, key, value} => Self::execute_query(pre, post, req, reply, end_lsn, key, value)
         }
         &&& post.wf()
+    }
+
+    pub open spec fn store_internal(pre: Self, post: Self) -> bool
+    {
+        &&& AbstractCrashAwareMap::State::next(pre.store, post.store, AbstractCrashAwareMap::Label::InternalLabel{})
         &&& post == Self{
-                journal: post.journal,
-                map: post.map,
-                ..pre
-            }
+            store: post.store,
+            ..pre
+        }
     }
 
     pub open spec fn accept_sync_request(pre: Self, post: Self, sync_req_id: SyncReqId) -> bool
@@ -187,7 +226,7 @@ impl AtomicState {
         &&& pre.client_ready()
         // &&& !pre.sync_req_map.contains_key(sync_req_id) // true by system invariant
         &&& post == Self{
-            sync_req_map: pre.sync_req_map.insert(sync_req_id, pre.map.stamped_map.seq_end as nat),
+            sync_req_map: pre.sync_req_map.insert(sync_req_id, pre.ephemeral_map().seq_end as nat),
             ..pre
         }
     }
@@ -198,7 +237,7 @@ impl AtomicState {
         // The request with this id was once made and is still outstanding
         &&& pre.sync_req_map.contains_key(sync_req_id)
         // The request has been satisfied by a disk sync that got completed
-        &&& pre.sync_req_map[sync_req_id] <= pre.persistent_map.seq_end
+        &&& pre.sync_req_map[sync_req_id] <= pre.persistent_map().seq_end
         &&& post == Self{
             sync_req_map: pre.sync_req_map.remove(sync_req_id),
             ..pre
@@ -225,11 +264,14 @@ impl AtomicState {
             let superblock = DiskLayout::spec_new().spec_parse(raw_page);
             &&& post == Self{
                 recovery_state: RecoveryState::SuperblockAvailable,
-                journal: CachedJournal::State::initialize(superblock.journal),
+                journal: CachedJournal::State{
+                    snapshot: superblock.journal,
+                    status: None,
+                },
                 // duck tape
                 store: AbstractCrashAwareMap::State{
                     persistent: superblock.store,
-                    ephemeral: Ephemeral::Known{v: superblock.store},
+                    ephemeral: Ephemeral::Known{v: AbstractMap::State{stamped_map: superblock.store}},
                     in_flight: None,
                 },
                 persistent_journal_seq_end: arbitrary(), // do not know yet
@@ -240,12 +282,13 @@ impl AtomicState {
         }
     }
 
-    pub open spec fn journal_recovery(pre: Self, post: Self, reads: reads: Map<Address, RawPage>)
+    pub open spec fn journal_recovery(pre: Self, post: Self, reads: Map<Address, RawPage>) -> bool
     {
-        &&& pre.recovery_state is SuperblockAvailable
         let cache_lbl = Cache::Label::Access{reads: reads, writes: Map::empty()};
-        &&& Cache::State::next(pre.cache, post.cache, cache_lbl)
         let journal_lbl = CachedJournal::Label::LoadIndex{reads: to_journal_reads(reads)};
+
+        &&& pre.recovery_state is SuperblockAvailable
+        &&& Cache::State::next(pre.cache, post.cache, cache_lbl)
         &&& CachedJournal::State::next(pre.journal, post.journal, journal_lbl)
         &&& post == Self{
             recovery_state: RecoveryState::JournalIndexComplete,
@@ -256,14 +299,13 @@ impl AtomicState {
     }
 
     // update map to the journal
-    pub open spec fn map_recovery(pre: Self, post: Self, records: MsgHistory, reads: Map<Address, RawPage>)
+    pub open spec fn map_recovery(pre: Self, post: Self, records: MsgHistory, reads: Map<Address, RawPage>) -> bool
     {
-        &&& pre.recovery_state is JournalIndexComplete
-
         let map_lbl = AbstractCrashAwareMap::Label::PutRecordsLabel{records};
-        let journal_lbl = CachedJournal::Label::ReadForRecovery{messages: messages, reads: to_journal_reads(reads)};
+        let journal_lbl = CachedJournal::Label::ReadForRecovery{messages: records, reads: to_journal_reads(reads)};
         let cache_lbl = Cache::Label::Access{reads: reads, writes: Map::empty()};
 
+        &&& pre.recovery_state is JournalIndexComplete
         &&& Cache::State::next(pre.cache, post.cache, cache_lbl)
         &&& CachedJournal::State::next(pre.journal, post.journal, journal_lbl)
         &&& AbstractCrashAwareMap::State::next(pre.store, post.store, map_lbl)
@@ -271,17 +313,17 @@ impl AtomicState {
         &&& post == Self{
             cache: post.cache,
             journal: post.journal,
-            store: post.store
+            store: post.store,
             ..pre
         }
     }
 
-    pub open spec fn recovery_complete(pre: Self, post: Self)
+    pub open spec fn recovery_complete(pre: Self, post: Self) -> bool
     {
-        &&& pre.recovery_state is JournalIndexComplete
-
         let end_lsn = pre.ephemeral_map().seq_end;
         let journal_lbl = CachedJournal::Label::QueryEndLsn{end_lsn: end_lsn};
+        
+        &&& pre.recovery_state is JournalIndexComplete
         &&& CachedJournal::State::next(pre.journal, post.journal, journal_lbl)
         &&& post == Self {
             recovery_state: RecoveryState::RecoveryComplete,
@@ -302,8 +344,7 @@ impl AtomicState {
     pub open spec fn cache_io_begin(pre: Self, post: Self, req_map: Map<ID, DiskRequest>, reqs: Multiset<(ID, DiskRequest)>, resps: Multiset<(ID, DiskResponse)>) -> bool
     {
         &&& Cache::State::next(pre.cache, post.cache, Cache::Label::DiskOps{requests: req_map, responses: Map::empty()})
-        // TODO: doesn't exist
-        &&& req_map.to_multiset() == reqs
+        &&& map_to_multiset(req_map) == reqs
         &&& resps.is_empty()
         &&& post == Self {
             cache: post.cache,
@@ -314,8 +355,7 @@ impl AtomicState {
     pub open spec fn cache_io_end(pre: Self, post: Self, resp_map: Map<ID, DiskResponse>, reqs: Multiset<(ID, DiskRequest)>, resps: Multiset<(ID, DiskResponse)>) -> bool
     {
         &&& Cache::State::next(pre.cache, post.cache, Cache::Label::DiskOps{requests: Map::empty(), responses: resp_map})
-        // TODO: doesn't exist
-        &&& resp_map.to_multiset() == resps
+        &&& map_to_multiset(resp_map) == resps
         &&& reqs.is_empty()
         &&& post == Self {
             cache: post.cache,
@@ -323,47 +363,81 @@ impl AtomicState {
         }
     }
 
-    pub open spec fn execute_sync_begin(pre: Self, post: Self, req_id: ID, req: DiskRequest, sync_map: bool, reqs: Multiset<(ID, DiskRequest)>, resps: Multiset<(ID, DiskResponse)>) -> bool
+    // superblock sync
+    pub open spec fn execute_sync_begin(pre: Self, post: Self, 
+        req_id: ID, req: DiskRequest, reqs: Multiset<(ID, DiskRequest)>, resps: Multiset<(ID, DiskResponse)>, 
+        frozen_journal: JournalSnapShot, frozen_seq_end: LSN, frozen_domain: Set<Address>, reads: Map<Address, RawPage>) -> bool
     {
-        let sb = pre.sync_sb(sync_map);
+        let map_lbl = AbstractCrashAwareMap::Label::CommitStartLabel{new_boundary_lsn: frozen_journal.boundary_lsn};
+        let cache_lbl1 = Cache::Label::Access{reads: reads, writes: Map::empty()};
+        let cache_lbl2 = Cache::Label::EvictableCheck{addrs: frozen_domain};
+        let journal_lbl = CachedJournal::Label::FreezeForCommit{frozen: frozen_journal, frozen_seq_end, frozen_domain, reads: to_journal_reads(reads)};
+
+        let sb = Superblock{
+            store: pre.in_flight_map(),
+            journal: frozen_journal,
+        };
+
+        // superblock writes
         let inflight_info = InflightInfo{
-            new_persistent_map: sb.store,
-            journal_version: pre.journal.journal.seq_end,
+            journal_version: frozen_seq_end,
             req_id
         };
 
         &&& pre.client_ready()
         &&& pre.in_flight is None
 
-        // requirement in checking freeze as
-        // TODO
+        // checks that map has been frozen
+        &&& AbstractCrashAwareMap::State::next(pre.store, post.store, map_lbl)
+
+        // checks that frozen journal has been flushed
+        &&&  Cache::State::next(pre.cache, post.cache, cache_lbl1)
+        &&& Cache::State::next(pre.cache, post.cache, cache_lbl2)
+        &&& CachedJournal::State::next(pre.journal, post.journal, journal_lbl)
 
         &&& req is WriteReq
         &&& req->to == spec_superblock_addr()
         &&& DiskLayout::spec_new().spec_parse(req->data) == sb
         &&& reqs == Multiset::singleton((req_id, req))
-
         &&& resps.is_empty()
-
-        &&& post == Self{ in_flight: Some(inflight_info), .. pre }
+        &&& post == Self{ 
+            store: post.store,
+            cache: post.cache,
+            journal: post.journal,
+            in_flight: Some(inflight_info), 
+            .. pre}
     }
 
-    pub open spec fn execute_sync_end(pre: Self, post: Self, reqs: Multiset<(ID, DiskRequest)>, resps: Multiset<(ID, DiskResponse)>) -> bool
+    pub open spec fn execute_sync_end(pre: Self, post: Self, reqs: Multiset<(ID, DiskRequest)>, resps: Multiset<(ID, DiskResponse)>,
+        discard_addrs: Set<Address>) -> bool
     {
+        let map_lbl = AbstractCrashAwareMap::Label::CommitCompleteLabel{};
+        let journal_lbl = CachedJournal::Label::DiscardOld{
+            start_lsn: post.persistent_map().seq_end,
+            require_end: post.ephemeral_map().seq_end, // requires journal to still line up with ephemeral map, might not be needed
+            discard_addrs,
+        };
+        let cache_lbl = Cache::Label::EvictableCheck{addrs: discard_addrs};
+
         &&& pre.client_ready()
         &&& pre.in_flight is Some 
         &&& reqs.is_empty()
         &&& resps == Multiset::singleton((pre.in_flight.unwrap().req_id, DiskResponse::WriteResp{}))
 
-        &&& {
-            let new_persistent_map = pre.in_flight.unwrap().new_persistent_map;
-            &&& post == Self{
-                recovery_state: RecoveryState::RecoveryComplete,
-                persistent_map: new_persistent_map,
-                journal: AbstractJournal::State{ journal: pre.journal.journal.discard_old(new_persistent_map.seq_end) },
-                in_flight: None,
-                ..pre
-            }
+        // map state shifts from persistent to in flight
+        &&& AbstractCrashAwareMap::State::next(pre.store, post.store, map_lbl)
+        // journal truncates if necessary
+        &&& CachedJournal::State::next(pre.journal, post.journal, journal_lbl)
+        // cache checks that discarded pages are now evictable
+        &&& Cache::State::next(pre.cache, post.cache, cache_lbl)
+
+        &&& post == Self{
+            store: post.store,
+            journal: post.journal,
+            cache: post.cache,
+            persistent_journal_seq_end: pre.in_flight.unwrap().journal_version,
+            in_flight: None,
+            ..pre
         }
     }
 
@@ -371,26 +445,14 @@ impl AtomicState {
     {
         match disk_event {
             DiskEvent::InitiateRecovery{req_id} => Self::initiate_recovery(pre, post, reqs, resps, req_id),
-            DiskEvent::CompleteRecovery{req_id, raw_page} => Self::complete_recovery(pre, post, reqs, resps, req_id, raw_page),
-            DiskEvent::ExecuteSyncBegin{req_id, req, sync_map} => Self::execute_sync_begin(pre, post, req_id, req, sync_map, reqs, resps),
-            DiskEvent::ExecuteSyncEnd{} => Self::execute_sync_end(pre, post, reqs, resps),
+            DiskEvent::SuperblockRecovery{req_id, raw_page} => Self::superblock_recovery(pre, post, reqs, resps, req_id, raw_page),
+            DiskEvent::ExecuteSyncBegin{req_id, req, frozen_journal, frozen_seq_end, frozen_domain, reads} 
+                => Self::execute_sync_begin(pre, post, req_id, req, reqs, resps, frozen_journal, frozen_seq_end, frozen_domain, reads),
+            DiskEvent::ExecuteSyncEnd{discard_addrs} => Self::execute_sync_end(pre, post, reqs, resps, discard_addrs),
             DiskEvent::CacheIOBegin{req_map} => Self::cache_io_begin(pre, post, req_map, reqs, resps),
             DiskEvent::CacheIOEnd{resp_map} => Self::cache_io_end(pre, post, resp_map, reqs, resps),
         }
     }
-
-    // TODO delete dead code
-//     pub closed spec fn disk_transition_system_assumptions(disk_event: DiskEvent) -> bool
-//     {
-//         match disk_event {
-//             DiskEvent::CompleteRecovery{req_id, raw_page} => {
-//                 // remember that superblock invariant survives disk
-//                 let superblock = DiskLayout::spec_new().spec_parse(raw_page);
-//                 superblock.store.appv.invariant()
-//             },
-//             _ => { true },
-//         }
-//     }
 
     // NOTE: silly internal op for now
     pub open spec fn internal_transitions(pre: Self, post: Self) -> bool
@@ -399,51 +461,29 @@ impl AtomicState {
         &&& pre.client_ready()
     }
 
-    // Just the ephemeral map
-    pub open spec fn mapspec(self) -> MapSpec::State {
-        MapSpec::State{ kmmap: self.map.stamped_map.value }
-    }
+    // pub open spec(checked) fn in_flight_sb(self) -> Superblock
+    // recommends
+    //     self.wf(),
+    //     self.client_ready(),
+    //     self.in_flight is Some,
+    // {
+    //     let inf = self.in_flight.unwrap();
+    //     Superblock{
+    //         store: inf.new_persistent_map,
+    //         journal: self.journal.journal.discard_old(inf.new_persistent_map.seq_end).discard_recent(inf.journal_version),
+    //     }
+    // }
 
-    pub open spec(checked) fn sync_sb(self, sync_map: bool) -> Superblock
-    recommends
-        self.client_ready(),
-    {
-        if sync_map {
-            Superblock{
-                store: self.map.stamped_map,
-                journal: MsgHistory::empty_history_at(self.map.stamped_map.seq_end),
-            }
-        } else {
-            Superblock{
-                store: self.persistent_map,
-                journal: self.journal.journal,
-            }
-        }
-    }
-
-    pub open spec(checked) fn in_flight_sb(self) -> Superblock
-    recommends
-        self.wf(),
-        self.client_ready(),
-        self.in_flight is Some,
-    {
-        let inf = self.in_flight.unwrap();
-        Superblock{
-            store: inf.new_persistent_map,
-            journal: self.journal.journal.discard_old(inf.new_persistent_map.seq_end).discard_recent(inf.journal_version),
-        }
-    }
-
-    pub open spec(checked) fn persistent_sb(self) -> Superblock
-    recommends
-        self.wf(),
-        self.client_ready(),
-    {
-        Superblock{
-            store: self.persistent_map,
-            journal: self.journal.journal.discard_recent(self.persistent_journal_seq_end),
-        }
-    }
+    // pub open spec(checked) fn persistent_sb(self) -> Superblock
+    // recommends
+    //     self.wf(),
+    //     self.client_ready(),
+    // {
+    //     Superblock{
+    //         store: self.persistent_map,
+    //         journal: self.journal.journal.discard_recent(self.persistent_journal_seq_end),
+    //     }
+    // }
 }
 
 }//verus!

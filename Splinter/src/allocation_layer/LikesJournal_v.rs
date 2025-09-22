@@ -659,11 +659,20 @@ state_machine!{ LikesJournal {
     
     pub open spec(checked) fn wf(self) -> bool {
         &&& self.journal.wf()
+        // self.decodable(root),
     }
 
-    transition!{ read_for_recovery(lbl: Label) {
-        require lbl is ReadForRecovery;
-        require LinkedJournal_v::LinkedJournal::State::next(pre.journal, pre.journal, Self::lbl_i(lbl));
+    transition!{ read_for_recovery(lbl: Label, depth: nat) {
+        require let Label::ReadForRecovery{messages} = lbl;
+        require messages.wf();
+
+        let tj = pre.journal.truncated_journal;
+        let dv = tj.disk_view;
+        require can_crop_index(pre.lsn_addr_index, dv.boundary_lsn, tj.freshest_rec, depth);
+
+        let ptr = pointer_after_crop_index(pre.lsn_addr_index, dv.boundary_lsn, tj.freshest_rec, depth);
+        require ptr is Some;
+        require messages == dv.entries[ptr.unwrap()].message_seq.maybe_discard_old(dv.boundary_lsn);
     } }
 
     transition!{ freeze_for_commit(lbl: Label, depth: nat) {
@@ -759,7 +768,7 @@ state_machine!{ LikesJournal {
     }
 
     #[inductive(read_for_recovery)]
-    fn read_for_recovery_inductive(pre: Self, post: Self, lbl: Label) {
+    fn read_for_recovery_inductive(pre: Self, post: Self, lbl: Label, depth: nat) {
     }
    
     #[inductive(freeze_for_commit)]
@@ -817,5 +826,77 @@ state_machine!{ LikesJournal {
     }
     
 } } // state_machine!
-        
+
+
+// utility functions
+
+pub open spec fn min_lsn(lsns: Set<LSN>) -> LSN
+    recommends !lsns.is_empty()
+    decreases lsns.len()
+{
+    if !lsns.finite() {
+        arbitrary()
+    } else {
+        let e = lsns.choose();
+        if lsns.remove(e).is_empty() { e } 
+        else { min(e as int, min_lsn(lsns.remove(e)) as int) as nat }
+    }
+}
+
+pub proof fn min_lsn_ensures(lsns: Set<LSN>)
+    requires !lsns.is_empty(), lsns.finite()
+    ensures 
+        lsns.contains(min_lsn(lsns)),
+        forall |lsn| #[trigger] lsns.contains(lsn) ==> min_lsn(lsns) <= lsn
+    decreases lsns.len()
+{
+    let e = lsns.choose();
+    if !lsns.remove(e).is_empty() {
+        let result = min_lsn(lsns);
+        min_lsn_ensures(lsns.remove(e));
+    }
+}
+
+pub open spec fn addr_to_lsns(index: LsnAddrIndex, addr: Address, bdy: LSN) -> Set<LSN>
+{
+    Set::new(|lsn| bdy <= lsn && index.contains_key(lsn) && index[lsn] == addr)
+}
+
+pub open spec(checked) fn next_index(index: LsnAddrIndex, bdy: LSN, ptr: Pointer) -> Pointer
+    recommends ptr is Some
+{
+    let lsns = addr_to_lsns(index, ptr.unwrap(), bdy);
+    if !lsns.is_empty() {
+        let min = min_lsn(lsns);
+        let prior_lsn = (min - 1) as nat;
+        if min > 0 && bdy <= prior_lsn && index.contains_key(prior_lsn) {
+            Some(index[prior_lsn])
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
+pub open spec fn can_crop_index(index: LsnAddrIndex, bdy: LSN, root: Pointer, depth: nat) -> bool
+    decreases depth
+{
+    0 < depth ==> {
+        &&& root is Some
+        &&& can_crop_index(index, bdy, next_index(index, bdy, root), (depth-1) as nat)
+    }
+}
+
+pub open spec(checked) fn pointer_after_crop_index(index: LsnAddrIndex, bdy: LSN, root: Pointer, depth: nat) -> Pointer
+    recommends can_crop_index(index, bdy, root, depth)
+    decreases depth
+{
+    if depth == 0 { root }
+    else { 
+        let next_ptr = next_index(index, bdy, root);
+        pointer_after_crop_index(index, bdy, next_ptr, (depth-1) as nat) 
+    }
+}
+
 } // verus!

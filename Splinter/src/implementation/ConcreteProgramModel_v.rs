@@ -33,7 +33,8 @@ impl ProgramModelTrait for ConcreteProgramModel {
 
     open spec fn init(pre: Self) -> bool
     {
-        &&& pre.state == AtomicState::init()
+        // NOTE: is this disgusting?
+        (exists |slots: nat| pre.state == AtomicState::init(slots))
     }
 
     open spec fn next(pre: Self, post: Self, lbl: ProgramLabel) -> bool

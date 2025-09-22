@@ -39,20 +39,22 @@ pub open spec(checked) fn singleton_floating_seq(at_index: nat, kmmap: TotalKMMa
 impl Superblock {
     pub open spec fn wf(self) -> bool
     {
-        &&& self.store.seq_end == self.journal.seq_start
-        &&& self.journal.wf()
+        true
+        // &&& self.store.seq_end == self.journal.seq_start
+        // &&& self.journal.wf()
     }
 
-    pub open spec fn initial_history(self) -> FloatingSeq<PersistentState>
-    {
-        let sm = self.journal.apply_to_stamped_map(self.store);
-        singleton_floating_seq(sm.seq_end, sm.value)
-    }
+    // TODO: rethink about these
+    // pub open spec fn initial_history(self) -> FloatingSeq<PersistentState>
+    // {
+    //     let sm = self.journal.apply_to_stamped_map(self.store);
+    //     singleton_floating_seq(sm.seq_end, sm.value)
+    // }
 
-    pub open spec fn version_index(self) -> LSN
-    {
-        self.journal.seq_end
-    }
+    // pub open spec fn version_index(self) -> LSN
+    // {
+    //     self.journal.seq_end
+    // }
 }
 
 pub struct ASuperblock {
@@ -83,12 +85,12 @@ impl ASuperblock {
         )
     }
 
-    pub open spec fn store_stamped_map(self) -> StampedMap
-    {
-        let value_map = VecMap::seq_to_map(self.store);
-        let total_map = Self::map_to_kmmap(value_map);
-        StampedMap{value: total_map, seq_end: self.journal@.seq_start}
-    }
+    // pub open spec fn store_stamped_map(self) -> StampedMap
+    // {
+    //     let value_map = VecMap::seq_to_map(self.store);
+    //     let total_map = Self::map_to_kmmap(value_map);
+    //     StampedMap{value: total_map, seq_end: self.journal@.seq_start}
+    // }
 
     // TODO dead code
 //     pub open spec fn final_stamped_map(self) -> StampedMap
@@ -108,10 +110,11 @@ impl View for ASuperblock {
 
     open spec fn view(&self) -> Self::V
     {
-        Superblock{
-            store: self.store_stamped_map(),
-            journal: self.journal@,
-        }
+        arbitrary()
+        // Superblock{
+        //     store: self.store_stamped_map(),
+        //     journal: self.journal@,
+        // }
     }
 }
 

@@ -60,6 +60,16 @@ state_machine!{ Cache {
         DiskOps{requests: Map<ID, DiskRequest>, responses: Map<ID, DiskResponse>},
         Internal,
     }
+    
+    pub open spec fn empty(slots: nat) -> Self
+    {
+        Cache::State{
+            entries: Map::new(|i: Slot| i < slots , |i| Entry::Empty),
+            status_map: Map::new(|i: Slot| i < slots , |i| Status::NotFilled),
+            lookup_map: Map::empty(),
+            outstanding_reqs: Map::empty(),
+        }
+    }
 
     pub open spec fn valid_read(self, addr: Address, data: RawPage) -> bool 
     {

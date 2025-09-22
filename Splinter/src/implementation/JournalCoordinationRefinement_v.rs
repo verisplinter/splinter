@@ -68,7 +68,7 @@ impl JournalCoordinationSystem::State {
     // TODO(JL): this almost feels like something we should have adopted in likesjournal
     pub proof fn next_index_refines(self, ptr: Pointer)
         requires 
-            self.inv(), 
+            self.inv(),
             ptr is Some,
             self.ephemeral_disk().is_nondangling_pointer(ptr),
         ensures ({
