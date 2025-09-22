@@ -96,8 +96,10 @@ state_machine!{ CachedJournal {
     #[invariant]
     pub open spec(checked) fn wf(self) -> bool
     {
-        &&& self.seq_start() <= self.seq_end()
-        &&& self.status is Some ==> self.status.unwrap().unmarshalled_tail.wf()
+        self.status is Some ==> {
+            &&& self.seq_start() <= self.seq_end()
+            &&& self.status.unwrap().unmarshalled_tail.wf()
+        }
     }
 
     pub open spec(checked) fn seq_start(self) -> LSN
@@ -106,16 +108,19 @@ state_machine!{ CachedJournal {
     }
 
     pub open spec(checked) fn marshalled_seq_end(self) -> LSN
+    recommends self.status is Some
     {
         self.status.unwrap().unmarshalled_tail.seq_start
     }
 
     pub open spec(checked) fn seq_end(self) -> LSN
+    recommends self.status is Some
     {
         self.status.unwrap().unmarshalled_tail.seq_end
     }
     
     pub open spec(checked) fn can_discard_to(self, lsn: LSN) -> bool
+    recommends self.status is Some
     {
         self.seq_start() <= lsn <= self.seq_end()
     }
@@ -262,13 +267,16 @@ state_machine!{ CachedJournal {
     fn load_index_inductive(pre: Self, post: Self, lbl: Label) { }
     
     #[inductive(initialize)]
-    pub fn initialize_inductive(post: Self, snapshot: JournalSnapShot) { }
+    pub fn initialize_inductive(post: Self, snapshot: JournalSnapShot) {
+    }
 
 }}
 
 impl CachedJournal::State {
     pub open spec(checked) fn next_index(self, ptr: Pointer) -> Pointer
-        recommends ptr is Some
+        recommends
+            self.status is Some,
+            ptr is Some,
     {
         let lsns = addr_to_lsns(self.status.unwrap().lsn_addr_index, ptr.unwrap(), self.snapshot.boundary_lsn);
         if !lsns.is_empty() {
@@ -294,7 +302,7 @@ impl CachedJournal::State {
     }
 
     pub open spec(checked) fn pointer_after_crop_index(self, root: Pointer, depth: nat) -> Pointer
-        recommends self.can_crop_index(root, depth)
+        recommends self.can_crop_index(root, depth), self.status is Some
         decreases depth
     {
         if depth == 0 { root }
