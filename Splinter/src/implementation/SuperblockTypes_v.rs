@@ -10,9 +10,11 @@ use crate::implementation::CachedJournal_v;
 use crate::marshalling::Marshalling_v::Parsedview;
 // use crate::marshalling::WF_v::WF;
 use crate::implementation::JournalTypes_v::*;
+use crate::implementation::JournalImpl_v;
 use crate::spec::TotalKMMap_t::*;
 use crate::abstract_system::MsgHistory_v::MsgHistory;
 use crate::abstract_system::StampedMap_v::*;
+use crate::implementation::CachedJournal_v::JournalSnapShot;
 
 verus! {
 
@@ -59,7 +61,7 @@ impl Superblock {
 
 pub struct ASuperblock {
     pub store: ARawStore,
-    pub journal: AJournal,
+    pub journal: JournalSnapShot,
     // need version so recovery knows the shape of the (mostly-empty) history to reconstruct (the LSN)
     // Wait no this is dumb; the journal contains its start LSN, which must match the store's LSN.
 //     pub version_index: u64,
@@ -67,7 +69,7 @@ pub struct ASuperblock {
 
 impl ASuperblock {
     pub open spec fn wf(self) -> bool {
-        &&& self.journal@.wf()
+//         &&& self.journal@.wf()   // dead code
         &&& VecMap::unique_keys(self.store)
     }
 
@@ -120,7 +122,7 @@ impl View for ASuperblock {
 
 #[derive(Debug)]
 pub struct ISuperblock {
-    pub journal: Journal,
+    pub journal_snapshot: JournalImpl_v::JournalSnapshot,
     pub store: RawStore,  // TODO: try
     // need version so recovery knows the shape of the (mostly-empty) history to reconstruct (the LSN)
     // pub version_index: u64,

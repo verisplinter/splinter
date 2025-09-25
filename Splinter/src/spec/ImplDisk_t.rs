@@ -18,6 +18,7 @@ pub type IAU = u32;
 
 pub type IPage = u32;
 
+#[derive(Debug, Copy, Clone)]
 pub struct IAddress {
     pub au: IAU,
     pub page: IPage,

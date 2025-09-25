@@ -10,6 +10,7 @@ use crate::spec::ImplDisk_t::*;
 use crate::implementation::SuperblockTypes_v::*;
 use crate::implementation::JournalTypes_v::*;
 use crate::implementation::CachedJournal_v::JournalSnapShot;
+use crate::implementation::JournalImpl_v;
 use crate::marshalling::ISuperblockFormat_v::*;
 use crate::marshalling::Marshalling_v::*;
 use crate::marshalling::Slice_v::*;
@@ -144,8 +145,11 @@ impl DiskLayout {
     pub exec fn exec_mkfs(&self) -> (out: Vec<u8>)
     requires self.wf()
     {
-        let journal = Journal{ msg_history: vec![], seq_start: 0 };
-        let sb = ISuperblock { journal, store: vec![] };
+        let journal_snapshot = JournalImpl_v::JournalSnapshot {
+            boundary_lsn: 0,
+            freshest_rec: None,
+        };
+        let sb = ISuperblock { journal_snapshot, store: vec![] };
         self.marshall(&sb)
     }
 

@@ -131,10 +131,4 @@ impl Clone for Journal {
     }
 }
 
-
-struct JournalFormat {
-    ilsn_fmt: IntFormat::<ILsn>,
-    msg_history_fmt: ResizableUniformSizedElementSeqFormat<KeyedMessageFormat, u8>,
-}
-
 } //verus!

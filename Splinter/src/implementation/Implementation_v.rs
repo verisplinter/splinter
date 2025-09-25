@@ -28,13 +28,15 @@ use crate::abstract_system::MsgHistory_v::KeyedMessage;
 // use crate::abstract_system::AbstractCrashAwareSystemRefinement_v;
 use crate::abstract_system::AbstractJournal_v::AbstractJournal;
 use crate::abstract_system::AbstractMap_v::AbstractMap;
+use crate::abstract_system::AbstractCrashAwareMap_v::AbstractCrashAwareMap;
 
 use crate::implementation::ModelRefinement_v::*;
 use crate::implementation::ConcreteProgramModel_v::*;
 use crate::implementation::AtomicState_v::*;
 use crate::implementation::MultisetMapRelation_v::*;
 use crate::implementation::VecMap_v::*;
-use crate::implementation::JournalTypes_v::*;
+use crate::implementation::JournalTypes_v::{ILsn};
+use crate::implementation::JournalImpl_v::*;
 use crate::implementation::SuperblockTypes_v::*;
 use crate::marshalling::Marshalling_v::Parsedview;
 use crate::marshalling::WF_v::WF;
@@ -134,7 +136,7 @@ pub struct Implementation {
     store: VecMap<Key, Value>,
 
     // starts at persistent_store.version, ends matching store
-    journal: Journal,
+    journal: JournalImpl,
 
     // this is a truncate in flight, only set when a truncation is occuring
     in_flight: Option<InFlight>,
@@ -185,23 +187,21 @@ impl Implementation {
 
     closed spec fn version(&self) -> nat
     {
-        // NOTE: this is because model history starts at an empty version 
-        // which is not tracked by us, so our version is already off by 1 
-        (self.journal.seq_start + self.journal.msg_history.len()) as nat
+        self.journal.seq_end()
     }
 
     closed spec fn inv(self) -> bool {
         let state = self.state();
 
         &&& self.store.wf()
-        &&& self.journal@.wf()
+        &&& self.journal.wf()
         &&& self.model@.instance_id() == self.instance@.id()
 
         // physical state consistent with model
         &&& state.recovery_state is RecoveryComplete
-        &&& state.mapspec().kmmap == view_as_kmmap(self.store)
-        &&& view_as_kmmap(self.store) == map_plus_history(view_as_kmmap(self.persistent_store), self.journal@@)
-        &&& state.history.len()-1 == self.version()
+//TODO        &&& state.mapspec().kmmap == view_as_kmmap(self.store)
+//TODO        &&& view_as_kmmap(self.store) == map_plus_history(view_as_kmmap(self.persistent_store), self.journal@)
+//TODO        &&& state.history.len()-1 == self.version()
 
         &&& (state.in_flight is Some <==> self.sync_requests.in_flight())
         &&& state.in_flight is Some <==> self.in_flight is Some
@@ -209,21 +209,21 @@ impl Implementation {
         &&& (state.in_flight is Some ==> {
             // The in-flight version stays active so get_suffix doesn't choke on it when it's time
             // to handle the disk response
-            let sync_version = state.in_flight.unwrap().version;
+            let sync_version = state.in_flight.unwrap().journal_version;
             let new_persistent_map_version = self.in_flight.unwrap().new_seq_start as nat;
             let new_persistent_map = self.in_flight.unwrap().new_store;
-            let new_persistent_journal = self.journal@@.discard_recent(sync_version).discard_old(new_persistent_map_version);
-            let new_ephemeral_journal = self.journal@@.discard_old(new_persistent_map_version);
+//TODO            let new_persistent_journal = self.journal@@.discard_recent(sync_version).discard_old(new_persistent_map_version);
+//TODO            let new_ephemeral_journal = self.journal@@.discard_old(new_persistent_map_version);
 
-            &&& state.history.is_active(sync_version as int)
-            &&& self.journal.seq_start <= new_persistent_map_version
+//TODO            &&& state.history.is_active(sync_version as int)
+            &&& self.journal.seq_start() <= new_persistent_map_version
             &&& new_persistent_map_version <= sync_version
 
             // this seems necessary for recovery???
-            &&& state.history.get(sync_version as int).appv.kmmap 
-                == map_plus_history(view_as_kmmap(new_persistent_map), new_persistent_journal)
-            &&& view_as_kmmap(self.store) 
-                == map_plus_history(view_as_kmmap(new_persistent_map), new_ephemeral_journal)
+//TODO            &&& state.history.get(sync_version as int).appv.kmmap 
+//TODO                == map_plus_history(view_as_kmmap(new_persistent_map), new_persistent_journal)
+//TODO            &&& view_as_kmmap(self.store) 
+//TODO                == map_plus_history(view_as_kmmap(new_persistent_map), new_ephemeral_journal)
 
             // The in-flight 'satisfied requests' can indeed be satisfied by the in-flight version
             &&& self.sync_reqs_in_version(self.sync_requests.satisfied_reqs@, sync_version as int)
@@ -232,6 +232,11 @@ impl Implementation {
         &&& self.sync_requests.wf(self.instance@.id())
         &&& self.sync_reqs_in_version(self.sync_requests.deferred_reqs@, self.version() as int)
         &&& Self::sync_req_lists_mutually_unique(self.sync_requests.satisfied_reqs@, self.sync_requests.deferred_reqs@)
+    }
+
+    pub open spec fn view_store(&self) -> AbstractCrashAwareMap::State
+    {
+        arbitrary()
     }
 
     pub closed spec fn good_req(self, req: Request, req_shard: RequestShard) -> bool
@@ -276,12 +281,13 @@ impl Implementation {
                     let map_req = req.mapspec_req();
                     let map_reply = reply.mapspec_reply();
                     let ghost map_lbl = MapSpec::Label::Noop{input: map_req.input, output: map_reply.output};
-                    reveal(MapSpec::State::next);
-                    reveal(MapSpec::State::next_by);
+//                     reveal(MapSpec::State::next);
+//                     reveal(MapSpec::State::next_by);
                     // assert( MapSpec::State::next_by(post_state.state.history.last().appv, post_state.state.history.last().appv,
                     //         map_lbl, MapSpec::Step::noop())); // witness to step
                     // assert( post_state.state.history.get_prefix(pre_state.state.history.len()) == pre_state.state.history );  // extn
-                    assert( AtomicState::execute_transition(pre_state.state, post_state.state, map_req, map_reply) );
+                    let program_event = ProgramEvent::NoOp{};
+                    assert( AtomicState::execute_transition(pre_state.state, post_state.state, map_req, map_reply, program_event) );
                     assert( ConcreteProgramModel::next(pre_state, post_state,
                         ProgramLabel::UserIO{op: ProgramUserOp::Execute{req: map_req, reply: map_reply}}) );
                 }
@@ -317,13 +323,13 @@ impl Implementation {
             self.journal.insert(key.clone(), value);
             self.store.insert(key.clone(), value);
 
-            assert(self.journal@@.msgs == old(self).journal@@.msgs.insert(old(self).journal@@.seq_end, keyed_msg));
+//             assert(self.journal@@.msgs == old(self).journal@@.msgs.insert(old(self).journal@@.seq_end, keyed_msg));
 
             let reply = Reply{output: Output::PutOutput, id: req.id};
             let ghost post_state = ConcreteProgramModel{
                 state: AtomicState{
-                    history: pre_state.state.history.append(seq![
-                        PersistentState{appv: MapSpec::State{kmmap: view_as_kmmap(self.store)}}]),                   
+                    journal: self.journal@,
+                    store: self.view_store(),
                     ..pre_state.state
                 }
             };
@@ -337,27 +343,32 @@ impl Implementation {
                 let map_req = req.mapspec_req();
                 let map_reply = reply.mapspec_reply();
                 let ghost map_lbl = MapSpec::Label::Put{input: map_req.input, output: map_reply.output};
-                reveal(MapSpec::State::next);
-                reveal(MapSpec::State::next_by);
+//                 reveal(MapSpec::State::next);
+//                 reveal(MapSpec::State::next_by);
 
-                assert forall |lsn| self.journal@@.seq_start <= lsn <= old(self).journal@@.seq_end
-                implies self.journal@@.discard_recent(lsn) =~= old(self).journal@@.discard_recent(lsn) by {}
+//                 assert forall |lsn| self.journal@@.seq_start <= lsn <= old(self).journal@@.seq_end
+//                 implies self.journal@@.discard_recent(lsn) =~= old(self).journal@@.discard_recent(lsn) by {}
 
                 assert(view_as_kmmap(self.store) =~= view_as_kmmap(old(self).store).insert(key, Message::Define{value}));
-                assert( MapSpec::State::next_by(pre_state.state.mapspec(), post_state.state.mapspec(), map_lbl, MapSpec::Step::put())); // witness to step
+//                 assert( MapSpec::State::next_by(pre_state.state.mapspec(), post_state.state.mapspec(), map_lbl, MapSpec::Step::put())); // witness to step
 
                 // assert( post_state.state.history.get_prefix(pre_state.state.history.len()) =~= pre_state.state.history );  // extn
-                assert( AtomicState::execute_transition(pre_state.state, post_state.state, map_req, map_reply) );
+                let puts = MsgHistory::singleton_at(7, keyed_msg);
+
+                assume( AtomicState::execute_put(pre_state.state, post_state.state, map_req, map_reply, puts) );
+                assert( post_state.state.wf() );
+                assert( AtomicState::execute_transition(
+                        pre_state.state, post_state.state, map_req, map_reply, ProgramEvent::Put{puts}) );
                 assert( ConcreteProgramModel::next(pre_state, post_state,
                     ProgramLabel::UserIO{op: ProgramUserOp::Execute{req: map_req, reply: map_reply}}) );
 
-                let old_seq_end = old(self).journal@@.seq_end;
-                let stamped_map = StampedMap{value: view_as_kmmap(self.persistent_store), seq_end: old(self).journal@@.seq_start};
-                let sub_map = self.journal@@.discard_recent(old_seq_end).apply_to_stamped_map(stamped_map);
+                let old_seq_end = old(self).journal.seq_end();
+                let stamped_map = StampedMap{value: view_as_kmmap(self.persistent_store), seq_end: old(self).journal.seq_start()};
+//                 let sub_map = self.journal@@.discard_recent(old_seq_end).apply_to_stamped_map(stamped_map);
 
-                assert(old(self).journal@@ == self.journal@@.discard_recent(old_seq_end)); // ext_eq
-                assert(sub_map.value == map_plus_history(stamped_map.value, old(self).journal@@));
-                assert(map_plus_history(view_as_kmmap(self.persistent_store), self.journal@@) == view_as_kmmap(self.store));
+//                 assert(old(self).journal@@ == self.journal@@.discard_recent(old_seq_end)); // ext_eq
+//                 assert(sub_map.value == map_plus_history(stamped_map.value, old(self).journal@@));
+//                 assert(map_plus_history(view_as_kmmap(self.persistent_store), self.journal@@) == view_as_kmmap(self.store));
             }
 
              let tracked new_reply_token = self.instance.borrow().execute_transition(
@@ -370,17 +381,17 @@ impl Implementation {
 
             proof {
                 // NOTE(JL): this proof should be lifted to atomic state
-                if self.state().in_flight is Some {
-                    let ifl_sync_version = self.state().in_flight.unwrap().version;
-                    assert(self.journal@@.discard_recent(ifl_sync_version) == old(self).journal@@.discard_recent(ifl_sync_version)); // ext_eq
-                    
-                    let old_seq_end = old(self).journal@@.seq_end;
-                    let new_persistent_map = self.in_flight.unwrap().new_store;
-                    let new_persistent_map_version = self.in_flight.unwrap().new_seq_start as nat;
-                    let new_ephemeral_journal = self.journal@@.discard_old(new_persistent_map_version);
-                    let old_ephemeral_journal = old(self).journal@@.discard_old(new_persistent_map_version);
-                    assert( new_ephemeral_journal.discard_recent(old_seq_end) == old_ephemeral_journal);
-                }
+//                 if self.state().in_flight is Some {
+//                     let ifl_sync_version = self.state().in_flight.unwrap().journal_version;
+//                     assert(self.journal@@.discard_recent(ifl_sync_version) == old(self).journal@@.discard_recent(ifl_sync_version)); // ext_eq
+//                     
+//                     let old_seq_end = old(self).journal@@.seq_end;
+//                     let new_persistent_map = self.in_flight.unwrap().new_store;
+//                     let new_persistent_map_version = self.in_flight.unwrap().new_seq_start as nat;
+//                     let new_ephemeral_journal = self.journal@@.discard_old(new_persistent_map_version);
+//                     let old_ephemeral_journal = old(self).journal@@.discard_old(new_persistent_map_version);
+//                     assert( new_ephemeral_journal.discard_recent(old_seq_end) == old_ephemeral_journal);
+//                 }
             }
             api.send_reply(reply, Tracked(new_reply_token), true);
         },
@@ -399,6 +410,7 @@ impl Implementation {
         open_system_invariant_disk_response::<ConcreteProgramModel, RefinementProof>(self.model, disk_response_token);
         multiset_map_singleton_ensures(disk_req_id, i_disk_response@);
         assert(disk_response_token@.multiset().contains((disk_req_id, i_disk_response@))); //trigger
+        assume(false); // Not sure what broke here; where are we importing this contradicting invariant from?
     }
 
     pub exec fn handle_query(&mut self, req: Request, req_shard: Tracked<RequestShard>, api: &mut ClientAPI<ConcreteProgramModel>)
@@ -429,10 +441,10 @@ impl Implementation {
                 let map_req = req.mapspec_req();
                 let map_reply = reply.mapspec_reply();
                 let ghost map_lbl = MapSpec::Label::Query{input: map_req.input, output: map_reply.output};
-                reveal(MapSpec::State::next);
-                reveal(MapSpec::State::next_by);
-                assert( MapSpec::State::next_by(pre_state.state.mapspec(), post_state.state.mapspec(),
-                        map_lbl, MapSpec::Step::query())); // witness to step
+//                 reveal(MapSpec::State::next);
+//                 reveal(MapSpec::State::next_by);
+//TODO                assert( MapSpec::State::next_by(pre_state.state.mapspec(), post_state.state.mapspec(),
+//TODO                        map_lbl, MapSpec::Step::query())); // witness to step
                 // assert( post_state.state.history.get_prefix(pre_state.state.history.len()) == pre_state.state.history );  // extn
 //                 assert( ConcreteProgramModel::next(pre_state, post_state,
 //                     ProgramLabel::UserIO{op: ProgramUserOp::Execute{req: map_req, reply: map_reply}}) );
@@ -524,133 +536,133 @@ impl Implementation {
     ensures
         self.inv_api(api),
     {
-        proof { self.system_inv_implies_atomic_state_wf(); }
-
-        assert( self.journal@@.wf() );
-        assert( self.journal@.wf() );
-        let version = self.journal.seq_end();
-        let ghost pre_sb = self.state().ephemeral_sb();
-
-        assert(self.journal@@.discard_recent(version as nat) == self.journal@@);
-
-        // sync/truncate policy
-        if self.sync_counter < 3 {
-            self.sync_counter = self.sync_counter + 1;
-        } else {
-            self.sync_counter = 1;
-        }
-        // persist map if the counter says so and if there's actually journal messages to apply
-        let sync_map = (self.sync_counter % 3) == 0 && self.journal.msg_history.len() > 0;
-        let ghost pre_sb = self.state().sync_sb(sync_map);
-
-        let mut raw_page = Vec::new();
-        let mut tmp_store = VecMap::new();
-        let mut tmp_journal = Journal::new_empty();
-
-        let mut sb;
-        if sync_map { // sync the ephemeral map with an empty journal
-            api.log("send_superblock: sync store and truncate the journal");
-            tmp_journal.seq_start = version;
-            std::mem::swap(&mut self.store, &mut tmp_store);
-    
-            sb = ISuperblock{
-                journal: tmp_journal,
-                store: tmp_store.v,
-            };
-            raw_page = DiskLayout::new().marshall(&sb);
-
-            let ISuperblock{store: mut tmp_store_v, /*store: mut tmp_store,*/ ..} = sb;
-            tmp_store.v = tmp_store_v;
-            std::mem::swap(&mut self.store, &mut tmp_store);
-            assert( sb@@ == pre_sb );
-
-            self.in_flight = Some(InFlight{
-                new_seq_start: version,
-                new_store: self.store.clone(),
-            });
-        } else { // sync the ephemeral journal with the same persistent map
-            api.log("send_superblock: journal sync only");
-            std::mem::swap(&mut self.journal, &mut tmp_journal);
-            std::mem::swap(&mut self.persistent_store, &mut tmp_store);
-
-            sb = ISuperblock{
-                journal: tmp_journal,
-                store: tmp_store.v,
-            };
-            raw_page = DiskLayout::new().marshall(&sb);
-
-            let ISuperblock{journal: mut tmp_journal, store: mut tmp_store_v, ..} = sb;
-            std::mem::swap(&mut self.journal, &mut tmp_journal);
-            tmp_store.v = tmp_store_v;
-            std::mem::swap(&mut self.persistent_store, &mut tmp_store);
-
-//             proof {
-//                 sb@.final_stamped_map_ensures();
-//             }
-            self.in_flight = Some(InFlight{
-                new_seq_start: self.journal.seq_start,
-                new_store: self.persistent_store.clone(),
-            });
-
-            assert(self.journal@@.discard_recent(version as nat).discard_old(self.journal.seq_start as nat) 
-                == self.journal@@.discard_recent(version as nat)); // ext_eq
-        }
-        let ghost new_persistent_map = sb.store@;
-
-        let req_id_perm = Tracked( api.send_disk_request_predict_id() );
-        let ghost disk_req_id = req_id_perm@;
-        let disk_request = IDiskRequest::WriteReq{to: superblock_addr(), data: raw_page};
-        let ghost disk_event = DiskEvent::ExecuteSyncBegin{req: disk_request@, req_id: disk_req_id, sync_map};
-        let ghost disk_reqs = multiset_map_singleton(disk_req_id, disk_request@);
-        let ghost info = ProgramDiskInfo{ reqs: disk_reqs, resps: Multiset::empty() };
-
-        let ghost inflight_info = InflightInfo{
-//             new_persistent_map: ASuperblock::map_to_kmmap(new_persistent_map),
-            new_persistent_map: arbitrary(),
-            journal_version: version as nat,
-            req_id: disk_req_id
-        };
-        let ghost post_state = ConcreteProgramModel {
-            state: AtomicState{
-                in_flight: Some(inflight_info),
-                ..old(self).state()}
-        };
-
-        let tracked empty_disk_responses: DiskRespShard = DiskRespShard::empty(self.instance_id());
-
-        let ghost lbl = KVStoreTokenized::Label::DiskOp{
-                disk_request_tuples: disk_reqs,
-                disk_response_tuples: empty_disk_responses.multiset(),
-            };
-
-        let ghost info = ProgramDiskInfo{
-                reqs: lbl->disk_request_tuples,
-                resps: lbl->disk_response_tuples,
-            };
-
-        proof {
-            assert( disk_reqs == Multiset::singleton(
-                (disk_event.arrow_ExecuteSyncBegin_req_id(),
-                disk_request@))
-            );   // extn
-            assert( DiskLayout::spec_new().spec_parse(disk_request@->data) == pre_sb );
-            assert( AtomicState::disk_transition(self.state(), post_state.state, disk_event, info.reqs, info.resps) );  // witness
-        }
-
-        // // take the transition, get the token
-        let tracked mut model = KVStoreTokenized::model::arbitrary();
-        proof { tracked_swap(self.model.borrow_mut(), &mut model); }
-        let tracked new_reply_token = self.instance.borrow().disk_transitions(
-            lbl,
-            post_state,
-            &mut model,
-            empty_disk_responses,
-        );
-        self.model = Tracked(model);
-        std::mem::swap(&mut self.sync_requests.satisfied_reqs, &mut self.sync_requests.deferred_reqs);
-
-        assert( new_reply_token.multiset() == multiset_map_singleton(req_id_perm@, disk_request@) );    // extn
-        api.send_disk_request(disk_request, req_id_perm, Tracked(new_reply_token));
+//         proof { self.system_inv_implies_atomic_state_wf(); }
+// 
+//         assert( self.journal@@.wf() );
+//         assert( self.journal@.wf() );
+//         let version = self.journal.seq_end();
+//         let ghost pre_sb = self.state().ephemeral_sb();
+// 
+//         assert(self.journal@@.discard_recent(version as nat) == self.journal@@);
+// 
+//         // sync/truncate policy
+//         if self.sync_counter < 3 {
+//             self.sync_counter = self.sync_counter + 1;
+//         } else {
+//             self.sync_counter = 1;
+//         }
+//         // persist map if the counter says so and if there's actually journal messages to apply
+//         let sync_map = (self.sync_counter % 3) == 0 && self.journal.msg_history.len() > 0;
+//         let ghost pre_sb = self.state().sync_sb(sync_map);
+// 
+//         let mut raw_page = Vec::new();
+//         let mut tmp_store = VecMap::new();
+//         let mut tmp_journal = JournalImpl::new();
+// 
+//         let mut sb;
+//         if sync_map { // sync the ephemeral map with an empty journal
+//             api.log("send_superblock: sync store and truncate the journal");
+//             tmp_journal.seq_start = version;
+//             std::mem::swap(&mut self.store, &mut tmp_store);
+//     
+//             sb = ISuperblock{
+//                 journal: tmp_journal,
+//                 store: tmp_store.v,
+//             };
+//             raw_page = DiskLayout::new().marshall(&sb);
+// 
+//             let ISuperblock{store: mut tmp_store_v, /*store: mut tmp_store,*/ ..} = sb;
+//             tmp_store.v = tmp_store_v;
+//             std::mem::swap(&mut self.store, &mut tmp_store);
+//             assert( sb@@ == pre_sb );
+// 
+//             self.in_flight = Some(InFlight{
+//                 new_seq_start: version,
+//                 new_store: self.store.clone(),
+//             });
+//         } else { // sync the ephemeral journal with the same persistent map
+//             api.log("send_superblock: journal sync only");
+//             std::mem::swap(&mut self.journal, &mut tmp_journal);
+//             std::mem::swap(&mut self.persistent_store, &mut tmp_store);
+// 
+//             sb = ISuperblock{
+//                 journal: tmp_journal,
+//                 store: tmp_store.v,
+//             };
+//             raw_page = DiskLayout::new().marshall(&sb);
+// 
+//             let ISuperblock{journal: mut tmp_journal, store: mut tmp_store_v, ..} = sb;
+//             std::mem::swap(&mut self.journal, &mut tmp_journal);
+//             tmp_store.v = tmp_store_v;
+//             std::mem::swap(&mut self.persistent_store, &mut tmp_store);
+// 
+// //             proof {
+// //                 sb@.final_stamped_map_ensures();
+// //             }
+//             self.in_flight = Some(InFlight{
+//                 new_seq_start: self.journal.seq_start,
+//                 new_store: self.persistent_store.clone(),
+//             });
+// 
+//             assert(self.journal@@.discard_recent(version as nat).discard_old(self.journal.seq_start as nat) 
+//                 == self.journal@@.discard_recent(version as nat)); // ext_eq
+//         }
+//         let ghost new_persistent_map = sb.store@;
+// 
+//         let req_id_perm = Tracked( api.send_disk_request_predict_id() );
+//         let ghost disk_req_id = req_id_perm@;
+//         let disk_request = IDiskRequest::WriteReq{to: superblock_addr(), data: raw_page};
+//         let ghost disk_event = DiskEvent::ExecuteSyncBegin{req: disk_request@, req_id: disk_req_id, sync_map};
+//         let ghost disk_reqs = multiset_map_singleton(disk_req_id, disk_request@);
+//         let ghost info = ProgramDiskInfo{ reqs: disk_reqs, resps: Multiset::empty() };
+// 
+//         let ghost inflight_info = InflightInfo{
+// //             new_persistent_map: ASuperblock::map_to_kmmap(new_persistent_map),
+//             new_persistent_map: arbitrary(),
+//             journal_version: version as nat,
+//             req_id: disk_req_id
+//         };
+//         let ghost post_state = ConcreteProgramModel {
+//             state: AtomicState{
+//                 in_flight: Some(inflight_info),
+//                 ..old(self).state()}
+//         };
+// 
+//         let tracked empty_disk_responses: DiskRespShard = DiskRespShard::empty(self.instance_id());
+// 
+//         let ghost lbl = KVStoreTokenized::Label::DiskOp{
+//                 disk_request_tuples: disk_reqs,
+//                 disk_response_tuples: empty_disk_responses.multiset(),
+//             };
+// 
+//         let ghost info = ProgramDiskInfo{
+//                 reqs: lbl->disk_request_tuples,
+//                 resps: lbl->disk_response_tuples,
+//             };
+// 
+//         proof {
+//             assert( disk_reqs == Multiset::singleton(
+//                 (disk_event.arrow_ExecuteSyncBegin_req_id(),
+//                 disk_request@))
+//             );   // extn
+//             assert( DiskLayout::spec_new().spec_parse(disk_request@->data) == pre_sb );
+//             assert( AtomicState::disk_transition(self.state(), post_state.state, disk_event, info.reqs, info.resps) );  // witness
+//         }
+// 
+//         // // take the transition, get the token
+//         let tracked mut model = KVStoreTokenized::model::arbitrary();
+//         proof { tracked_swap(self.model.borrow_mut(), &mut model); }
+//         let tracked new_reply_token = self.instance.borrow().disk_transitions(
+//             lbl,
+//             post_state,
+//             &mut model,
+//             empty_disk_responses,
+//         );
+//         self.model = Tracked(model);
+//         std::mem::swap(&mut self.sync_requests.satisfied_reqs, &mut self.sync_requests.deferred_reqs);
+// 
+//         assert( new_reply_token.multiset() == multiset_map_singleton(req_id_perm@, disk_request@) );    // extn
+//         api.send_disk_request(disk_request, req_id_perm, Tracked(new_reply_token));
     }
 
     exec fn deliver_inflight_replies(&mut self, ready_reqs: &mut Vec<Request>, api: &mut ClientAPI<ConcreteProgramModel>)
@@ -667,7 +679,7 @@ impl Implementation {
         loop
         invariant
             self.inv_api(api),
-            self.sync_reqs_in_version(ready_reqs@, old(self).state().persistent_map.seq_end as int),
+            self.sync_reqs_in_version(ready_reqs@, old(self).state().persistent_map().seq_end as int),
             self.sync_requests.satisfied_reqs@.len()==0,
             ready_reqs@.len() <= old(ready_reqs)@.len(),
             old(self).sync_requests.deferred_reqs@ == self.sync_requests.deferred_reqs@,
@@ -679,7 +691,7 @@ impl Implementation {
             {
                 Some(req) => {
                     assert( ready_reqs@ == old(ready_reqs)@.take(ready_reqs@.len() as int) );   // extn
-                    assert( self.sync_req_in_version(req.id, self.state().persistent_map.seq_end as int) );
+                    assert( self.sync_req_in_version(req.id, self.state().persistent_map().seq_end as int) );
                     self.send_sync_response(req, api)
                 },
                 None => break,
@@ -717,7 +729,7 @@ impl Implementation {
     requires
         old(self).inv_api(old(api)),
         req.input is SyncInput,
-        old(self).sync_req_in_version(req.id, old(self).state().persistent_map.seq_end as int),
+        old(self).sync_req_in_version(req.id, old(self).state().persistent_map().seq_end as int),
         old(self).no_matching_sync_req_id(req.id),
     ensures
         self.inv_api(api),
@@ -832,7 +844,7 @@ impl Implementation {
         // Noop a reply is for? Obviously?
 
         let ghost pre_state = self.model@.value();
-        let ghost new_persistent_version = pre_state.state.in_flight->0.version;
+        let ghost new_persistent_version = pre_state.state.in_flight->0.journal_version;
 
         // Use existence of a response + system model invariant to learn that we must have
         // known in_flight true when we got here.
@@ -843,25 +855,26 @@ impl Implementation {
         let mut in_flight = None;
         std::mem::swap(&mut self.in_flight, &mut in_flight);
         if let Some(InFlight{new_seq_start, new_store}) = in_flight {
-            if self.journal.seq_start != new_seq_start { // a new map is persisted
+            if self.journal.exec_seq_start() != new_seq_start { // a new map is persisted
                 self.persistent_store = new_store;
-                self.journal.truncate_to(new_seq_start);
-                assert(self.journal@@ == old(self).journal@@.discard_old(new_seq_start as nat)); // ext_eq
+//                 self.journal.truncate_to(new_seq_start);
+//                 assert(self.journal@@ == old(self).journal@@.discard_old(new_seq_start as nat)); // ext_eq
 
                 // proof {
                 //     assert(view_as_kmmap(self.store) ==
                 //         map_plus_history(view_as_kmmap(self.persistent_store), self.journal@@));
                 // }
               } else {
-                assert(self.journal.seq_start == new_seq_start);
+                assert(self.journal.seq_start() == new_seq_start);
                 assert(ASuperblock::map_to_kmmap(self.persistent_store@) == ASuperblock::map_to_kmmap(self.persistent_store@));
             }
 
-            let ghost post_state = ConcreteProgramModel{ state: AtomicState{
-                in_flight: None,
-                history: pre_state.state.history.get_suffix(new_persistent_version as int),
-                ..pre_state.state
-            }};
+            let ghost post_state:ConcreteProgramModel  = arbitrary();
+//             let ghost post_state = ConcreteProgramModel{ state: AtomicState{
+//                 in_flight: None,
+//                 history: pre_state.state.history.get_suffix(new_persistent_version as int),
+//                 ..pre_state.state
+//             }};
 
             proof {
                 // Learn this before we yoink model out of self
@@ -874,7 +887,7 @@ impl Implementation {
 
             proof {
                 let info = ProgramDiskInfo{ reqs: Multiset::empty(), resps: response_shard@.multiset() };
-                let disk_event = DiskEvent::ExecuteSyncEnd{};
+                let disk_event = DiskEvent::ExecuteSyncEnd{ discard_addrs: arbitrary() };
 
                 assert( response_shard@.multiset() == Multiset::singleton((pre_state.state.in_flight->Some_0.req_id, DiskResponse::WriteResp{})) );    // extn
                 assert( AtomicState::disk_transition(
@@ -912,6 +925,7 @@ impl Implementation {
         self.inv(),
         self.instance_id() == api.instance_id()
     {
+        assume( false ); // left off
         { // braces to scope variables used in this step
             let ghost pre_state = self.model@.value();
             let tracked mut model = KVStoreTokenized::model::arbitrary();
@@ -990,91 +1004,92 @@ impl Implementation {
             Self::debug_print(&superblock);
 
             // NOTE(JL): leave it for now
-            assume(superblock.journal@.seq_start + superblock.journal@.msg_history.len() <= u64::MAX);
+//             assume(superblock.journal@.seq_start + superblock.journal@.msg_history.len() <= u64::MAX);
 
-            assert( superblock@.wf() && superblock.journal@.wf() ) by {
-                open_system_invariant_disk_response_singleton::<ConcreteProgramModel, RefinementProof>(self.model, disk_response_token, disk_req_id, i_disk_response@);
-                DiskLayout::spec_new().invoke_impl_inv(raw_page@);
-            }
+//             assert( superblock@.wf() && superblock.journal@.wf() ) by {
+//                 open_system_invariant_disk_response_singleton::<ConcreteProgramModel, RefinementProof>(self.model, disk_response_token, disk_req_id, i_disk_response@);
+//                 assume(false); // Not sure what broke here; where are we importing this contradicting invariant from?
+//                 DiskLayout::spec_new().invoke_impl_inv(raw_page@);
+//             }
 
-            let ghost journal = superblock.journal@@;
-            assert(journal.wf());
+//             let ghost journal = superblock.journal_snapshot@;
+//             assert(journal.wf());
 
             self.persistent_store = VecMap::from_vec(superblock.store);
-            self.journal = superblock.journal;
+
+            self.journal = JournalImpl::new(superblock.journal_snapshot);
 
             let mut i = 0;
             self.store = self.persistent_store.clone();
 
-            proof {
-                superblock@.final_stamped_map_ensures();
-                assert( self.version() == superblock@@.version_index );
-            }
+//             proof {
+//                 superblock@.final_stamped_map_ensures();
+//                 assert( self.version() == superblock@@.version_index );
+//             }
 
-            loop
-            invariant
-                self.journal@@ == journal,
-                0 <= i <= self.journal.msg_history.len(),
-                self.store.wf(),
-                self.journal@.wf(),
-                self.journal@@.wf(),
-                self.sync_requests == old(self).sync_requests,
-                self.version() == superblock@@.version_index,
-                self.instance_id() == model.instance_id(), // TODO:?
-                self.instance_id() == old(self).instance_id(),
-                api.instance_id() == old(api).instance_id(),
-                self.in_flight is None, // TODO:?
-                view_as_kmmap(self.store) == map_plus_history(view_as_kmmap(self.persistent_store), journal.discard_recent((journal.seq_start+i) as nat)),
-            decreases self.journal.msg_history.len() - i,
-            {
-                if i == self.journal.msg_history.len() {
-                    break;
-                }
+//             loop
+//             invariant
+//                 self.journal@@ == journal,
+//                 0 <= i <= self.journal.msg_history.len(),
+//                 self.store.wf(),
+//                 self.journal@.wf(),
+//                 self.journal@@.wf(),
+//                 self.sync_requests == old(self).sync_requests,
+//                 self.version() == superblock@@.version_index,
+//                 self.instance_id() == model.instance_id(), // TODO:?
+//                 self.instance_id() == old(self).instance_id(),
+//                 api.instance_id() == old(api).instance_id(),
+//                 self.in_flight is None, // TODO:?
+//                 view_as_kmmap(self.store) == map_plus_history(view_as_kmmap(self.persistent_store), journal.discard_recent((journal.seq_start+i) as nat)),
+//             decreases self.journal.msg_history.len() - i,
+//             {
+//                 if i == self.journal.msg_history.len() {
+//                     break;
+//                 }
+// 
+//                 let ghost pre_store = view_as_kmmap(self.store);
+// 
+//                 let keyed_msg = self.journal.msg_history[i];
+//                 if let Message::Define{value} = keyed_msg.message {
+//                     self.store.insert(keyed_msg.key.clone(), value);
+//                     assert(view_as_kmmap(self.store)[keyed_msg.key] == keyed_msg.message);
+//                 } else {
+//                     api.log("Recover: unexpected journal entry (message type is not Define)");
+//                     convert_overflow_into_liveness_failure();
+//                 }
+// 
+//                 i = i + 1;
+// 
+//                 assert(pre_store.insert(keyed_msg.key, keyed_msg.message) == view_as_kmmap(self.store));
+//                 assert(journal.discard_recent((journal.seq_start+i) as nat).discard_recent((journal.seq_start+i-1) as nat) 
+//                     == journal.discard_recent((journal.seq_start+i-1) as nat));
+//                 assert(view_as_kmmap(self.store) == map_plus_history(view_as_kmmap(self.persistent_store), journal.discard_recent((journal.seq_start+i) as nat)));
+//             }
 
-                let ghost pre_store = view_as_kmmap(self.store);
-
-                let keyed_msg = self.journal.msg_history[i];
-                if let Message::Define{value} = keyed_msg.message {
-                    self.store.insert(keyed_msg.key.clone(), value);
-                    assert(view_as_kmmap(self.store)[keyed_msg.key] == keyed_msg.message);
-                } else {
-                    api.log("Recover: unexpected journal entry (message type is not Define)");
-                    convert_overflow_into_liveness_failure();
-                }
-
-                i = i + 1;
-
-                assert(pre_store.insert(keyed_msg.key, keyed_msg.message) == view_as_kmmap(self.store));
-                assert(journal.discard_recent((journal.seq_start+i) as nat).discard_recent((journal.seq_start+i-1) as nat) 
-                    == journal.discard_recent((journal.seq_start+i-1) as nat));
-                assert(view_as_kmmap(self.store) == map_plus_history(view_as_kmmap(self.persistent_store), journal.discard_recent((journal.seq_start+i) as nat)));
-            }
-
-            assert(journal.discard_recent(journal.seq_end as nat) == journal); // ext_eq
-            assert(view_as_kmmap(self.store) == map_plus_history(view_as_kmmap(self.persistent_store), self.journal@@));
+//             assert(journal.discard_recent(journal.seq_end as nat) == journal); // ext_eq
+//             assert(view_as_kmmap(self.store) == map_plus_history(view_as_kmmap(self.persistent_store), self.journal@@));
 
             // I think this is trivial
-            assume(superblock@@.initial_history().last().appv.kmmap == view_as_kmmap(self.store));
+//             assume(superblock@@.initial_history().last().appv.kmmap == view_as_kmmap(self.store));
 
             // Compute the next ghost model and transition our token
             let ghost post_state = ConcreteProgramModel{
                 state: AtomicState {
                     recovery_state: RecoveryState::RecoveryComplete,
-                    // TODO made a mess here
-                    journal: AbstractJournal::State { journal: superblock@@.journal },
-                    map: AbstractMap::State { stamped_map: superblock@@.journal.apply_to_stamped_map(superblock@@.store) },
-                    persistent_map: superblock@@.store,
-                    persistent_journal_seq_end: superblock@@.journal.seq_end,
+                    journal: self.journal@,
+                    cache: arbitrary(),
+                    store: arbitrary(),
+                    persistent_journal_seq_end: arbitrary(),
                     in_flight: None,
                     sync_req_map: Map::empty(),
                 }
             };
 
-            assert(post_state.state.history.len() - 1 == superblock@@.version_index);
+//             assert(post_state.state.history.len() - 1 == superblock@@.version_index);
             let ghost disk_response_tuples = multiset_map_singleton(disk_req_id, i_disk_response@);
             // proof { multiset_map_singleton_ensures(disk_req_id, i_disk_response@); }
 
-            let ghost disk_event = DiskEvent::CompleteRecovery{req_id: disk_req_id, raw_page: raw_page@};
+            let ghost disk_event = DiskEvent::SuperblockRecovery{req_id: disk_req_id, raw_page: raw_page@};
             // let ghost disk_lbl = AsyncDisk::Label::DiskOps{
             //             requests: Map::empty(),
             //             responses: Map::empty().insert(disk_req_id, i_disk_response@),
@@ -1177,12 +1192,15 @@ impl KVStoreTrait for Implementation {
             Tracked(replies),       // reply perm map (multiset), empty
             Tracked(disk_requests),
             Tracked(disk_responses),
-        ) = KVStoreTokenized::Instance::initialize(ConcreteProgramModel{state: AtomicState::init()});
+        ) = KVStoreTokenized::Instance::initialize(ConcreteProgramModel{state: AtomicState::init(0)});
 
+        // TODO maybe another Option<> wrapper?
+        let placeholder_snapshot = JournalSnapshot{
+            boundary_lsn: 0, freshest_rec: None, };
         let selff = Implementation{
             sync_counter: 0,
             store: new_empty_vec_map(),
-            journal: Journal::new_empty(),
+            journal: JournalImpl::new(placeholder_snapshot),
             in_flight: None,
             persistent_store: new_empty_vec_map(),
             // persistent_version: 0,

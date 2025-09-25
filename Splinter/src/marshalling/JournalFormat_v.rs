@@ -21,32 +21,6 @@ impl Parsedview<KeyedMessage> for KeyedMessage {
 
 impl WF for Journal { }
 
-// Move to ResizableUniformSizedElementSeqFormat?
-impl<T,L> UniformSized for ResizableUniformSizedElementSeqFormat<T,L>
-where T: Marshal + UniformSized, L: IntFormattable
-{
-    open spec fn us_valid(&self) -> bool
-    {
-        0 < self.total_size
-    }
-
-    open spec fn uniform_size(&self) -> (sz: usize)
-    {
-        self.total_size
-    }
-
-    proof fn uniform_size_ensures(&self)
-    ensures 0 < self.uniform_size()
-    {
-    }
-
-    exec fn exec_uniform_size(&self) -> (sz: usize)
-    ensures sz == self.uniform_size()
-    {
-        self.total_size
-    }
-}
-
 pub const JOURNAL_CAPACITY: usize = 200;
 
 pub struct JournalFormatWrappable {}

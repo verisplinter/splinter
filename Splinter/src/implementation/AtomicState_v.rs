@@ -80,6 +80,7 @@ pub enum DiskEvent{
 
 // labels
 pub enum ProgramEvent{
+    NoOp{},
     Put{puts: MsgHistory},
     Query{end_lsn: LSN, key: Key, value: Value},
 }
@@ -181,6 +182,11 @@ impl AtomicState {
         }
     }
 
+    pub open spec fn execute_noop(pre: Self, post: Self, req: Request, reply: Reply) -> bool
+    {
+        &&& post == pre
+    }
+
     pub open spec fn execute_put(pre: Self, post: Self, req: Request, reply: Reply, records: MsgHistory) -> bool
     {
         &&& AbstractCrashAwareMap::State::next(pre.store, post.store, AbstractCrashAwareMap::Label::PutRecordsLabel{records})
@@ -206,6 +212,7 @@ impl AtomicState {
         &&& pre.client_ready()
         &&& valid_request_reply_pair(req, reply)
         &&& match event {
+            ProgramEvent::NoOp{} => Self::execute_noop(pre, post, req, reply),
             ProgramEvent::Put{puts} => Self::execute_put(pre, post, req, reply, puts),
             ProgramEvent::Query{end_lsn, key, value} => Self::execute_query(pre, post, req, reply, end_lsn, key, value)
         }

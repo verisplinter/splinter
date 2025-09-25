@@ -16,11 +16,14 @@ pub mod UniformPairFormat_v;
 pub mod WF_v;
 pub mod KeyedMessageFormat_v;
 pub mod KeyValueFormat_v;
-pub mod JournalFormat_v;
+// pub mod JournalFormat_v;
+pub mod JournalSnapshotFormat_v;
 pub mod ISuperblockFormat_v;
 pub mod VecMapFormat_v;
 pub mod Wrappable_v;
 pub mod PaddedFormat_v;
+pub mod IAddressFormat_v;
+pub mod OptionFormat_v;
 
 // next steps:
 //
