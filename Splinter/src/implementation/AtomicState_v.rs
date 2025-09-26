@@ -152,7 +152,7 @@ impl AtomicState {
         &&& self.client_ready() ==> {
             &&& self.journal.wf()
             // persistent map lines up with ephemeral journal
-            &&& self.journal.snapshot.boundary_lsn == self.persistent_map().seq_end
+            &&& self.journal.seq_end() == self.persistent_map().seq_end
             // ephemeral map = persistent map + ephemeral journal
             // TODO(move into inv)
             // &&& self.ephemeral_map() == self.journal.journal.apply_to_stamped_map(self.persistent_map())

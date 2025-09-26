@@ -14,10 +14,18 @@ use crate::implementation::OverflowFiction_v::*;
 use crate::implementation::CachedJournal_v::CachedJournal;
 use crate::disk::GenericDisk_v::{Address, IAddress};
 use crate::implementation::CachedJournal_v;
+use crate::implementation::JournalTypes_v::AJournal;
+use crate::implementation::JournalTypes_v::ILsn;
+use crate::implementation::JournalModel_v::LsnAddrIndex;
 
 verus!{
 
 pub type LsnAddrIndexImpl = HashMapWithView<u64, IAddress>;
+
+pub open spec fn LsnAddrIndexImpl_view(selff: LsnAddrIndexImpl) -> LsnAddrIndex
+{
+    Map::new(|k: LSN| selff@.contains_key(k as u64), |k| selff@[k as u64]@)
+}
 
 #[derive(Debug, Copy, Clone)]
 pub struct JournalSnapshot {
@@ -54,19 +62,50 @@ impl Parsedview<CachedJournal_v::JournalSnapShot> for JournalSnapshot {
 pub struct JournalStatus {
     pub unmarshalled_tail: Vec<(Key,Value)>,
     pub lsn_addr_index: LsnAddrIndexImpl,
+    pub unmarshalled_tail_start: ILsn,   // invariant to agree with freshest_rec contents / boundary_lsn
+}
+
+impl JournalStatus {
+    pub closed spec fn tail_as_history(&self) -> MsgHistory
+    {
+        AJournal {
+            msg_history: self.unmarshalled_tail@.map_values(|pr: (Key, Value)| KeyedMessage::from_kv(pr.0, pr.1)),
+            seq_start: self.unmarshalled_tail_start,
+        }@
+    }
+}
+
+impl View for JournalStatus {
+    type V = CachedJournal_v::JournalStatus;
+    open spec fn view(&self) -> Self::V {
+        Self::V {
+            unmarshalled_tail: self.tail_as_history(),
+            lsn_addr_index: LsnAddrIndexImpl_view(self.lsn_addr_index),
+        }
+    }
 }
 
 pub struct JournalImpl {
     snapshot: JournalSnapshot,
-    status: Option<JournalStatus>,
+
+    // TODO(discuss with verus): I can't put JournalStatus behind an option, because then I can't
+    // reach through the option with unwrap() or match Some(ref mut v); I get
+    // "The verifier does not yet support the following Rust feature: &mut types, except in special
+    // cases"
+    // Evidently field access is an allowed special case. Is there a better way to do this?
+//     status: Option<JournalStatus>,
+    index_known: bool,
+    status: JournalStatus,
 }
 
 impl JournalImpl {
-    pub open spec fn wf(&self) -> bool {
-        true
+    pub closed spec fn wf(&self) -> bool {
+        self.index_known ==> {
+            &&& self.snapshot.boundary_lsn <= self.status.unmarshalled_tail_start
+        }
     }
 
-    pub open spec fn seq_start(&self) -> LSN {
+    pub closed spec fn seq_start(&self) -> LSN {
         0
     }
 
@@ -76,33 +115,93 @@ impl JournalImpl {
         0
     }
 
-    pub open spec fn seq_end(&self) -> LSN {
-        0
+    pub closed spec fn seq_end(&self) -> LSN {
+        self.status.tail_as_history().seq_end
     }
 
     pub exec fn exec_seq_end(&self) -> (out: u64)
     ensures out == self.seq_end()
     {
-        0
+        // this cheat is incurrent a runtime check, ugh
+        if u64::MAX - self.status.unmarshalled_tail_start < self.status.unmarshalled_tail.len() as u64 {
+            convert_overflow_into_liveness_failure();
+        }
+
+        self.status.unmarshalled_tail_start + self.status.unmarshalled_tail.len() as u64
+    }
+
+    pub closed spec fn index_ready(&self) -> bool
+    {
+        self.index_known
     }
 
     pub exec fn new(snapshot: JournalSnapshot) -> (out: Self)
 //         TODO how do I express this? transition!s work, but not init!
 //     ensures CachedJournal::initialize(snapshot@)
     {
-        Self{ snapshot, status: None }
+        Self{
+            snapshot,
+            index_known: false,
+            status: JournalStatus{
+                unmarshalled_tail: vec![],
+                lsn_addr_index: LsnAddrIndexImpl::new(),
+                unmarshalled_tail_start: 0,
+            },
+        }
     }
 
     pub exec fn insert(&mut self, key: Key, value: Value)
-    ensures self.wf(), self@.wf()
+    requires
+        old(self).wf(),
+        old(self).index_ready(),
+    ensures
+        self.wf(),
+        self@.wf(),
+        self@.seq_end() == old(self)@.seq_end() + 1,
+        CachedJournal_v::CachedJournal::State::put(old(self)@, self@,
+            CachedJournal_v::CachedJournal::Label::Put{
+            messages: MsgHistory::singleton_at(old(self).seq_end(), KeyedMessage::from_kv(key, value))
+        }),
     {
+        self.status.unmarshalled_tail.push((key,value));
+//         assert( old(self)@.seq_start() == self.snapshot.boundary_lsn );
+//         assert( old(self)@.seq_end() == old(self)@.status.unwrap().unmarshalled_tail.seq_end );
+//         assert( old(self)@.seq_end() == old(self).status.tail_as_history().seq_end );
+// 
+//         assert( old(self).snapshot.boundary_lsn <= old(self).status.unmarshalled_tail_start@ );
+//         assert( old(self).status.unmarshalled_tail_start@ <= old(self).status.tail_as_history().seq_end );
+// 
+//         assert( old(self)@.seq_start() <= old(self)@.seq_end() );
+//         assert( self@.seq_start() == old(self)@.seq_start() );
+//         assert( self@.seq_end() == old(self)@.seq_end() + 1 );
+//         assert( self@.seq_start() <= self@.seq_end() );
+//         assert( self@.wf() );
+        proof {
+            let messages = MsgHistory::singleton_at(old(self).seq_end(), KeyedMessage::from_kv(key, value));
+            let old_tail = old(self)@.status.unwrap().unmarshalled_tail;
+            let new_tail = self@.status.unwrap().unmarshalled_tail;
+            assert( old_tail.seq_end == old(self).status.tail_as_history().seq_end );
+            assert( old_tail.seq_end == old(self).seq_end() );
+            assert( old_tail.can_concat(messages) );
+
+            assert( new_tail == old_tail.concat(messages) );
+            assert(
+                CachedJournal_v::CachedJournal::State::put(old(self)@, self@,
+                    CachedJournal_v::CachedJournal::Label::Put{
+                    messages: MsgHistory::singleton_at(old(self).seq_end(), KeyedMessage::from_kv(key, value))
+                })
+            );
+        }
     }
 }
 
 impl View for JournalImpl {
     type V = CachedJournal::State;
-    open spec fn view(&self) -> Self::V {
-        arbitrary()
+    closed spec fn view(&self) -> Self::V {
+        CachedJournal_v::CachedJournal::State {
+            snapshot: self.snapshot@,
+            status: if self.index_ready() { Some(self.status@) } else { None }
+        }
     }
 }
 

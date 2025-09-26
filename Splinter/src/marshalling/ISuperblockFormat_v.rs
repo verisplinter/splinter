@@ -96,13 +96,9 @@ impl Wrappable for SuperblockJSWrappable {
         assert( a_fmt.uniform_size() == a_fmt.pair_fmt.a_fmt.uniform_size() + a_fmt.pair_fmt.b_fmt.uniform_size() );
 
         use crate::marshalling::KeyedMessageFormat_v::KeyedMessageFormat;
-//         assert( a_fmt.pair_fmt.a_fmt ==
-//             ResizableUniformSizedElementSeqFormat::spec_new(
-//                 KeyedMessageFormat::spec_new(), IntFormat::<u8>::spec_new(), JOURNAL_CAPACITY) );
         
-        assert( a_fmt.pair_fmt.a_fmt.uniform_size() == JOURNAL_CAPACITY );
-        assert( a_fmt.pair_fmt.b_fmt.uniform_size() == 8 );
-        assert( a_fmt.uniform_size() == JOURNAL_CAPACITY + 8 );
+        assert( a_fmt.pair_fmt.a_fmt.uniform_size() == 8 );
+        assert( a_fmt.pair_fmt.b_fmt.uniform_size() == 9 );
         assert( b_fmt.uniform_size() == 200 );
         assert( a_fmt.uniform_size() as int + a_fmt.uniform_size() as int <= usize::MAX );
         (a_fmt, b_fmt)

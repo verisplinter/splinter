@@ -21,7 +21,7 @@ use crate::disk::GenericDisk_v::Address;
 
 verus! {
 
-pub const JOURNAL_CAPACITY: usize = 200;
+// pub const JOURNAL_CAPACITY: usize = 200;
 
 // TODO(jonh): move to IAddress defn
 impl Parsedview<Address> for IAddress {
@@ -65,7 +65,10 @@ impl Wrappable for JournalSnapshotWrappable {
 
     exec fn exec_to_pair(value: &Self::U) -> (pair: (ILsn, Option<IAddress>))
     {
-        (value.boundary_lsn, value.freshest_rec)
+        let pair = (value.boundary_lsn, value.freshest_rec);
+        assert( Self::to_pair((*value).parsedv()) == pair.parsedv() );   // trigger ensures 🙄
+        assert( pair.wf() ); // trigger ensures 🙄
+        pair
     }
 
     exec fn exec_from_pair(pair: (ILsn, Option<IAddress>)) -> (j: JournalSnapshot)
@@ -80,7 +83,10 @@ impl Wrappable for JournalSnapshotWrappable {
 
     exec fn new_format_pair() -> (Self::AF, Self::BF)
     {
-        (IntFormat::new(), OptionFormat::new(IAddressFormat::new()))
+        let out = (IntFormat::new(), OptionFormat::new(IAddressFormat::new()));
+        assert( out.1.us_valid() );   // trigger ensures 🙄
+        assert( crate::marshalling::UniformPairFormat_v::uniform_size_matches_spec_size(out.1) );   // trigger ensures 🙄
+        out
     }
 }
 

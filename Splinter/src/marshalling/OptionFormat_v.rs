@@ -5,15 +5,16 @@ use crate::marshalling::Slice_v::Slice;
 use crate::marshalling::Marshalling_v::{Marshal, Parsedview};
 use crate::marshalling::UniformPairFormat_v::*;
 use crate::marshalling::UniformSized_v::UniformSized;
+use crate::marshalling::UniformSizedMarshal_v::UniformSizedMarshal;
 use crate::marshalling::WF_v::WF;
 
 verus! {
 
-pub struct OptionFormat<F: Marshal> {
+pub struct OptionFormat<F: UniformSizedMarshal> {
     pub f: F
 }
 
-impl<F: Marshal> OptionFormat<F> {
+impl<F: UniformSizedMarshal> OptionFormat<F> {
     pub open spec fn spec_new(f: F) -> Self
     {
         Self{f}
@@ -26,7 +27,7 @@ impl<F: Marshal> OptionFormat<F> {
     }
 }
 
-impl<F: Marshal + UniformSized> UniformSized for OptionFormat<F>
+impl<F: UniformSizedMarshal> UniformSized for OptionFormat<F>
 {
     open spec fn us_valid(&self) -> bool
     {
@@ -71,7 +72,7 @@ where U: Parsedview<DV>
     }
 }
 
-impl<F: Marshal + UniformSized> Marshal for OptionFormat<F>
+impl<F: UniformSizedMarshal> Marshal for OptionFormat<F>
 // This constraint pushes the option-wrapper-Parsedview obligation
 // off to the caller, which feels lame. But Rust won't let me write
 // Parsedview for Option<F> in a generic way, frustratingly.
@@ -82,22 +83,54 @@ impl<F: Marshal + UniformSized> Marshal for OptionFormat<F>
     
     open spec fn valid(&self) -> bool
     {
-        self.f.valid()
+        &&& self.f.valid()
+        &&& self.us_valid()
     }
     
     open spec fn parsable(&self, data: Seq<u8>) -> bool
     {
-        false
+        if data.len() < self.uniform_size() { false }
+        else {
+            match data[0] {
+                0 => { true },
+                1 => { self.f.parsable(data.subrange(1, 1 + self.f.uniform_size() as int)) },
+                _ => { false },
+            }
+        }
     }
     
     open spec fn parse(&self, data: Seq<u8>) -> Self::DV
     {
-        None
+        match data[0] {
+            0 => { None },
+            1 => { Some(self.f.parse(data.subrange(1, 1 + self.f.uniform_size() as int))) },
+            _ => { arbitrary() },
+        }
     }
     
     exec fn try_parse(&self, slice: &Slice, data: &Vec<u8>) -> (ov: Option<Self::U>)
     {
-        None
+        if slice.len() < self.exec_uniform_size() {
+            return None;
+        }
+        match data[slice.start] {
+            0 => {
+                let ov = Some(None);
+                assert( ov.unwrap().parsedv() == self.parse(slice@.i(data@)) ); // trait ensures 🙄
+                assert( ov.unwrap().wf() ); // what does this trigger!?
+                ov
+            }
+            1 => {
+                let ss = slice.subslice(1, 1 + self.f.exec_uniform_size());
+                assert( ss@.i(data@) == slice@.i(data@).subrange(1, 1 + self.f.uniform_size() as int) );    // extn
+                match self.f.try_parse(&ss, data)
+                {
+                    Some(v) => { Some(Some(v)) }
+                    None => { None }
+                }
+            }
+            _ => { None }
+        }
     }
 
     open spec fn marshallable(&self, value: Self::DV) -> bool
@@ -105,6 +138,14 @@ impl<F: Marshal + UniformSized> Marshal for OptionFormat<F>
         match value {
             None => true,
             Some(v) => self.f.marshallable(v),
+        }
+    }
+
+    open spec fn impl_marshallable(&self, impl_value: Self::U) -> bool
+    {
+        match impl_value {
+            None => true,
+            Some(v) => self.f.impl_marshallable(v),
         }
     }
 
@@ -122,14 +163,18 @@ impl<F: Marshal + UniformSized> Marshal for OptionFormat<F>
 
     exec fn exec_marshall(&self, value: &Self::U, data: &mut Vec<u8>, start: usize) -> (end: usize)
     {
+        let end = start + self.exec_uniform_size();
         match value {
             None => { data[start] = 0; }
             Some(v) => {
                 data[start] = 1;
-                self.f.exec_marshall(v, data, start + 1);
+                proof { self.f.uniform_size_matches_spec_size(); }
+                let f_end = self.f.exec_marshall(v, data, start + 1);
+                assert( data@.subrange(start + 1 as int, f_end as int ) ==
+                    data@.subrange(start as int, end as int).subrange(1, 1 + self.f.uniform_size() as int) ); // extn
             }
         }
-        start + self.exec_uniform_size()
+        end
     }
 }
 

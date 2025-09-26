@@ -20,6 +20,13 @@ pub struct KeyedMessage {
   pub message: Message 
 }
 
+impl KeyedMessage {
+    pub open spec fn from_kv(key: Key, value: Value) -> Self
+    {
+        KeyedMessage { key, message: Message::Define{value} }
+    }
+}
+
 // (Tenzin): It seems that given MsgHistory is required to be contiguous,
 // reusing a FloatingSeq of the appropriate type would provide better
 // type reusage.

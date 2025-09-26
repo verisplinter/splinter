@@ -24,6 +24,7 @@ pub mod Wrappable_v;
 pub mod PaddedFormat_v;
 pub mod IAddressFormat_v;
 pub mod OptionFormat_v;
+pub mod UniformSizedMarshal_v;
 
 // next steps:
 //

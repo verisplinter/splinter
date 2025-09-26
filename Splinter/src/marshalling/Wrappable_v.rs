@@ -5,6 +5,7 @@ use crate::marshalling::Slice_v::Slice;
 use crate::marshalling::Marshalling_v::{Marshal, Parsedview};
 use crate::marshalling::UniformPairFormat_v::*;
 use crate::marshalling::UniformSized_v::UniformSized;
+use crate::marshalling::UniformSizedMarshal_v::UniformSizedMarshal;
 use crate::marshalling::WF_v::WF;
 
 verus! {
@@ -14,6 +15,7 @@ impl<ADV,AU:Parsedview<ADV>,BDV,BU:Parsedview<BDV>> Parsedview<(ADV,BDV)> for (A
     open spec fn parsedv(&self) -> (ADV,BDV) { (self.0.parsedv(), self.1.parsedv()) }
 }
 
+// TODO rename PairFunctor
 // A Wrappable struct explains how a type can be represented as a pair of other marshallable items.
 // Presently the pair member formatters must be UniformSized, but this constraint could be relaxed
 // by introducing an optional length field.
@@ -187,5 +189,8 @@ impl<W: Wrappable> Marshal for WrappableFormat<W> {
     }
 }
 
+impl<W: Wrappable> UniformSizedMarshal for WrappableFormat<W> {
+    proof fn uniform_size_matches_spec_size(self: &Self) { }
+}
 
 } //verus!

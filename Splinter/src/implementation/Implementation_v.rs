@@ -355,8 +355,12 @@ impl Implementation {
                 // assert( post_state.state.history.get_prefix(pre_state.state.history.len()) =~= pre_state.state.history );  // extn
                 let puts = MsgHistory::singleton_at(7, keyed_msg);
 
-                assume( AtomicState::execute_put(pre_state.state, post_state.state, map_req, map_reply, puts) );
+                assert( post_state.state.journal.status.unwrap().unmarshalled_tail.seq_end ==
+                        pre_state.state.journal.status.unwrap().unmarshalled_tail.seq_end + 1 );
+                assert( post_state.state.journal.seq_end() == pre_state.state.journal.seq_end() + 1 );
+                assert( post_state.state.journal.seq_end() == post_state.state.persistent_map().seq_end );
                 assert( post_state.state.wf() );
+                assert( AtomicState::execute_put(pre_state.state, post_state.state, map_req, map_reply, puts) );
                 assert( AtomicState::execute_transition(
                         pre_state.state, post_state.state, map_req, map_reply, ProgramEvent::Put{puts}) );
                 assert( ConcreteProgramModel::next(pre_state, post_state,
