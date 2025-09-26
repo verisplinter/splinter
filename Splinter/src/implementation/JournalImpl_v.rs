@@ -93,15 +93,17 @@ pub struct JournalImpl {
     // "The verifier does not yet support the following Rust feature: &mut types, except in special
     // cases"
     // Evidently field access is an allowed special case. Is there a better way to do this?
-//     status: Option<JournalStatus>,
-    index_known: bool,
-    status: JournalStatus,
+    status: Option<JournalStatus>,
+//     index_known: bool,
+//     status: JournalStatus,
 }
 
 impl JournalImpl {
     pub closed spec fn wf(&self) -> bool {
-        self.index_known ==> {
-            &&& self.snapshot.boundary_lsn <= self.status.unmarshalled_tail_start
+        match self.status {
+            None => true,
+            Some(status) =>
+                self.snapshot.boundary_lsn <= status.unmarshalled_tail_start,
         }
     }
 
@@ -115,39 +117,39 @@ impl JournalImpl {
         0
     }
 
-    pub closed spec fn seq_end(&self) -> LSN {
-        self.status.tail_as_history().seq_end
+    pub closed spec(checked) fn seq_end(&self) -> LSN
+    recommends self.index_ready()
+    {
+        self.status.unwrap().tail_as_history().seq_end
     }
 
     pub exec fn exec_seq_end(&self) -> (out: u64)
+    requires self.index_ready()
     ensures out == self.seq_end()
     {
-        // this cheat is incurrent a runtime check, ugh
-        if u64::MAX - self.status.unmarshalled_tail_start < self.status.unmarshalled_tail.len() as u64 {
-            convert_overflow_into_liveness_failure();
-        }
+        match &self.status {
+            None => 0,
+            Some(status) => {
+                // this cheat is incurrent a runtime check, ugh
+                if u64::MAX - status.unmarshalled_tail_start < status.unmarshalled_tail.len() as u64 {
+                    convert_overflow_into_liveness_failure();
+                }
 
-        self.status.unmarshalled_tail_start + self.status.unmarshalled_tail.len() as u64
+                status.unmarshalled_tail_start + status.unmarshalled_tail.len() as u64
+            }
+        }
     }
 
     pub closed spec fn index_ready(&self) -> bool
     {
-        self.index_known
+        self.status is Some
     }
 
     pub exec fn new(snapshot: JournalSnapshot) -> (out: Self)
 //         TODO how do I express this? transition!s work, but not init!
 //     ensures CachedJournal::initialize(snapshot@)
     {
-        Self{
-            snapshot,
-            index_known: false,
-            status: JournalStatus{
-                unmarshalled_tail: vec![],
-                lsn_addr_index: LsnAddrIndexImpl::new(),
-                unmarshalled_tail_start: 0,
-            },
-        }
+        Self{ snapshot, status: None }
     }
 
     pub exec fn insert(&mut self, key: Key, value: Value)
@@ -163,7 +165,20 @@ impl JournalImpl {
             messages: MsgHistory::singleton_at(old(self).seq_end(), KeyedMessage::from_kv(key, value))
         }),
     {
-        self.status.unmarshalled_tail.push((key,value));
+        // Since we don't have &mut results in verus yet, we need to swap the
+        // option out of self, deconstruct it, do the work we want on the inner struct,
+        // then reassemble the option and swap it back in. 🫤
+        let mut dummy: Option<JournalStatus> = None;
+        core::mem::swap(&mut self.status, &mut dummy);
+        dummy = match dummy {
+            None => { None },
+            Some(mut status) => {
+                status.unmarshalled_tail.push((key,value));
+                Some(status)
+            }
+        };
+        core::mem::swap(&mut self.status, &mut dummy);
+
 //         assert( old(self)@.seq_start() == self.snapshot.boundary_lsn );
 //         assert( old(self)@.seq_end() == old(self)@.status.unwrap().unmarshalled_tail.seq_end );
 //         assert( old(self)@.seq_end() == old(self).status.tail_as_history().seq_end );
@@ -176,11 +191,12 @@ impl JournalImpl {
 //         assert( self@.seq_end() == old(self)@.seq_end() + 1 );
 //         assert( self@.seq_start() <= self@.seq_end() );
 //         assert( self@.wf() );
+
         proof {
             let messages = MsgHistory::singleton_at(old(self).seq_end(), KeyedMessage::from_kv(key, value));
             let old_tail = old(self)@.status.unwrap().unmarshalled_tail;
             let new_tail = self@.status.unwrap().unmarshalled_tail;
-            assert( old_tail.seq_end == old(self).status.tail_as_history().seq_end );
+            assert( old_tail.seq_end == old(self).status.unwrap().tail_as_history().seq_end );
             assert( old_tail.seq_end == old(self).seq_end() );
             assert( old_tail.can_concat(messages) );
 
@@ -200,7 +216,10 @@ impl View for JournalImpl {
     closed spec fn view(&self) -> Self::V {
         CachedJournal_v::CachedJournal::State {
             snapshot: self.snapshot@,
-            status: if self.index_ready() { Some(self.status@) } else { None }
+            status: match self.status {
+                None => None,
+                Some(status) => Some(status@),
+            }
         }
     }
 }
