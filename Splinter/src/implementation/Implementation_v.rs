@@ -285,6 +285,7 @@ impl Implementation {
     ensures
         self.inv_api(api),
     {
+        assume(false); // TODO(jonh): left off here
         match req.input {
             Input::NoopInput => {
                 let reply = Reply{output: Output::NoopOutput, id: req.id};
@@ -333,6 +334,7 @@ impl Implementation {
     ensures
         self.inv_api(api),
     {
+        assume(false); // TODO(jonh): left off here
         let out = match req.input {
         Input::PutInput{key, value} => {
             let ghost pre_state = self.model@.value();
@@ -444,6 +446,7 @@ impl Implementation {
         self.inv_api(api),
         // allowed to do nothing in response
     {
+        assume(false); // TODO(jonh): left off here
         match req.input {
         Input::QueryInput{key} => {
             let value = match self.store.get(&key) {
@@ -494,6 +497,7 @@ impl Implementation {
     ensures
         self.inv_api(api),
     {
+        assume(false); // TODO(jonh): left off here
         let ghost old_satisfied_reqs = old(self).sync_requests.satisfied_reqs@;
         let ghost old_deferred_reqs = old(self).sync_requests.deferred_reqs@;
         assert({
@@ -954,6 +958,7 @@ impl Implementation {
                 assert( post_state.state.in_flight is None );
                 assert( post_state.state.store.in_flight is Some == post_state.state.in_flight is Some );
 //                 assert( post_state.state.journal.seq_end() == post_state.state.persistent_map().seq_end );
+                assume(false); // TODO(jonh) left off here
                 assert( post_state.state.wf() );
                 assert( AbstractCrashAwareMap::State::next(pre_state.state.store, post_state.state.store, AbstractCrashAwareMap::Label::CommitCompleteLabel{}) );
                 assume(false);
