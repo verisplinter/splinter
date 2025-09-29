@@ -35,6 +35,7 @@ pub enum RecoveryState {
     RecoveryComplete,
 }
 
+// This is state we need in addition to the in-flight state hiding inside AbstractCrashAwareMap.
 pub struct InflightInfo {
     pub journal_version: LSN,
     pub req_id: ID,
@@ -152,7 +153,11 @@ impl AtomicState {
         &&& self.client_ready() ==> {
             &&& self.journal.wf()
             // persistent map lines up with ephemeral journal
-            &&& self.journal.seq_end() == self.persistent_map().seq_end
+//             &&& self.journal.seq_end() == self.persistent_map().seq_end
+            // That doesn't make any sense. Maybe you meant one or both of these?
+            &&& self.journal.seq_start() == self.persistent_map().seq_end
+            &&& self.journal.seq_end() == self.ephemeral_map().seq_end
+
             // ephemeral map = persistent map + ephemeral journal
             // TODO(move into inv)
             // &&& self.ephemeral_map() == self.journal.journal.apply_to_stamped_map(self.persistent_map())
@@ -244,7 +249,7 @@ impl AtomicState {
         // The request with this id was once made and is still outstanding
         &&& pre.sync_req_map.contains_key(sync_req_id)
         // The request has been satisfied by a disk sync that got completed
-        &&& pre.sync_req_map[sync_req_id] <= pre.persistent_map().seq_end
+        &&& pre.sync_req_map[sync_req_id] <= pre.persistent_journal_seq_end
         &&& post == Self{
             sync_req_map: pre.sync_req_map.remove(sync_req_id),
             ..pre

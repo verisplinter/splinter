@@ -15,6 +15,7 @@ use crate::trusted::ReqReply_t::*;
 use crate::trusted::KVStoreTrait_t::*;
 use crate::trusted::KVStoreTokenized_t::*;
 use crate::trusted::ProgramModelTrait_t::*;
+use crate::abstract_system::StampedMap_v::LSN;
 
 use crate::spec::MapSpec_t::{ID, MapSpec, PersistentState};
 use crate::spec::TotalKMMap_t::*;
@@ -29,6 +30,7 @@ use crate::abstract_system::MsgHistory_v::KeyedMessage;
 use crate::abstract_system::AbstractJournal_v::AbstractJournal;
 use crate::abstract_system::AbstractMap_v::AbstractMap;
 use crate::abstract_system::AbstractCrashAwareMap_v::AbstractCrashAwareMap;
+use crate::disk::GenericDisk_v::Pointer;
 
 use crate::implementation::ModelRefinement_v::*;
 use crate::implementation::ConcreteProgramModel_v::*;
@@ -36,8 +38,11 @@ use crate::implementation::AtomicState_v::*;
 use crate::implementation::MultisetMapRelation_v::*;
 use crate::implementation::VecMap_v::*;
 use crate::implementation::JournalTypes_v::{ILsn};
+use crate::implementation::JournalModel_v::lsn_addr_index_discard_up_to;
 use crate::implementation::JournalImpl_v::*;
 use crate::implementation::SuperblockTypes_v::*;
+use crate::implementation::CachedJournal_v::CachedJournal;
+use crate::implementation::CachedJournal_v;
 use crate::marshalling::Marshalling_v::Parsedview;
 use crate::marshalling::WF_v::WF;
 // use crate::marshalling::UniformSized_v::UniformSized;
@@ -112,7 +117,9 @@ pub type DiskReqShard = KVStoreTokenized::disk_requests_multiset<ConcreteProgram
 // Truncate 
 pub struct InFlight {
     // Together this is the implementation of a StampedMap
-    new_seq_start: ILsn,     // this will be the version of the new persistent map (when it lands)
+    new_boundary_lsn: ILsn,     // this will be the version of the new persistent map (when it lands)
+    freshest_rec: Pointer,
+    new_persistent_lsn: ILsn,   // this will be the seq_end of the persistent journal (when it lands)
     new_store: VecMap<Key, Value>,  // this will be the new persistent map
 }
 
@@ -199,18 +206,29 @@ impl Implementation {
 
         // physical state consistent with model
         &&& state.recovery_state is RecoveryComplete
+
+        // map and journal are at the same LSN
+        &&& state.journal.seq_end() == state.persistent_map().seq_end
+        // Probably also need contents to match...
+
 //TODO        &&& state.mapspec().kmmap == view_as_kmmap(self.store)
 //TODO        &&& view_as_kmmap(self.store) == map_plus_history(view_as_kmmap(self.persistent_store), self.journal@)
-//TODO        &&& state.history.len()-1 == self.version()
+//DELETE        &&& state.history.len()-1 == self.version()
 
-        &&& (state.in_flight is Some <==> self.sync_requests.in_flight())
+        &&& self.state().journal.wf()
+
+        &&& state.in_flight is Some <==> self.sync_requests.in_flight()
         &&& state.in_flight is Some <==> self.in_flight is Some
 
         &&& (state.in_flight is Some ==> {
+            &&& self.in_flight.unwrap().new_boundary_lsn <= state.journal.status.unwrap().unmarshalled_tail.seq_start
+            })
+        &&& (state.in_flight is Some ==> {
+
             // The in-flight version stays active so get_suffix doesn't choke on it when it's time
             // to handle the disk response
             let sync_version = state.in_flight.unwrap().journal_version;
-            let new_persistent_map_version = self.in_flight.unwrap().new_seq_start as nat;
+            let new_persistent_map_version = self.in_flight.unwrap().new_boundary_lsn as nat;
             let new_persistent_map = self.in_flight.unwrap().new_store;
 //TODO            let new_persistent_journal = self.journal@@.discard_recent(sync_version).discard_old(new_persistent_map_version);
 //TODO            let new_ephemeral_journal = self.journal@@.discard_old(new_persistent_map_version);
@@ -226,11 +244,11 @@ impl Implementation {
 //TODO                == map_plus_history(view_as_kmmap(new_persistent_map), new_ephemeral_journal)
 
             // The in-flight 'satisfied requests' can indeed be satisfied by the in-flight version
-            &&& self.sync_reqs_in_version(self.sync_requests.satisfied_reqs@, sync_version as int)
+            &&& self.sync_reqs_in_version(self.sync_requests.satisfied_reqs@, sync_version)
         })
 
         &&& self.sync_requests.wf(self.instance@.id())
-        &&& self.sync_reqs_in_version(self.sync_requests.deferred_reqs@, self.version() as int)
+        &&& self.sync_reqs_in_version(self.sync_requests.deferred_reqs@, self.version())
         &&& Self::sync_req_lists_mutually_unique(self.sync_requests.satisfied_reqs@, self.sync_requests.deferred_reqs@)
     }
 
@@ -391,7 +409,7 @@ impl Implementation {
 //                     
 //                     let old_seq_end = old(self).journal@@.seq_end;
 //                     let new_persistent_map = self.in_flight.unwrap().new_store;
-//                     let new_persistent_map_version = self.in_flight.unwrap().new_seq_start as nat;
+//                     let new_persistent_map_version = self.in_flight.unwrap().new_boundary_lsn as nat;
 //                     let new_ephemeral_journal = self.journal@@.discard_old(new_persistent_map_version);
 //                     let old_ephemeral_journal = old(self).journal@@.discard_old(new_persistent_map_version);
 //                     assert( new_ephemeral_journal.discard_recent(old_seq_end) == old_ephemeral_journal);
@@ -581,7 +599,7 @@ impl Implementation {
 //             assert( sb@@ == pre_sb );
 // 
 //             self.in_flight = Some(InFlight{
-//                 new_seq_start: version,
+//                 new_boundary_lsn: version,
 //                 new_store: self.store.clone(),
 //             });
 //         } else { // sync the ephemeral journal with the same persistent map
@@ -604,7 +622,7 @@ impl Implementation {
 // //                 sb@.final_stamped_map_ensures();
 // //             }
 //             self.in_flight = Some(InFlight{
-//                 new_seq_start: self.journal.seq_start,
+//                 new_boundary_lsn: self.journal.seq_start,
 //                 new_store: self.persistent_store.clone(),
 //             });
 // 
@@ -672,7 +690,7 @@ impl Implementation {
     exec fn deliver_inflight_replies(&mut self, ready_reqs: &mut Vec<Request>, api: &mut ClientAPI<ConcreteProgramModel>)
     requires
         old(self).inv_api(old(api)),
-        // old(self).sync_reqs_in_version(old(ready_reqs)@, old(self).state().history.first_active_index()),
+        old(self).sync_reqs_in_version(old(ready_reqs)@, old(self).state().persistent_journal_seq_end),
         // can't break in-flight inv because there aren't any satisfied_reqs during this call
         old(self).sync_requests.satisfied_reqs@.len()==0,
         Self::sync_req_lists_mutually_unique(old(ready_reqs)@, old(self).sync_requests.deferred_reqs@),
@@ -683,7 +701,8 @@ impl Implementation {
         loop
         invariant
             self.inv_api(api),
-            self.sync_reqs_in_version(ready_reqs@, old(self).state().persistent_map().seq_end as int),
+            self.sync_reqs_in_version(ready_reqs@, old(self).state().persistent_journal_seq_end),
+            self.state().persistent_journal_seq_end == old(self).state().persistent_journal_seq_end,
             self.sync_requests.satisfied_reqs@.len()==0,
             ready_reqs@.len() <= old(ready_reqs)@.len(),
             old(self).sync_requests.deferred_reqs@ == self.sync_requests.deferred_reqs@,
@@ -695,7 +714,6 @@ impl Implementation {
             {
                 Some(req) => {
                     assert( ready_reqs@ == old(ready_reqs)@.take(ready_reqs@.len() as int) );   // extn
-                    assert( self.sync_req_in_version(req.id, self.state().persistent_map().seq_end as int) );
                     self.send_sync_response(req, api)
                 },
                 None => break,
@@ -703,7 +721,8 @@ impl Implementation {
         }
     }
 
-    closed spec fn sync_reqs_in_version(&self, reqs: Seq<Request>, version_num: int) -> bool
+    // Every request in reqs is a Sync request and is satisfiable by version_num
+    closed spec fn sync_reqs_in_version(&self, reqs: Seq<Request>, version_num: LSN) -> bool
     {
         &&& forall |i| #![auto] 0<=i<reqs.len() ==> {
             &&& reqs[i].input is SyncInput
@@ -712,7 +731,8 @@ impl Implementation {
         &&& forall |i,j| #![auto] 0 <= i < reqs.len() && 0 <= j < reqs.len() && i!=j ==> reqs[i].id != reqs[j].id
     }
 
-    closed spec fn sync_req_in_version(&self, id: ID, version_num: int) -> bool
+    // sync req ID is in the sync_req map and is satisfiable by LSN version_num
+    closed spec fn sync_req_in_version(&self, id: ID, version_num: LSN) -> bool
     {
         &&& self.state().sync_req_map.contains_key(id)
         &&& self.state().sync_req_map[id] <= version_num
@@ -733,7 +753,7 @@ impl Implementation {
     requires
         old(self).inv_api(old(api)),
         req.input is SyncInput,
-        old(self).sync_req_in_version(req.id, old(self).state().persistent_map().seq_end as int),
+        old(self).sync_req_in_version(req.id, old(self).state().persistent_journal_seq_end),
         old(self).no_matching_sync_req_id(req.id),
     ensures
         self.inv_api(api),
@@ -802,6 +822,7 @@ impl Implementation {
         open_system_invariant_disk_response::<ConcreteProgramModel, RefinementProof>(self.model, disk_response_token);
         multiset_map_singleton_ensures(disk_req_id, i_disk_response@);
         assert(disk_response_token@.multiset().contains((disk_req_id, i_disk_response@))); //trigger
+        assume( false ); // something broke in connection to ConcreteSystem<AtomicState>?
     }
 
     proof fn system_inv_implies_atomic_state_wf(self)
@@ -852,33 +873,65 @@ impl Implementation {
 
         // Use existence of a response + system model invariant to learn that we must have
         // known in_flight true when we got here.
-        assert( self.in_flight is Some ) by {
+        assert( self.in_flight is Some
+            && self.model@.value().state.journal.status is Some
+            ) by {
             open_system_invariant_disk_response_singleton::<ConcreteProgramModel, RefinementProof>(self.model, response_shard, id, disk_response@);
+            assume( false );    // TODO(JL+jonh): Another spot where we lost open-invariant properties
         }
 
         let mut in_flight = None;
         std::mem::swap(&mut self.in_flight, &mut in_flight);
-        if let Some(InFlight{new_seq_start, new_store}) = in_flight {
-            if self.journal.exec_seq_start() != new_seq_start { // a new map is persisted
+        if let Some(InFlight{new_boundary_lsn, freshest_rec, new_persistent_lsn, new_store}) = in_flight {
+            if self.journal.exec_seq_start() != new_boundary_lsn { // a new map is persisted
                 self.persistent_store = new_store;
-//                 self.journal.truncate_to(new_seq_start);
-//                 assert(self.journal@@ == old(self).journal@@.discard_old(new_seq_start as nat)); // ext_eq
+//                 self.journal.truncate_to(new_boundary_lsn);
+//                 assert(self.journal@@ == old(self).journal@@.discard_old(new_boundary_lsn as nat)); // ext_eq
 
                 // proof {
                 //     assert(view_as_kmmap(self.store) ==
                 //         map_plus_history(view_as_kmmap(self.persistent_store), self.journal@@));
                 // }
               } else {
-                assert(self.journal.seq_start() == new_seq_start);
+                assert(self.journal.seq_start() == new_boundary_lsn);
                 assert(ASuperblock::map_to_kmmap(self.persistent_store@) == ASuperblock::map_to_kmmap(self.persistent_store@));
             }
 
-            let ghost post_state:ConcreteProgramModel  = arbitrary();
-//             let ghost post_state = ConcreteProgramModel{ state: AtomicState{
-//                 in_flight: None,
-//                 history: pre_state.state.history.get_suffix(new_persistent_version as int),
-//                 ..pre_state.state
-//             }};
+            let ghost new_lsn_addr_index =
+                lsn_addr_index_discard_up_to(pre_state.state.journal.status.unwrap().lsn_addr_index, new_boundary_lsn as LSN);
+            
+            // Here's a commit_complete step of AbstractCrashAwareMap:
+            let ghost post_store = AbstractCrashAwareMap::State{
+                persistent: old(self).state().store.in_flight.unwrap(),
+                in_flight: None,
+                ..old(self).state().store
+            };
+            let ghost post_state = ConcreteProgramModel{ state: AtomicState{
+                in_flight: None,
+                journal: CachedJournal::State {
+                    snapshot: CachedJournal_v::JournalSnapShot{
+                        boundary_lsn: new_boundary_lsn as LSN,
+                        freshest_rec: freshest_rec,
+                    },
+                    status: Some(CachedJournal_v::JournalStatus{
+                        lsn_addr_index: new_lsn_addr_index,
+                        ..pre_state.state.journal.status.unwrap()
+                    }),
+                    ..pre_state.state.journal
+                },
+                store: post_store,
+                persistent_journal_seq_end: new_persistent_lsn as LSN,
+                ..pre_state.state
+            }};
+//             assert( pre_state.state.journal.wf() );
+//             assert( post_state.state.journal.seq_start() == new_boundary_lsn );
+//             assert( post_state.state.journal.seq_end() == pre_state.state.journal.status.unwrap().unmarshalled_tail.seq_end );
+//             assert( new_boundary_lsn == old(self).in_flight.unwrap().new_boundary_lsn );
+//             assert( old(self).in_flight.unwrap().new_boundary_lsn
+//                 <= old(self).state().journal.status.unwrap().unmarshalled_tail.seq_start );
+//             assert( new_boundary_lsn <= pre_state.state.journal.status.unwrap().unmarshalled_tail.seq_start );
+//             assert( post_state.state.journal.seq_start() <= post_state.state.journal.seq_end() );
+//             assert( post_state.state.journal.wf() );
 
             proof {
                 // Learn this before we yoink model out of self
@@ -891,9 +944,25 @@ impl Implementation {
 
             proof {
                 let info = ProgramDiskInfo{ reqs: Multiset::empty(), resps: response_shard@.multiset() };
-                let disk_event = DiskEvent::ExecuteSyncEnd{ discard_addrs: arbitrary() };
+                let discard_addrs =
+                    pre_state.state.journal.status.unwrap().lsn_addr_index.values() - new_lsn_addr_index.values();
+                let disk_event = DiskEvent::ExecuteSyncEnd{ discard_addrs };
 
                 assert( response_shard@.multiset() == Multiset::singleton((pre_state.state.in_flight->Some_0.req_id, DiskResponse::WriteResp{})) );    // extn
+
+                assert( post_state.state.store.in_flight is None);
+                assert( post_state.state.in_flight is None );
+                assert( post_state.state.store.in_flight is Some == post_state.state.in_flight is Some );
+//                 assert( post_state.state.journal.seq_end() == post_state.state.persistent_map().seq_end );
+                assert( post_state.state.wf() );
+                assert( AbstractCrashAwareMap::State::next(pre_state.state.store, post_state.state.store, AbstractCrashAwareMap::Label::CommitCompleteLabel{}) );
+                assume(false);
+                let journal_lbl = CachedJournal::Label::DiscardOld{
+                    start_lsn: post_state.state.persistent_map().seq_end,
+                    require_end: post_state.state.ephemeral_map().seq_end, // requires journal to still line up with ephemeral map, might not be needed
+                    discard_addrs,
+                };
+                assert( CachedJournal::State::next(pre_state.state.journal, post_state.state.journal, journal_lbl) );
                 assert( AtomicState::disk_transition(
                     pre_state.state, post_state.state, disk_event, info.reqs, info.resps) );    // witness
             }
