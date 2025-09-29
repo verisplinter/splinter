@@ -211,11 +211,7 @@ impl Implementation {
         &&& state.journal.seq_end() == state.persistent_map().seq_end
         // Probably also need contents to match...
 
-//TODO        &&& state.mapspec().kmmap == view_as_kmmap(self.store)
-//TODO        &&& view_as_kmmap(self.store) == map_plus_history(view_as_kmmap(self.persistent_store), self.journal@)
-//DELETE        &&& state.history.len()-1 == self.version()
-
-        &&& self.state().journal.wf()
+        &&& self.state().wf()
 
         &&& state.in_flight is Some <==> self.sync_requests.in_flight()
         &&& state.in_flight is Some <==> self.in_flight is Some
@@ -285,7 +281,6 @@ impl Implementation {
     ensures
         self.inv_api(api),
     {
-        assume(false); // TODO(jonh): left off here
         match req.input {
             Input::NoopInput => {
                 let reply = Reply{output: Output::NoopOutput, id: req.id};
