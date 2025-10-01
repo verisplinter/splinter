@@ -221,6 +221,14 @@ impl Implementation {
         self.journal.seq_end()
     }
 
+    closed spec fn recover_inv(self) -> bool {
+        &&& self.model@.instance_id() == self.instance@.id()
+        &&& self.in_flight is None
+        &&& !self.sync_requests.in_flight()
+        &&& self.sync_requests.deferred_reqs@.len() == 0
+        &&& self.store.wf()
+    }
+
     closed spec fn inv(self) -> bool {
         let state = self.state();
 
@@ -1056,8 +1064,9 @@ impl Implementation {
 
     fn recover(&mut self, api: &mut ClientAPI<ConcreteProgramModel>)
     requires
-        old(self).wf_init(),
-        old(self).instance_id() == old(api).instance_id()
+        old(self).recover_inv(),
+        old(self).state().recovery_state is Begin,
+        old(self).instance_id() == old(api).instance_id(),
     ensures
         self.inv(),
         self.instance_id() == api.instance_id(),
@@ -1162,83 +1171,31 @@ impl Implementation {
             let mut i = 0;
             self.store = self.persistent_store.clone();
 
-//             proof {
-//                 superblock@.final_stamped_map_ensures();
-//                 assert( self.version() == superblock@@.version_index );
-//             }
-
-//             loop
-//             invariant
-//                 self.journal@@ == journal,
-//                 0 <= i <= self.journal.msg_history.len(),
-//                 self.store.wf(),
-//                 self.journal@.wf(),
-//                 self.journal@@.wf(),
-//                 self.sync_requests == old(self).sync_requests,
-//                 self.version() == superblock@@.version_index,
-//                 self.instance_id() == model.instance_id(), // TODO:?
-//                 self.instance_id() == old(self).instance_id(),
-//                 api.instance_id() == old(api).instance_id(),
-//                 self.in_flight is None, // TODO:?
-//                 view_as_kmmap(self.store) == map_plus_history(view_as_kmmap(self.persistent_store), journal.discard_recent((journal.seq_start+i) as nat)),
-//             decreases self.journal.msg_history.len() - i,
-//             {
-//                 if i == self.journal.msg_history.len() {
-//                     break;
-//                 }
-// 
-//                 let ghost pre_store = view_as_kmmap(self.store);
-// 
-//                 let keyed_msg = self.journal.msg_history[i];
-//                 if let Message::Define{value} = keyed_msg.message {
-//                     self.store.insert(keyed_msg.key.clone(), value);
-//                     assert(view_as_kmmap(self.store)[keyed_msg.key] == keyed_msg.message);
-//                 } else {
-//                     api.log("Recover: unexpected journal entry (message type is not Define)");
-//                     convert_overflow_into_liveness_failure();
-//                 }
-// 
-//                 i = i + 1;
-// 
-//                 assert(pre_store.insert(keyed_msg.key, keyed_msg.message) == view_as_kmmap(self.store));
-//                 assert(journal.discard_recent((journal.seq_start+i) as nat).discard_recent((journal.seq_start+i-1) as nat) 
-//                     == journal.discard_recent((journal.seq_start+i-1) as nat));
-//                 assert(view_as_kmmap(self.store) == map_plus_history(view_as_kmmap(self.persistent_store), journal.discard_recent((journal.seq_start+i) as nat)));
-//             }
-
-//             assert(journal.discard_recent(journal.seq_end as nat) == journal); // ext_eq
-//             assert(view_as_kmmap(self.store) == map_plus_history(view_as_kmmap(self.persistent_store), self.journal@@));
-
-            // I think this is trivial
-//             assume(superblock@@.initial_history().last().appv.kmmap == view_as_kmmap(self.store));
-
             // Compute the next ghost model and transition our token
+            let ghost psb = DiskLayout::spec_new().spec_parse(raw_page@);
             let ghost post_state = ConcreteProgramModel{
                 state: AtomicState {
                     recovery_state: RecoveryState::SuperblockAvailable,
                     journal: self.journal@,
-                    cache: arbitrary(),
-                    store: arbitrary(),
+                    cache: pre_state.state.cache, // cheating?
+                    store: AbstractCrashAwareMap::State{
+                        persistent: psb.store,
+                        ephemeral: AbstractCrashAwareMap_v::Ephemeral::Known {
+                            v: AbstractMap::State { stamped_map: psb.store }
+                        },
+                        in_flight: None,
+                    },
                     persistent_journal_seq_end: arbitrary(),
                     in_flight: None,
                     sync_req_map: Map::empty(),
                 }
             };
 
-//             assert(post_state.state.history.len() - 1 == superblock@@.version_index);
             let ghost disk_response_tuples = multiset_map_singleton(disk_req_id, i_disk_response@);
-            // proof { multiset_map_singleton_ensures(disk_req_id, i_disk_response@); }
 
             let ghost disk_event = DiskEvent::SuperblockRecovery{req_id: disk_req_id, raw_page: raw_page@};
-            // let ghost disk_lbl = AsyncDisk::Label::DiskOps{
-            //             requests: Map::empty(),
-            //             responses: Map::empty().insert(disk_req_id, i_disk_response@),
-            //         };
             let ghost disk_request_tuples = Multiset::empty();
 
-            // extn; why isn't it triggered by requires in macro output?
-            // (Might also make a nice broadcast lemma, if that was usable.)
-            // assert( disk_lbl->requests == multiset_to_map(disk_request_tuples) );   // extn
             proof {
                 // Something about constructing a ProgramDiskInfo object is necessary to trigger a
                 // pattern match in the disk_transitions preconditions below.
@@ -1246,14 +1203,6 @@ impl Implementation {
                     reqs: disk_request_tuples,
                     resps: disk_response_tuples,
                 };
-                let sb = DiskLayout::spec_new().spec_parse(disk_event->raw_page);
-                assert( sb == superblock@@ );
-                assert( self.journal@.snapshot == superblock.journal_snapshot@ );
-                assert( superblock@@.journal == superblock.journal_snapshot@ );
-                assert( self.journal@.snapshot == sb.journal );
-                assert( post_state.state.journal == self.journal@ );
-                assert( post_state.state.journal.snapshot == sb.journal );
-                assume( false );
                 assert(AtomicState::disk_transition(
                     pre_state.state, post_state.state, disk_event, info.reqs, info.resps)); // step witness
             }
@@ -1267,17 +1216,41 @@ impl Implementation {
                 &mut model,
                 disk_response_token.get(),
             );
-
             self.model = Tracked(model);
-
-            // assert( superblock.parsedv().store_stamped_map().value == SuperblockTypes_v::map_to_kmmap(self.store@) );
-            // assert( superblock.parsedv().final_stamped_map().value == SuperblockTypes_v::map_to_kmmap(self.store@) );   // because of the runtime test-and-hang for a non-empty journal above
-            // assert( post_state.state.mapspec().kmmap == self.view_as_kmmap() );
-            // assert( self.state().mapspec().kmmap == self.view_as_kmmap() );
-            // assert(view_as_kmmap(self.store) == map_plus_history(view_as_kmmap(self.persistent_store), self.journal@@));
-
-            assert( self.inv() );
         }
+
+        self.recover_journal_index(api);
+        self.recover_ephemeral_map_from_journal(api);
+        assert( self.inv() );
+    }
+
+    fn recover_journal_index(&mut self, api: &mut ClientAPI<ConcreteProgramModel>)
+    requires
+        old(self).recover_inv(),
+        old(self).instance_id() == old(api).instance_id(),
+        old(self).state().recovery_state is SuperblockAvailable,
+    ensures
+        self.recover_inv(),
+        self.instance_id() == api.instance_id(),
+        self.state().recovery_state is JournalIndexComplete,
+        self.journal.index_ready(),
+    {
+        assume( false );    // unimpl
+    }
+
+    fn recover_ephemeral_map_from_journal(&mut self, api: &mut ClientAPI<ConcreteProgramModel>)
+    requires
+        old(self).recover_inv(),
+        old(self).instance_id() == old(api).instance_id(),
+        old(self).state().recovery_state is JournalIndexComplete,
+        old(self).journal.index_ready(),
+    ensures
+        self.recover_inv(),
+        self.instance_id() == api.instance_id(),
+        self.journal.index_ready(),
+        self.inv(), // includes RecoveryComplete,
+    {
+        assume( false );    // unimpl
     }
 
     #[verifier::external_body]
@@ -1316,12 +1289,8 @@ impl KVStoreTrait for Implementation {
     type Proof = RefinementProof;
 
     closed spec fn wf_init(self) -> bool {
-        &&& self.model@.instance_id() == self.instance@.id()
-        &&& self.model@.value().state.recovery_state is Begin
-        &&& self.in_flight is None
-        &&& !self.sync_requests.in_flight()
-        &&& self.sync_requests.deferred_reqs@.len() == 0
-        &&& self.store.wf()
+        &&& self.recover_inv()
+        &&& self.state().recovery_state is Begin
     }
 
     closed spec fn instance_id(self) -> InstanceId

@@ -483,6 +483,17 @@ state_machine!{ Cache {
     }
 }}
 
+// TODO(verus): Surely this should be constructed by the macros.
+pub open spec fn cache_functional_new(slots: nat) -> Cache::State
+{
+    Cache::State {
+        entries: Map::new(|i: Slot| i < slots , |i| Entry::Empty),
+        status_map: Map::new(|i: Slot| i < slots , |i| Status::NotFilled),
+        lookup_map: Map::empty(),
+        outstanding_reqs: Map::empty(),
+    }
+}
+
 pub proof fn injective_map_property<K,V>(map: Map<K, V>)
     requires map.is_injective()
     ensures 

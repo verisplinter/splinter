@@ -117,6 +117,11 @@ impl JournalImpl {
         0
     }
 
+    pub closed spec fn index_ready(&self) -> bool
+    {
+        self.status is Some
+    }
+
     pub closed spec(checked) fn seq_end(&self) -> LSN
     recommends self.index_ready()
     {
@@ -140,13 +145,11 @@ impl JournalImpl {
         }
     }
 
-    pub closed spec fn index_ready(&self) -> bool
-    {
-        self.status is Some
-    }
-
     pub exec fn new(snapshot: JournalSnapshot) -> (out: Self)
-        ensures out@.snapshot == snapshot@
+    ensures
+        out.wf(),
+        !out.index_ready(),
+        out@.snapshot == snapshot@,
 //         TODO how do I express this? transition!s work, but not init!
 //     ensures CachedJournal::initialize(snapshot@)
     {
@@ -214,7 +217,7 @@ impl JournalImpl {
     }
 
     pub broadcast proof fn view_ensures(self)
-        ensures self.index_ready() ==> (#[trigger] self@).status is Some
+        ensures self.index_ready() <==> (#[trigger] self@).status is Some
     {
     }
 }
