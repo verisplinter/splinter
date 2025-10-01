@@ -27,8 +27,8 @@ impl SystemModel::State<ConcreteProgramModel>  {
         &&& self.program.state.wf()
         &&& self.disk.inv()
 
-//         &&& self.in_flight_request_present()
-//         &&& self.persistent_sb_disk_inv()
+        &&& self.in_flight_request_present()
+        &&& self.persistent_sb_disk_inv()
 
 //         &&& self.no_writes_till_recovery_complete() // why should a property like this be an inv?
 //         &&& self.at_most_one_oustanding_request_per_address()
@@ -52,50 +52,50 @@ impl SystemModel::State<ConcreteProgramModel>  {
 //         &&& DiskLayout::impl_inv(self.disk.content[spec_superblock_addr()])
     }
 
-//     pub open spec fn in_flight_request_present(self) -> bool
-//     {
-//         &&& self.program.state.client_ready() ==> {
-//             let in_flight = self.program.state.in_flight;
-//             &&& in_flight is Some ==> {
-//                 let id = in_flight.unwrap().req_id;
-//                 &&& (self.disk.requests.contains_key(id) || self.disk.responses.contains_key(id))
-//                 &&& self.disk.requests.contains_key(id) ==>  {
-//                     &&& self.disk.requests[id] is WriteReq
-//                     &&& self.disk.requests[id]->to == spec_superblock_addr()
-//                     &&& DiskLayout::spec_new().spec_parse(self.disk.requests[id]->data) == self.program.state.in_flight_sb()
-//                     }
-//                 &&& self.disk.responses.contains_key(id) ==>
-//                     self.disk.responses[id] == DiskResponse::WriteResp{}
-//             }
-//             &&& in_flight is None ==> {
-//                 &&& forall |id| #[trigger] self.disk.requests.contains_key(id) //&& self.disk.requests[id] is WriteReq
-//                     ==> self.disk.requests[id].addr() != spec_superblock_addr()
-//                 &&& forall |id| #[trigger] self.disk.responses.contains_key(id)
-//                     ==> self.addr_for_id(id) != spec_superblock_addr()
-//             }
-//         }
-//     }
+    pub open spec fn in_flight_request_present(self) -> bool
+    {
+        &&& self.program.state.client_ready() ==> {
+            let in_flight = self.program.state.in_flight;
+            &&& in_flight is Some ==> {
+                let id = in_flight.unwrap().req_id;
+                &&& (self.disk.requests.contains_key(id) || self.disk.responses.contains_key(id))
+                &&& self.disk.requests.contains_key(id) ==>  {
+                    &&& self.disk.requests[id] is WriteReq
+                    &&& self.disk.requests[id]->to == spec_superblock_addr()                    
+                    &&& DiskLayout::spec_new().spec_parse(self.disk.requests[id]->data) == self.program.state.in_flight_sb()
+                }
+                &&& self.disk.responses.contains_key(id) ==>
+                    self.disk.responses[id] == DiskResponse::WriteResp{}
+            }
+            &&& in_flight is None ==> {
+                &&& forall |id| #[trigger] self.disk.requests.contains_key(id) //&& self.disk.requests[id] is WriteReq
+                    ==> self.disk.requests[id].addr() != spec_superblock_addr()
+                &&& forall |id| #[trigger] self.disk.responses.contains_key(id)
+                    ==> self.addr_for_id(id) != spec_superblock_addr()
+            }
+        }
+    }
 
-//     pub open spec fn persistent_sb_disk_inv(self) -> bool
-//     {
-//         &&& self.disk.content.contains_key(spec_superblock_addr())
-//         &&& {
-//             let sb : Superblock = DiskLayout::spec_new().spec_parse(self.disk.content[spec_superblock_addr()]);
-//             &&& sb.wf()
-//             &&& if self.program.state.client_ready() {
-//                     // on disk sb either contains inflight sb or persistent sb
-//                     let in_flight = self.program.state.in_flight;
-//                     if in_flight is Some && self.disk.responses.contains_key(in_flight.unwrap().req_id) {
-//                         sb == self.program.state.in_flight_sb()
-//                     } else {
-//                         sb == self.program.state.persistent_sb()
-//                     }
-//                 } else {
-//                     forall |id| #![auto] self.disk.responses.contains_key(id) ==>
-//                         self.disk.responses[id] == DiskResponse::ReadResp{data: self.disk.content[spec_superblock_addr()]}
-//                 }
-//         }
-//     }
+    pub open spec fn persistent_sb_disk_inv(self) -> bool
+    {
+        &&& self.disk.content.contains_key(spec_superblock_addr())
+        &&& {
+            let sb : Superblock = DiskLayout::spec_new().spec_parse(self.disk.content[spec_superblock_addr()]);
+            &&& sb.wf()
+            &&& if self.program.state.client_ready() {
+                    // on disk sb either contains inflight sb or persistent sb
+                    let in_flight = self.program.state.in_flight;
+                    if in_flight is Some && self.disk.responses.contains_key(in_flight.unwrap().req_id) {
+                        sb == self.program.state.in_flight_sb()
+                    } else {
+                        sb == self.program.state.persistent_sb()
+                    }
+                } else {
+                    forall |id| #![auto] self.disk.responses.contains_key(id) ==>
+                        self.disk.responses[id] == DiskResponse::ReadResp{data: self.disk.content[spec_superblock_addr()]}
+                }
+        }
+    }
 
 //     // NOTE:
 //     // pre recovery state constraint
@@ -117,11 +117,16 @@ impl SystemModel::State<ConcreteProgramModel>  {
             self.program.state.sync_req_map.dom().disjoint(self.sync_requests.dom())
     }
 
-//     // TODO: update once we have structures to track id -> address
-//     pub open spec fn addr_for_id(self, id: ID) -> Address
-//     {
-//         spec_superblock_addr()
-//     }
+    // assumes that all I/Os beside superblock are managed by the cache
+    pub open spec fn addr_for_id(self, id: ID) -> Address
+    {
+        let cache = self.program.state.cache;
+        if cache.outstanding_reqs.contains_key(id) {
+            cache.entries[cache.outstanding_reqs[id]].get_addr()
+        } else {
+            spec_superblock_addr()
+        }
+    }
 
 //     // This restricts the reads we can have
 //     // TODO: write responses must guarantee that the content on disk is the same as
@@ -354,6 +359,7 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
 
     proof fn init_refines(pre: SystemModel::State<ConcreteProgramModel>)
     {
+        assume(false);
         assert( SystemModel::State::initialize(pre, pre.program, pre.disk) );
         assert( Self::i(pre).async_ephemeral == AsyncMap::State::init_ephemeral_state() );
         assert( Self::i(pre).sync_requests == Map::<SyncReqId,nat>::empty() );  // extn

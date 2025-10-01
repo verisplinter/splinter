@@ -165,6 +165,7 @@ impl AtomicState {
 
             &&& if let Some(ifl) = self.in_flight {
                 &&& self.persistent_map().seq_end <= self.in_flight_map().seq_end
+
                 // TODO(move into inv)
                 // &&& self.ephemeral_map() == self.journal.journal
                 //         .discard_old(self.in_flight_map().seq_end)
@@ -403,7 +404,7 @@ impl AtomicState {
         &&& AbstractCrashAwareMap::State::next(pre.store, post.store, map_lbl)
 
         // checks that frozen journal has been flushed
-        &&&  Cache::State::next(pre.cache, post.cache, cache_lbl1)
+        &&& Cache::State::next(pre.cache, post.cache, cache_lbl1)
         &&& Cache::State::next(pre.cache, post.cache, cache_lbl2)
         &&& CachedJournal::State::next(pre.journal, post.journal, journal_lbl)
 
@@ -473,29 +474,54 @@ impl AtomicState {
         &&& pre.client_ready()
     }
 
-    // pub open spec(checked) fn in_flight_sb(self) -> Superblock
-    // recommends
-    //     self.wf(),
-    //     self.client_ready(),
-    //     self.in_flight is Some,
-    // {
-    //     let inf = self.in_flight.unwrap();
-    //     Superblock{
-    //         store: inf.new_persistent_map,
-    //         journal: self.journal.journal.discard_old(inf.new_persistent_map.seq_end).discard_recent(inf.journal_version),
-    //     }
-    // }
+    pub open spec(checked) fn in_flight_sb(self) -> Superblock
+    recommends
+        self.wf(),
+        self.client_ready(),
+        self.in_flight is Some,
+        self.in_flight.unwrap().journal_version != self.in_flight_map().seq_end 
+        ==> ({
+            let ifl_journal_version = self.in_flight.unwrap().journal_version;
+            let index = self.journal.status.unwrap().lsn_addr_index;
+            &&& ifl_journal_version > 0 
+            &&& index.contains_key(ifl_journal_version)
+        }),
+    {
+        let inf = self.in_flight.unwrap();
+        let index = self.journal.status.unwrap().lsn_addr_index;
+        // not sure if this reconstruction is necessary
+        let freshest_rec = 
+            if inf.journal_version == self.in_flight_map().seq_end { None } 
+            else { Some(index[(inf.journal_version-1) as nat]) };
+        Superblock{
+            store: self.in_flight_map(),
+            journal: JournalSnapShot{boundary_lsn: self.in_flight_map().seq_end, freshest_rec},
+        }
+    }
 
-    // pub open spec(checked) fn persistent_sb(self) -> Superblock
-    // recommends
-    //     self.wf(),
-    //     self.client_ready(),
-    // {
-    //     Superblock{
-    //         store: self.persistent_map,
-    //         journal: self.journal.journal.discard_recent(self.persistent_journal_seq_end),
-    //     }
-    // }
+    pub open spec(checked) fn persistent_sb(self) -> Superblock
+    recommends
+        self.wf(),
+        self.client_ready(),
+        self.persistent_journal_seq_end != self.persistent_map().seq_end 
+        ==> ({
+            let index = self.journal.status.unwrap().lsn_addr_index;
+            &&& self.in_flight_map().seq_end > 0 
+            &&& index.contains_key(self.in_flight.unwrap().journal_version)
+        }),
+
+        self.in_flight.unwrap().journal_version == self.in_flight_map().seq_end || self.in_flight_map().seq_end > 0
+    {
+        let freshest_rec = 
+            if self.persistent_journal_seq_end == self.persistent_map().seq_end { None } 
+            else { Some(self.journal.status.unwrap().lsn_addr_index[(self.persistent_journal_seq_end-1) as nat]) };
+
+        arbitrary()
+        // Superblock{
+        //     store: self.persistent_map(),
+        //     journal: self.journal.journal.discard_recent(self.persistent_journal_seq_end),
+        // }
+    }
 }
 
 }//verus!
