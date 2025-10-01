@@ -542,7 +542,6 @@ impl Implementation {
         self.inv_api(api),
         self.ready_for_user_operation(),
     {
-        assume(false); // TODO(jonh): left off here
         let ghost old_satisfied_reqs = old(self).sync_requests.satisfied_reqs@;
         let ghost old_deferred_reqs = old(self).sync_requests.deferred_reqs@;
         assert({
@@ -554,8 +553,7 @@ impl Implementation {
 
         // Consume the shard to convert into model state
         let ghost pre_state = self.model@.value();
-        // let ghost version = (pre_state.state.history.len()-1) as nat;
-        let ghost version = arbitrary();
+        let ghost version = pre_state.state.ephemeral_map().seq_end;
         let ghost post_state = ConcreteProgramModel {
             state: AtomicState{
                 sync_req_map: pre_state.state.sync_req_map.insert(req.id, version),
@@ -580,14 +578,17 @@ impl Implementation {
             if r != req { assert( old(self).sync_requests.deferred_reqs@.contains(r) ); }
         }
 
+//         assert( self.inv_api(api) );
         self.maybe_launch_superblock(api);
     }
 
     pub exec fn maybe_launch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>)
     requires
         old(self).inv_api(old(api)),
+        old(self).ready_for_user_operation(),
     ensures
         self.inv_api(api),
+        self.ready_for_user_operation(),
     {
         if self.sync_requests.deferred_reqs.len() == 0 {
             // nobody is waiting for a superblock send.
@@ -604,8 +605,10 @@ impl Implementation {
         old(self).inv_api(old(api)),
         old(self).sync_requests.satisfied_reqs.len() == 0,
         old(self).sync_requests.deferred_reqs.len() > 0,
+        old(self).ready_for_user_operation(),
     ensures
         self.inv_api(api),
+        self.ready_for_user_operation(),
     {
 //         proof { self.system_inv_implies_atomic_state_wf(); }
 // 
