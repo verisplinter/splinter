@@ -159,7 +159,8 @@ impl JournalImpl {
     ensures
         self.wf(),
         self@.wf(),
-        self@.seq_end() == old(self)@.seq_end() + 1,
+        self.seq_start() == old(self).seq_start(),
+        self.seq_end() == old(self).seq_end() + 1,
         CachedJournal_v::CachedJournal::State::put(old(self)@, self@,
             CachedJournal_v::CachedJournal::Label::Put{
             messages: MsgHistory::singleton_at(old(self).seq_end(), KeyedMessage::from_kv(key, value))

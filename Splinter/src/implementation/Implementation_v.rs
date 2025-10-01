@@ -46,7 +46,8 @@ use crate::implementation::CachedJournal_v;
 use crate::marshalling::Marshalling_v::Parsedview;
 use crate::marshalling::WF_v::WF;
 // use crate::marshalling::UniformSized_v::UniformSized;
-use crate::implementation::OverflowFiction_v::*; // not checked in 
+use crate::implementation::OverflowFiction_v::*;
+use crate::abstract_system::AbstractCrashAwareMap_v;
 
 #[allow(unused_imports)]
 use vstd::multiset::*;
@@ -128,6 +129,26 @@ closed spec(checked) fn view_as_kmmap(store: VecMap<Key, Value>) -> TotalKMMap
     ASuperblock::map_to_kmmap(store@)
 }
 
+// TODO(jonh): delete
+// proof fn vec_insert_is_kmmap_insert(old_store: Map<Key, Value>, new_store: Map<Key, Value>, key: Key, value: Value)
+// requires
+//     new_store == old_store.insert(key, value),
+// ensures ASuperblock::map_to_kmmap(new_store) == ASuperblock::map_to_kmmap(old_store.insert(key, value))
+// {
+// }
+// 
+// proof fn insert_is_apply(old_kmmap: TotalKMMap, new_kmmap: TotalKMMap, key: Key, value: Value, lsn: LSN)
+// requires
+//     new_kmmap == old_kmmap.insert(key, Message::Define{value})
+// ensures ({
+//     let puts = MsgHistory::singleton_at(lsn, KeyedMessage{key, message: Message::Define{value}});
+//     new_kmmap == puts.apply_to_stamped_map(StampedMap{value: old_kmmap, seq_end: lsn}).value
+//     })
+// {
+// }
+    
+
+// TODO replace with defn from MsgHistory
 closed spec(checked) fn map_plus_history(map: TotalKMMap, msg_history: MsgHistory) -> TotalKMMap
     recommends msg_history.wf()
 {
@@ -207,8 +228,12 @@ impl Implementation {
         // physical state consistent with model
         &&& state.recovery_state is RecoveryComplete
 
+        // model matches our interpretation of Implementation state struct
+        &&& state.store == self.view_store()
+        &&& state.journal == self.journal@
+
         // map and journal are at the same LSN
-        &&& state.journal.seq_end() == state.persistent_map().seq_end
+        &&& state.journal.seq_end() == state.ephemeral_map().seq_end
         // Probably also need contents to match...
 
         &&& self.state().wf()
@@ -248,9 +273,35 @@ impl Implementation {
         &&& Self::sync_req_lists_mutually_unique(self.sync_requests.satisfied_reqs@, self.sync_requests.deferred_reqs@)
     }
 
+    pub closed spec fn i_persistent_store(self) -> StampedMap {
+        StampedMap{value: view_as_kmmap(self.persistent_store), seq_end: self.journal.seq_start()}
+    }
+
+    pub closed spec fn i_ephemeral_store(self) -> AbstractCrashAwareMap_v::Ephemeral {
+        // When is it Unknown? I guess based on the program counter being in recovery.
+        AbstractCrashAwareMap_v::Ephemeral::Known{
+            v: AbstractMap::State{
+                stamped_map: StampedMap{value: view_as_kmmap(self.store), seq_end: self.journal.seq_end()}
+            }
+        }
+    }
+
+    pub closed spec fn i_inflight_store(self) -> Option<StampedMap> {
+        match self.in_flight {
+            None => None,
+            Some(inflight) => {
+                Some(StampedMap{value: view_as_kmmap(inflight.new_store), seq_end: inflight.new_boundary_lsn as nat})
+            }
+        }
+    }
+
     pub open spec fn view_store(&self) -> AbstractCrashAwareMap::State
     {
-        arbitrary()
+        AbstractCrashAwareMap::State{
+            persistent: self.i_persistent_store(),
+            ephemeral: self.i_ephemeral_store(),
+            in_flight: self.i_inflight_store(),
+        }
     }
 
     pub closed spec fn good_req(self, req: Request, req_shard: RequestShard) -> bool
@@ -321,15 +372,20 @@ impl Implementation {
         }
     }
 
+    pub closed spec fn ready_for_put(&self) -> bool
+    {
+        &&& self.journal.index_ready()
+    }
+
     pub exec fn handle_put(&mut self, req: Request, req_shard: Tracked<RequestShard>, api: &mut ClientAPI<ConcreteProgramModel>)
     requires
         old(self).inv_api(old(api)),
         old(self).good_req(req, req_shard@),
+        old(self).ready_for_put(),
         req.input is PutInput,
     ensures
         self.inv_api(api),
     {
-        assume(false); // TODO(jonh): left off here
         let out = match req.input {
         Input::PutInput{key, value} => {
             let ghost pre_state = self.model@.value();
@@ -337,8 +393,6 @@ impl Implementation {
 
             self.journal.insert(key.clone(), value);
             self.store.insert(key.clone(), value);
-
-//             assert(self.journal@@.msgs == old(self).journal@@.msgs.insert(old(self).journal@@.seq_end, keyed_msg));
 
             let reply = Reply{output: Output::PutOutput, id: req.id};
             let ghost post_state = ConcreteProgramModel{
@@ -349,45 +403,46 @@ impl Implementation {
                 }
             };
 
-            // assert(post_state.state.history.len()-1 == pre_state.state.history.len());
-
             let tracked mut model = KVStoreTokenized::model::arbitrary();
             proof { tracked_swap(self.model.borrow_mut(), &mut model); }
 
+            // Prove our physical states correspond to the model state machine step.
             proof {
                 let map_req = req.mapspec_req();
                 let map_reply = reply.mapspec_reply();
-                let ghost map_lbl = MapSpec::Label::Put{input: map_req.input, output: map_reply.output};
-//                 reveal(MapSpec::State::next);
-//                 reveal(MapSpec::State::next_by);
+                let puts = MsgHistory::singleton_at(old(self).journal.seq_end(), keyed_msg);
 
-//                 assert forall |lsn| self.journal@@.seq_start <= lsn <= old(self).journal@@.seq_end
-//                 implies self.journal@@.discard_recent(lsn) =~= old(self).journal@@.discard_recent(lsn) by {}
+                assert(view_as_kmmap(self.store) =~= view_as_kmmap(old(self).store).insert(key, Message::Define{value})); //extn
 
-                assert(view_as_kmmap(self.store) =~= view_as_kmmap(old(self).store).insert(key, Message::Define{value}));
-//                 assert( MapSpec::State::next_by(pre_state.state.mapspec(), post_state.state.mapspec(), map_lbl, MapSpec::Step::put())); // witness to step
+                // Need to unwind two instances of the recursive definition: one for the empty base
+                // case and one for the single message we stuck in the history.
+                reveal_with_fuel(MsgHistory::apply_to_stamped_map, 2);
 
-                // assert( post_state.state.history.get_prefix(pre_state.state.history.len()) =~= pre_state.state.history );  // extn
-                let puts = MsgHistory::singleton_at(7, keyed_msg);
+                reveal(AbstractMap::State::next_by);
+                reveal(AbstractMap::State::next);
+                // step witness
+                assert( AbstractMap::State::next_by(pre_state.state.store.ephemeral->v, post_state.state.store.ephemeral->v,
+                        AbstractMap::Label::PutLabel{ puts }, AbstractMap::Step::put{}));
 
-                assert( post_state.state.journal.status.unwrap().unmarshalled_tail.seq_end ==
-                        pre_state.state.journal.status.unwrap().unmarshalled_tail.seq_end + 1 );
-                assert( post_state.state.journal.seq_end() == pre_state.state.journal.seq_end() + 1 );
-                assert( post_state.state.journal.seq_end() == post_state.state.persistent_map().seq_end );
-                assert( post_state.state.wf() );
+                reveal(AbstractCrashAwareMap::State::next_by);
+                reveal(AbstractCrashAwareMap::State::next);
+                // step witness
+                assert( AbstractCrashAwareMap::State::next_by(pre_state.state.store, post_state.state.store,
+                        AbstractCrashAwareMap::Label::PutRecordsLabel{records: puts},
+                        AbstractCrashAwareMap::Step::put_records(post_state.state.store.ephemeral->v)) );
+
+                reveal(CachedJournal::State::next_by);
+                reveal(CachedJournal::State::next);
+                // step witness
+                assert( CachedJournal::State::next_by(pre_state.state.journal, post_state.state.journal,
+                        CachedJournal::Label::Put{messages: puts},
+                        CachedJournal::Step::put()) );
+
                 assert( AtomicState::execute_put(pre_state.state, post_state.state, map_req, map_reply, puts) );
                 assert( AtomicState::execute_transition(
                         pre_state.state, post_state.state, map_req, map_reply, ProgramEvent::Put{puts}) );
                 assert( ConcreteProgramModel::next(pre_state, post_state,
                     ProgramLabel::UserIO{op: ProgramUserOp::Execute{req: map_req, reply: map_reply}}) );
-
-                let old_seq_end = old(self).journal.seq_end();
-                let stamped_map = StampedMap{value: view_as_kmmap(self.persistent_store), seq_end: old(self).journal.seq_start()};
-//                 let sub_map = self.journal@@.discard_recent(old_seq_end).apply_to_stamped_map(stamped_map);
-
-//                 assert(old(self).journal@@ == self.journal@@.discard_recent(old_seq_end)); // ext_eq
-//                 assert(sub_map.value == map_plus_history(stamped_map.value, old(self).journal@@));
-//                 assert(map_plus_history(view_as_kmmap(self.persistent_store), self.journal@@) == view_as_kmmap(self.store));
             }
 
              let tracked new_reply_token = self.instance.borrow().execute_transition(
@@ -398,20 +453,6 @@ impl Implementation {
             );
             self.model = Tracked(model);
 
-            proof {
-                // NOTE(JL): this proof should be lifted to atomic state
-//                 if self.state().in_flight is Some {
-//                     let ifl_sync_version = self.state().in_flight.unwrap().journal_version;
-//                     assert(self.journal@@.discard_recent(ifl_sync_version) == old(self).journal@@.discard_recent(ifl_sync_version)); // ext_eq
-//                     
-//                     let old_seq_end = old(self).journal@@.seq_end;
-//                     let new_persistent_map = self.in_flight.unwrap().new_store;
-//                     let new_persistent_map_version = self.in_flight.unwrap().new_boundary_lsn as nat;
-//                     let new_ephemeral_journal = self.journal@@.discard_old(new_persistent_map_version);
-//                     let old_ephemeral_journal = old(self).journal@@.discard_old(new_persistent_map_version);
-//                     assert( new_ephemeral_journal.discard_recent(old_seq_end) == old_ephemeral_journal);
-//                 }
-            }
             api.send_reply(reply, Tracked(new_reply_token), true);
         },
             _ => unreached(),
