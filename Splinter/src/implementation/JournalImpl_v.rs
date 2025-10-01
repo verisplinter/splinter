@@ -212,6 +212,11 @@ impl JournalImpl {
             );
         }
     }
+
+    pub broadcast proof fn view_ensures(self)
+        ensures self.index_ready() ==> (#[trigger] self@).status is Some
+    {
+    }
 }
 
 impl View for JournalImpl {

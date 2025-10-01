@@ -62,6 +62,8 @@ use crate::implementation::DiskLayout_v::*;
 
 verus!{
 
+broadcast use JournalImpl::view_ensures;
+
 pub closed spec fn good_req(instance_id: InstanceId, req: Request, req_shard: RequestShard) -> bool
 {
     &&& req_shard.instance_id() == instance_id
@@ -747,13 +749,16 @@ impl Implementation {
         // can't break in-flight inv because there aren't any satisfied_reqs during this call
         old(self).sync_requests.satisfied_reqs@.len()==0,
         Self::sync_req_lists_mutually_unique(old(ready_reqs)@, old(self).sync_requests.deferred_reqs@),
+        old(self).ready_for_user_operation(),
     ensures
         self.inv_api(api),
+        self.ready_for_user_operation(),
     {
         assert( ready_reqs@.take(ready_reqs@.len() as int) == ready_reqs@ ); // extn
         loop
         invariant
             self.inv_api(api),
+            self.ready_for_user_operation(),
             self.sync_reqs_in_version(ready_reqs@, old(self).state().persistent_journal_seq_end),
             self.state().persistent_journal_seq_end == old(self).state().persistent_journal_seq_end,
             self.sync_requests.satisfied_reqs@.len()==0,
@@ -808,6 +813,7 @@ impl Implementation {
         req.input is SyncInput,
         old(self).sync_req_in_version(req.id, old(self).state().persistent_journal_seq_end),
         old(self).no_matching_sync_req_id(req.id),
+        old(self).ready_for_user_operation(),
     ensures
         self.inv_api(api),
 //         self.store == old(self).store,
@@ -817,6 +823,7 @@ impl Implementation {
             ..old(self).state()
         }),
         old(self).sync_requests.deferred_reqs@ == self.sync_requests.deferred_reqs@,
+        self.ready_for_user_operation(),
     {
         // Convert the model state back into a shard
         let ghost pre_state = self.model@.value();

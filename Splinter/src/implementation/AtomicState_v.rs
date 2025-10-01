@@ -128,7 +128,8 @@ pub open spec fn to_journal_reads(reads: Map<Address, RawPage>) -> Map<Address, 
 impl AtomicState {
     pub open spec fn client_ready(self) -> bool
     {
-        self.recovery_state is RecoveryComplete
+        &&& self.recovery_state is RecoveryComplete
+        &&& self.journal.status is Some
     }
 
     // Duck tape: directly accessing submodule state...
@@ -504,13 +505,14 @@ impl AtomicState {
         self.wf(),
         self.client_ready(),
         self.persistent_journal_seq_end != self.persistent_map().seq_end 
-        ==> ({
+        ==>
+        ({
             let index = self.journal.status.unwrap().lsn_addr_index;
+            &&& self.store.in_flight is Some
             &&& self.in_flight_map().seq_end > 0 
             &&& index.contains_key(self.in_flight.unwrap().journal_version)
-        }),
-
-        self.in_flight.unwrap().journal_version == self.in_flight_map().seq_end || self.in_flight_map().seq_end > 0
+            &&& self.in_flight.unwrap().journal_version == self.in_flight_map().seq_end || self.in_flight_map().seq_end > 0
+        })
     {
         let freshest_rec = 
             if self.persistent_journal_seq_end == self.persistent_map().seq_end { None } 
