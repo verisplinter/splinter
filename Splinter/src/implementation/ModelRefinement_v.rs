@@ -27,29 +27,38 @@ impl SystemModel::State<ConcreteProgramModel>  {
         &&& self.program.state.wf()
         &&& self.disk.inv()
 
+        // &&& self.ephemeral_map() == self.journal.journal.apply_to_stamped_map(self.persistent_map())
+        // TODO(move into inv)
+        // &&& self.ephemeral_map() == self.journal.journal
+        //         .discard_old(self.in_flight_map().seq_end)
+        //         .apply_to_stamped_map(self.in_flight_map())
+
         &&& self.in_flight_request_present()
         &&& self.persistent_sb_disk_inv()
 
 //         &&& self.no_writes_till_recovery_complete() // why should a property like this be an inv?
-//         &&& self.at_most_one_oustanding_request_per_address()
-//         &&& self.responses_consistent_with_disk()
+        &&& self.at_most_one_oustanding_request_per_address()
+        &&& self.responses_consistent_with_disk()
+        &&& self.cache_consistent_with_outstanding_reqs()
+        // do we also need to require self.outstanding
+        // NOTE(disk): 1 outstanding IO for each loading/writeback page, reserved & filled (!writeback) -> 0 I/O
 
-//         &&& self.requests_have_unique_ids()
-//         &&& self.replies_have_unique_ids()
-//         &&& self.requests_replies_id_disjoint()
-//         &&& self.request_ids_in_history()
-//         &&& self.reply_ids_in_history()
 
-//         &&& self.sync_req_reply_ids_disjoint()
-//         &&& self.sync_req_ids_in_history()
-//         &&& self.sync_reply_ids_in_history()
-//         &&& self.program.state.client_ready() ==> self.program_sync_req_ids_in_history()
+        // id history tracking
+        &&& self.requests_have_unique_ids()
+        &&& self.replies_have_unique_ids()
+        &&& self.requests_replies_id_disjoint()
+        &&& self.request_ids_in_history()
+        &&& self.reply_ids_in_history()
+        &&& self.sync_req_reply_ids_disjoint()
+        &&& self.sync_req_ids_in_history()
+        &&& self.sync_reply_ids_in_history()
+        &&& self.program.state.client_ready() ==> self.program_sync_req_ids_in_history()
 
-//         &&& self.superblock_writes_inv()
-
-//         &&& self.sync_requests_inv()
-
-//         &&& DiskLayout::impl_inv(self.disk.content[spec_superblock_addr()])
+        // disk write inv
+        &&& self.superblock_writes_inv()
+        &&& self.sync_requests_inv()
+        &&& DiskLayout::impl_inv(self.disk.content[spec_superblock_addr()])
     }
 
     pub open spec fn in_flight_request_present(self) -> bool
@@ -67,6 +76,7 @@ impl SystemModel::State<ConcreteProgramModel>  {
                 &&& self.disk.responses.contains_key(id) ==>
                     self.disk.responses[id] == DiskResponse::WriteResp{}
             }
+
             &&& in_flight is None ==> {
                 &&& forall |id| #[trigger] self.disk.requests.contains_key(id) //&& self.disk.requests[id] is WriteReq
                     ==> self.disk.requests[id].addr() != spec_superblock_addr()
@@ -128,41 +138,56 @@ impl SystemModel::State<ConcreteProgramModel>  {
         }
     }
 
-//     // This restricts the reads we can have
-//     // TODO: write responses must guarantee that the content on disk is the same as
-//     pub open spec fn responses_consistent_with_disk(self) -> bool
-//     {
-//         forall |id| #[trigger] self.disk.responses.contains_key(id)
-//         ==> {
-//             &&& self.disk.content.contains_key(self.addr_for_id(id))
-//             &&& self.disk.responses[id] is ReadResp /* && valid_checksum(self.disk.responses[id]->data)*/ ==>
-//                 self.disk.responses[id]->data == self.disk.content[self.addr_for_id(id)]
-//             &&& self.disk.responses[id] is WriteResp ==>
-//                 DiskLayout::spec_new().spec_parse(self.disk.content[self.addr_for_id(id)]) == self.program.state.in_flight_sb()
-//         }
-//     }
+    pub open spec fn responses_consistent_with_disk(self) -> bool
+    {
+        forall |id| #[trigger] self.disk.responses.contains_key(id)
+        ==> {
+            &&& self.disk.content.contains_key(self.addr_for_id(id))
+            &&& self.disk.responses[id] is ReadResp /* && valid_checksum(self.disk.responses[id]->data)*/ ==>
+                self.disk.responses[id]->data == self.disk.content[self.addr_for_id(id)]
+            &&& self.disk.responses[id] is WriteResp ==> {
+                let addr = self.addr_for_id(id);
+                let disk_data = DiskLayout::spec_new().spec_parse(addr);
+                &&& addr == spec_superblock_addr() ==> disk_data == self.program.state.in_flight_sb()
+                &&& addr != spec_superblock_addr() ==> {
+                    let cache = self.program.state.cache;
+                    &&& cache.lookup_map.contains_key(addr)
+                    &&& cache.entries[cache.lookup_map[addr]] is Filled
+                    &&& disk_data == cache.entries[cache.lookup_map[addr]]->data
+                }
+            }
+        }
+    }
 
-//     // for request, we only make one request at a time, losing the addr makes it hard
-//     // when we only have reply and can't restrict additional requests for an addr is present in the request queue
-//     // right now this is fine because the only I/O is writing to superblock
-//     pub open spec fn at_most_one_oustanding_request_per_address(self) -> bool
-//     {
-//         // TODO: temporary restriction only valid for the simple model
-//         &&& forall |id| #[trigger] self.disk.requests.contains_key(id) ==>
-//                 self.disk.requests[id].addr() == spec_superblock_addr()
+    pub open spec fn cache_consistent_with_outstanding_reqs(self) -> bool
+    {
+        
+    }
+        // do we also need to require self.outstanding
+        // NOTE(disk): 1 outstanding IO for each loading/writeback page, reserved & filled (!writeback) -> 0 I/O
 
-//         // no concurrent requests on the same address
-//         &&& forall |id1, id2| #[trigger] self.disk.requests.contains_key(id1) && #[trigger] self.disk.requests.contains_key(id2)
-//             && id1 != id2 ==> self.disk.requests[id1].addr() != self.disk.requests[id2].addr()
 
-//         // no concurrent responses on the same address
-//         &&& forall |id1, id2| #[trigger] self.disk.responses.contains_key(id1) && #[trigger] self.disk.responses.contains_key(id2)
-//             && id1 != id2 ==> self.addr_for_id(id1) != self.addr_for_id(id2)
+    // for request, we only make one request at a time, losing the addr makes it hard
+    // when we only have reply and can't restrict additional requests for an addr is present in the request queue
+    // right now this is fine because the only I/O is writing to superblock
+    pub open spec fn at_most_one_oustanding_request_per_address(self) -> bool
+    {
+        // TODO: temporary restriction only valid for the simple model
+        // &&& forall |id| #[trigger] self.disk.requests.contains_key(id) ==>
+        //         self.disk.requests[id].addr() == spec_superblock_addr()
 
-//         // no concurrent request response on the same address
-//         &&& forall |id1, id2| #[trigger] self.disk.requests.contains_key(id1) && #[trigger] self.disk.responses.contains_key(id2)
-//             ==> self.disk.requests[id1].addr() != self.addr_for_id(id2)
-//     }
+        // no concurrent requests on the same address
+        &&& forall |id1, id2| #[trigger] self.disk.requests.contains_key(id1) && #[trigger] self.disk.requests.contains_key(id2)
+            && id1 != id2 ==> self.disk.requests[id1].addr() != self.disk.requests[id2].addr()
+
+        // no concurrent responses on the same address
+        &&& forall |id1, id2| #[trigger] self.disk.responses.contains_key(id1) && #[trigger] self.disk.responses.contains_key(id2)
+            && id1 != id2 ==> self.addr_for_id(id1) != self.addr_for_id(id2)
+
+        // no concurrent request response on the same address
+        &&& forall |id1, id2| #[trigger] self.disk.requests.contains_key(id1) && #[trigger] self.disk.responses.contains_key(id2)
+            ==> self.disk.requests[id1].addr() != self.addr_for_id(id2)
+    }
 
     pub open spec(checked) fn requests_have_unique_ids(self) -> bool
     {
@@ -173,14 +198,14 @@ impl SystemModel::State<ConcreteProgramModel>  {
             ==> #[trigger] req1.id != #[trigger] req2.id
     }
 
-//     pub open spec(checked) fn replies_have_unique_ids(self) -> bool
-//     {
-//         &&& all_elems_single(self.replies)
-//         &&& forall |reply1, reply2| self.replies.contains(reply1)
-//             && self.replies.contains(reply2)
-//             && reply1 != reply2
-//             ==> #[trigger] reply1.id != #[trigger] reply2.id
-//     }
+    pub open spec(checked) fn replies_have_unique_ids(self) -> bool
+    {
+        &&& all_elems_single(self.replies)
+        &&& forall |reply1, reply2| self.replies.contains(reply1)
+            && self.replies.contains(reply2)
+            && reply1 != reply2
+            ==> #[trigger] reply1.id != #[trigger] reply2.id
+    }
 
     pub open spec(checked) fn requests_replies_id_disjoint(self) -> bool
     {
@@ -223,7 +248,9 @@ impl SystemModel::State<ConcreteProgramModel>  {
     // invariant provided by the program.
     pub open spec(checked) fn superblock_writes_inv(self) -> bool
     {
-        forall |id| #![auto] self.disk.requests.contains_key(id) && self.disk.requests[id] is WriteReq && self.disk.requests[id]->to == spec_superblock_addr()
+        forall |id| #![auto] self.disk.requests.contains_key(id) 
+            && self.disk.requests[id] is WriteReq 
+            && self.disk.requests[id]->to == spec_superblock_addr()
             ==> DiskLayout::impl_inv(self.disk.requests[id]->data)
     }
 

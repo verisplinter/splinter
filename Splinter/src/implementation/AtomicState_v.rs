@@ -153,25 +153,13 @@ impl AtomicState {
     pub open spec fn wf(self) -> bool {
         &&& self.client_ready() ==> {
             &&& self.journal.wf()
-            // persistent map lines up with ephemeral journal
-//             &&& self.journal.seq_end() == self.persistent_map().seq_end
-            // That doesn't make any sense. Maybe you meant one or both of these?
             &&& self.journal.seq_start() == self.persistent_map().seq_end
             &&& self.journal.seq_end() == self.ephemeral_map().seq_end
 
-            // ephemeral map = persistent map + ephemeral journal
-            // TODO(move into inv)
-            // &&& self.ephemeral_map() == self.journal.journal.apply_to_stamped_map(self.persistent_map())
             &&& self.store.in_flight is Some <==> self.in_flight is Some
-
-            &&& if let Some(ifl) = self.in_flight {
-                &&& self.persistent_map().seq_end <= self.in_flight_map().seq_end
-
-                // TODO(move into inv)
-                // &&& self.ephemeral_map() == self.journal.journal
-                //         .discard_old(self.in_flight_map().seq_end)
-                //         .apply_to_stamped_map(self.in_flight_map())
-                } else { true }
+            &&& if let Some(ifl) = self.in_flight 
+                { self.persistent_map().seq_end <= self.in_flight_map().seq_end } 
+                else { true }
         }
     }
 
@@ -490,10 +478,10 @@ impl AtomicState {
     {
         let inf = self.in_flight.unwrap();
         let index = self.journal.status.unwrap().lsn_addr_index;
-        // not sure if this reconstruction is necessary
         let freshest_rec = 
             if inf.journal_version == self.in_flight_map().seq_end { None } 
             else { Some(index[(inf.journal_version-1) as nat]) };
+
         Superblock{
             store: self.in_flight_map(),
             journal: JournalSnapShot{boundary_lsn: self.in_flight_map().seq_end, freshest_rec},
@@ -508,21 +496,19 @@ impl AtomicState {
         ==>
         ({
             let index = self.journal.status.unwrap().lsn_addr_index;
-            &&& self.store.in_flight is Some
-            &&& self.in_flight_map().seq_end > 0 
-            &&& index.contains_key(self.in_flight.unwrap().journal_version)
-            &&& self.in_flight.unwrap().journal_version == self.in_flight_map().seq_end || self.in_flight_map().seq_end > 0
-        })
+            &&& self.persistent_journal_seq_end > 0 
+            &&& index.contains_key(self.persistent_journal_seq_end)
+        }),
     {
+        let index = self.journal.status.unwrap().lsn_addr_index;
         let freshest_rec = 
             if self.persistent_journal_seq_end == self.persistent_map().seq_end { None } 
-            else { Some(self.journal.status.unwrap().lsn_addr_index[(self.persistent_journal_seq_end-1) as nat]) };
+            else { Some(index[(self.persistent_journal_seq_end-1) as nat]) };
 
-        arbitrary()
-        // Superblock{
-        //     store: self.persistent_map(),
-        //     journal: self.journal.journal.discard_recent(self.persistent_journal_seq_end),
-        // }
+        Superblock{
+            store: self.persistent_map(),
+            journal: JournalSnapShot{boundary_lsn: self.persistent_map().seq_end, freshest_rec},
+        }
     }
 }
 
