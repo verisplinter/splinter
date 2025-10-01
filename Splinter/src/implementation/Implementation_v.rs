@@ -500,7 +500,6 @@ impl Implementation {
         // allowed to do nothing in response
         self.ready_for_user_operation(),
     {
-        assume(false); // TODO(jonh): left off here
         match req.input {
         Input::QueryInput{key} => {
             let value = match self.store.get(&key) {
@@ -516,17 +515,30 @@ impl Implementation {
             let tracked mut model = KVStoreTokenized::model::arbitrary();
             proof { tracked_swap(self.model.borrow_mut(), &mut model); }
 
+            // Prove our physical states correspond to the model state machine step.
             proof {
+                let end_lsn = pre_state.state.ephemeral_map().seq_end;
                 let map_req = req.mapspec_req();
                 let map_reply = reply.mapspec_reply();
-                let ghost map_lbl = MapSpec::Label::Query{input: map_req.input, output: map_reply.output};
-//                 reveal(MapSpec::State::next);
-//                 reveal(MapSpec::State::next_by);
-//TODO                assert( MapSpec::State::next_by(pre_state.state.mapspec(), post_state.state.mapspec(),
-//TODO                        map_lbl, MapSpec::Step::query())); // witness to step
-                // assert( post_state.state.history.get_prefix(pre_state.state.history.len()) == pre_state.state.history );  // extn
-//                 assert( ConcreteProgramModel::next(pre_state, post_state,
-//                     ProgramLabel::UserIO{op: ProgramUserOp::Execute{req: map_req, reply: map_reply}}) );
+
+                reveal(AbstractMap::State::next_by);
+                reveal(AbstractMap::State::next);
+                // step witness
+                assert( AbstractMap::State::next_by(pre_state.state.store.ephemeral->v, post_state.state.store.ephemeral->v,
+                        AbstractMap::Label::QueryLabel{end_lsn, key, value}, AbstractMap::Step::query{}));
+                
+                reveal(AbstractCrashAwareMap::State::next_by);
+                reveal(AbstractCrashAwareMap::State::next);
+                // step witness
+                assert( AbstractCrashAwareMap::State::next_by(pre_state.state.store, post_state.state.store,
+                        AbstractCrashAwareMap::Label::QueryLabel{end_lsn, key, value},
+                        AbstractCrashAwareMap::Step::query(post_state.state.store.ephemeral->v)) );
+
+                assert( AtomicState::execute_query(pre_state.state, post_state.state, map_req, map_reply, end_lsn, key, value) );
+                assert( AtomicState::execute_transition(
+                        pre_state.state, post_state.state, map_req, map_reply, ProgramEvent::Query{end_lsn, key, value}) );
+                assert( ConcreteProgramModel::next(pre_state, post_state,
+                    ProgramLabel::UserIO{op: ProgramUserOp::Execute{req: map_req, reply: map_reply}}) );
             }
 
             let tracked new_reply_token = self.instance.borrow().execute_transition(
