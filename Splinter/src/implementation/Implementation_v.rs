@@ -40,6 +40,7 @@ use crate::implementation::VecMap_v::*;
 use crate::implementation::JournalTypes_v::{ILsn};
 use crate::implementation::JournalModel_v::lsn_addr_index_discard_up_to;
 use crate::implementation::JournalImpl_v::*;
+use crate::implementation::SuperblockTypes_v;
 use crate::implementation::SuperblockTypes_v::*;
 use crate::implementation::CachedJournal_v::CachedJournal;
 use crate::implementation::CachedJournal_v;
@@ -126,7 +127,7 @@ pub struct InFlight {
 
 closed spec(checked) fn view_as_kmmap(store: VecMap<Key, Value>) -> TotalKMMap
 {
-    ASuperblock::map_to_kmmap(store@)
+    SuperblockTypes_v::map_to_kmmap(store@)
 }
 
 // TODO(jonh): delete
@@ -949,7 +950,7 @@ impl Implementation {
                 // }
               } else {
                 assert(self.journal.seq_start() == new_boundary_lsn);
-                assert(ASuperblock::map_to_kmmap(self.persistent_store@) == ASuperblock::map_to_kmmap(self.persistent_store@));
+                assert(SuperblockTypes_v::map_to_kmmap(self.persistent_store@) == SuperblockTypes_v::map_to_kmmap(self.persistent_store@));
             }
 
             let ghost new_lsn_addr_index =
@@ -1055,7 +1056,6 @@ impl Implementation {
         self.instance_id() == api.instance_id(),
         self.ready_for_user_operation(),
     {
-        assume( false ); // left off
         { // braces to scope variables used in this step
             let ghost pre_state = self.model@.value();
             let tracked mut model = KVStoreTokenized::model::arbitrary();
@@ -1145,6 +1145,9 @@ impl Implementation {
 //             let ghost journal = superblock.journal_snapshot@;
 //             assert(journal.wf());
 
+            assert( VecMap::unique_keys(superblock.store@) ) by {
+                assume( false );    // get this from a system invariant about the superblock on the disk
+            }
             self.persistent_store = VecMap::from_vec(superblock.store);
 
             self.journal = JournalImpl::new(superblock.journal_snapshot);
@@ -1205,7 +1208,7 @@ impl Implementation {
             // Compute the next ghost model and transition our token
             let ghost post_state = ConcreteProgramModel{
                 state: AtomicState {
-                    recovery_state: RecoveryState::RecoveryComplete,
+                    recovery_state: RecoveryState::SuperblockAvailable,
                     journal: self.journal@,
                     cache: arbitrary(),
                     store: arbitrary(),
@@ -1237,6 +1240,13 @@ impl Implementation {
                     resps: disk_response_tuples,
                 };
                 let sb = DiskLayout::spec_new().spec_parse(disk_event->raw_page);
+                assert( sb == superblock@@ );
+                assert( self.journal@.snapshot == superblock.journal_snapshot@ );
+                assert( superblock@@.journal == superblock.journal_snapshot@ );
+                assert( self.journal@.snapshot == sb.journal );
+                assert( post_state.state.journal == self.journal@ );
+                assert( post_state.state.journal.snapshot == sb.journal );
+                assume( false );
                 assert(AtomicState::disk_transition(
                     pre_state.state, post_state.state, disk_event, info.reqs, info.resps)); // step witness
             }
@@ -1253,8 +1263,8 @@ impl Implementation {
 
             self.model = Tracked(model);
 
-            // assert( superblock.parsedv().store_stamped_map().value == ASuperblock::map_to_kmmap(self.store@) );
-            // assert( superblock.parsedv().final_stamped_map().value == ASuperblock::map_to_kmmap(self.store@) );   // because of the runtime test-and-hang for a non-empty journal above
+            // assert( superblock.parsedv().store_stamped_map().value == SuperblockTypes_v::map_to_kmmap(self.store@) );
+            // assert( superblock.parsedv().final_stamped_map().value == SuperblockTypes_v::map_to_kmmap(self.store@) );   // because of the runtime test-and-hang for a non-empty journal above
             // assert( post_state.state.mapspec().kmmap == self.view_as_kmmap() );
             // assert( self.state().mapspec().kmmap == self.view_as_kmmap() );
             // assert(view_as_kmmap(self.store) == map_plus_history(view_as_kmmap(self.persistent_store), self.journal@@));

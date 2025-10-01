@@ -146,6 +146,7 @@ impl JournalImpl {
     }
 
     pub exec fn new(snapshot: JournalSnapshot) -> (out: Self)
+        ensures out@.snapshot == snapshot@
 //         TODO how do I express this? transition!s work, but not init!
 //     ensures CachedJournal::initialize(snapshot@)
     {

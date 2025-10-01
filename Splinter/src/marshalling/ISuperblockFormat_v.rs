@@ -23,17 +23,6 @@ use crate::disk::GenericDisk_v::IAddress;
 
 verus! {
 
-impl Parsedview<ASuperblock> for ISuperblock {
-    open spec fn parsedv(&self) -> ASuperblock {
-        ASuperblock{
-            journal: self.journal_snapshot@,
-            store: self.store@,
-        }
-    }
-}
-
-impl WF for ISuperblock {}
-
 pub struct SuperblockJSWrappable {}
 impl Wrappable for SuperblockJSWrappable {
     type AF = JournalSnapshotFormat;
