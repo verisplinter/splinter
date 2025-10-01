@@ -16,7 +16,7 @@ use crate::betree::SplitRequest_v::*;
 
 verus! {
 
-broadcast use PivotTable::route_lemma, PivotTable::route_is_lemma;
+broadcast use {PivotTable::route_lemma, PivotTable::route_is_lemma};
 
 impl BetreeNode {
     pub open spec(checked) fn i_children_seq(self, start: int) -> Seq<PagedBetree_v::BetreeNode>

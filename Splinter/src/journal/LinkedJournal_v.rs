@@ -232,6 +232,7 @@ impl DiskView {
     ensures
         forall |addr| #[trigger] self.build_tight(root).entries.contains_key(addr) ==> self.entries.contains_key(addr),
         self.acyclic() ==> self.build_tight(root).is_sub_disk(self),
+        self.build_tight(root).wf(),
     decreases
         self.the_rank_of(root),
     {

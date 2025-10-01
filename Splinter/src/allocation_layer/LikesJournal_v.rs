@@ -12,7 +12,7 @@ use verus_state_machines_macros::state_machine;
 
 use crate::abstract_system::StampedMap_v::LSN;
 use crate::abstract_system::MsgHistory_v::*;
-use crate::journal::LinkedJournal_v;
+use crate::journal::LinkedJournal_v::LinkedJournal;
 use crate::journal::LinkedJournal_v::TruncatedJournal;
 use crate::journal::LinkedJournal_v::DiskView;
 use crate::disk::GenericDisk_v::*;
@@ -476,18 +476,29 @@ impl TruncatedJournal {
         self.disk_view.build_lsn_addr_index(self.freshest_rec)
     }
 
-    pub proof fn build_lsn_addr_index_ensures(self)
-    requires self.decodable()
+    pub broadcast proof fn build_lsn_addr_index_ensures(self)
+    requires #[trigger] self.decodable()
     ensures 
         self.index_domain_valid(self.build_lsn_addr_index()),
         self.disk_view.index_keys_map_to_valid_entries(self.build_lsn_addr_index()),
-        self.index_range_valid(self.build_lsn_addr_index())
+        self.index_range_valid(self.build_lsn_addr_index()),
+        self.freshest_rec is Some ==> self.build_lsn_addr_index().contains_value(self.freshest_rec.unwrap())
     {        
         reveal(TruncatedJournal::index_domain_valid);
         reveal(DiskView::index_keys_map_to_valid_entries);
         if self.freshest_rec is Some {
             self.disk_view.build_lsn_addr_index_domain_valid(self.freshest_rec);
             self.disk_view.build_lsn_addr_index_range_valid(self.freshest_rec);
+
+            let index = self.build_lsn_addr_index();
+            assert(index.contains_value(self.freshest_rec.unwrap())) by {
+                let curr_msgs = self.disk_view.entries[self.freshest_rec.unwrap()].message_seq;
+                let start_lsn = max(self.disk_view.boundary_lsn as int, curr_msgs.seq_start as int) as nat;
+                assert(start_lsn < curr_msgs.seq_end);
+                let update = singleton_index(start_lsn, curr_msgs.seq_end, self.freshest_rec.unwrap());
+                assert(update.contains_key(start_lsn)); // trigger
+                assert(index.contains_key(start_lsn)); // trigger
+            }
         }
     }
 
@@ -498,7 +509,8 @@ impl TruncatedJournal {
         &&& new.wf()
         &&& new.disk_view.boundary_lsn == start_lsn
         &&& new.disk_view.entries <= self.disk_view.entries
-        &&& forall |addr| #[trigger] keep_addrs.contains(addr) ==> new.disk_view.entries.dom().contains(addr)
+        &&& keep_addrs <= new.disk_view.entries.dom()
+        // &&& forall |addr| #[trigger] keep_addrs.contains(addr) ==> new.disk_view.entries.dom().contains(addr)
         &&& new.freshest_rec == if self.seq_end() == start_lsn { None } else { self.freshest_rec }
     }
 
@@ -621,14 +633,14 @@ impl TruncatedJournal {
 
 state_machine!{ LikesJournal {
     fields {
-        pub journal: LinkedJournal_v::LinkedJournal::State,
+        pub journal: LinkedJournal::State,
         pub lsn_addr_index: LsnAddrIndex,
     }
 
     pub enum Label
     {
         ReadForRecovery{messages: MsgHistory},
-        FreezeForCommit{frozen_journal: TruncatedJournal},
+        FreezeForCommit{frozen_journal: TruncatedJournal},            
         QueryEndLsn{end_lsn: LSN},
         Put{messages: MsgHistory},
         DiscardOld{start_lsn: LSN, require_end: LSN},
@@ -640,26 +652,25 @@ state_machine!{ LikesJournal {
     // above. There's a lot of useless boilerplate in this layer; perhaps
     // there's a prettier way to decorate an existing state machine with
     // extra ghost state.
-    pub open spec fn lbl_i(lbl: Label) -> LinkedJournal_v::LinkedJournal::Label {
+    pub open spec fn lbl_i(lbl: Label) -> LinkedJournal::Label {
         match lbl {
             Label::ReadForRecovery{messages}
-                => LinkedJournal_v::LinkedJournal::Label::ReadForRecovery{messages},
+                => LinkedJournal::Label::ReadForRecovery{messages},
             Label::FreezeForCommit{frozen_journal}
-                => LinkedJournal_v::LinkedJournal::Label::FreezeForCommit{frozen_journal},
+                => LinkedJournal::Label::FreezeForCommit{frozen_journal},
             Label::QueryEndLsn{end_lsn}
-                => LinkedJournal_v::LinkedJournal::Label::QueryEndLsn{end_lsn},
+                => LinkedJournal::Label::QueryEndLsn{end_lsn},
             Label::Put{messages}
-                => LinkedJournal_v::LinkedJournal::Label::Put{messages},
+                => LinkedJournal::Label::Put{messages},
             Label::DiscardOld{start_lsn, require_end}
-                => LinkedJournal_v::LinkedJournal::Label::DiscardOld{start_lsn, require_end},
+                => LinkedJournal::Label::DiscardOld{start_lsn, require_end},
             Label::Internal{}
-                => LinkedJournal_v::LinkedJournal::Label::Internal{},
+                => LinkedJournal::Label::Internal{},
         }
     }
     
     pub open spec(checked) fn wf(self) -> bool {
         &&& self.journal.wf()
-        // self.decodable(root),
     }
 
     transition!{ read_for_recovery(lbl: Label, depth: nat) {
@@ -677,63 +688,60 @@ state_machine!{ LikesJournal {
 
     transition!{ freeze_for_commit(lbl: Label, depth: nat) {
         require lbl is FreezeForCommit;
-
-        let fj = lbl->frozen_journal;
         let tj = pre.journal.truncated_journal;
-        let new_bdy = fj.seq_start();
+        let fj = lbl->frozen_journal;
 
+        require can_crop_index(pre.lsn_addr_index, tj.disk_view.boundary_lsn, tj.freshest_rec, depth);
         require fj.decodable();
-        require tj.disk_view.can_crop(tj.freshest_rec, depth);
-        require tj.disk_view.boundary_lsn <= new_bdy;
+        require fj.disk_view.is_sub_disk_with_newer_lsn(tj.disk_view);
+        require fj.freshest_rec == pointer_after_crop_index(pre.lsn_addr_index, tj.disk_view.boundary_lsn, tj.freshest_rec, depth);
 
-        let cropped_tj = tj.crop(depth);
-        require cropped_tj.can_discard_to(new_bdy);
-
-        // figure out the frozen lsn range
-        let post_discard = cropped_tj.discard_old(new_bdy);
-        let frozen_lsns = Set::new(|lsn: LSN| new_bdy <= lsn && lsn < post_discard.seq_end());
-        let frozen_index = pre.lsn_addr_index.restrict(frozen_lsns);
-
-        require cropped_tj.discard_old_cond(new_bdy, frozen_index.values(), fj);
+        let frozen_bdy = fj.disk_view.boundary_lsn;
+        require match fj.freshest_rec {
+            Some(addr) => frozen_bdy < tj.disk_view.entries[addr].message_seq.seq_end,
+            None => frozen_bdy == tj.disk_view.boundary_lsn,
+        };
     } }
 
     transition!{ query_end_lsn(lbl: Label) {
         require lbl is QueryEndLsn;
-        require LinkedJournal_v::LinkedJournal::State::next(pre.journal, pre.journal, Self::lbl_i(lbl));
+        require lbl->end_lsn == pre.journal.seq_end();
     } }
     
-    transition!{ put(lbl: Label, new_journal: LinkedJournal_v::LinkedJournal::State) {
-        require lbl is Put;
-        require LinkedJournal_v::LinkedJournal::State::next(pre.journal, new_journal, Self::lbl_i(lbl));
-        update journal = new_journal;
+    transition!{ put(lbl: Label) {
+        require let Label::Put{messages} = lbl;
+        require messages.wf();
+        require messages.seq_start == pre.journal.seq_end();
+        update journal = LinkedJournal::State{
+            unmarshalled_tail: pre.journal.unmarshalled_tail.concat(messages),
+            ..pre.journal
+        };
     } }
 
-    transition!{ discard_old(lbl: Label, new_journal: LinkedJournal_v::LinkedJournal::State) {
+    transition!{ discard_old(lbl: Label, new_journal: LinkedJournal::State) {
         require lbl is DiscardOld;
 
         let start_lsn = lbl->start_lsn;
         let require_end = lbl->require_end;
 
         require require_end == pre.journal.seq_end();
-        require pre.journal.truncated_journal.can_discard_to(start_lsn);
+        require pre.tj().can_discard_to(start_lsn);
 
-        let lsn_addr_index_post = lsn_addr_index_discard_up_to(pre.lsn_addr_index, start_lsn);
-        let keep_addrs = lsn_addr_index_post.values();
+        let new_lsn_addr_index = lsn_addr_index_discard_up_to(pre.lsn_addr_index, start_lsn);
 
-        // require new_journal.wf();
         require pre.journal.truncated_journal.discard_old_cond(
-            start_lsn, keep_addrs, new_journal.truncated_journal);
+            start_lsn, new_lsn_addr_index.values(), new_journal.truncated_journal);
         require new_journal.unmarshalled_tail == 
             pre.journal.unmarshalled_tail.bounded_discard(start_lsn);
 
         update journal = new_journal;
-        update lsn_addr_index = lsn_addr_index_post;
+        update lsn_addr_index = new_lsn_addr_index;
     } }
 
-    transition!{ internal_journal_marshal(lbl: Label, cut: LSN, addr: Address, new_journal: LinkedJournal_v::LinkedJournal::State) {
+    transition!{ internal_journal_marshal(lbl: Label, cut: LSN, addr: Address, new_journal: LinkedJournal::State) {
         require lbl is Internal;
-        require LinkedJournal_v::LinkedJournal::State::next_by(pre.journal, new_journal, 
-            Self::lbl_i(lbl), LinkedJournal_v::LinkedJournal::Step::internal_journal_marshal(cut, addr));
+        require LinkedJournal::State::next_by(pre.journal, new_journal, 
+            Self::lbl_i(lbl), LinkedJournal::Step::internal_journal_marshal(cut, addr));
 
         update journal = new_journal;
         update lsn_addr_index = lsn_addr_index_append_record(
@@ -753,7 +761,7 @@ state_machine!{ LikesJournal {
     init!{ initialize(ijournal: TruncatedJournal) {
         require ijournal.decodable();    // An invariant carried by CoordinationSystem from FreezeForCommit, past a crash, back here
         // require ijournal.disk_is_tight_wrt_representation(); // Note(Jialin): might not be necessary
-        init journal = LinkedJournal_v::LinkedJournal::State{
+        init journal = LinkedJournal::State{
             truncated_journal: ijournal,
             unmarshalled_tail: MsgHistory::empty_history_at(ijournal.seq_end())}; // Note(Jialin): used to be ijournal.build_tight but I can't think of why
         init lsn_addr_index = ijournal.build_lsn_addr_index();
@@ -762,8 +770,9 @@ state_machine!{ LikesJournal {
     #[invariant]
     pub open spec(checked) fn inv(self) -> bool {
         let tj = self.journal.truncated_journal;
+
         &&& self.wf()
-        &&& tj.disk_view.acyclic()
+        &&& tj.decodable()
         &&& self.lsn_addr_index == tj.build_lsn_addr_index() // equivalent to imperative_matches_transitive
     }
 
@@ -780,13 +789,11 @@ state_machine!{ LikesJournal {
     }
    
     #[inductive(put)]
-    fn put_inductive(pre: Self, post: Self, lbl: Label, new_journal: LinkedJournal_v::LinkedJournal::State) {
-        reveal(LinkedJournal_v::LinkedJournal::State::next);
-        reveal(LinkedJournal_v::LinkedJournal::State::next_by);
+    fn put_inductive(pre: Self, post: Self, lbl: Label) {
     }
 
     #[inductive(discard_old)]
-    fn discard_old_inductive(pre: Self, post: Self, lbl: Label, new_journal: LinkedJournal_v::LinkedJournal::State) {
+    fn discard_old_inductive(pre: Self, post: Self, lbl: Label, new_journal: LinkedJournal::State) {
         let tj = pre.journal.truncated_journal;
         let post_tj = post.journal.truncated_journal;
         let start_lsn = lbl->start_lsn;
@@ -797,15 +804,15 @@ state_machine!{ LikesJournal {
     }
 
     #[inductive(internal_journal_marshal)]
-    fn internal_journal_marshal_inductive(pre: Self, post: Self, lbl: Label, cut: LSN, addr: Address, new_journal: LinkedJournal_v::LinkedJournal::State) {
-        reveal(LinkedJournal_v::LinkedJournal::State::next_by);
+    fn internal_journal_marshal_inductive(pre: Self, post: Self, lbl: Label, cut: LSN, addr: Address, new_journal: LinkedJournal::State) {
+        reveal(LinkedJournal::State::next_by);
         assert( post.wf() );
 
-        let istep:LinkedJournal_v::LinkedJournal::Step = LinkedJournal_v::LinkedJournal::Step::internal_journal_marshal(cut, addr);
-        assert(LinkedJournal_v::LinkedJournal::State::next_by(pre.journal, post.journal, State::lbl_i(lbl), istep));
+        let istep:LinkedJournal::Step = LinkedJournal::Step::internal_journal_marshal(cut, addr);
+        assert(LinkedJournal::State::next_by(pre.journal, post.journal, State::lbl_i(lbl), istep));
 
         // NOTE(Jialin): inv_next duplicates what should be exported by submodule inv
-        LinkedJournal_v::LinkedJournal::State::inv_next(pre.journal, post.journal, State::lbl_i(lbl), istep);
+        LinkedJournal::State::inv_next(pre.journal, post.journal, State::lbl_i(lbl), istep);
 
         let tj_pre = pre.journal.truncated_journal;
         let tj_post = post.journal.truncated_journal;
@@ -813,7 +820,6 @@ state_machine!{ LikesJournal {
 
         tj_pre.disk_view.sub_disk_repr_index(tj_post.disk_view, tj_pre.freshest_rec);
         assert( post.lsn_addr_index == tj_post.build_lsn_addr_index() );
-
         assert( post.inv() );
     }
    
@@ -823,8 +829,10 @@ state_machine!{ LikesJournal {
    
     #[inductive(initialize)]
     fn initialize_inductive(post: Self, ijournal: TruncatedJournal) {
+        // post.journal.truncated_journal.build_lsn_addr_index_ensures();
+        // reveal(DiskView::index_keys_map_to_valid_entries);
     }
-    
+
 } } // state_machine!
 
 
@@ -862,12 +870,18 @@ pub open spec fn addr_to_lsns(index: LsnAddrIndex, addr: Address, bdy: LSN) -> S
     Set::new(|lsn| bdy <= lsn && index.contains_key(lsn) && index[lsn] == addr)
 }
 
+pub open spec fn minmin(index: LsnAddrIndex, addr: Address, lsn: LSN) -> bool
+{
+    &&& index.contains_pair(lsn, addr)
+    &&& forall |other_lsn| (#[trigger] index.contains_key(other_lsn)
+        && index[other_lsn] == addr) ==> lsn <= other_lsn
+}
+
 pub open spec(checked) fn next_index(index: LsnAddrIndex, bdy: LSN, ptr: Pointer) -> Pointer
     recommends ptr is Some
 {
-    let lsns = addr_to_lsns(index, ptr.unwrap(), bdy);
-    if !lsns.is_empty() {
-        let min = min_lsn(lsns);
+    if index.contains_value(ptr.unwrap()) {
+        let min = choose |min| minmin(index, ptr.unwrap(), min);
         let prior_lsn = (min - 1) as nat;
         if min > 0 && bdy <= prior_lsn && index.contains_key(prior_lsn) {
             Some(index[prior_lsn])
@@ -877,6 +891,18 @@ pub open spec(checked) fn next_index(index: LsnAddrIndex, bdy: LSN, ptr: Pointer
     } else {
         None
     }
+    // let lsns = addr_to_lsns(index, ptr.unwrap(), bdy);
+    // if !lsns.is_empty() {
+    //     let min = min_lsn(lsns);
+    //     let prior_lsn = (min - 1) as nat;
+    //     if min > 0 && bdy <= prior_lsn && index.contains_key(prior_lsn) {
+    //         Some(index[prior_lsn])
+    //     } else {
+    //         None
+    //     }
+    // } else {
+    //     None
+    // }
 }
 
 pub open spec fn can_crop_index(index: LsnAddrIndex, bdy: LSN, root: Pointer, depth: nat) -> bool
