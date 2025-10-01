@@ -165,6 +165,7 @@ impl JournalImpl {
             CachedJournal_v::CachedJournal::Label::Put{
             messages: MsgHistory::singleton_at(old(self).seq_end(), KeyedMessage::from_kv(key, value))
         }),
+        self.index_ready(),
     {
         // Since we don't have &mut results in verus yet, we need to swap the
         // option out of self, deconstruct it, do the work we want on the inner struct,

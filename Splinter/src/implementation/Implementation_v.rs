@@ -273,6 +273,13 @@ impl Implementation {
         &&& Self::sync_req_lists_mutually_unique(self.sync_requests.satisfied_reqs@, self.sync_requests.deferred_reqs@)
     }
 
+    // Recovery is complete -- journal index ready, map matches journal. We've established
+    // invariants necessary to process user requsets.
+    pub closed spec fn ready_for_user_operation(&self) -> bool
+    {
+        &&& self.journal.index_ready()
+    }
+
     pub closed spec fn i_persistent_store(self) -> StampedMap {
         StampedMap{value: view_as_kmmap(self.persistent_store), seq_end: self.journal.seq_start()}
     }
@@ -329,8 +336,10 @@ impl Implementation {
         old(self).inv_api(old(api)),
         old(self).good_req(req, req_shard@),
         req.input is NoopInput,
+        old(self).ready_for_user_operation(),
     ensures
         self.inv_api(api),
+        self.ready_for_user_operation(),
     {
         match req.input {
             Input::NoopInput => {
@@ -372,19 +381,15 @@ impl Implementation {
         }
     }
 
-    pub closed spec fn ready_for_put(&self) -> bool
-    {
-        &&& self.journal.index_ready()
-    }
-
     pub exec fn handle_put(&mut self, req: Request, req_shard: Tracked<RequestShard>, api: &mut ClientAPI<ConcreteProgramModel>)
     requires
         old(self).inv_api(old(api)),
         old(self).good_req(req, req_shard@),
-        old(self).ready_for_put(),
+        old(self).ready_for_user_operation(),
         req.input is PutInput,
     ensures
         self.inv_api(api),
+        self.ready_for_user_operation(),
     {
         let out = match req.input {
         Input::PutInput{key, value} => {
@@ -478,9 +483,11 @@ impl Implementation {
         old(self).inv_api(old(api)),
         old(self).good_req(req, req_shard@),
         req.input is QueryInput,
+        old(self).ready_for_user_operation(),
     ensures
         self.inv_api(api),
         // allowed to do nothing in response
+        self.ready_for_user_operation(),
     {
         assume(false); // TODO(jonh): left off here
         match req.input {
@@ -530,8 +537,10 @@ impl Implementation {
         old(self).inv_api(old(api)),
         old(self).good_req(req, req_shard@),
         req.input is SyncInput,
+        old(self).ready_for_user_operation(),
     ensures
         self.inv_api(api),
+        self.ready_for_user_operation(),
     {
         assume(false); // TODO(jonh): left off here
         let ghost old_satisfied_reqs = old(self).sync_requests.satisfied_reqs@;
@@ -838,8 +847,10 @@ impl Implementation {
     requires
         old(self).inv_api(old(api)),
         old(self).good_req(req, req_shard@),
+        old(self).ready_for_user_operation(),
     ensures
         self.inv_api(api),
+        self.ready_for_user_operation(),
     {
         match req.input {
             Input::NoopInput => self.handle_noop(req, req_shard, api),
@@ -900,6 +911,7 @@ impl Implementation {
         response_shard@.multiset() == multiset_map_singleton(id, disk_response@),
     ensures
         self.inv_api(api),
+        old(self).ready_for_user_operation() ==> self.ready_for_user_operation(),
     {
         let mut ready_reqs = vec![];
         std::mem::swap(&mut self.sync_requests.satisfied_reqs, &mut ready_reqs);
@@ -1037,7 +1049,8 @@ impl Implementation {
         old(self).instance_id() == old(api).instance_id()
     ensures
         self.inv(),
-        self.instance_id() == api.instance_id()
+        self.instance_id() == api.instance_id(),
+        self.ready_for_user_operation(),
     {
         assume( false ); // left off
         { // braces to scope variables used in this step
@@ -1340,15 +1353,21 @@ impl KVStoreTrait for Implementation {
         invariant
             self.inv_api(&api),
             self.model@.value().state.recovery_state is RecoveryComplete,   // TODO(jonh): delete; redundant with inv
+            self.ready_for_user_operation(),
         {
+            assert(self.ready_for_user_operation());
             let mut progress = false;
             api.log("main loop");
 
             match api.receive_disk_response() {
                 None => {},
                 // TODO pass the req through
-                Some(rec) => { progress = true; self.handle_disk_response(rec.id, rec.disk_response, rec.token, &mut api); }
+                Some(rec) => {
+                    progress = true;
+                    self.handle_disk_response(rec.id, rec.disk_response, rec.token, &mut api);
+                }
             }
+            assert(self.ready_for_user_operation());
             match api.receive_request(debug_print) {
                 None => {},
                 Some(rec) => {
@@ -1361,6 +1380,7 @@ impl KVStoreTrait for Implementation {
                         }
                         _ => {
                             self.handle_user_request(rec.request, rec.token, &mut api);
+                            assert(self.ready_for_user_operation());
                         }
                     }
                 }
@@ -1369,6 +1389,7 @@ impl KVStoreTrait for Implementation {
                 api.log("sleeping");
                 api.sleep_a_little();
             }
+            assert(self.ready_for_user_operation());
         }
     }
 }
