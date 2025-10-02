@@ -1107,8 +1107,9 @@ impl Implementation {
         match self.outstanding_requests.get(&id) {
             None => {
                 assert(false) by {
-                    assume(false);  // TODO apply a system invariant: every disk response matches
-                                    // an outstanding disk request
+                    // TODO apply a system invariant: every disk response matches an outstanding
+                    // disk request
+                    assume(false);
                 }
             }
             Some(disk_request) => {
@@ -1398,7 +1399,6 @@ impl KVStoreTrait for Implementation {
 
             match api.receive_disk_response() {
                 None => {},
-                // TODO pass the req through
                 Some(rec) => {
                     progress = true;
                     self.handle_disk_response(rec.id, rec.disk_response, rec.token, &mut api);
