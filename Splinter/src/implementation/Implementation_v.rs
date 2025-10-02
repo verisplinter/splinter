@@ -59,6 +59,7 @@ use crate::spec::AsyncDisk_t::*;
 use crate::spec::ImplDisk_t::*;
 #[allow(unused_imports)]
 use crate::implementation::DiskLayout_v::*;
+use vstd::hash_map::HashMapWithView;
 
 verus!{
 
@@ -183,6 +184,8 @@ pub struct Implementation {
     instance: Tracked<KVStoreTokenized::Instance<ConcreteProgramModel>>,
 
     sync_requests: SyncRequestBuffer,
+
+    outstanding_requests: HashMapWithView<ID, IDiskRequest>,
 }
 
 impl Implementation {
@@ -934,7 +937,11 @@ impl Implementation {
         assume( false );   // fresh id stuff
     }
 
-    pub exec fn handle_disk_response(&mut self, id: ID, disk_response: IDiskResponse, response_shard: Tracked<DiskRespShard>,
+    // A reply to a superblock read only ever occurs as the first operation after reboot; those get
+    // handled in-line by the recover procedure.
+
+    // In normal operations, we will see write acknowledgements to superblock commits.
+    pub exec fn handle_disk_superblock_write_response(&mut self, id: ID, disk_response: IDiskResponse, response_shard: Tracked<DiskRespShard>,
         api: &mut ClientAPI<ConcreteProgramModel>)
     requires
         old(self).inv_api(old(api)),
@@ -1074,6 +1081,46 @@ impl Implementation {
         }
     }
 
+    // In normal operations, we will see write acknowledgements to cache IO.
+    pub exec fn handle_disk_cache_response(&mut self, id: ID, disk_response: IDiskResponse, response_shard: Tracked<DiskRespShard>,
+        api: &mut ClientAPI<ConcreteProgramModel>)
+    requires
+        old(self).inv_api(old(api)),
+        old(self).good_disk_response(id, disk_response, response_shard@),
+        response_shard@.multiset() == multiset_map_singleton(id, disk_response@),
+    ensures
+        self.inv_api(api),
+        old(self).ready_for_user_operation() ==> self.ready_for_user_operation(),
+    {
+    }
+
+    pub exec fn handle_disk_response(&mut self, id: ID, disk_response: IDiskResponse, response_shard: Tracked<DiskRespShard>,
+        api: &mut ClientAPI<ConcreteProgramModel>)
+    requires
+        old(self).inv_api(old(api)),
+        old(self).good_disk_response(id, disk_response, response_shard@),
+        response_shard@.multiset() == multiset_map_singleton(id, disk_response@),
+    ensures
+        self.inv_api(api),
+        old(self).ready_for_user_operation() ==> self.ready_for_user_operation(),
+    {
+        match self.outstanding_requests.get(&id) {
+            None => {
+                assert(false) by {
+                    assume(false);  // TODO apply a system invariant: every disk response matches
+                                    // an outstanding disk request
+                }
+            }
+            Some(disk_request) => {
+                if disk_request.exec_addr() == superblock_addr() {
+                    self.handle_disk_superblock_write_response(id, disk_response, response_shard, api);
+                } else {
+                    self.handle_disk_cache_response(id, disk_response, response_shard, api);
+                }
+            }
+        }
+    }
+
     fn recover(&mut self, api: &mut ClientAPI<ConcreteProgramModel>)
     requires
         old(self).recover_inv(),
@@ -1160,18 +1207,6 @@ impl Implementation {
             let layout = DiskLayout::new();
             let superblock: ISuperblock = layout.parse(&raw_page);
             Self::debug_print(&superblock);
-
-            // NOTE(JL): leave it for now
-//             assume(superblock.journal@.seq_start + superblock.journal@.msg_history.len() <= u64::MAX);
-
-//             assert( superblock@.wf() && superblock.journal@.wf() ) by {
-//                 open_system_invariant_disk_response_singleton::<ConcreteProgramModel, RefinementProof>(self.model, disk_response_token, disk_req_id, i_disk_response@);
-//                 assume(false); // Not sure what broke here; where are we importing this contradicting invariant from?
-//                 DiskLayout::spec_new().invoke_impl_inv(raw_page@);
-//             }
-
-//             let ghost journal = superblock.journal_snapshot@;
-//             assert(journal.wf());
 
             assert( VecMap::unique_keys(superblock.store@) ) by {
                 assume( false );    // get this from a system invariant about the superblock on the disk
@@ -1335,6 +1370,7 @@ impl KVStoreTrait for Implementation {
             model: Tracked(model),
             instance: Tracked(instance),
             sync_requests: SyncRequestBuffer::new_empty(),
+            outstanding_requests: HashMapWithView::new(),
         };
         selff
     }

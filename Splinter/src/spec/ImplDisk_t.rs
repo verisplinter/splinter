@@ -18,10 +18,16 @@ pub type IAU = u32;
 
 pub type IPage = u32;
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone/*, Eq, PartialEq*/)]
 pub struct IAddress {
     pub au: IAU,
     pub page: IPage,
+}
+
+impl PartialEq for IAddress {
+    fn eq(&self, other: &Self) -> bool {
+        self.au == other.au && self.page == other.page
+    }
 }
 
 /// further restricted by actual disk size

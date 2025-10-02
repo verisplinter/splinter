@@ -15,7 +15,7 @@ verus!{
 /// Address defined for spec code
 
 /// The `AU` type is the type for a unique allocation unit identifier (thus we use `nat`s).
-/// 
+///
 /// An Allocation Unit (AU) is the minimum disk unit the "external" (i.e.: top-level) allocator
 /// allocates to data structures like the Betree and Journal. Allocation Units
 /// are made up of contiguous disk sectors. AUs are specified as part of the
@@ -36,12 +36,12 @@ pub struct Address {
     pub page: Page,
 }
 
-/// Returns the number of a disk pages in an Allocation Unit. 
+/// Returns the number of a disk pages in an Allocation Unit.
 /// Left as an uninterpreted function since it's implementation defined.
 
 pub uninterp spec(checked) fn page_count() -> nat;
 
-/// Returns the number of Allocation Unit of the disk. 
+/// Returns the number of Allocation Unit of the disk.
 /// Left as an uninterpreted function since it's implementation defined.
 pub uninterp spec(checked) fn au_count() -> nat;
 
@@ -74,17 +74,28 @@ pub enum GenericDiskRequest<A, D> {
     WriteReq{to: A, data: D},
 }
 
-pub type DiskRequest = GenericDiskRequest<Address, RawPage>;
-
-impl DiskRequest {
-    pub open spec fn addr(self) -> Address
+impl<A, D> GenericDiskRequest<A, D> {
+    pub open spec fn addr(self) -> A
     {
         match self {
             Self::ReadReq{from} => from,
             Self::WriteReq{to, data} => to,
-        }   
+        }
     }
 }
+
+impl<A: Copy, D> GenericDiskRequest<A, D> {
+    pub exec fn exec_addr(&self) -> (out: A)
+        ensures out == self.addr()
+    {
+        match self {
+            Self::ReadReq{from} => *from,
+            Self::WriteReq{to, data} => *to,
+        }
+    }
+}
+
+pub type DiskRequest = GenericDiskRequest<Address, RawPage>;
 
 pub enum GenericDiskResponse<D> {
     ReadResp{data: D},
@@ -115,7 +126,7 @@ state_machine!{ AsyncDisk {
 
     pub enum Label {
         // models disk controller receiving & responding to disk ops
-        DiskOps{requests: Map<ID, DiskRequest>, responses: Map<ID, DiskResponse>},  
+        DiskOps{requests: Map<ID, DiskRequest>, responses: Map<ID, DiskResponse>},
         // models disk internal operation that actually read/write data
         Internal,
         // models the crash event
@@ -175,7 +186,7 @@ state_machine!{ AsyncDisk {
     //     require pre.requests.dom().contains(id);
     //     require pre.requests[id] is ReadReq;
     //     require pre.requests[id]->from.wf();
-        
+
     //     // restriction possible fake content
     //     require fake_content != pre.content[pre.requests[id]->from];
     //     // TODO: assume disk cannot fail from a checksum-correct state
@@ -193,7 +204,7 @@ state_machine!{ AsyncDisk {
     // process writes
     transition!{ process_write(lbl: Label, id: ID){
         require lbl is Internal;
-    
+
         // write processed must have been requested
         require pre.requests.dom().contains(id);
         require pre.requests[id] is WriteReq;
@@ -224,19 +235,19 @@ state_machine!{ AsyncDisk {
 
     #[inductive(initialize)]
     fn initialize_inductive(post: Self) { }
-   
+
     #[inductive(disk_ops)]
     fn disk_ops_inductive(pre: Self, post: Self, lbl: Label) { }
-   
+
     #[inductive(process_read)]
     fn process_read_inductive(pre: Self, post: Self, lbl: Label, id: ID) { }
-   
+
     // #[inductive(process_read_failure)]
     // fn process_read_failure_inductive(pre: Self, post: Self, lbl: Label, id: ID, fake_content: RawPage) { }
-   
+
     #[inductive(process_write)]
     fn process_write_inductive(pre: Self, post: Self, lbl: Label, id: ID) { }
-   
+
     #[inductive(crash)]
     fn crash_inductive(pre: Self, post: Self, lbl: Label) { }
 }}
