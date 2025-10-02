@@ -160,9 +160,29 @@ closed spec(checked) fn map_plus_history(map: TotalKMMap, msg_history: MsgHistor
     msg_history.apply_to_stamped_map(stamped_map).value
 }
 
+enum RecoveryPhase {
+    FetchingSuperblock, // not really needed since this phase is delineated by lexical scope
+    ReadingJournalIndex,
+    ApplyingJournalToRecoverEphemeralMap,
+    ReadyForUserOperation,
+}
+
+impl RecoveryPhase {
+    spec fn advances(self, old: Self) -> bool {
+        match old {
+            Self::FetchingSuperblock => { true },
+            Self::ReadingJournalIndex => { !(self is FetchingSuperblock) },
+            Self::ApplyingJournalToRecoverEphemeralMap => { self is ApplyingJournalToRecoverEphemeralMap || self is ReadyForUserOperation },
+            Self::ReadyForUserOperation => { self is ReadyForUserOperation },
+        }
+    }
+}
+
 // This struct supplies KVStoreTrait, which has both the entry point to the implementation and the
 // proof hooks to satisfy the refinement obligation trait.
 pub struct Implementation {
+    recovery_phase: RecoveryPhase,
+
     sync_counter: u64,
 
     store: VecMap<Key, Value>,
@@ -224,20 +244,24 @@ impl Implementation {
         self.journal.seq_end()
     }
 
-    closed spec fn recover_inv(self) -> bool {
+    closed spec fn inv_recover(self) -> bool {
+        &&& self.recovery_phase is FetchingSuperblock
         &&& self.model@.instance_id() == self.instance@.id()
         &&& self.in_flight is None
         &&& !self.sync_requests.in_flight()
         &&& self.sync_requests.deferred_reqs@.len() == 0
         &&& self.store.wf()
+        &&& self.state().recovery_state is Begin
     }
 
-    closed spec fn inv(self) -> bool {
+    closed spec fn inv_running(self) -> bool {
         let state = self.state();
 
         &&& self.store.wf()
         &&& self.journal.wf()
         &&& self.model@.instance_id() == self.instance@.id()
+
+        &&& self.journal.index_ready()
 
         // physical state consistent with model
         &&& state.recovery_state is RecoveryComplete
@@ -287,11 +311,33 @@ impl Implementation {
         &&& Self::sync_req_lists_mutually_unique(self.sync_requests.satisfied_reqs@, self.sync_requests.deferred_reqs@)
     }
 
+    spec fn inv_reading_journal(self) -> bool
+    {
+        &&& self.state().recovery_state is SuperblockAvailable
+    }
+
+    spec fn inv_applying_journal(self) -> bool
+    {
+        &&& self.state().recovery_state is JournalIndexComplete
+    }
+
+    closed spec fn inv(self) -> bool {
+        // from the physical phase field to stuff we know
+        &&& self.recovery_phase is FetchingSuperblock ==> self.inv_recover()
+        &&& self.recovery_phase is ReadingJournalIndex ==> self.inv_reading_journal()
+        &&& self.recovery_phase is ApplyingJournalToRecoverEphemeralMap ==> self.inv_applying_journal()
+        &&& self.recovery_phase is ReadyForUserOperation ==> self.inv_running()
+
+        // working backward from stuff we know to infer physical phase (used when applying system
+        // invs to infer current state)
+        &&& self.in_flight is Some ==> self.recovery_phase is ReadyForUserOperation
+    }
+
     // Recovery is complete -- journal index ready, map matches journal. We've established
     // invariants necessary to process user requsets.
     pub closed spec fn ready_for_user_operation(&self) -> bool
     {
-        &&& self.journal.index_ready()
+        &&& self.recovery_phase is ReadyForUserOperation
     }
 
     pub closed spec fn i_persistent_store(self) -> StampedMap {
@@ -949,7 +995,7 @@ impl Implementation {
         response_shard@.multiset() == multiset_map_singleton(id, disk_response@),
     ensures
         self.inv_api(api),
-        old(self).ready_for_user_operation() ==> self.ready_for_user_operation(),
+        self.ready_for_user_operation(),
     {
         let mut ready_reqs = vec![];
         std::mem::swap(&mut self.sync_requests.satisfied_reqs, &mut ready_reqs);
@@ -969,6 +1015,7 @@ impl Implementation {
             open_system_invariant_disk_response_singleton::<ConcreteProgramModel, RefinementProof>(self.model, response_shard, id, disk_response@);
             assume( false );    // TODO(JL+jonh): Another spot where we lost open-invariant properties
         }
+        assert( self.recovery_phase is ReadyForUserOperation );
 
         let mut in_flight = None;
         std::mem::swap(&mut self.in_flight, &mut in_flight);
@@ -1082,7 +1129,7 @@ impl Implementation {
     }
 
     // In normal operations, we will see write acknowledgements to cache IO.
-    pub exec fn handle_disk_cache_response(&mut self, id: ID, disk_response: IDiskResponse, response_shard: Tracked<DiskRespShard>,
+    exec fn handle_disk_cache_response(&mut self, id: ID, disk_response: IDiskResponse, response_shard: Tracked<DiskRespShard>,
         api: &mut ClientAPI<ConcreteProgramModel>)
     requires
         old(self).inv_api(old(api)),
@@ -1090,19 +1137,20 @@ impl Implementation {
         response_shard@.multiset() == multiset_map_singleton(id, disk_response@),
     ensures
         self.inv_api(api),
-        old(self).ready_for_user_operation() ==> self.ready_for_user_operation(),
+        self.recovery_phase.advances(old(self).recovery_phase),
     {
     }
 
-    pub exec fn handle_disk_response(&mut self, id: ID, disk_response: IDiskResponse, response_shard: Tracked<DiskRespShard>,
+    exec fn handle_disk_response(&mut self, id: ID, disk_response: IDiskResponse, response_shard: Tracked<DiskRespShard>,
         api: &mut ClientAPI<ConcreteProgramModel>)
     requires
         old(self).inv_api(old(api)),
+        !(old(self).recovery_phase is FetchingSuperblock),
         old(self).good_disk_response(id, disk_response, response_shard@),
         response_shard@.multiset() == multiset_map_singleton(id, disk_response@),
     ensures
         self.inv_api(api),
-        old(self).ready_for_user_operation() ==> self.ready_for_user_operation(),
+        self.recovery_phase.advances(old(self).recovery_phase),
     {
         match self.outstanding_requests.get(&id) {
             None => {
@@ -1122,15 +1170,16 @@ impl Implementation {
         }
     }
 
-    fn recover(&mut self, api: &mut ClientAPI<ConcreteProgramModel>)
+    fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>)
     requires
-        old(self).recover_inv(),
-        old(self).state().recovery_state is Begin,
+        old(self).inv(),
+        old(self).recovery_phase is FetchingSuperblock,
         old(self).instance_id() == old(api).instance_id(),
+//         old(self).state().recovery_state is Begin,   // delete?
     ensures
         self.inv(),
         self.instance_id() == api.instance_id(),
-        self.ready_for_user_operation(),
+        self.recovery_phase is ReadingJournalIndex,
     {
         { // braces to scope variables used in this step
             let ghost pre_state = self.model@.value();
@@ -1267,38 +1316,33 @@ impl Implementation {
             self.model = Tracked(model);
         }
 
-        self.recover_journal_index(api);
-        self.recover_ephemeral_map_from_journal(api);
+        self.recovery_phase = RecoveryPhase::ReadingJournalIndex;
+
         assert( self.inv() );
     }
 
-    fn recover_journal_index(&mut self, api: &mut ClientAPI<ConcreteProgramModel>)
+    fn recover_read_journal_index(&mut self, api: &mut ClientAPI<ConcreteProgramModel>) -> (progress: bool)
     requires
-        old(self).recover_inv(),
-        old(self).instance_id() == old(api).instance_id(),
-        old(self).state().recovery_state is SuperblockAvailable,
+        old(self).inv_api(old(api)),
+        old(self).recovery_phase is ReadingJournalIndex,
     ensures
-        self.recover_inv(),
-        self.instance_id() == api.instance_id(),
-        self.state().recovery_state is JournalIndexComplete,
-        self.journal.index_ready(),
+        self.inv_api(api),
+        self.recovery_phase is ApplyingJournalToRecoverEphemeralMap,
     {
-        assume( false );    // unimpl
+        assume( false );
+        false
     }
 
-    fn recover_ephemeral_map_from_journal(&mut self, api: &mut ClientAPI<ConcreteProgramModel>)
+    fn recover_apply_journal_to_recover_ephemeral_map(&mut self, api: &mut ClientAPI<ConcreteProgramModel>) -> (progress: bool)
     requires
-        old(self).recover_inv(),
-        old(self).instance_id() == old(api).instance_id(),
-        old(self).state().recovery_state is JournalIndexComplete,
-        old(self).journal.index_ready(),
+        old(self).inv_api(old(api)),
+        old(self).recovery_phase is ApplyingJournalToRecoverEphemeralMap,
     ensures
-        self.recover_inv(),
-        self.instance_id() == api.instance_id(),
-        self.journal.index_ready(),
-        self.inv(), // includes RecoveryComplete,
+        self.inv_api(api),
+        self.recovery_phase is ReadyForUserOperation,
     {
-        assume( false );    // unimpl
+        assume( false );
+        false
     }
 
     #[verifier::external_body]
@@ -1337,7 +1381,7 @@ impl KVStoreTrait for Implementation {
     type Proof = RefinementProof;
 
     closed spec fn wf_init(self) -> bool {
-        &&& self.recover_inv()
+        &&& self.inv_recover()
         &&& self.state().recovery_state is Begin
     }
 
@@ -1362,6 +1406,7 @@ impl KVStoreTrait for Implementation {
         let placeholder_snapshot = JournalSnapshot{
             boundary_lsn: 0, freshest_rec: None, };
         let selff = Implementation{
+            recovery_phase: RecoveryPhase::FetchingSuperblock,
             sync_counter: 0,
             store: new_empty_vec_map(),
             journal: JournalImpl::new(placeholder_snapshot),
@@ -1384,16 +1429,18 @@ impl KVStoreTrait for Implementation {
     #[verifier::exec_allows_no_decreases_clause]    // main loop doesn't terminate
     fn kvstore_main(&mut self, mut api: ClientAPI<Self::ProgramModel>)
     {
-        self.recover(&mut api);
+        self.recover_fetch_superblock(&mut api);
 
         let debug_print = true;
         loop
         invariant
             self.inv_api(&api),
-            self.model@.value().state.recovery_state is RecoveryComplete,   // TODO(jonh): delete; redundant with inv
-            self.ready_for_user_operation(),
+            !(self.recovery_phase is FetchingSuperblock),
         {
-            assert(self.ready_for_user_operation());
+            // "Progress" means some step changed the system state, so maybe another step occurring
+            // right away would be productive, say because a queued work item is now runnable. If
+            // no steps make progress, we're waiting on IO, so we may as well sleep a little
+            // waiting for that IO to arrive.
             let mut progress = false;
             api.log("main loop");
 
@@ -1404,20 +1451,31 @@ impl KVStoreTrait for Implementation {
                     self.handle_disk_response(rec.id, rec.disk_response, rec.token, &mut api);
                 }
             }
-            assert(self.ready_for_user_operation());
-            match api.receive_request(debug_print) {
-                None => {},
-                Some(rec) => {
-                    progress = true;
-                    match rec.request.input {
-                        Input::SimulateCrash => {
-                        // End this main thread so the trusted main can restart us "after the
-                        // crash" to exercise the recovery path.
-                        return;
-                        }
-                        _ => {
-                            self.handle_user_request(rec.request, rec.token, &mut api);
-                            assert(self.ready_for_user_operation());
+            match self.recovery_phase {
+                RecoveryPhase::FetchingSuperblock => {
+                    assert(false);
+                }
+                RecoveryPhase::ReadingJournalIndex => {
+                    progress = self.recover_read_journal_index(&mut api);
+                }
+                RecoveryPhase::ApplyingJournalToRecoverEphemeralMap => {
+                    progress = self.recover_apply_journal_to_recover_ephemeral_map(&mut api);
+                }
+                RecoveryPhase::ReadyForUserOperation => {
+                    match api.receive_request(debug_print) {
+                        None => {},
+                        Some(rec) => {
+                            progress = true;
+                            match rec.request.input {
+                                Input::SimulateCrash => {
+                                // End this main thread so the trusted main can restart us "after the
+                                // crash" to exercise the recovery path.
+                                return;
+                                }
+                                _ => {
+                                    self.handle_user_request(rec.request, rec.token, &mut api);
+                                }
+                            }
                         }
                     }
                 }
@@ -1426,7 +1484,6 @@ impl KVStoreTrait for Implementation {
                 api.log("sleeping");
                 api.sleep_a_little();
             }
-            assert(self.ready_for_user_operation());
         }
     }
 }
