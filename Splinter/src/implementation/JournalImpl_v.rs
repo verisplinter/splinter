@@ -156,6 +156,20 @@ impl JournalImpl {
         Self{ snapshot, status: None }
     }
 
+    // This should do some cache reads and either bump another cache read (to walk the skip list)
+    // or report that it's done (and the index is ready).
+    pub exec fn recover_index_step(&mut self) -> (ready: bool)
+    requires
+        old(self).wf(),
+    ensures
+        self.wf(),
+        self@.wf(),
+        ready ==> self.index_ready(),
+    {
+        assume(false); // unimpl
+        true
+    }
+
     pub exec fn insert(&mut self, key: Key, value: Value)
     requires
         old(self).wf(),

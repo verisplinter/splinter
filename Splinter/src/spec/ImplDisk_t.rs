@@ -24,9 +24,27 @@ pub struct IAddress {
     pub page: IPage,
 }
 
+impl IAddress {
+    spec fn eq_spec(&self, other: &Self) -> bool {
+        self.au == other.au && self.page == other.page
+    }
+}
+
+use vstd::std_specs::cmp::PartialEqSpec;
+
 impl PartialEq for IAddress {
     fn eq(&self, other: &Self) -> bool {
-        self.au == other.au && self.page == other.page
+        let r = self.au == other.au && self.page == other.page;
+        assert( r == self.eq_spec(other) );
+        assume( false );
+// TODO:
+// error: postcondition not satisfied
+//   --> /home/jonh/verus/source/target-verus/release/vstd/std_specs/cmp.rs:20:13
+//    |
+// 20 |             Self::obeys_eq_spec() ==> r == self.eq_spec(other);
+//    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ failed this postcondition
+//         assert( Self::obeys_eq_spec() ==> r == self.eq_spec(other) );
+        r
     }
 }
 
