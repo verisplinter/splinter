@@ -49,6 +49,7 @@ use crate::marshalling::WF_v::WF;
 // use crate::marshalling::UniformSized_v::UniformSized;
 use crate::implementation::OverflowFiction_v::*;
 use crate::abstract_system::AbstractCrashAwareMap_v;
+use crate::implementation::CacheImpl_v::CacheImpl;
 
 #[allow(unused_imports)]
 use vstd::multiset::*;
@@ -314,11 +315,14 @@ impl Implementation {
     spec fn inv_reading_journal(self) -> bool
     {
         &&& self.state().recovery_state is SuperblockAvailable
+        &&& self.journal.wf()
+        &&& !self.journal.index_ready()
     }
 
     spec fn inv_applying_journal(self) -> bool
     {
         &&& self.state().recovery_state is JournalIndexComplete
+        &&& self.journal.wf()
     }
 
     closed spec fn inv(self) -> bool {
@@ -1327,10 +1331,47 @@ impl Implementation {
         old(self).recovery_phase is ReadingJournalIndex,
     ensures
         self.inv_api(api),
-        self.recovery_phase is ApplyingJournalToRecoverEphemeralMap,
+        self.recovery_phase is ReadingJournalIndex || self.recovery_phase is ApplyingJournalToRecoverEphemeralMap,
     {
-        assume( false );
-        false
+        assert( self.journal.wf() );
+        let (progress,ready) = self.journal.recover_index_step(&CacheImpl::new());
+        if ready {
+            self.recovery_phase = RecoveryPhase::ApplyingJournalToRecoverEphemeralMap;
+
+            let tracked mut model = KVStoreTokenized::model::arbitrary();
+            proof { tracked_swap(self.model.borrow_mut(), &mut model); }
+
+            let ghost pre_state = self.i();
+            let ghost post_state = ConcreteProgramModel{
+                state: AtomicState {
+                    recovery_state: RecoveryState::JournalIndexComplete,
+                    journal: self.journal@,
+                    cache: pre_state.cache,
+                    store: pre_state.store,
+                    persistent_journal_seq_end: arbitrary(),
+                    in_flight: None,
+                    sync_req_map: Map::empty(),
+                }
+            };
+
+            proof {
+                assert(AtomicState::internal_transitions(pre_state, post_state.state)) by {
+                    // AtomicState internal transition is currently a "silly" noop; needs to expand
+                    // to include journal internal
+                    assume( false ); // TODO
+                };
+            }
+
+            let tracked new_reply_token = self.instance.borrow().internal(
+                KVStoreTokenized::Label::InternalOp{},
+                post_state,
+                &mut model,
+            );
+            self.model = Tracked(model);
+
+            assert( self.i().recovery_state is JournalIndexComplete );
+        }
+        progress
     }
 
     fn recover_apply_journal_to_recover_ephemeral_map(&mut self, api: &mut ClientAPI<ConcreteProgramModel>) -> (progress: bool)

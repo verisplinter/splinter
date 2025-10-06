@@ -17,14 +17,23 @@ use crate::implementation::CachedJournal_v;
 use crate::implementation::JournalTypes_v::AJournal;
 use crate::implementation::JournalTypes_v::ILsn;
 use crate::implementation::JournalModel_v::LsnAddrIndex;
+use crate::implementation::CacheImpl_v::*;
+use crate::marshalling::Slice_v::Slice;
+use crate::marshalling::IJournalRecordFormat_v::IJournalRecordFormat;
+use crate::marshalling::Marshalling_v::Marshal;
 
 verus!{
 
+// This is a silly index implementation, since it has an entry for every LSN :v)
 pub type LsnAddrIndexImpl = HashMapWithView<u64, IAddress>;
 
 pub open spec fn LsnAddrIndexImpl_view(selff: LsnAddrIndexImpl) -> LsnAddrIndex
 {
     Map::new(|k: LSN| selff@.contains_key(k as u64), |k| selff@[k as u64]@)
+}
+
+exec fn index_assign_lsns(selff: &mut LsnAddrIndexImpl, low_inclusive: ILsn, high_exclusive: ILsn, addr: IAddress)
+{
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -66,7 +75,24 @@ pub struct JournalStatus {
 }
 
 impl JournalStatus {
-    pub closed spec fn tail_as_history(&self) -> MsgHistory
+    spec fn wf(&self) -> bool
+    {
+        true
+    }
+
+    exec fn new(tail_start: ILsn) -> (out: Self)
+    ensures
+        out.wf(),
+        out.unmarshalled_tail_start == tail_start,
+    {
+        Self{
+            unmarshalled_tail: vec![],
+            lsn_addr_index: LsnAddrIndexImpl::new(),
+            unmarshalled_tail_start: tail_start,
+        }
+    }
+
+    closed spec fn tail_as_history(&self) -> MsgHistory
     {
         AJournal {
             msg_history: self.unmarshalled_tail@.map_values(|pr: (Key, Value)| KeyedMessage::from_kv(pr.0, pr.1)),
@@ -77,7 +103,7 @@ impl JournalStatus {
 
 impl View for JournalStatus {
     type V = CachedJournal_v::JournalStatus;
-    open spec fn view(&self) -> Self::V {
+    closed spec fn view(&self) -> Self::V {
         Self::V {
             unmarshalled_tail: self.tail_as_history(),
             lsn_addr_index: LsnAddrIndexImpl_view(self.lsn_addr_index),
@@ -85,25 +111,27 @@ impl View for JournalStatus {
     }
 }
 
+pub struct IndexBuilder {
+    next_head: JournalSnapshot,
+}
+
 pub struct JournalImpl {
     snapshot: JournalSnapshot,
-
-    // TODO(discuss with verus): I can't put JournalStatus behind an option, because then I can't
-    // reach through the option with unwrap() or match Some(ref mut v); I get
-    // "The verifier does not yet support the following Rust feature: &mut types, except in special
-    // cases"
-    // Evidently field access is an allowed special case. Is there a better way to do this?
+    index_builder: Option<IndexBuilder>,
     status: Option<JournalStatus>,
-//     index_known: bool,
-//     status: JournalStatus,
+    fmt: IJournalRecordFormat,
 }
 
 impl JournalImpl {
     pub closed spec fn wf(&self) -> bool {
-        match self.status {
-            None => true,
-            Some(status) =>
-                self.snapshot.boundary_lsn <= status.unmarshalled_tail_start,
+        &&& self.fmt.valid()
+        &&& match self.status {
+            None => {
+                self.index_builder is Some
+            },
+            Some(status) => {
+                self.snapshot.boundary_lsn <= status.unmarshalled_tail_start
+            }
         }
     }
 
@@ -153,21 +181,88 @@ impl JournalImpl {
 //         TODO how do I express this? transition!s work, but not init!
 //     ensures CachedJournal::initialize(snapshot@)
     {
-        Self{ snapshot, status: None }
+        Self{
+            snapshot,
+            index_builder: Some(IndexBuilder{
+                next_head: snapshot,
+            }),
+            status: None,
+            fmt: IJournalRecordFormat::new(),
+        }
     }
 
     // This should do some cache reads and either bump another cache read (to walk the skip list)
     // or report that it's done (and the index is ready).
-    pub exec fn recover_index_step(&mut self) -> (ready: bool)
+    // This could be a while loop that restarts from the beginning after every block for cache IO,
+    // but that's quadratric compute, and will eventually suck. I'm going to write it keeping
+    // intermediate state. That state will need an invariant wrt the cache, which Implementation
+    // will have to hang onto for us, unfortunately.
+    pub exec fn recover_index_step(&mut self, cache: &CacheImpl) -> (progress_ready: (bool, bool))
     requires
         old(self).wf(),
+        !old(self).index_ready(),
     ensures
         self.wf(),
         self@.wf(),
-        ready ==> self.index_ready(),
+        progress_ready.1 <==> self.index_ready(),
     {
-        assume(false); // unimpl
-        true
+        let mut progress = false;
+        let mut ready = false;
+        // swappery to deal with lack of &mut
+        let mut dummy: Option<IndexBuilder> = None;
+        core::mem::swap(&mut self.index_builder, &mut dummy);
+        dummy = match dummy {
+            None => { assert(false); None }, // !index_ready && wf ==> we have an index_builder.
+            Some(mut builder) => {
+                match builder.next_head.freshest_rec {
+                    None => {
+                        // We got to the end of the journal linked list! We're done!
+                        self.status = Some(JournalStatus::new(builder.next_head.boundary_lsn));
+                        assert( self.snapshot.boundary_lsn <= self.status.unwrap().unmarshalled_tail_start ) by {
+                            assume( false ); // This needs to become an invariant of the builder process.
+                        }
+
+                        // Build the index all at once at the end in a while loop. We just know
+                        // (liveness fingers crossed) it's not going to have to pause for IO.
+//                         index: LsnAddrIndexImpl,
+
+                        // let the dummy object die, leaving the None in its place.
+                        progress = true;
+                        ready = true;
+                        None
+                    },
+                    Some(addr) => {
+                        // Can we read the next page from the cache?
+                        match cache.read_or_fetch(&addr) {
+                            None => {
+                                // Cache is going to do a fetch and call us later. Bail out.
+                                // Re-construct the struct
+                                Some(builder)
+                            },
+                            Some(raw_page) => {
+                                // Parse the page
+                                let all_slice = Slice::all(&raw_page);
+                                assert( all_slice@.i(raw_page@) == raw_page@ );
+                                assert( self.fmt.parsable(all_slice@.i(raw_page@)) ) by {
+                                    assume( false ); // system invariant
+                                }
+                                let i_journal_record = self.fmt.exec_parse(&all_slice, &raw_page);
+                                
+                                // Advance the pointer.
+                                builder.next_head.freshest_rec = i_journal_record.header.prior_rec;
+
+                                // Another invocation will do useful work without waiting for IO.
+                                progress = true;
+                                Some(builder)
+                            },
+                        }
+                    },
+                }
+            }
+        };
+        core::mem::swap(&mut self.index_builder, &mut dummy);
+        assert( self.wf() );
+        (progress, ready)
     }
 
     pub exec fn insert(&mut self, key: Key, value: Value)
@@ -185,6 +280,7 @@ impl JournalImpl {
         }),
         self.index_ready(),
     {
+        // swappery to deal with lack of &mut
         // Since we don't have &mut results in verus yet, we need to swap the
         // option out of self, deconstruct it, do the work we want on the inner struct,
         // then reassemble the option and swap it back in. 🫤

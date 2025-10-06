@@ -16,7 +16,7 @@ pub mod UniformPairFormat_v;
 pub mod WF_v;
 pub mod KeyedMessageFormat_v;
 pub mod KeyValueFormat_v;
-// pub mod JournalFormat_v;
+pub mod IJournalRecordFormat_v;
 pub mod JournalSnapshotFormat_v;
 pub mod ISuperblockFormat_v;
 pub mod VecMapFormat_v;
