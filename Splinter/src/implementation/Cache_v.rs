@@ -14,11 +14,12 @@ use crate::spec::MapSpec_t::{ID};
 
 verus!{
 
-pub type Slot = i32;
+pub type Slot = u32;
 
 //  Entry is separate from Status because there are some cases
 //  where we need to have shared access to the Entry while modifying
 //  the Status
+#[derive(Clone)]
 pub enum Status {
     NotFilled,
     Clean,

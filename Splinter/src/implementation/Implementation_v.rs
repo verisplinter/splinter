@@ -190,6 +190,8 @@ pub struct Implementation {
 
     // starts at persistent_store.version, ends matching store
     journal: JournalImpl,
+    
+    cache: CacheImpl,
 
     // this is a truncate in flight, only set when a truncation is occuring
     in_flight: Option<InFlight>,
@@ -1334,7 +1336,7 @@ impl Implementation {
         self.recovery_phase is ReadingJournalIndex || self.recovery_phase is ApplyingJournalToRecoverEphemeralMap,
     {
         assert( self.journal.wf() );
-        let (progress,ready) = self.journal.recover_index_step(&CacheImpl::new());
+        let (progress,ready) = self.journal.recover_index_step(&self.cache);
         if ready {
             self.recovery_phase = RecoveryPhase::ApplyingJournalToRecoverEphemeralMap;
 
@@ -1451,6 +1453,7 @@ impl KVStoreTrait for Implementation {
             sync_counter: 0,
             store: new_empty_vec_map(),
             journal: JournalImpl::new(placeholder_snapshot),
+            cache: CacheImpl::new(100),
             in_flight: None,
             persistent_store: new_empty_vec_map(),
             // persistent_version: 0,

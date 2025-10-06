@@ -18,10 +18,17 @@ pub type IAU = u32;
 
 pub type IPage = u32;
 
-#[derive(Debug, Copy, Clone/*, Eq, PartialEq*/)]
+#[derive(Debug, Copy, Clone, Eq, Hash)]
 pub struct IAddress {
     pub au: IAU,
     pub page: IPage,
+}
+
+impl View for IAddress{
+    type V = Address; 
+    open spec fn view(&self) -> Self::V {
+        Address{au: self.au as nat, page: self.page as nat}
+    }
 }
 
 impl IAddress {
@@ -55,10 +62,6 @@ pub uninterp spec(checked) fn ipage_count() -> IPage;
 pub uninterp spec(checked) fn iau_count() -> IAU;
 
 impl IAddress {
-    pub open spec fn view(self) -> Address {
-        Address{au: self.au as nat, page: self.page as nat}
-    }
-
     pub open spec(checked) fn wf(self) -> bool {
         &&& self.au < iau_count()
         &&& self.page < ipage_count()

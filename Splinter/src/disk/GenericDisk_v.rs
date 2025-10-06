@@ -221,15 +221,6 @@ pub open spec(checked) fn addr_range(au: IAU, start: IPage, end_excl: IPage) -> 
     })
 }
 
-impl View for IAddress {
-    type V = Address;
-
-    open spec fn view(&self) -> Self::V
-    {
-        Address{au: self.au as nat, page: self.page as nat}
-    }
-}
-
 /// A Pointer is either an Address or None. (i.e.: we wrap Address with the semantics for
 /// "NULL" pointers). Used when certain data structures might have unallocated pointers.
 pub type Pointer = Option<Address>;

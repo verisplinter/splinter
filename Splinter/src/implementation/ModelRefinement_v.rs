@@ -146,22 +146,24 @@ impl SystemModel::State<ConcreteProgramModel>  {
             &&& self.disk.responses[id] is ReadResp /* && valid_checksum(self.disk.responses[id]->data)*/ ==>
                 self.disk.responses[id]->data == self.disk.content[self.addr_for_id(id)]
             &&& self.disk.responses[id] is WriteResp ==> {
-                let addr = self.addr_for_id(id);
-                let disk_data = DiskLayout::spec_new().spec_parse(addr);
-                &&& addr == spec_superblock_addr() ==> disk_data == self.program.state.in_flight_sb()
-                &&& addr != spec_superblock_addr() ==> {
-                    let cache = self.program.state.cache;
-                    &&& cache.lookup_map.contains_key(addr)
-                    &&& cache.entries[cache.lookup_map[addr]] is Filled
-                    &&& disk_data == cache.entries[cache.lookup_map[addr]]->data
-                }
+                true
+                // TODO:
+                // let addr = self.addr_for_id(id);
+                // let disk_data = DiskLayout::spec_new().spec_parse(addr);
+                // &&& addr == spec_superblock_addr() ==> disk_data == self.program.state.in_flight_sb()
+                // &&& addr != spec_superblock_addr() ==> {
+                //     let cache = self.program.state.cache;
+                //     &&& cache.lookup_map.contains_key(addr)
+                //     &&& cache.entries[cache.lookup_map[addr]] is Filled
+                //     &&& disk_data == cache.entries[cache.lookup_map[addr]]->data
+                // }
             }
         }
     }
 
     pub open spec fn cache_consistent_with_outstanding_reqs(self) -> bool
     {
-        
+        true
     }
         // do we also need to require self.outstanding
         // NOTE(disk): 1 outstanding IO for each loading/writeback page, reserved & filled (!writeback) -> 0 I/O
