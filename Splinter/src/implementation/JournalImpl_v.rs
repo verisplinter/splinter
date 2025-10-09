@@ -201,6 +201,7 @@ impl JournalImpl {
     requires
         old(self).wf(),
         !old(self).index_ready(),
+        cache.wf(),
     ensures
         self.wf(),
         self@.wf(),
@@ -209,9 +210,10 @@ impl JournalImpl {
         let mut progress = false;
         let mut ready = false;
         // swappery to deal with lack of &mut
-        let mut dummy: Option<IndexBuilder> = None;
-        core::mem::swap(&mut self.index_builder, &mut dummy);
-        dummy = match dummy {
+        let mut index_builder = self.index_builder.take();
+//         let mut dummy: Option<IndexBuilder> = None;
+//         core::mem::swap(&mut self.index_builder, &mut dummy);
+        index_builder = match index_builder {
             None => { assert(false); None }, // !index_ready && wf ==> we have an index_builder.
             Some(mut builder) => {
                 match builder.next_head.freshest_rec {
@@ -260,7 +262,7 @@ impl JournalImpl {
                 }
             }
         };
-        core::mem::swap(&mut self.index_builder, &mut dummy);
+        core::mem::swap(&mut self.index_builder, &mut index_builder);
         assert( self.wf() );
         (progress, ready)
     }

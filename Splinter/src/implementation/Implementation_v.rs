@@ -161,6 +161,7 @@ closed spec(checked) fn map_plus_history(map: TotalKMMap, msg_history: MsgHistor
     msg_history.apply_to_stamped_map(stamped_map).value
 }
 
+#[derive(Debug)]
 enum RecoveryPhase {
     FetchingSuperblock, // not really needed since this phase is delineated by lexical scope
     ReadingJournalIndex,
@@ -255,6 +256,7 @@ impl Implementation {
         &&& self.sync_requests.deferred_reqs@.len() == 0
         &&& self.store.wf()
         &&& self.state().recovery_state is Begin
+        &&& self.cache.wf()
     }
 
     closed spec fn inv_running(self) -> bool {
@@ -328,6 +330,7 @@ impl Implementation {
     }
 
     closed spec fn inv(self) -> bool {
+        &&& self.cache.wf()
         // from the physical phase field to stuff we know
         &&& self.recovery_phase is FetchingSuperblock ==> self.inv_recover()
         &&& self.recovery_phase is ReadingJournalIndex ==> self.inv_reading_journal()
@@ -1187,6 +1190,7 @@ impl Implementation {
         self.instance_id() == api.instance_id(),
         self.recovery_phase is ReadingJournalIndex,
     {
+        api.log("issue superblock read");
         { // braces to scope variables used in this step
             let ghost pre_state = self.model@.value();
             let tracked mut model = KVStoreTokenized::model::arbitrary();
@@ -1243,6 +1247,7 @@ impl Implementation {
         ////////////////////////////////////////
         assert( self.model@.value().state.recovery_state is AwaitingSuperblock );
         ////////////////////////////////////////
+        api.log("await superblock response");
         { // braces to scope variables used in this step
             let ghost pre_state = self.model@.value();
             let disk_resp = IDiskRequest::ReadReq{from: superblock_addr() };
@@ -1322,6 +1327,7 @@ impl Implementation {
             self.model = Tracked(model);
         }
 
+        api.log("recovery phase now ReadingJournalIndex");
         self.recovery_phase = RecoveryPhase::ReadingJournalIndex;
 
         assert( self.inv() );
@@ -1400,7 +1406,9 @@ impl Implementation {
 
         // absorb the write response
         match api.blocking_receive_disk_response() {
-            DiskResponseRecord{disk_response: IDiskResponse::WriteResp{..}, ..} => { println!("hooray") }
+            DiskResponseRecord{disk_response: IDiskResponse::WriteResp{..}, ..} => {
+                api.log("mkfs acknowledged")
+            }
             _ => { panic!(); }
         };
     }
@@ -1472,6 +1480,7 @@ impl KVStoreTrait for Implementation {
     #[verifier::exec_allows_no_decreases_clause]    // main loop doesn't terminate
     fn kvstore_main(&mut self, mut api: ClientAPI<Self::ProgramModel>)
     {
+        api.log("knstore_main begins");
         self.recover_fetch_superblock(&mut api);
 
         let debug_print = true;
@@ -1487,6 +1496,7 @@ impl KVStoreTrait for Implementation {
             let mut progress = false;
             api.log("main loop");
 
+            Self::debug_print(&self.recovery_phase);
             match api.receive_disk_response() {
                 None => {},
                 Some(rec) => {

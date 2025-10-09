@@ -537,4 +537,3 @@ state_machine!{ CrashTolerantAsyncMap {
 }}
 
 } // verus!
-fn main() {}
