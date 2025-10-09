@@ -3,12 +3,9 @@
 
 #![allow(unused_imports)]
 
-use verus_builtin::*;
-
-use verus_builtin_macros::*;
+use vstd::prelude::*;
 
 use vstd::{calc_macro::*};
-
 
 use vstd::prelude::*;
 use vstd::map::*;

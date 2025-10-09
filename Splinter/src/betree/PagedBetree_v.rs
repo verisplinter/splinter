@@ -1,8 +1,8 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
-use verus_builtin::*;
+use vstd::prelude::*;
 
-use verus_builtin_macros::*;
+//use vstd::prelude_macros::*;
 use verus_state_machines_macros::state_machine;
 
 use vstd::prelude::*;

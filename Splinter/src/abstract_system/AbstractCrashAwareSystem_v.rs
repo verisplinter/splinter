@@ -5,9 +5,9 @@
 ///
 /// This is the final refinement layer before the top level trusted spec.
 
-use verus_builtin::*;
+use vstd::prelude::*;
 
-use verus_builtin_macros::*;
+//use vstd::prelude_macros::*;
 use verus_state_machines_macros::state_machine;
 use vstd::prelude::*;
 

@@ -1,4 +1,4 @@
-use verus_builtin::*;
+use vstd::prelude::*;
 use vstd::prelude::*;
 use vstd::rwlock::*;
 use vstd::invariant::*;

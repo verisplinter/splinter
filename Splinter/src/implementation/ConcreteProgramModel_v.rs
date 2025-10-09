@@ -1,5 +1,5 @@
 #[allow(unused_imports)]    // lost in erasure
-use verus_builtin::*;
+use vstd::prelude::*;
 use vstd::prelude::*;
 
 use crate::spec::AsyncDisk_t::*;

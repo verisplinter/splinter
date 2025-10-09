@@ -4,8 +4,8 @@
 #![allow(non_snake_case)]   // we should probably fix up the module names to be rust-snakey
 #![allow(unused_imports)]
 
-use verus_builtin::*;
-use verus_builtin_macros::*;
+use vstd::prelude::*;
+//use vstd::prelude_macros::*;
 
 pub mod marshalling;
 use crate::marshalling::IntegerMarshalling_v::*;

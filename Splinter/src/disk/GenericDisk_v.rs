@@ -4,8 +4,8 @@
 //! This file contains types relating to generic disk addressing and referencing.
 
 #[allow(unused_imports)]
-use verus_builtin::*;
-use verus_builtin_macros::*;
+use vstd::prelude::*;
+//use vstd::prelude_macros::*;
 use vstd::prelude::*;
 use vstd::map_lib::*;
 

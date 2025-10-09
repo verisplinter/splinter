@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: BSD-2-Clause
 
 #![allow(unused_imports)]
-use verus_builtin::*;
+use vstd::prelude::*;
 use vstd::prelude::*;
 use vstd::{map::*,multiset::*};
 use crate::disk::GenericDisk_v::*;

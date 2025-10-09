@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: BSD-2-Clause
 // TODO _t and _s enforcement in the build system? Gasp, don't know how to thing about
 // approaching/modifying/enhancing crate build...?
-use verus_builtin::*;
-use verus_builtin_macros::*;
+use vstd::prelude::*;
+//use vstd::prelude_macros::*;
 use vstd::{map::*, set::*};
 
 use crate::spec::FloatingSeq_t::*;

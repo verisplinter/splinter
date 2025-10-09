@@ -1,7 +1,7 @@
-use verus_builtin_macros::*;
+//use vstd::prelude_macros::*;
 
 #[allow(unused_imports)]
-use verus_builtin::*; // needed for Ghost, but that gets erased.
+use vstd::prelude::*; // needed for Ghost, but that gets erased.
 
 use crate::trusted::KVStoreTrait_t::*;
 use crate::trusted::ClientAPI_t::*;

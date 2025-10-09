@@ -1,5 +1,5 @@
-use verus_builtin::*;
-use verus_builtin_macros::*;
+use vstd::prelude::*;
+//use vstd::prelude_macros::*;
 use verus_state_machines_macros::state_machine;
 
 use vstd::{set::*, multiset::Multiset};

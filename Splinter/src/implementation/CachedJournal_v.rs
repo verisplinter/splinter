@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: BSD-2-Clause
 //
 #![allow(unused_imports)]
-use verus_builtin::*;
+use vstd::prelude::*;
 use vstd::prelude::*;
 use vstd::math::*;
 
-use verus_builtin_macros::*;
+//use vstd::prelude_macros::*;
 use verus_state_machines_macros::state_machine;
 
 use crate::abstract_system::StampedMap_v::LSN;

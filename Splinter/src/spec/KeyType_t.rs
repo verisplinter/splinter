@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: BSD-2-Clause
 #![allow(unused_imports)]
 
-use verus_builtin::*;
-use verus_builtin_macros::*;
+use vstd::prelude::*;
+//use vstd::prelude_macros::*;
 use vstd::prelude::*;
 use vstd::set_lib::*;
 use crate::spec::injective_t::*;

@@ -4,8 +4,8 @@
 use std::sync::Arc;
 use std::thread::*;
 
-use verus_builtin::*;
-use verus_builtin_macros::*;
+use vstd::prelude::*;
+//use vstd::prelude_macros::*;
 use vstd::{map::*, seq::*, rwlock::*, slice::*};
 use crate::Bank_v::*;
 use crate::ClientAPI_t::*;

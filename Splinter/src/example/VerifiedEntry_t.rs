@@ -1,5 +1,5 @@
-use verus_builtin::*;
-use verus_builtin_macros::*;
+use vstd::prelude::*;
+//use vstd::prelude_macros::*;
 use std::sync::atomic::{AtomicU64};
 
 use crate::Bank_v::Bank;
