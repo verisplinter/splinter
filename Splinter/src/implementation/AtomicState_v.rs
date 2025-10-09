@@ -44,15 +44,16 @@ pub struct InflightInfo {
 #[verifier::ext_equal]
 pub struct AtomicState {
     pub recovery_state: RecoveryState,
-
-    // msg history seq start
-    // pub journal: AbstractJournal::State, // ephemeral
-    pub journal: CachedJournal::State,
+    
     pub cache: Cache::State,
+    // bookkeeping structure to route disk responses back to cache
+    pub outstanding_cache_reqs: Map<ID, Address>,
 
     // crash aware map
     pub store: AbstractCrashAwareMap::State, // covers ephemeral, in_flight map, plus a persistent map
 
+    // msg history seq start
+    pub journal: CachedJournal::State,
     pub persistent_journal_seq_end: LSN,
 
     // tells us what we can bump persistent_version when the disk response comes back.
@@ -73,10 +74,6 @@ pub enum DiskEvent{
     // other I/Os
     CacheIOBegin{req_map: Map<ID, DiskRequest>},
     CacheIOEnd{resp_map: Map<ID, DiskResponse>},
-    // CacheReadBegin{req_map: Map<ID, addr: Address>},
-    // CacheReadEnd{resp_map: Map<ID, raw_page: RawPage>},
-    // CacheWriteBegin{req_map: Map<ID, info: (Address, RawPage)>},
-    // CacheWriteEnd{resp_map: Set<ID>},
 }
 
 // labels
@@ -151,11 +148,15 @@ impl AtomicState {
     }
 
     pub open spec fn wf(self) -> bool {
+        &&& self.cache.inv()
+        &&& self.outstanding_cache_reqs.is_injective() // at most 1 outstanding req per addr
+        &&& !self.outstanding_cache_reqs.contains_value(spec_superblock_addr()) // sb ops do not go through the cache
+        &&& self.outstanding_cache_reqs.values() <= self.cache.lookup_map.dom()
+
         &&& self.client_ready() ==> {
             &&& self.journal.wf()
             &&& self.journal.seq_start() == self.persistent_map().seq_end
             &&& self.journal.seq_end() == self.ephemeral_map().seq_end
-
             &&& self.store.in_flight is Some <==> self.in_flight is Some
             &&& if let Some(ifl) = self.in_flight 
                 { self.persistent_map().seq_end <= self.in_flight_map().seq_end } 
@@ -168,8 +169,10 @@ impl AtomicState {
     {
         AtomicState{
             recovery_state: RecoveryState::Begin,
-            journal: arbitrary(),
             cache: Cache::State::empty(cache_slots),
+            outstanding_cache_reqs: Map::empty(),
+            // initialized later on recovery
+            journal: arbitrary(),
             store: arbitrary(), 
             persistent_journal_seq_end: arbitrary(),
             in_flight: arbitrary(),
@@ -345,22 +348,34 @@ impl AtomicState {
 
     pub open spec fn cache_io_begin(pre: Self, post: Self, req_map: Map<ID, DiskRequest>, reqs: Multiset<(ID, DiskRequest)>, resps: Multiset<(ID, DiskResponse)>) -> bool
     {
-        &&& Cache::State::next(pre.cache, post.cache, Cache::Label::DiskOps{requests: req_map, responses: Map::empty()})
+        let updated_outstanding_cache_reqs = Map::new(|id| req_map.contains_key(id), |id| req_map[id].addr());
+        let new_outstanding_cache_reqs = pre.outstanding_cache_reqs.union_prefer_right(updated_outstanding_cache_reqs);
+
         &&& map_to_multiset(req_map) == reqs
         &&& resps.is_empty()
+        // TODO: any domain restriction can be part of the invariant and not an enabling condition
+        // &&& req_map.dom().disjoint(pre.outstanding_cache_reqs.dom())
+        &&& Cache::State::next(pre.cache, post.cache, Cache::Label::DiskOps{requests: req_map.values(), responses: Map::empty()})
         &&& post == Self {
             cache: post.cache,
+            outstanding_cache_reqs: new_outstanding_cache_reqs,
             ..pre
         }
     }
 
     pub open spec fn cache_io_end(pre: Self, post: Self, resp_map: Map<ID, DiskResponse>, reqs: Multiset<(ID, DiskRequest)>, resps: Multiset<(ID, DiskResponse)>) -> bool
     {
-        &&& Cache::State::next(pre.cache, post.cache, Cache::Label::DiskOps{requests: Map::empty(), responses: resp_map})
+        let new_outstanding_cache_reqs = pre.outstanding_cache_reqs.remove_keys(resp_map.dom());
+        let finished_cache_reqs = pre.outstanding_cache_reqs.restrict(resp_map.dom()).invert();
+        let cache_resps = Map::new(|addr| finished_cache_reqs.contains_key(addr), |addr| resp_map[finished_cache_reqs[addr]]);
+
         &&& map_to_multiset(resp_map) == resps
         &&& reqs.is_empty()
+
+        &&& Cache::State::next(pre.cache, post.cache, Cache::Label::DiskOps{requests: set![], responses: cache_resps})
         &&& post == Self {
             cache: post.cache,
+            outstanding_cache_reqs: new_outstanding_cache_reqs,
             ..pre
         }
     }

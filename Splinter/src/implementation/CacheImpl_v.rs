@@ -52,7 +52,6 @@ pub struct CacheImpl {
     entries: Vec<IEntry>,
     status_table: Vec<Status>,
     lookup_map: HashMapWithView<IAddress, Slot>,
-    outstanding_reqs: HashMapWithView<ID, Slot>,
 }
 
 impl View for CacheImpl {
@@ -67,14 +66,21 @@ impl View for CacheImpl {
             entries,
             status_map,
             lookup_map: self.lookup_map@,
-            outstanding_reqs: self.outstanding_reqs@,
         }
     }
 }
 
 impl CacheImpl {
+    pub closed spec fn wf(self) -> bool
+    {
+        &&& self.entries.len() == self.status_table.len()
+        &&& forall |slot| self.lookup_map@.contains_value(slot) ==> slot < self.entries.len()
+    }
+
     pub exec fn new(total_slots: usize) -> (out: Self)
-        ensures out@ == Cache::State::empty(total_slots as nat)
+        ensures
+            out.wf(),
+            out@ == Cache::State::empty(total_slots as nat)
     {
         let mut entries = Vec::<IEntry>::with_capacity(total_slots);
         let mut status_table = Vec::<Status>::with_capacity(total_slots);
@@ -100,14 +106,19 @@ impl CacheImpl {
             entries,
             status_table,
             lookup_map: HashMapWithView::new(),
-            outstanding_reqs: HashMapWithView::new(),
         }
     }
 
     // Some => here's the page! Hooray! (borrow with lifetime?)
     // None => we've initiated the IO; try again later
-    pub exec fn read_or_fetch(&self, addr: &IAddress) -> Option<Vec<u8>>
+
+    // client api for request
+    // mut self 
+    pub exec fn read_or_fetch(&self, addr: &IAddress) -> (out: Option<Vec<u8>>)
+        requires self.wf()
+        ensures self.wf()
     {
+        // if self.status_
         unreached()
     }
 }

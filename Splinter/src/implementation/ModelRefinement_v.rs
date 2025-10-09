@@ -130,12 +130,14 @@ impl SystemModel::State<ConcreteProgramModel>  {
     // assumes that all I/Os beside superblock are managed by the cache
     pub open spec fn addr_for_id(self, id: ID) -> Address
     {
-        let cache = self.program.state.cache;
-        if cache.outstanding_reqs.contains_key(id) {
-            cache.entries[cache.outstanding_reqs[id]].get_addr()
-        } else {
-            spec_superblock_addr()
-        }
+        arbitrary()
+
+        // let cache = self.program.state.cache;
+        // if cache.outstanding_reqs.contains_key(id) {
+        //     cache.entries[cache.outstanding_reqs[id]].get_addr()
+        // } else {
+        //     spec_superblock_addr()
+        // }
     }
 
     pub open spec fn responses_consistent_with_disk(self) -> bool
@@ -163,6 +165,15 @@ impl SystemModel::State<ConcreteProgramModel>  {
 
     pub open spec fn cache_consistent_with_outstanding_reqs(self) -> bool
     {
+            //  &&& forall |addr| non_sb_addrs.contains(addr)
+            // <==> ({
+            //     let slot = self.cache.lookup_map[addr];
+            //     // every req must be a loading or writeback page
+            //     ||| self.entries[slot] is // the request is being mapped to  // requests  
+            //     ||| 
+            // })
+        // do we also need to require self.outstanding
+        // NOTE(disk): 1 outstanding IO for each loading/writeback page, reserved & filled (!writeback) -> 0 I/O
         true
     }
         // do we also need to require self.outstanding

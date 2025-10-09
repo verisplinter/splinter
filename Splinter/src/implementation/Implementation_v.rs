@@ -1278,9 +1278,8 @@ impl Implementation {
             let ghost psb = DiskLayout::spec_new().spec_parse(raw_page@);
             let ghost post_state = ConcreteProgramModel{
                 state: AtomicState {
-                    recovery_state: RecoveryState::SuperblockAvailable,
+                    recovery_state: RecoveryState::SuperblockAvailable,                    
                     journal: self.journal@,
-                    cache: pre_state.state.cache, // cheating?
                     store: AbstractCrashAwareMap::State{
                         persistent: psb.store,
                         ephemeral: AbstractCrashAwareMap_v::Ephemeral::Known {
@@ -1291,6 +1290,7 @@ impl Implementation {
                     persistent_journal_seq_end: arbitrary(),
                     in_flight: None,
                     sync_req_map: Map::empty(),
+                    ..pre_state.state
                 }
             };
 
@@ -1336,7 +1336,7 @@ impl Implementation {
         self.recovery_phase is ReadingJournalIndex || self.recovery_phase is ApplyingJournalToRecoverEphemeralMap,
     {
         assert( self.journal.wf() );
-        let (progress,ready) = self.journal.recover_index_step(&self.cache);
+        let (progress,ready) = self.journal.recover_index_step(&mut self.cache);
         if ready {
             self.recovery_phase = RecoveryPhase::ApplyingJournalToRecoverEphemeralMap;
 
@@ -1348,11 +1348,10 @@ impl Implementation {
                 state: AtomicState {
                     recovery_state: RecoveryState::JournalIndexComplete,
                     journal: self.journal@,
-                    cache: pre_state.cache,
-                    store: pre_state.store,
                     persistent_journal_seq_end: arbitrary(),
                     in_flight: None,
                     sync_req_map: Map::empty(),
+                    ..pre_state
                 }
             };
 
