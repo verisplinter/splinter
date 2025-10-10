@@ -1,0 +1,18 @@
+[package]
+name = "verisplinter"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "verisplinter"
+path = "src/main.rs"
+
+[dependencies]
+vstd = "=0.0.0-2025-08-12-1837"
+verus_state_machines_macros = "=0.0.0-2025-08-12-1837"
+
+[package.metadata.verus]
+verify = true
+
+[package.metadata.verus.ide]
+extra_args = "--expand-errors"
