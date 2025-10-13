@@ -21,12 +21,14 @@ verus! {
 
 // Since we only ever read journal pages sequentially, we'll use bulk marshalling instead of
 // incremental seq accessors.
+#[verifier::ext_equal]
 pub struct JournalHeader {
     pub prior_rec: Pointer,
     pub start_lsn: LSN,
 }
 
 #[derive(Clone)]
+#[verifier::ext_equal]
 pub struct IJournalHeader {
     pub prior_rec: Option<IAddress>,
     pub start_lsn: ILsn,
@@ -45,11 +47,13 @@ impl Parsedview<JournalHeader> for IJournalHeader {
     }
 }
 
+#[verifier::ext_equal]
 pub struct AJournalRecord {
     pub header: JournalHeader,
     pub messages: Seq<KeyedMessage>,
 }
 
+#[verifier::ext_equal]
 pub struct IJournalRecord {
     pub header: IJournalHeader,
     pub messages: Vec<KeyedMessage>,
@@ -119,7 +123,7 @@ impl Wrappable for IJournalHeaderWrappable {
         let b_fmt = IntFormat::<ILsn>::new();
 
         assert( a_fmt.uniform_size() == 9 );
-        assert( a_fmt.uniform_size() == 4 );
+//         assert( b_fmt.uniform_size() == 4 );
         assert( a_fmt.uniform_size() as int + a_fmt.uniform_size() as int <= usize::MAX );
         (a_fmt, b_fmt)
     }
@@ -167,7 +171,7 @@ impl Wrappable for IJournalRecordWrappable {
     exec fn exec_from_pair(pair: (IJournalHeader, Vec<KeyedMessage>)) -> (u: Self::U)
     {
         let u = Self::U{ header: pair.0, messages: pair.1 };
-//         assert( u.parsedv() == Self::from_pair(pair.parsedv()) );
+        assert( u.parsedv() == Self::from_pair(pair.parsedv()) );   // manually  trigger trait ensures extn
         u
     }
 
@@ -183,8 +187,8 @@ impl Wrappable for IJournalRecordWrappable {
         let a_fmt = WrappableFormat::<IJournalHeaderWrappable>::new();
         let b_fmt = Self::BF::new(KeyedMessageFormat::new(), IntFormat::<u8>::new(), 200);
 
-        assert( a_fmt.uniform_size() == 5 );
-        assert( b_fmt.uniform_size() == 4 );
+        assert( a_fmt.uniform_size() == 17 );
+        assert( b_fmt.uniform_size() == 200 );
         assert( a_fmt.uniform_size() as int + a_fmt.uniform_size() as int <= usize::MAX );
         (a_fmt, b_fmt)
     }
