@@ -1460,7 +1460,7 @@ impl KVStoreTrait for Implementation {
             sync_counter: 0,
             store: new_empty_vec_map(),
             journal: JournalImpl::new(placeholder_snapshot),
-            cache: CacheImpl::new(100),
+            cache: CacheImpl::new(/*100*/),
             in_flight: None,
             persistent_store: new_empty_vec_map(),
             // persistent_version: 0,

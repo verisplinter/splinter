@@ -243,12 +243,12 @@ impl JournalImpl {
                             },
                             Some(raw_page) => {
                                 // Parse the page
-                                let all_slice = Slice::all(&raw_page);
-                                assert( all_slice@.i(raw_page@) == raw_page@ );
-                                assert( self.fmt.parsable(all_slice@.i(raw_page@)) ) by {
+                                let all_slice = Slice::all(raw_page.borrow());
+                                assert( all_slice@.i(raw_page@@) == raw_page@@ );
+                                assert( self.fmt.parsable(all_slice@.i(raw_page@@)) ) by {
                                     assume( false ); // system invariant
                                 }
-                                let i_journal_record = self.fmt.exec_parse(&all_slice, &raw_page);
+                                let i_journal_record = self.fmt.exec_parse(&all_slice, raw_page.borrow());
                                 
                                 // Advance the pointer.
                                 builder.next_head.freshest_rec = i_journal_record.header.prior_rec;
