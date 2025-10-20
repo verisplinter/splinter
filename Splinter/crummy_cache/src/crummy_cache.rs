@@ -5,6 +5,7 @@ verus! {
 pub const REC_SIZE_BYTES: usize = 10;
 pub const CACHE_SIZE_RECS: usize = 1000;
 
+pub type ARec = Seq<u8>;
 pub type Rec = Vec<u8>;
 
 #[verifier::external_body]
@@ -12,38 +13,42 @@ pub fn print_rec(rec: &Rec) {
     println!("rec value {:?}", rec);
 }
 
-pub struct ImmHandle {
-    idx: usize,
-    rec: Rec
-}
-
-impl ImmHandle {
-    pub closed spec fn inv(self) -> bool {
-        &&& self.idx < CACHE_SIZE_RECS
-        &&& self.rec.len() == REC_SIZE_BYTES
-    }
-
-    pub fn borrow(&self) -> &Rec
-    {
-        &self.rec
-    }
-}
-
-pub struct MutHandle {
+pub struct Handle {
     idx: usize,
     rec: Rec,
     _releasable: Ghost<bool>,
 }
 
-impl MutHandle {
+impl Handle {
     pub closed spec fn releasable(self) -> bool {
         self._releasable@
+    }
+
+    pub closed spec fn value(self) -> ARec
+    recommends 
+        self.inv(),
+        self.releasable(),
+    {
+        self.rec@
+    }
+
+    pub closed spec fn index(self) -> int
+    {
+        self.idx as int
+    }
+
+    pub fn borrow(&self) -> &Rec
+    requires self.releasable(),
+    {
+        &self.rec
     }
 
     pub closed spec fn inv(self) -> bool {
         &&& self.idx < CACHE_SIZE_RECS
         &&& self._releasable@ ==> self.rec.len() == REC_SIZE_BYTES
     }
+
+    // Mutable stuff
 
     pub fn take(&mut self) -> (rec: Rec)
         requires
@@ -52,6 +57,8 @@ impl MutHandle {
         ensures rec.len() == REC_SIZE_BYTES,
             self.inv(),
             !self.releasable(),
+            rec@ == old(self).value(),
+            self.index() == old(self).index(),
     {
         let mut dummy = vec![];
         std::mem::swap(&mut dummy, &mut self.rec);
@@ -68,6 +75,8 @@ impl MutHandle {
     ensures
         self.inv(),
         self.releasable(),
+        self.value() == rec@,
+        self.index() == old(self).index(),
     {
         self.rec = rec;
         self._releasable = Ghost(true);
@@ -104,35 +113,47 @@ impl Cache {
         Set::new(|i| 0<=i<CACHE_SIZE_RECS && self.ary[i] is None)
     }
 
-    pub fn get_ro(&mut self, idx: usize) -> (hdl: ImmHandle)
+    pub fn get(&mut self, idx: usize) -> (hdl: Handle)
     requires
         old(self).inv(),
         0 <= idx < CACHE_SIZE_RECS,
         !old(self).outstanding_handles().contains(idx as int),
     ensures
         self.inv(),
-        self.outstanding_handles() == old(self).outstanding_handles().insert(idx as int)
+        hdl.inv(),
+        hdl.releasable(),
+        hdl.index() == idx as int,
+        self.outstanding_handles() == old(self).outstanding_handles().insert(hdl.index()),
     {
-        self.ary.push(None);
-        let mut taken = self.ary.swap_remove(idx);
-        assert( taken is Some );
-        ImmHandle{ idx, rec: taken.unwrap() }
+        match self.maybe_get(idx) {
+            None => { assert(false); unreached() }
+            Some(hdl) => hdl,
+        }
+//         self.ary.push(None);
+//         let mut taken = self.ary.swap_remove(idx);
+//         assert( taken is Some );
+//         Handle{ idx, rec: taken.unwrap(), _releasable: Ghost(true) }
     }
 
 
-    pub fn maybe_get_ro(&mut self, idx: usize) -> (hdl: Option<ImmHandle>)
+    // None means the index is already outstanding in another handle.
+    // I don't think our actual code will need this path.
+    pub fn maybe_get(&mut self, idx: usize) -> (res: Option<Handle>)
     requires
         old(self).inv(),
         0 <= idx < CACHE_SIZE_RECS,
     ensures
         self.inv(),
-        match hdl {
+        match res {
             None => {
                 &&& old(self).outstanding_handles().contains(idx as int)
                 &&& self.outstanding_handles() == old(self).outstanding_handles()
             },
             Some(hdl) => {
-                &&& self.outstanding_handles() == old(self).outstanding_handles().insert(idx as int)
+                &&& hdl.index() == idx as int
+                &&& hdl.inv()
+                &&& hdl.releasable()
+                &&& self.outstanding_handles() == old(self).outstanding_handles().insert(hdl.index())
             },
         },
     {
@@ -140,46 +161,19 @@ impl Cache {
         let mut taken = self.ary.swap_remove(idx);
         match taken {
             None => None,   // Somebody beat you to it
-            Some(rec) => Some(ImmHandle{ idx, rec }),
+            Some(rec) => Some(Handle{ idx, rec, _releasable: Ghost(true) }),
         }
     }
 
-    pub fn get_mut(&mut self, idx: usize) -> (out: Option<MutHandle>)
-    requires
-        old(self).inv(),
-        0 <= idx < CACHE_SIZE_RECS,
-    ensures
-        self.inv(),
-        match out { Some(hdl) => hdl.inv() && hdl.releasable(), _ => true },
-    {
-        self.ary.push(None);
-        let mut taken = self.ary.swap_remove(idx);
-        match taken {
-            None => None,   // Somebody beat you to it
-            Some(rec) => Some(MutHandle{ idx, rec, _releasable: Ghost(true) }),
-        }
-    }
-
-    pub fn release_imm(&mut self, hdl: ImmHandle)
-    requires
-        old(self).inv(),
-        hdl.inv(),
-    ensures
-        self.inv(),
-    {
-        self.ary[hdl.idx] = Some(hdl.rec)
-    }
-
-    pub fn release_mut(&mut self, hdl: MutHandle)
+    pub fn release(&mut self, hdl: Handle)
     requires
         old(self).inv(),
         hdl.inv(),
         hdl.releasable(),
     ensures
         self.inv(),
+        self.outstanding_handles() == old(self).outstanding_handles().remove(hdl.index())
     {
-        // we'd like to assert that self.ary[hdl.idx] is None right now; an invariant
-        // about outstanding Handles
         self.ary[hdl.idx] = Some(hdl.rec)
     }
 }
