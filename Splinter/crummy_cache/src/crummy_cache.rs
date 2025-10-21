@@ -20,6 +20,11 @@ pub struct Handle {
 }
 
 impl Handle {
+    pub closed spec fn inv(self) -> bool {
+        &&& self.idx < CACHE_SIZE_RECS
+        &&& self._releasable@ ==> self.rec.len() == REC_SIZE_BYTES
+    }
+
     pub closed spec fn releasable(self) -> bool {
         self._releasable@
     }
@@ -37,18 +42,20 @@ impl Handle {
         self.idx as int
     }
 
-    pub fn borrow(&self) -> &Rec
-    requires self.releasable(),
+    // Immutable access
+
+    pub fn borrow(&self) -> (rec: &Rec)
+    requires
+        self.inv(),
+        self.releasable(),
+    ensures
+        rec.len() == REC_SIZE_BYTES,
+        rec@ == self.value(),
     {
         &self.rec
     }
 
-    pub closed spec fn inv(self) -> bool {
-        &&& self.idx < CACHE_SIZE_RECS
-        &&& self._releasable@ ==> self.rec.len() == REC_SIZE_BYTES
-    }
-
-    // Mutable stuff
+    // Mutable access
 
     pub fn take(&mut self) -> (rec: Rec)
         requires
@@ -89,11 +96,19 @@ pub struct Cache {
 }
 
 impl Cache {
+
+    pub open spec fn empty_rec() -> ARec
+    {
+        Seq::new(REC_SIZE_BYTES as nat, |i| 0)
+    }
+
     #[verifier::external_body]
+    // TODO make this verify. Build inductively in a while loop?
     pub fn new() -> (out: Self)
     ensures
         out.inv(),
-        out.outstanding_handles().is_empty()
+        out.outstanding_handles().is_empty(),
+        forall |i| 0<=i<CACHE_SIZE_RECS ==> out.value_at(i) == Self::empty_rec(),
     {
         let ary: [Option<Rec>; CACHE_SIZE_RECS] = std::array::from_fn(|_| Some(vec![0; REC_SIZE_BYTES]));
         Self{
@@ -113,6 +128,15 @@ impl Cache {
         Set::new(|i| 0<=i<CACHE_SIZE_RECS && self.ary[i] is None)
     }
 
+    pub closed spec fn value_at(self, idx: int) -> ARec
+        recommends self.inv(), !self.outstanding_handles().contains(idx)
+    {
+        match self.ary[idx] {
+            None => arbitrary(),
+            Some(rec) => rec@,
+        }
+    }
+
     pub fn get(&mut self, idx: usize) -> (hdl: Handle)
     requires
         old(self).inv(),
@@ -124,17 +148,15 @@ impl Cache {
         hdl.releasable(),
         hdl.index() == idx as int,
         self.outstanding_handles() == old(self).outstanding_handles().insert(hdl.index()),
+        hdl.value() == old(self).value_at(idx as int),
+        forall |i| 0<=i<CACHE_SIZE_RECS && i != idx as int ==>
+            self.value_at(i) == old(self).value_at(i),
     {
         match self.maybe_get(idx) {
             None => { assert(false); unreached() }
             Some(hdl) => hdl,
         }
-//         self.ary.push(None);
-//         let mut taken = self.ary.swap_remove(idx);
-//         assert( taken is Some );
-//         Handle{ idx, rec: taken.unwrap(), _releasable: Ghost(true) }
     }
-
 
     // None means the index is already outstanding in another handle.
     // I don't think our actual code will need this path.
@@ -148,12 +170,17 @@ impl Cache {
             None => {
                 &&& old(self).outstanding_handles().contains(idx as int)
                 &&& self.outstanding_handles() == old(self).outstanding_handles()
+                &&& forall |i| 0<=i<CACHE_SIZE_RECS ==>
+                    self.value_at(i) == old(self).value_at(i)
             },
             Some(hdl) => {
                 &&& hdl.index() == idx as int
                 &&& hdl.inv()
                 &&& hdl.releasable()
                 &&& self.outstanding_handles() == old(self).outstanding_handles().insert(hdl.index())
+                &&& hdl.value() == old(self).value_at(idx as int)
+                &&& forall |i| 0<=i<CACHE_SIZE_RECS && i != idx as int ==>
+                    self.value_at(i) == old(self).value_at(i)
             },
         },
     {
@@ -172,7 +199,10 @@ impl Cache {
         hdl.releasable(),
     ensures
         self.inv(),
-        self.outstanding_handles() == old(self).outstanding_handles().remove(hdl.index())
+        self.outstanding_handles() == old(self).outstanding_handles().remove(hdl.index()),
+        self.value_at(hdl.index()) == hdl.value(),
+        forall |i| 0<=i<CACHE_SIZE_RECS && i != hdl.index() as int ==>
+            self.value_at(i) == old(self).value_at(i),
     {
         self.ary[hdl.idx] = Some(hdl.rec)
     }
