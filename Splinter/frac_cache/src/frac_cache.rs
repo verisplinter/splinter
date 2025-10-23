@@ -8,6 +8,7 @@ verus! {
 pub const REC_SIZE_BYTES: usize = 10;
 pub const CACHE_SIZE_RECS: usize = 1000;
 
+pub type ARec = Seq<u8>;
 pub type Rec = Vec<u8>;
 pub type Slot = usize;
 pub type Perm = Frac<Slot,2>;
@@ -19,7 +20,7 @@ pub struct MutHandle {
 }
 
 impl MutHandle {
-    pub closed spec fn inv(&self) -> bool
+    pub open spec fn inv(&self) -> bool
     {
         &&& self.token@.resource() == self.idx
         &&& self.rec.len() == REC_SIZE_BYTES
@@ -31,8 +32,12 @@ pub struct Cache {
     entries: Vec<Option<Rec>>,
 }
 
+// how would we apply this elsewhere
+
+
+
 impl View for Cache {
-    type V = Seq<Seq<u8>>;
+    type V = Seq<ARec>;
 
     closed spec fn view(&self) -> Self::V
     {
@@ -61,10 +66,12 @@ impl Cache {
 
     // NOTE: we might need to include the entry token id doesn't change
     pub open spec(checked) fn entries_same_except(self, other: Self, idx: usize) -> bool
-        recommends idx < self.count(), self.count() == other.count(),
+        recommends self.inv(), other.inv(), idx < self.count(), self.count() == other.count(), 
     {
-        forall |i| 0 <= i < self.count() && i != idx ==> 
-            self.entry_present(i) == other.entry_present(i)
+        &&& forall |i| i != idx 
+            ==> #[trigger] self.entry_present(i) == other.entry_present(i)
+        &&& forall |i| 0 <= i < self.count()
+            ==> self.entry_token_id(i) == other.entry_token_id(i)
     }
 
     pub open spec(checked) fn valid_handle(self, handle: MutHandle) -> bool
@@ -131,6 +138,7 @@ impl Cache {
             old(self).entry_present(idx),
         ensures 
             self.inv(),
+            out.idx == idx,
             self.valid_handle(out),
             self.entries_same_except(*old(self), idx),
             old(self)@ == self@.update(idx as int, out.rec@),

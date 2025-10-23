@@ -1,4 +1,5 @@
 use vstd::prelude::*;
+use vstd::pervasive::unreached;
 
 verus! {
 
