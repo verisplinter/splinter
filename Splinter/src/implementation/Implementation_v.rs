@@ -256,7 +256,7 @@ impl Implementation {
         &&& self.sync_requests.deferred_reqs@.len() == 0
         &&& self.store.wf()
         &&& self.state().recovery_state is Begin
-        &&& self.cache.wf()
+        &&& self.cache.inv()
     }
 
     closed spec fn inv_running(self) -> bool {
@@ -330,7 +330,7 @@ impl Implementation {
     }
 
     closed spec fn inv(self) -> bool {
-        &&& self.cache.wf()
+        &&& self.cache.inv()
         // from the physical phase field to stuff we know
         &&& self.recovery_phase is FetchingSuperblock ==> self.inv_recover()
         &&& self.recovery_phase is ReadingJournalIndex ==> self.inv_reading_journal()

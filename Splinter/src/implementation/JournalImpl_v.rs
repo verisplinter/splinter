@@ -197,14 +197,15 @@ impl JournalImpl {
     // but that's quadratric compute, and will eventually suck. I'm going to write it keeping
     // intermediate state. That state will need an invariant wrt the cache, which Implementation
     // will have to hang onto for us, unfortunately.
-    pub exec fn recover_index_step(&mut self, cache: &CacheImpl) -> (progress_ready: (bool, bool))
+    pub exec fn recover_index_step(&mut self, cache: &mut CacheImpl) -> (progress_ready: (bool, bool))
     requires
         old(self).wf(),
         !old(self).index_ready(),
-        cache.wf(),
+        old(cache).inv(),
     ensures
         self.wf(),
         self@.wf(),
+        cache.inv(),
         progress_ready.1 <==> self.index_ready(),
     {
         let mut progress = false;
@@ -244,8 +245,8 @@ impl JournalImpl {
                             Some(raw_page) => {
                                 // Parse the page
                                 let all_slice = Slice::all(raw_page.borrow());
-                                assert( all_slice@.i(raw_page@@) == raw_page@@ );
-                                assert( self.fmt.parsable(all_slice@.i(raw_page@@)) ) by {
+                                assert( all_slice@.i(raw_page.value()) == raw_page.value() );
+                                assert( self.fmt.parsable(all_slice@.i(raw_page.value())) ) by {
                                     assume( false ); // system invariant
                                 }
                                 let i_journal_record = self.fmt.exec_parse(&all_slice, raw_page.borrow());
