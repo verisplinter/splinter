@@ -23,6 +23,7 @@ pub mod KeyValueFormat_v;
 pub mod IJournalRecordFormat_v;
 pub mod JournalSnapshotFormat_v;
 pub mod JournalSnapshot2Format_v;
+pub mod JournalSnapshot3Format_v;
 pub mod ISuperblockFormat_v;
 pub mod ISuperblock2Format_v;
 pub mod ISuperblock3Format_v;
