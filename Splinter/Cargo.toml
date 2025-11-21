@@ -7,6 +7,10 @@ edition = "2021"
 name = "verisplinter"
 path = "src/main.rs"
 
+[[bin]]
+name = "marshalling_test"
+path = "src/marshalling_test.rs"
+
 [dependencies]
 vstd = "=0.0.0-2025-08-12-1837"
 verus_builtin = "=0.0.0-2025-08-12-1837"

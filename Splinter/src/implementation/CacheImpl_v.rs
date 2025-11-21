@@ -43,7 +43,6 @@ impl Handle {
     }
 
     pub closed spec fn releasable(self) -> bool {
-        &&& self.inv()
         &&& self._releasable@
     }
 
@@ -341,6 +340,7 @@ impl CacheImpl {
                     self.value_at_slot(i) == old(self).value_at_slot(i)
             },
             Some(hdl) => {
+                &&& hdl.inv()
                 &&& hdl.releasable()
                 &&& hdl.value() == old(self).value_at_slot(hdl.slot())
                 &&& self.outstanding_handle_addresses() == old(self).outstanding_handle_addresses().insert(*addr)
@@ -435,6 +435,7 @@ impl CacheImpl {
                     self.value_at_slot(i) == old(self).value_at_slot(i)
             },
             Some(hdl) => {
+                &&& hdl.inv()
                 &&& hdl.releasable()
                 &&& hdl.slot() == slot
                 &&& hdl.value() == old(self).value_at_slot(slot)

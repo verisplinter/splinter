@@ -165,13 +165,35 @@ impl<F: UniformSizedMarshal> Marshal for OptionFormat<F>
     {
         let end = start + self.exec_uniform_size();
         match value {
-            None => { data[start] = 0; }
+            None => { 
+                data.set(start, 0);
+                // We don't need to write anything to the rest of the space - parsable
+                // only looks at the tag byte when it's 0
+                proof {
+                    let subr = data@.subrange(start as int, end as int);
+                    assert(subr[0] == 0);
+                    assert(self.parsable(subr));
+                    assert(self.parse(subr) == value.parsedv());
+                }
+            }
             Some(v) => {
-                data[start] = 1;
+                data.set(start, 1);
                 proof { self.f.uniform_size_matches_spec_size(); }
+                let ghost mid_data = data@;
                 let f_end = self.f.exec_marshall(v, data, start + 1);
-                assert( data@.subrange(start + 1 as int, f_end as int ) ==
-                    data@.subrange(start as int, end as int).subrange(1, 1 + self.f.uniform_size() as int) ); // extn
+                proof {
+                    let subr = data@.subrange(start as int, end as int);
+                    // Tag byte preserved
+                    assert( mid_data.subrange(start as int, start + 1 as int) ==
+                        data@.subrange(start as int, start + 1 as int) );
+                    assert(subr[0] == 1);
+                    // Inner value marshalled correctly
+                    assert( data@.subrange(start + 1 as int, f_end as int ) ==
+                        subr.subrange(1, 1 + self.f.uniform_size() as int) ); // extn
+                    assert(self.f.parsable(subr.subrange(1, 1 + self.f.uniform_size() as int)));
+                    assert(self.parsable(subr));
+                    assert(self.parse(subr) == value.parsedv());
+                }
             }
         }
         end
