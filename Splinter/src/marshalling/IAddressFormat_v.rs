@@ -1,76 +1,60 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
+
+//! IAddress marshaller generated using the struct_marshaller_2! macro
+//! This replaces the old Wrappable-based implementation with clean, composable code.
+
 use vstd::{prelude::*};
-use crate::abstract_system::MsgHistory_v::KeyedMessage;
-use crate::marshalling::Marshalling_v::Marshal;
-use crate::marshalling::Marshalling_v::Parsedview;
+use crate::marshalling::Slice_v::Slice;
+use crate::marshalling::Marshalling_v::{Marshal, Parsedview};
 use crate::marshalling::IntegerMarshalling_v::*;
-use crate::marshalling::ResizableUniformSizedSeq_v::ResizableUniformSizedElementSeqFormat;
-use crate::marshalling::KeyedMessageFormat_v::KeyedMessageFormat;
-use crate::marshalling::Wrappable_v::*;
 use crate::marshalling::UniformSized_v::*;
-use crate::disk::GenericDisk_v::IAU;
-use crate::disk::GenericDisk_v::IPage;
-use crate::disk::GenericDisk_v::IAddress;
-use crate::disk::GenericDisk_v::Address;
-use crate::implementation::JournalTypes_v::*;
+use crate::marshalling::UniformSizedMarshal_v::UniformSizedMarshal;
 use crate::marshalling::WF_v::WF;
-use crate::disk::GenericDisk_v::AU;
-use crate::disk::GenericDisk_v::Page;
+use crate::disk::GenericDisk_v::{IAU, IPage, IAddress, Address, AU, Page};
 
 verus! {
 
-pub struct IAddressWrappable {}
-impl Wrappable for IAddressWrappable {
-    type AF = IntFormat::<IAU>;
-    type BF = IntFormat::<IPage>;
-    type DV = Address;
-    type U = IAddress;
+// Conversion functions for IAddress marshalling
+pub open spec fn int_to_au(v: int) -> AU {
+    v as AU
+}
 
-    open spec fn value_marshallable(value: Self::DV) -> bool
-    {
-        // self.b_fmt.marshallable(value.msg_history)
-        &&& true
-    }
+pub open spec fn au_to_int(v: AU) -> int {
+    v as int
+}
 
-    open spec fn to_pair(value: Address) -> (int, int)
-    {
-        (value.au as int, value.page as int)
-    }
+pub open spec fn int_to_page(v: int) -> Page {
+    v as Page
+}
 
-    open spec fn from_pair(pair: (int, int)) -> (value: Address)
-    {
-        Address{au: pair.0 as AU, page: pair.1 as Page}
-    }
+pub open spec fn page_to_int(v: Page) -> int {
+    v as int
+}
 
-    proof fn to_from_bijective()
-    {
-    }
+} // verus!
 
-    exec fn exec_to_pair(value: &IAddress) -> (pair: (IAU, IPage))
-    {
-        let pair = (value.au, value.page);
-        assert( Self::to_pair(value.parsedv()).0 == pair.parsedv().0 ); // extn
-        assert( pair.wf() );    // TODO(jonh)
-        pair
-    }
-
-    exec fn exec_from_pair(pair: (IAU, IPage)) -> (out: IAddress)
-    {
-        IAddress{au: pair.0, page: pair.1}
-    }
-
-    open spec fn spec_new_format_pair() -> (Self::AF, Self::BF)
-    {
-        (IntFormat::spec_new(), IntFormat::spec_new())
-    }
-
-    exec fn new_format_pair() -> (Self::AF, Self::BF)
-    {
-        (IntFormat::new(), IntFormat::new())
+struct_marshaller_2! {
+    format_name: IAddressFormat,
+    impl_type: IAddress,
+    spec_type: Address,
+    field1: {
+        impl_field: au,
+        spec_field: au,
+        formatter_type: IntFormat<IAU>,
+        formatter_spec_new: IntFormat::spec_new(),
+        formatter_new: IntFormat::new(),
+        parse_fn: int_to_au,
+        marshallable_fn: au_to_int,
+    },
+    field2: {
+        impl_field: page,
+        spec_field: page,
+        formatter_type: IntFormat<IPage>,
+        formatter_spec_new: IntFormat::spec_new(),
+        formatter_new: IntFormat::new(),
+        parse_fn: int_to_page,
+        marshallable_fn: page_to_int,
     }
 }
 
-pub type IAddressFormat = WrappableFormat<IAddressWrappable>;
-
-} //verus!

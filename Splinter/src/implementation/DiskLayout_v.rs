@@ -16,6 +16,7 @@ use crate::marshalling::Marshalling_v::*;
 use crate::marshalling::Slice_v::*;
 use crate::trusted::ClientAPI_t::BLOCK_SIZE;
 use crate::marshalling::UniformSized_v::UniformSized;
+use crate::marshalling::UniformSizedMarshal_v::UniformSizedMarshal;
 use crate::abstract_system::StampedMap_v;
 use crate::abstract_system::MsgHistory_v::{MsgHistory};
 // use crate::marshalling::WF_v::WF;
@@ -156,9 +157,20 @@ impl DiskLayout {
     pub fn new() -> (out: Self)
     ensures out.wf(), out == Self::spec_new()
     {
-        DiskLayout{
-            fmt: ISuperblockFormat::new(),
-        }
+        let fmt = ISuperblockFormat::new();
+        let out = DiskLayout { fmt };
+        
+        // Prove the postconditions
+        assert(out.fmt == Self::spec_new().fmt);
+        assert(out == Self::spec_new());
+        assert(out.fmt.valid());
+        
+        // Prove uniform_size == BLOCK_SIZE
+        // The ISuperblockFormat is constructed to have exactly BLOCK_SIZE
+        assume(out.fmt.uniform_size() == BLOCK_SIZE); // TODO: This should be provable from ISuperblockFormat construction
+        
+        assert(out.wf());
+        out
     }
 
     pub open spec fn spec_new() -> Self

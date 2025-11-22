@@ -31,6 +31,17 @@ impl View for IAddress{
     }
 }
 
+use crate::marshalling::Marshalling_v::Parsedview;
+use crate::marshalling::WF_v::WF;
+
+impl Parsedview<Address> for IAddress {
+    open spec fn parsedv(&self) -> Address {
+        self@
+    }
+}
+
+impl WF for IAddress {}
+
 impl IAddress {
     spec fn eq_spec(&self, other: &Self) -> bool {
         self.au == other.au && self.page == other.page

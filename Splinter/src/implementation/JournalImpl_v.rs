@@ -68,6 +68,10 @@ impl Parsedview<CachedJournal_v::JournalSnapShot> for JournalSnapshot {
     }
 }
 
+use crate::marshalling::WF_v::WF;
+
+impl WF for JournalSnapshot {}
+
 pub struct JournalStatus {
     pub unmarshalled_tail: Vec<(Key,Value)>,
     pub lsn_addr_index: LsnAddrIndexImpl,

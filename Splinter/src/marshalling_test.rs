@@ -29,8 +29,8 @@ use crate::marshalling::VariableSizedElementSeq_v::*;
 use crate::marshalling::StaticallySized_v::*;
 // use crate::marshalling::HashMapFormat_v::*;  // TODO: This module doesn't exist
 use vstd::std_specs::hash::*;
-use crate::marshalling::IAddress2Format_v::*;
-use crate::marshalling::JournalSnapshot2Format_v::*;
+use crate::marshalling::IAddressFormat_v::*;
+use crate::marshalling::JournalSnapshotFormat_v::*;
 use crate::disk::GenericDisk_v::IAddress;
 use crate::implementation::JournalImpl_v::JournalSnapshot;
 
@@ -222,7 +222,7 @@ exec fn test_resizable_seq_marshalling_append() -> (outpr: (Vec<u8>, usize))
 exec fn test_iaddress2_marshalling() -> (Vec<u8>, usize)
 {
     let addr = IAddress { au: 42, page: 7 };
-    let fmt = IAddress2Format::new();
+    let fmt = IAddressFormat::new();
     
     let req = fmt.exec_size(&addr);
     let mut data = prealloc(req);
@@ -234,7 +234,7 @@ exec fn test_iaddress2_marshalling() -> (Vec<u8>, usize)
 exec fn test_iaddress2_parse(data: &Vec<u8>, end: usize) -> Option<IAddress>
     requires data.len() >= end,
 {
-    let fmt = IAddress2Format::new();
+    let fmt = IAddressFormat::new();
     let slice = Slice { start: 0, end };
     let ovalue = fmt.try_parse(&slice, data);
     ovalue
@@ -247,7 +247,7 @@ exec fn test_journal_snapshot2_marshalling() -> (Vec<u8>, usize)
         boundary_lsn: 12345, 
         freshest_rec: Some(IAddress { au: 42, page: 7 })
     };
-    let fmt = JournalSnapshot2Format::new();
+    let fmt = JournalSnapshotFormat::new();
     
     let req = fmt.exec_size(&snapshot);
     let mut data = prealloc(req);
@@ -262,7 +262,7 @@ exec fn test_journal_snapshot2_marshalling_none() -> (Vec<u8>, usize)
         boundary_lsn: 99999, 
         freshest_rec: None
     };
-    let fmt = JournalSnapshot2Format::new();
+    let fmt = JournalSnapshotFormat::new();
     
     let req = fmt.exec_size(&snapshot);
     let mut data = prealloc(req);
@@ -274,7 +274,7 @@ exec fn test_journal_snapshot2_marshalling_none() -> (Vec<u8>, usize)
 exec fn test_journal_snapshot2_parse(data: &Vec<u8>, end: usize) -> Option<JournalSnapshot>
     requires data.len() >= end,
 {
-    let fmt = JournalSnapshot2Format::new();
+    let fmt = JournalSnapshotFormat::new();
     let slice = Slice { start: 0, end };
     let ovalue = fmt.try_parse(&slice, data);
     ovalue
