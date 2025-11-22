@@ -219,7 +219,7 @@ exec fn test_resizable_seq_marshalling_append() -> (outpr: (Vec<u8>, usize))
 }
 
 // Test for the new direct IAddress2Format implementation
-exec fn test_iaddress2_marshalling() -> (Vec<u8>, usize)
+exec fn test_iaddress_marshalling() -> (Vec<u8>, usize)
 {
     let addr = IAddress { au: 42, page: 7 };
     let fmt = IAddressFormat::new();
@@ -231,7 +231,7 @@ exec fn test_iaddress2_marshalling() -> (Vec<u8>, usize)
     (data, end)
 }
 
-exec fn test_iaddress2_parse(data: &Vec<u8>, end: usize) -> Option<IAddress>
+exec fn test_iaddress_parse(data: &Vec<u8>, end: usize) -> Option<IAddress>
     requires data.len() >= end,
 {
     let fmt = IAddressFormat::new();
@@ -241,7 +241,7 @@ exec fn test_iaddress2_parse(data: &Vec<u8>, end: usize) -> Option<IAddress>
 }
 
 // Test for JournalSnapshot2Format
-exec fn test_journal_snapshot2_marshalling() -> (Vec<u8>, usize)
+exec fn test_journal_snapshot_marshalling() -> (Vec<u8>, usize)
 {
     let snapshot = JournalSnapshot { 
         boundary_lsn: 12345, 
@@ -256,7 +256,7 @@ exec fn test_journal_snapshot2_marshalling() -> (Vec<u8>, usize)
     (data, end)
 }
 
-exec fn test_journal_snapshot2_marshalling_none() -> (Vec<u8>, usize)
+exec fn test_journal_snapshot_marshalling_none() -> (Vec<u8>, usize)
 {
     let snapshot = JournalSnapshot { 
         boundary_lsn: 99999, 
@@ -271,7 +271,7 @@ exec fn test_journal_snapshot2_marshalling_none() -> (Vec<u8>, usize)
     (data, end)
 }
 
-exec fn test_journal_snapshot2_parse(data: &Vec<u8>, end: usize) -> Option<JournalSnapshot>
+exec fn test_journal_snapshot_parse(data: &Vec<u8>, end: usize) -> Option<JournalSnapshot>
     requires data.len() >= end,
 {
     let fmt = JournalSnapshotFormat::new();
@@ -479,24 +479,24 @@ fn main() {
     print!("v: {:?}\n", v);
 
     print!("\n");
-    print!("iaddress2_marshalling (direct implementation)...\n");
-    let (data, end) = test_iaddress2_marshalling();
+    print!("iaddress_marshalling (macro-generated)...\n");
+    let (data, end) = test_iaddress_marshalling();
     print!("end: {:?} data {:?}\n", end, data);
-    let v = test_iaddress2_parse(&data, end);
+    let v = test_iaddress_parse(&data, end);
     print!("parsed: {:?}\n", v);
 
     print!("\n");
-    print!("journal_snapshot2_marshalling (with Some)...\n");
-    let (data, end) = test_journal_snapshot2_marshalling();
+    print!("journal_snapshot_marshalling (with Some)...\n");
+    let (data, end) = test_journal_snapshot_marshalling();
     print!("end: {:?} data {:?}\n", end, data);
-    let v = test_journal_snapshot2_parse(&data, end);
+    let v = test_journal_snapshot_parse(&data, end);
     print!("parsed: {:?}\n", v);
 
     print!("\n");
-    print!("journal_snapshot2_marshalling (with None)...\n");
-    let (data, end) = test_journal_snapshot2_marshalling_none();
+    print!("journal_snapshot_marshalling (with None)...\n");
+    let (data, end) = test_journal_snapshot_marshalling_none();
     print!("end: {:?} data {:?}\n", end, data);
-    let v = test_journal_snapshot2_parse(&data, end);
+    let v = test_journal_snapshot_parse(&data, end);
     print!("parsed: {:?}\n", v);
 
     // TODO: Re-enable when KVPairFormat_v and HashMapFormat_v are available
