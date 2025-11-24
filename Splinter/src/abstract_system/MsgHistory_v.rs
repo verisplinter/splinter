@@ -21,12 +21,15 @@ pub struct KeyedMessage {
 }
 
 use crate::marshalling::Marshalling_v::Parsedview;
+use crate::marshalling::WF_v::WF;
 
 impl Parsedview<KeyedMessage> for KeyedMessage {
     open spec fn parsedv(&self) -> KeyedMessage {
         *self
     }
 }
+
+impl WF for KeyedMessage { }
 
 impl KeyedMessage {
     pub open spec fn from_kv(key: Key, value: Value) -> Self

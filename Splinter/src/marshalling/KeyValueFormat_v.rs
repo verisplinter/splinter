@@ -42,7 +42,7 @@ impl Wrappable for KeyValueFormatWrappable {
     exec fn exec_to_pair(value: &(Key, Value)) -> (pair: (u64, u64))
     {
         let pair = (value.0.0, value.1.0);
-        assert( Self::to_pair((*value).parsedv()) == pair.parsedv() );
+        assert( Self::to_pair((*value).parsedv()) == Parsedview::<(int,int)>::parsedv(&pair) );
         assert( pair.wf() );    // manually trigger trait ensures
         pair
     }

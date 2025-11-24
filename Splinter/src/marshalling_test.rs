@@ -162,7 +162,7 @@ exec fn test_resizable_seq_marshalling() -> (outpr: (Vec<u8>, usize))
     val.push(16 as u32);
     let rusm = u32_resizable_seq_marshaller_factory();
 
-    assert( val.parsedv().len() == 3);    // witness to the multiplicand in marshallable
+    assert( Parsedview::<Seq<int>>::parsedv(&val).len() == 3);    // witness to the multiplicand in marshallable
     assert( rusm.total_size == 24 );
     assert( rusm.spec_size(val.parsedv()) == rusm.total_size );
     assert(rusm.marshallable(val.parsedv()));

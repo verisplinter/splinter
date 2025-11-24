@@ -1,30 +1,25 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
 
-//! ISuperblock marshaller generated using the struct_marshaller_2! macro
-//! Replaces the old Wrappable-based implementation with clean, composable code.
+#![allow(macro_expanded_macro_exports_accessed_by_absolute_paths)]
 
-use vstd::{prelude::*};
-use crate::spec::KeyType_t::*;
-use crate::spec::Messages_t::*;
-use crate::abstract_system::MsgHistory_v::KeyedMessage;
-use crate::marshalling::Slice_v::Slice;
-use crate::marshalling::Marshalling_v::{Marshal, Parsedview};
-use crate::marshalling::IntegerMarshalling_v::*;
-use crate::marshalling::UniformSized_v::*;
-use crate::marshalling::UniformSizedMarshal_v::UniformSizedMarshal;
-use crate::marshalling::WF_v::WF;
-use crate::marshalling::StructMarshalMacro_v::identity;
+//! ISuperblockFormat_v - marshaller for ISuperblock using the struct_marshaller_2 macro
+
+use crate::implementation::SuperblockTypes_v::{ASuperblock, ISuperblock};
 use crate::marshalling::JournalSnapshotFormat_v::JournalSnapshotFormat;
 use crate::marshalling::KeyValueFormat_v::KeyValueFormat;
 use crate::marshalling::ResizableUniformSizedSeq_v::ResizableUniformSizedElementSeqFormat;
-use crate::implementation::JournalTypes_v::*;
-use crate::implementation::SuperblockTypes_v::{ASuperblock, ISuperblock};
-use crate::implementation::CachedJournal_v::JournalSnapShot;
-use crate::implementation::JournalImpl_v::JournalSnapshot;
-use crate::disk::GenericDisk_v::Address;
-use crate::disk::GenericDisk_v::IAddress;
+use crate::marshalling::IntegerMarshalling_v::IntFormat;
+use crate::marshalling::Slice_v::Slice;
+use crate::struct_marshaller_2;
+use crate::marshalling::Marshalling_v::{Marshal, Parsedview};
+use crate::marshalling::UniformSized_v::UniformSized;
+use crate::marshalling::UniformSizedMarshal_v::UniformSizedMarshal;
+use vstd::prelude::*;
 
+verus! {
+
+#[allow(macro_expanded_macro_exports_accessed_by_absolute_paths)]
 struct_marshaller_2! {
     format_name: ISuperblockFormat,
     impl_type: ISuperblock,
@@ -35,25 +30,14 @@ struct_marshaller_2! {
         formatter_type: JournalSnapshotFormat,
         formatter_spec_new: JournalSnapshotFormat::spec_new(),
         formatter_new: JournalSnapshotFormat::new(),
-        parse_fn: identity,
-        marshallable_fn: identity,
     },
     field2: {
         impl_field: store,
         spec_field: store,
         formatter_type: ResizableUniformSizedElementSeqFormat<KeyValueFormat, u8>,
-        formatter_spec_new: ResizableUniformSizedElementSeqFormat::spec_new(
-            KeyValueFormat::spec_new(),
-            IntFormat::<u8>::spec_new(),
-            200
-        ),
-        formatter_new: ResizableUniformSizedElementSeqFormat::new(
-            KeyValueFormat::new(),
-            IntFormat::<u8>::new(),
-            200
-        ),
-        parse_fn: identity,
-        marshallable_fn: identity,
+        formatter_spec_new: ResizableUniformSizedElementSeqFormat::spec_new(KeyValueFormat::spec_new(), IntFormat::<u8>::spec_new(), 200),
+        formatter_new: ResizableUniformSizedElementSeqFormat::new(KeyValueFormat::new(), IntFormat::<u8>::new(), 200),
     }
 }
 
+} // verus!

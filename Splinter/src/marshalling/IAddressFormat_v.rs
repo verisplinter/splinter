@@ -1,39 +1,22 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
 
-//! IAddress marshaller generated using the struct_marshaller_2! macro
-//! This replaces the old Wrappable-based implementation with clean, composable code.
+#![allow(macro_expanded_macro_exports_accessed_by_absolute_paths)]
 
-use vstd::{prelude::*};
+//! IAddressFormat_v - marshaller for IAddress using the struct_marshaller_2 macro
+
+use crate::disk::GenericDisk_v::{IAddress, Address};
+use crate::marshalling::NatFormat_v::NatFormat;
 use crate::marshalling::Slice_v::Slice;
+use crate::struct_marshaller_2;
 use crate::marshalling::Marshalling_v::{Marshal, Parsedview};
-use crate::marshalling::IntegerMarshalling_v::*;
-use crate::marshalling::UniformSized_v::*;
+use crate::marshalling::UniformSized_v::UniformSized;
 use crate::marshalling::UniformSizedMarshal_v::UniformSizedMarshal;
-use crate::marshalling::WF_v::WF;
-use crate::disk::GenericDisk_v::{IAU, IPage, IAddress, Address, AU, Page};
+use vstd::prelude::*;
 
 verus! {
 
-// Conversion functions for IAddress marshalling
-pub open spec fn int_to_au(v: int) -> AU {
-    v as AU
-}
-
-pub open spec fn au_to_int(v: AU) -> int {
-    v as int
-}
-
-pub open spec fn int_to_page(v: int) -> Page {
-    v as Page
-}
-
-pub open spec fn page_to_int(v: Page) -> int {
-    v as int
-}
-
-} // verus!
-
+#[allow(macro_expanded_macro_exports_accessed_by_absolute_paths)]
 struct_marshaller_2! {
     format_name: IAddressFormat,
     impl_type: IAddress,
@@ -41,20 +24,17 @@ struct_marshaller_2! {
     field1: {
         impl_field: au,
         spec_field: au,
-        formatter_type: IntFormat<IAU>,
-        formatter_spec_new: IntFormat::spec_new(),
-        formatter_new: IntFormat::new(),
-        parse_fn: int_to_au,
-        marshallable_fn: au_to_int,
+        formatter_type: NatFormat<u32>,
+        formatter_spec_new: NatFormat::spec_new(),
+        formatter_new: NatFormat::new(),
     },
     field2: {
         impl_field: page,
         spec_field: page,
-        formatter_type: IntFormat<IPage>,
-        formatter_spec_new: IntFormat::spec_new(),
-        formatter_new: IntFormat::new(),
-        parse_fn: int_to_page,
-        marshallable_fn: page_to_int,
+        formatter_type: NatFormat<u32>,
+        formatter_spec_new: NatFormat::spec_new(),
+        formatter_new: NatFormat::new(),
     }
 }
 
+} // verus!

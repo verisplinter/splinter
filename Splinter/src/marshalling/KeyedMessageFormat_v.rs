@@ -1,76 +1,41 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
-use vstd::{prelude::*};
-use crate::spec::KeyType_t::*;
-use crate::spec::Messages_t::*;
+
+#![allow(macro_expanded_macro_exports_accessed_by_absolute_paths)]
+
+//! KeyedMessageFormat_v - marshaller for KeyedMessage using the struct_marshaller_2 macro
+
 use crate::abstract_system::MsgHistory_v::KeyedMessage;
-use crate::marshalling::Marshalling_v::{Parsedview};
-use crate::marshalling::IntegerMarshalling_v::IntFormat;
-use crate::marshalling::Wrappable_v::*;
-use crate::marshalling::WF_v::WF;
+use crate::marshalling::KeyFormat_v::KeyFormat;
+use crate::marshalling::MessageFormat_v::MessageFormat;
+use crate::marshalling::Slice_v::Slice;
+use crate::struct_marshaller_2;
+use crate::marshalling::Marshalling_v::{Marshal, Parsedview};
+use crate::marshalling::UniformSized_v::UniformSized;
+use crate::marshalling::UniformSizedMarshal_v::UniformSizedMarshal;
+use vstd::prelude::*;
 
 verus! {
 
-impl WF for KeyedMessage { }
-
-pub struct KeyedMessageFormatWrappable {}
-impl Wrappable for KeyedMessageFormatWrappable {
-    type AF = IntFormat::<u64>;
-    type BF = IntFormat::<u64>;
-    type DV = KeyedMessage;
-    type U = KeyedMessage;
-
-    open spec fn value_marshallable(value: KeyedMessage) -> bool
-    {
-        // We aren't gonna need Delta values for a long time
-        value.message is Define
-    }
-
-    open spec fn to_pair(value: KeyedMessage) -> (int, int)
-    {
-        let message_data = match value.message {
-            Message::Define{value: Value(v)} => v,
-            Message::Update{delta: Delta(_)} => { 0 },
-        };
-        (value.key.0 as int, message_data as int)
-    }
-
-    open spec fn from_pair(pair: (int, int)) -> (value: KeyedMessage)
-    {
-        KeyedMessage{ key: Key(pair.0 as u64), message: Message::Define{value: Value(pair.1 as u64)}}
-    }
-
-    proof fn to_from_bijective()
-    {
-    }
-
-    exec fn exec_to_pair(value: &KeyedMessage) -> (pair: (u64, u64))
-    {
-        let message_data = match value.message {
-            Message::Define{value: Value(v)} => v,
-            Message::Update{delta: Delta(_)} => { assert(false); 0 },
-        };
-        let pair = (value.key.0, message_data);
-        assert( Self::to_pair(value.parsedv()) == pair.parsedv() );  // verus #1534
-        pair
-    }
-
-    exec fn exec_from_pair(pair: (u64, u64)) -> (km: KeyedMessage)
-    {
-        KeyedMessage{ key: Key(pair.0), message: Message::Define{value: Value(pair.1)}}
-    }
-
-    open spec fn spec_new_format_pair() -> (Self::AF, Self::BF)
-    {
-        (IntFormat::spec_new(), IntFormat::spec_new())
-    }
-
-    exec fn new_format_pair() -> (Self::AF, Self::BF)
-    {
-        (IntFormat::new(), IntFormat::new())
+#[allow(macro_expanded_macro_exports_accessed_by_absolute_paths)]
+struct_marshaller_2! {
+    format_name: KeyedMessageFormat,
+    impl_type: KeyedMessage,
+    spec_type: KeyedMessage,
+    field1: {
+        impl_field: key,
+        spec_field: key,
+        formatter_type: KeyFormat,
+        formatter_spec_new: KeyFormat::spec_new(),
+        formatter_new: KeyFormat::new(),
+    },
+    field2: {
+        impl_field: message,
+        spec_field: message,
+        formatter_type: MessageFormat,
+        formatter_spec_new: MessageFormat::spec_new(),
+        formatter_new: MessageFormat::new(),
     }
 }
 
-pub type KeyedMessageFormat = WrappableFormat<KeyedMessageFormatWrappable>;
-
-} //verus!
+} // verus!

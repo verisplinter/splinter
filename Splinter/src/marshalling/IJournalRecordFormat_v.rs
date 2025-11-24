@@ -98,7 +98,7 @@ impl Wrappable for IJournalHeaderWrappable {
     exec fn exec_to_pair(value: &Self::U) -> (pair: (Option<IAddress>, ILsn))
     {
         let pair = (value.prior_rec, value.start_lsn);
-        assert( Self::to_pair((*value).parsedv()) == pair.parsedv() );  // verus #1534
+        assert( Self::to_pair((*value).parsedv()) == Parsedview::<(Pointer,int)>::parsedv(&pair) );  // verus #1534
         assume( pair.wf() );    // TODO(jonh) need to plumb an obligation through the trait? Maybe a custom pair type?
         pair
     }
@@ -163,7 +163,7 @@ impl Wrappable for IJournalRecordWrappable {
         let pair = (header_clone, messages_clone);
         assume( header_clone == value.header );
         assume( messages_clone == value.messages );
-        assert( Self::to_pair((*value).parsedv()) == pair.parsedv() );  // verus #1534
+        assert( Self::to_pair((*value).parsedv()) == Parsedview::<(JournalHeader, Seq<KeyedMessage>)>::parsedv(&pair) );  // verus #1534
         assume( pair.wf() );    // TODO(jonh) need to plumb an obligation through the trait? Maybe a custom pair type?
         pair
     }

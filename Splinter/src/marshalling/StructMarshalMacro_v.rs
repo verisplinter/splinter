@@ -1,27 +1,37 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
 
+#![allow(macro_expanded_macro_exports_accessed_by_absolute_paths)]
+
 //! Macro for generating struct marshallers
 //!
 //! This macro generates all the boilerplate for implementing Marshal and UniformSized
 //! for a 2-field struct, given the formatters for each field.
 //!
-//! Usage:
-//! - User provides conversion functions for parse: `parse_fn: path::to::function`
-//! - User provides conversion functions for marshallable: `marshallable_fn: path::to::function`
-//! - Use `identity` for no conversion, or custom functions for type conversions
-//! - The user provides both formatter_spec_new and formatter_new expressions for full flexibility
+//! Key design principle: The formatter types must match the struct field types EXACTLY.
+//! If you need type conversions (e.g., IntFormat<u64> for a Key field), create a wrapper
+//! formatter (e.g., KeyFormat) that handles the conversion internally.
 //!
 //! Limitations:
 //! - Only supports 2-field structs (can be extended to N fields)
 
 use vstd::prelude::*;
+use crate::marshalling::Marshalling_v::{Marshal, Parsedview};
+use crate::marshalling::UniformSized_v::UniformSized;
+use crate::marshalling::WF_v::WF;
 
 verus! {
 
 /// Identity conversion function (no-op)
-/// Use this when the formatter's output type matches the struct field type
+/// This is now primarily for documentation - the macro doesn't use conversion functions anymore
 pub open spec fn identity<T>(v: T) -> T {
+    v
+}
+
+#[verifier::external_body]
+pub fn identity_exec<T>(v: T) -> (result: T)
+    ensures result == v
+{
     v
 }
 
@@ -40,8 +50,6 @@ macro_rules! struct_marshaller_2 {
             formatter_type: $fmt_type1:ty,
             formatter_spec_new: $fmt_spec_new1:expr,
             formatter_new: $fmt_new1:expr,
-            parse_fn: $parse_fn1:path,
-            marshallable_fn: $marsh_fn1:path,
         },
         field2: {
             impl_field: $impl_field2:ident,
@@ -49,10 +57,9 @@ macro_rules! struct_marshaller_2 {
             formatter_type: $fmt_type2:ty,
             formatter_spec_new: $fmt_spec_new2:expr,
             formatter_new: $fmt_new2:expr,
-            parse_fn: $parse_fn2:path,
-            marshallable_fn: $marsh_fn2:path,
         }
     ) => {
+        #[allow(macro_expanded_macro_exports_accessed_by_absolute_paths)]
         verus! {
 
         pub struct $format_name {
@@ -90,14 +97,14 @@ macro_rules! struct_marshaller_2 {
             open spec fn uniform_size(&self) -> usize {
                 (self.field1_fmt.uniform_size() + self.field2_fmt.uniform_size()) as usize
             }
-
+            
             proof fn uniform_size_ensures(&self)
                 ensures 0 < self.uniform_size()
             {
                 self.field1_fmt.uniform_size_ensures();
                 self.field2_fmt.uniform_size_ensures();
             }
-
+            
             exec fn exec_uniform_size(&self) -> (sz: usize)
                 ensures sz == self.uniform_size()
             {
@@ -119,7 +126,7 @@ macro_rules! struct_marshaller_2 {
                 let field1_end = self.field1_fmt.uniform_size() as int;
                 let field2_end = field1_end + self.field2_fmt.uniform_size() as int;
                 
-                &&& self.field1_fmt.uniform_size() + self.field2_fmt.uniform_size() <= data.len()
+                &&& field2_end == data.len()
                 &&& self.field1_fmt.parsable(data.subrange(0, field1_end))
                 &&& self.field2_fmt.parsable(data.subrange(field1_end, field2_end))
             }
@@ -128,9 +135,9 @@ macro_rules! struct_marshaller_2 {
                 let field1_end = self.field1_fmt.uniform_size() as int;
                 let field2_end = field1_end + self.field2_fmt.uniform_size() as int;
                 
-                Self::DV {
-                    $spec_field1: $parse_fn1(self.field1_fmt.parse(data.subrange(0, field1_end))),
-                    $spec_field2: $parse_fn2(self.field2_fmt.parse(data.subrange(field1_end, field2_end))),
+                $spec_type {
+                    $spec_field1: self.field1_fmt.parse(data.subrange(0, field1_end)),
+                    $spec_field2: self.field2_fmt.parse(data.subrange(field1_end, field2_end)),
                 }
             }
 
@@ -188,12 +195,9 @@ macro_rules! struct_marshaller_2 {
                     assert(field1_slice@.i(data@) == idata.subrange(0, f1_end));
                     assert(field2_slice@.i(data@) == idata.subrange(f1_end, f2_end));
                     
-                    assert(field1_value.wf());
-                    assert(field2_value.wf());
-                    
                     // Show parsed correctly
-                    assert(field1_value.parsedv() == self.field1_fmt.parse(idata.subrange(0, f1_end)));
-                    assert(field2_value.parsedv() == self.field2_fmt.parse(idata.subrange(f1_end, f2_end)));
+                    // Note: Can't use .parsedv() directly due to potential ambiguity (e.g., u32: Parsedview<int> and Parsedview<nat>)
+                    // Instead, rely on the fact that try_parse postcondition ensures correct parsing
                     // Help extensionality for struct field matching
                     assert(result.parsedv().$spec_field1 == self.parse(idata).$spec_field1);
                     assert(result.parsedv().$spec_field2 == self.parse(idata).$spec_field2);
@@ -203,8 +207,8 @@ macro_rules! struct_marshaller_2 {
             }
 
             open spec fn marshallable(&self, value: Self::DV) -> bool {
-                &&& self.field1_fmt.marshallable($marsh_fn1(value.$spec_field1))
-                &&& self.field2_fmt.marshallable($marsh_fn2(value.$spec_field2))
+                &&& self.field1_fmt.marshallable(value.$spec_field1)
+                &&& self.field2_fmt.marshallable(value.$spec_field2)
             }
 
             open spec fn impl_marshallable(&self, impl_value: Self::U) -> bool {
@@ -212,12 +216,14 @@ macro_rules! struct_marshaller_2 {
                 &&& self.field2_fmt.impl_marshallable(impl_value.$impl_field2)
             }
 
-            open spec fn spec_size(&self, value: Self::DV) -> usize {
+            open spec fn spec_size(&self, v: Self::DV) -> usize {
                 (self.field1_fmt.uniform_size() + self.field2_fmt.uniform_size()) as usize
             }
 
-            exec fn exec_size(&self, value: &Self::U) -> (sz: usize) {
-                self.field1_fmt.exec_uniform_size() + self.field2_fmt.exec_uniform_size()
+            exec fn exec_size(&self, val: &Self::U) -> (sz: usize) {
+                let field1_size = self.field1_fmt.exec_size(&val.$impl_field1);
+                let field2_size = self.field2_fmt.exec_size(&val.$impl_field2);
+                field1_size + field2_size
             }
 
             exec fn exec_marshall(&self, value: &Self::U, data: &mut Vec<u8>, start: usize) -> (end: usize) {
@@ -243,19 +249,19 @@ macro_rules! struct_marshaller_2 {
                     assert(self.field2_fmt.parsable(subr.subrange(f1_size, f1_size + f2_size)));
                     assert(self.parsable(subr));
                     
-                    assert(self.field1_fmt.parse(subr.subrange(0, f1_size)) == value.$impl_field1.parsedv());
-                    assert(self.field2_fmt.parse(subr.subrange(f1_size, f1_size + f2_size)) == value.$impl_field2.parsedv());
+                    // Note: Can't use .parsedv() on fields directly due to potential ambiguity
+                    // The extensionality assertions below are sufficient for verification
                     // Help extensionality for struct field matching
                     assert(self.parse(subr).$spec_field1 == value.parsedv().$spec_field1);
                     assert(self.parse(subr).$spec_field2 == value.parsedv().$spec_field2);
                     
                     assert(field2_end == start + self.spec_size(value.parsedv()));
                 }
-
+                
                 field2_end
             }
         }
-
+        
         impl UniformSizedMarshal for $format_name {
             proof fn uniform_size_matches_spec_size(self: &Self) {
                 assert forall |value: $spec_type| #[trigger] self.spec_size(value) == self.uniform_size() by { }
@@ -265,4 +271,3 @@ macro_rules! struct_marshaller_2 {
         } // verus!
     };
 }
-
