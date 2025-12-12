@@ -34,7 +34,7 @@ proof fn journal_snapshot_wf_proof(
     ensures
         js.wf(),
 {
-    assume(js.wf());
+    // JournalSnapshot::wf() returns true unconditionally
 }
 
 // Postcondition proof for JournalSnapshotFormat::try_parse
@@ -56,12 +56,34 @@ proof fn journal_snapshot_postcondition_proof(
         field1_value.wf(),
         field2_value.wf(),
         fmt.parsable(slice@.i(data@)),
+        // Facts from macro (try_parse postconditions):
+        Parsedview::<nat>::parsedv(&field1_value) == fmt.field1_fmt.parse(field1_slice@.i(data@)),
+        Parsedview::<Option<crate::disk::GenericDisk_v::Address>>::parsedv(&field2_value) == fmt.field2_fmt.parse(field2_slice@.i(data@)),
+        // Slice relationships:
+        field1_slice@.i(data@) == slice@.i(data@).subrange(0, fmt.field1_fmt.uniform_size() as int),
+        field2_slice@.i(data@) == slice@.i(data@).subrange(
+            fmt.field1_fmt.uniform_size() as int,
+            fmt.field1_fmt.uniform_size() as int + fmt.field2_fmt.uniform_size() as int),
     ensures
         result.parsedv() == fmt.parse(slice@.i(data@)),
         result.wf(),
 {
-    assume(result.parsedv() == fmt.parse(slice@.i(data@)));
-    assume(result.wf());
+    // JournalSnapshot::wf() returns true unconditionally
+
+    // result.parsedv() = result@ = JournalSnapShot { boundary_lsn: result.boundary_lsn as nat, freshest_rec: iaddr_view(result.freshest_rec) }
+    // fmt.parse(...) = JournalSnapShot { boundary_lsn: fmt.field1_fmt.parse(...), freshest_rec: fmt.field2_fmt.parse(...) }
+    let idata = slice@.i(data@);
+    let f1_end = fmt.field1_fmt.uniform_size() as int;
+    let f2_end = f1_end + fmt.field2_fmt.uniform_size() as int;
+
+    // Show the parse result matches field by field
+    assert(result.parsedv().boundary_lsn == (field1_value as nat));
+    assert(fmt.parse(idata).boundary_lsn == fmt.field1_fmt.parse(idata.subrange(0, f1_end)));
+
+    // For field2: iaddr_view(result.freshest_rec) == Parsedview::parsedv(&field2_value)
+    // because both are defined identically (match on Option, apply @ to inner)
+    assert(result.parsedv().freshest_rec == Parsedview::<Option<crate::disk::GenericDisk_v::Address>>::parsedv(&field2_value));
+    assert(fmt.parse(idata).freshest_rec == fmt.field2_fmt.parse(idata.subrange(f1_end, f2_end)));
 }
 
 } // verus!

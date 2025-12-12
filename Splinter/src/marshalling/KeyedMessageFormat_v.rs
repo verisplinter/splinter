@@ -33,7 +33,7 @@ proof fn keyed_message_wf_proof(
     ensures
         km.wf(),
 {
-    assume(km.wf());
+    // KeyedMessage::wf() returns true unconditionally
 }
 
 // Postcondition proof for KeyedMessageFormat::try_parse
@@ -55,12 +55,31 @@ proof fn keyed_message_postcondition_proof(
         field1_value.wf(),
         field2_value.wf(),
         fmt.parsable(slice@.i(data@)),
+        // Facts from macro (try_parse postconditions):
+        Parsedview::<Key>::parsedv(&field1_value) == fmt.field1_fmt.parse(field1_slice@.i(data@)),
+        Parsedview::<Message>::parsedv(&field2_value) == fmt.field2_fmt.parse(field2_slice@.i(data@)),
+        // Slice relationships:
+        field1_slice@.i(data@) == slice@.i(data@).subrange(0, fmt.field1_fmt.uniform_size() as int),
+        field2_slice@.i(data@) == slice@.i(data@).subrange(
+            fmt.field1_fmt.uniform_size() as int,
+            fmt.field1_fmt.uniform_size() as int + fmt.field2_fmt.uniform_size() as int),
     ensures
         result.parsedv() == fmt.parse(slice@.i(data@)),
         result.wf(),
 {
-    assume(result.parsedv() == fmt.parse(slice@.i(data@)));
-    assume(result.wf());
+    // KeyedMessage::wf() returns true unconditionally
+
+    // result.parsedv() = *result (since Parsedview<KeyedMessage>::parsedv returns self)
+    // fmt.parse(...) = KeyedMessage { key: fmt.field1_fmt.parse(...), message: fmt.field2_fmt.parse(...) }
+    let idata = slice@.i(data@);
+    let f1_end = fmt.field1_fmt.uniform_size() as int;
+    let f2_end = f1_end + fmt.field2_fmt.uniform_size() as int;
+
+    // Key and Message also have parsedv = *self
+    assert(result.parsedv().key == field1_value);
+    assert(result.parsedv().message == field2_value);
+    assert(fmt.parse(idata).key == fmt.field1_fmt.parse(idata.subrange(0, f1_end)));
+    assert(fmt.parse(idata).message == fmt.field2_fmt.parse(idata.subrange(f1_end, f2_end)));
 }
 
 } // verus!

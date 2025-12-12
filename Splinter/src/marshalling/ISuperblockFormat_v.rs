@@ -34,7 +34,7 @@ proof fn isuperblock_wf_proof(
     ensures
         sb.wf(),
 {
-    assume(sb.wf());
+    // ISuperblock::wf() returns true unconditionally
 }
 
 // Postcondition proof for ISuperblockFormat::try_parse
@@ -56,12 +56,41 @@ proof fn isuperblock_postcondition_proof(
         field1_value.wf(),
         field2_value.wf(),
         fmt.parsable(slice@.i(data@)),
+        // Facts from macro (try_parse postconditions):
+        Parsedview::<crate::implementation::CachedJournal_v::JournalSnapShot>::parsedv(&field1_value) == fmt.field1_fmt.parse(field1_slice@.i(data@)),
+        Parsedview::<Seq<(crate::spec::KeyType_t::Key, crate::spec::Messages_t::Value)>>::parsedv(&field2_value) == fmt.field2_fmt.parse(field2_slice@.i(data@)),
+        // Slice relationships:
+        field1_slice@.i(data@) == slice@.i(data@).subrange(0, fmt.field1_fmt.uniform_size() as int),
+        field2_slice@.i(data@) == slice@.i(data@).subrange(
+            fmt.field1_fmt.uniform_size() as int,
+            fmt.field1_fmt.uniform_size() as int + fmt.field2_fmt.uniform_size() as int),
     ensures
         result.parsedv() == fmt.parse(slice@.i(data@)),
         result.wf(),
 {
-    assume(result.parsedv() == fmt.parse(slice@.i(data@)));
-    assume(result.wf());
+    // ISuperblock::wf() returns true unconditionally
+
+    // result.parsedv() = ASuperblock { journal: result.journal_snapshot@, store: result.store@ }
+    // fmt.parse(...) = ASuperblock { journal: fmt.field1_fmt.parse(...), store: fmt.field2_fmt.parse(...) }
+    let idata = slice@.i(data@);
+    let f1_end = fmt.field1_fmt.uniform_size() as int;
+    let f2_end = f1_end + fmt.field2_fmt.uniform_size() as int;
+
+    // For field1 (journal_snapshot):
+    // JournalSnapshot::parsedv() = JournalSnapshot@
+    // From requires: field1_value.parsedv() == fmt.field1_fmt.parse(...)
+    assert(field1_value@ == Parsedview::<crate::implementation::CachedJournal_v::JournalSnapShot>::parsedv(&field1_value));
+    assert(result.parsedv().journal == field1_value@);
+    assert(result.parsedv().journal == fmt.field1_fmt.parse(idata.subrange(0, f1_end)));
+    assert(fmt.parse(idata).journal == fmt.field1_fmt.parse(idata.subrange(0, f1_end)));
+
+    // For field2 (store):
+    // Vec<(K,V)>::@ and Vec<(K,V)>::parsedv() should be equal for identity-like Parsedview
+    // Since (Key,Value)::parsedv() = identity, Vec::parsedv() = Vec::@
+    assert(field2_value@ =~= Parsedview::<Seq<(crate::spec::KeyType_t::Key, crate::spec::Messages_t::Value)>>::parsedv(&field2_value));
+    assert(result.parsedv().store == field2_value@);
+    assert(result.parsedv().store =~= fmt.field2_fmt.parse(idata.subrange(f1_end, f2_end)));
+    assert(fmt.parse(idata).store == fmt.field2_fmt.parse(idata.subrange(f1_end, f2_end)));
 }
 
 } // verus!

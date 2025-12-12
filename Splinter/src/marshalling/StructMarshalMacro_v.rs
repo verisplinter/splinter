@@ -205,6 +205,16 @@ macro_rules! struct_marshaller_2 {
                     // We successfully parsed both fields, so struct is parsable
                     assert(self.parsable(idata));
 
+                    // These facts come from try_parse postconditions of field formatters:
+                    // field_value.parsedv() == formatter.parse(slice.i(data))
+                    // Use explicit trait syntax to disambiguate Parsedview
+                    assert(Parsedview::<<$fmt_type1 as Marshal>::DV>::parsedv(&field1_value) == self.field1_fmt.parse(field1_slice@.i(data@)));
+                    assert(Parsedview::<<$fmt_type2 as Marshal>::DV>::parsedv(&field2_value) == self.field2_fmt.parse(field2_slice@.i(data@)));
+
+                    // And therefore:
+                    assert(Parsedview::<<$fmt_type1 as Marshal>::DV>::parsedv(&field1_value) == self.field1_fmt.parse(idata.subrange(0, f1_end)));
+                    assert(Parsedview::<<$fmt_type2 as Marshal>::DV>::parsedv(&field2_value) == self.field2_fmt.parse(idata.subrange(f1_end, f2_end)));
+
                     // Call user-provided postcondition proof to establish:
                     // - result.parsedv() == self.parse(slice@.i(data@))
                     // - result.wf()
