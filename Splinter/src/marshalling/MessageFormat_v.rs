@@ -43,7 +43,7 @@ impl UniformSized for MessageFormat {
     open spec fn us_valid(&self) -> bool {
         self.inner.us_valid()
     }
-    
+
     open spec fn uniform_size(&self) -> usize {
         self.inner.uniform_size()
     }
@@ -96,14 +96,39 @@ impl Marshal for MessageFormat {
 
     exec fn exec_marshall(&self, value: &Self::U, data: &mut Vec<u8>, start: usize) -> (end: usize) {
         match value {
-            Message::Define { value: Value(v) } => self.inner.exec_marshall(v, data, start),
+            Message::Define { value: Value(v) } => {
+                let end = self.inner.exec_marshall(v, data, start);
+                proof {
+                    let subr = data@.subrange(start as int, end as int);
+                    // inner postcondition: self.inner.parse(subr) == v.parsedv() (as int)
+                    // we need: self.parse(subr) == value.parsedv()
+                    // self.parse(subr) = Message::Define { value: Value(self.inner.parse(subr) as u64) }
+                    // value.parsedv() = *value = Message::Define { value: Value(v) }
+                    assert(Parsedview::<int>::parsedv(v) == (*v as int));
+                    assert(self.inner.parse(subr) == (*v as int));
+                    assert(self.parse(subr) == Message::Define { value: Value(self.inner.parse(subr) as u64) });
+                }
+                end
+            }
             Message::Update { .. } => { assert(false); 0 }  // Not supported
         }
     }
 
     exec fn try_parse(&self, slice: &Slice, data: &Vec<u8>) -> (ov: Option<Self::U>) {
         match self.inner.try_parse(slice, data) {
-            Some(v) => Some(Message::Define { value: Value(v) }),
+            Some(v) => {
+                proof {
+                    // inner postcondition: v.parsedv() == self.inner.parse(...) (as int)
+                    // we need: Message::Define{...}.parsedv() == self.parse(...)
+                    let idata = slice@.i(data@);
+                    assert(Parsedview::<int>::parsedv(&v) == (v as int));
+                    assert(self.inner.parse(idata) == (v as int));
+                    assert(self.parse(idata) == Message::Define { value: Value(self.inner.parse(idata) as u64) });
+                    let result = Message::Define { value: Value(v) };
+                    assert(result.parsedv() == result);
+                }
+                Some(Message::Define { value: Value(v) })
+            }
             None => None,
         }
     }

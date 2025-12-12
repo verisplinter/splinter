@@ -41,7 +41,7 @@ impl UniformSized for KeyFormat {
     open spec fn us_valid(&self) -> bool {
         self.inner.us_valid()
     }
-    
+
     open spec fn uniform_size(&self) -> usize {
         self.inner.uniform_size()
     }
@@ -88,12 +88,51 @@ impl Marshal for KeyFormat {
     }
 
     exec fn exec_marshall(&self, value: &Self::U, data: &mut Vec<u8>, start: usize) -> (end: usize) {
-        self.inner.exec_marshall(&value.0, data, start)
+        let end = self.inner.exec_marshall(&value.0, data, start);
+        proof {
+            let subr = data@.subrange(start as int, end as int);
+            // inner postcondition: self.inner.parse(subr) == value.0.parsedv() (as int)
+            // we need: self.parse(subr) == value.parsedv()
+            // self.parse(subr) = Key(self.inner.parse(subr) as u64)
+            // value.parsedv() = *value = Key(value.0)
+            // Since value.0.parsedv() = value.0 as int, and self.inner.parse(subr) = value.0 as int,
+            // self.inner.parse(subr) as u64 = value.0
+            assert(Parsedview::<int>::parsedv(&value.0) == (value.0 as int));
+            assert(self.inner.parse(subr) == (value.0 as int));
+            assert(self.parse(subr) == Key(self.inner.parse(subr) as u64));
+        }
+        end
     }
 
     exec fn try_parse(&self, slice: &Slice, data: &Vec<u8>) -> (ov: Option<Self::U>) {
         match self.inner.try_parse(slice, data) {
-            Some(v) => Some(Key(v)),
+            Some(v) => {
+                let result = Key(v);
+                proof {
+                    let idata = slice@.i(data@);
+
+                    // Prove parsability (for postcondition self.parsable(idata) <==> ov is Some)
+                    assert(self.inner.parsable(idata)); // inner was successfully parsed
+                    assert(self.parsable(idata)); // therefore KeyFormat is parsable
+
+                    // Prove wf (from inner postcondition)
+                    assert(v.wf()); // inner postcondition guarantees v.wf()
+                    assert(result.wf()); // Key wraps a wf u64
+
+                    // inner postcondition: v.parsedv() == self.inner.parse(...) (as int)
+                    // we need: result.parsedv() == self.parse(...)
+                    // Key(v).parsedv() = Key(v) (identity)
+                    // self.parse(...) = Key(self.inner.parse(...) as u64)
+                    // Since v.parsedv() = v as int = self.inner.parse(...),
+                    // self.inner.parse(...) as u64 = v
+                    assert(Parsedview::<int>::parsedv(&v) == (v as int));
+                    assert(self.inner.parse(idata) == (v as int));
+                    assert(self.parse(idata) == Key(self.inner.parse(idata) as u64));
+                    assert(result.parsedv() == result); // Key(v)
+                    assert(result.parsedv() == self.parse(idata));
+                }
+                Some(result)
+            }
             None => None,
         }
     }

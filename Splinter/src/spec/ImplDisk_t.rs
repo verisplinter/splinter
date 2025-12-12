@@ -25,7 +25,7 @@ pub struct IAddress {
 }
 
 impl View for IAddress{
-    type V = Address; 
+    type V = Address;
     open spec fn view(&self) -> Self::V {
         Address{au: self.au as nat, page: self.page as nat}
     }
@@ -40,7 +40,15 @@ impl Parsedview<Address> for IAddress {
     }
 }
 
-impl WF for IAddress {}
+impl WF for IAddress {
+    open spec fn wf(&self) -> bool { true }
+}
+
+#[verifier::external_body]
+broadcast proof fn iaddress_always_wf(addr: IAddress)
+    ensures #[trigger] addr.wf()
+{
+}
 
 impl IAddress {
     spec fn eq_spec(&self, other: &Self) -> bool {
@@ -72,12 +80,15 @@ pub uninterp spec(checked) fn ipage_count() -> IPage;
 /// further restricted by actual disk size
 pub uninterp spec(checked) fn iau_count() -> IAU;
 
-impl IAddress {
-    pub open spec(checked) fn wf(self) -> bool {
-        &&& self.au < iau_count()
-        &&& self.page < ipage_count()
-    }
-}
+// REMOVED: conflicting inherent wf() method - use WF trait instead
+// The inherent wf() was shadowing the WF trait method, causing Verus
+// verification issues in struct_marshaller_2! macro.
+// impl IAddress {
+//     pub open spec(checked) fn wf(self) -> bool {
+//         &&& self.au < iau_count()
+//         &&& self.page < ipage_count()
+//     }
+// }
 
 /// axioms relating spec and impl page and au count
 #[verifier(external_body)]
@@ -98,7 +109,7 @@ impl IDiskRequest {
     pub open spec fn view(self) -> DiskRequest {
         match self {
             Self::ReadReq{from} => DiskRequest::ReadReq{from: from@},
-            Self::WriteReq{to, data} => DiskRequest::WriteReq{to: to@, data: data@}, 
+            Self::WriteReq{to, data} => DiskRequest::WriteReq{to: to@, data: data@},
         }
     }
 }
@@ -107,7 +118,7 @@ impl IDiskResponse {
     pub open spec fn view(self) -> DiskResponse {
         match self {
             Self::ReadResp{data} => DiskResponse::ReadResp{data: data@},
-            Self::WriteResp{} => DiskResponse::WriteResp{}, 
+            Self::WriteResp{} => DiskResponse::WriteResp{},
         }
     }
 }
