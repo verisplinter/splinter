@@ -12,6 +12,12 @@
 //! If you need type conversions (e.g., IntFormat<u64> for a Key field), create a wrapper
 //! formatter (e.g., KeyFormat) that handles the conversion internally.
 //!
+//! REQUIREMENT: The impl_type must have a "compositional" Parsedview implementation,
+//! meaning that for each field:
+//!   result.parsedv().$spec_field == Parsedview::<FieldDV>::parsedv(&result.$impl_field)
+//!
+//! This is captured by the Compositional2 trait below.
+//!
 //! Limitations:
 //! - Only supports 2-field structs (can be extended to N fields)
 
@@ -22,30 +28,60 @@ use crate::marshalling::WF_v::WF;
 
 verus! {
 
-/// Identity conversion function (no-op)
-/// This is now primarily for documentation - the macro doesn't use conversion functions anymore
-pub open spec fn identity<T>(v: T) -> T {
-    v
-}
-
-#[verifier::external_body]
-pub fn identity_exec<T>(v: T) -> (result: T)
-    ensures result == v
+/// Trait for 2-field structs with compositional Parsedview.
+///
+/// A struct S with spec type DV and two fields (F1, F2) with spec types (DV1, DV2)
+/// is compositional if:
+///   - s.parsedv().field1 == s.field1.parsedv()
+///   - s.parsedv().field2 == s.field2.parsedv()
+///
+/// This trait captures these relationships, allowing the macro to verify the
+/// marshalling postconditions automatically.
+///
+/// Type parameters:
+///   - DV: The spec (view) type of the struct
+///   - F1, F2: The impl types of the two fields
+///   - DV1, DV2: The spec types of the two fields
+pub trait Compositional2<DV, F1, F2, DV1, DV2>: Parsedview<DV>
+where
+    F1: Parsedview<DV1>,
+    F2: Parsedview<DV2>,
 {
-    v
+    /// Returns the first field of self
+    spec fn field1(&self) -> F1;
+
+    /// Returns the second field of self
+    spec fn field2(&self) -> F2;
+
+    /// Returns the first field of the spec type
+    spec fn spec_field1(dv: DV) -> DV1;
+
+    /// Returns the second field of the spec type
+    spec fn spec_field2(dv: DV) -> DV2;
+
+    /// Proof that parsedv is compositional for field1
+    proof fn compositional_field1(&self)
+        ensures Self::spec_field1(self.parsedv()) =~= self.field1().parsedv();
+
+    /// Proof that parsedv is compositional for field2
+    proof fn compositional_field2(&self)
+        ensures Self::spec_field2(self.parsedv()) =~= self.field2().parsedv();
 }
 
 } // verus!
 
 // Macro for generating a two-field struct marshaller
+//
+// REQUIREMENT: The impl_type must implement Compositional2, which captures
+// the requirement that parsedv() is defined field-by-field.
+//
+// The macro generates the Compositional2 implementation automatically.
 #[macro_export]
 macro_rules! struct_marshaller_2 {
     (
         format_name: $format_name:ident,
         impl_type: $impl_type:ty,
         spec_type: $spec_type:ty,
-        wf_proof: $wf_proof:expr,
-        postcondition_proof: $postcondition_proof:expr,
         field1: {
             impl_field: $impl_field1:ident,
             spec_field: $spec_field1:ident,
@@ -62,6 +98,42 @@ macro_rules! struct_marshaller_2 {
         }
     ) => {
         verus! {
+
+        // Implement Compositional2 for the impl_type.
+        // This will fail to verify if the struct's Parsedview is not compositional.
+        impl Compositional2<
+            $spec_type,
+            <$fmt_type1 as Marshal>::U,
+            <$fmt_type2 as Marshal>::U,
+            <$fmt_type1 as Marshal>::DV,
+            <$fmt_type2 as Marshal>::DV
+        > for $impl_type {
+            open spec fn field1(&self) -> <$fmt_type1 as Marshal>::U {
+                self.$impl_field1
+            }
+
+            open spec fn field2(&self) -> <$fmt_type2 as Marshal>::U {
+                self.$impl_field2
+            }
+
+            open spec fn spec_field1(dv: $spec_type) -> <$fmt_type1 as Marshal>::DV {
+                dv.$spec_field1
+            }
+
+            open spec fn spec_field2(dv: $spec_type) -> <$fmt_type2 as Marshal>::DV {
+                dv.$spec_field2
+            }
+
+            proof fn compositional_field1(&self) {
+                // Trigger extensional equality check
+                assert(Self::spec_field1(self.parsedv()) =~= self.field1().parsedv());
+            }
+
+            proof fn compositional_field2(&self) {
+                // Trigger extensional equality check
+                assert(Self::spec_field2(self.parsedv()) =~= self.field2().parsedv());
+            }
+        }
 
         pub struct $format_name {
             pub field1_fmt: $fmt_type1,
@@ -193,6 +265,8 @@ macro_rules! struct_marshaller_2 {
                 };
 
                 proof {
+                    use crate::marshalling::StructMarshalMacro_v::Compositional2;
+
                     // Prove parsability from the fact that both fields parsed successfully
                     let idata = slice@.i(data@);
                     let f1_end = self.field1_fmt.uniform_size() as int;
@@ -205,29 +279,30 @@ macro_rules! struct_marshaller_2 {
                     // We successfully parsed both fields, so struct is parsable
                     assert(self.parsable(idata));
 
-                    // These facts come from try_parse postconditions of field formatters:
+                    // From try_parse postconditions of field formatters:
                     // field_value.parsedv() == formatter.parse(slice.i(data))
-                    // Use explicit trait syntax to disambiguate Parsedview
-                    assert(Parsedview::<<$fmt_type1 as Marshal>::DV>::parsedv(&field1_value) == self.field1_fmt.parse(field1_slice@.i(data@)));
-                    assert(Parsedview::<<$fmt_type2 as Marshal>::DV>::parsedv(&field2_value) == self.field2_fmt.parse(field2_slice@.i(data@)));
-
-                    // And therefore:
                     assert(Parsedview::<<$fmt_type1 as Marshal>::DV>::parsedv(&field1_value) == self.field1_fmt.parse(idata.subrange(0, f1_end)));
                     assert(Parsedview::<<$fmt_type2 as Marshal>::DV>::parsedv(&field2_value) == self.field2_fmt.parse(idata.subrange(f1_end, f2_end)));
 
-                    // Call user-provided postcondition proof to establish:
-                    // - result.parsedv() == self.parse(slice@.i(data@))
-                    // - result.wf()
-                    $postcondition_proof(
-                        self,
-                        slice,
-                        data,
-                        &field1_slice,
-                        field1_value,
-                        &field2_slice,
-                        field2_value,
-                        result
-                    );
+                    // Use Compositional2 trait to establish that parsedv is field-by-field
+                    result.compositional_field1();
+                    result.compositional_field2();
+
+                    // Now spec_field(result.parsedv()) == result.field().parsedv() == field_value.parsedv()
+                    assert(<$impl_type as Compositional2<$spec_type, _, _, _, _>>::spec_field1(result.parsedv())
+                           =~= self.field1_fmt.parse(idata.subrange(0, f1_end)));
+                    assert(<$impl_type as Compositional2<$spec_type, _, _, _, _>>::spec_field2(result.parsedv())
+                           =~= self.field2_fmt.parse(idata.subrange(f1_end, f2_end)));
+
+                    // These are the same as self.parse(idata).field
+                    assert(result.parsedv().$spec_field1 =~= self.parse(idata).$spec_field1);
+                    assert(result.parsedv().$spec_field2 =~= self.parse(idata).$spec_field2);
+
+                    // Conclude the main postcondition
+                    assert(result.parsedv() =~= self.parse(idata));
+
+                    // WF: All field types implement WF with wf() returning true by default
+                    assert(result.wf());
                 }
 
                 Some(result)
