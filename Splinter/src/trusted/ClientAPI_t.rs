@@ -75,7 +75,7 @@ impl TheDisk {
     {
         let path = Path::new("storage.bin");
         let file = match OpenOptions::new().read(true).write(true).open(&path) {
-            Err(why) => panic!("Couldn't open {}: {}", path.display(), why),
+            Err(why) => panic!("Couldn't open {}: {}; touch it first?", path.display(), why),
             Ok(file) => file,
         };
         let (sender, receiver) = mpsc::channel();
