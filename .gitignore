@@ -25,3 +25,5 @@
 
 # Ignore per-user VSCode configuration
 .vscode/
+
+storage.bin
