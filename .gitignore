@@ -27,3 +27,4 @@
 .vscode/
 
 storage.bin
+Cargo.lock
