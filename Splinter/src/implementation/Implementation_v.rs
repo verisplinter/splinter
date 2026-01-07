@@ -188,6 +188,7 @@ pub struct Implementation {
     sync_counter: u64,
 
     store: VecMap<Key, Value>,
+    store_lsn: u64,
 
     // starts at persistent_store.version, ends matching store
     journal: JournalImpl,
@@ -264,7 +265,7 @@ impl Implementation {
 
         &&& self.store.wf()
         &&& self.journal.wf()
-        &&& self.model@.instance_id() == self.instance@.id()
+        // &&& self.model@.instance_id() == self.instance@.id() // TODO delete covered by inv
 
         &&& self.journal.index_ready()
 
@@ -327,6 +328,7 @@ impl Implementation {
     {
         &&& self.state().recovery_state is JournalIndexComplete
         &&& self.journal.wf()
+        &&& self.journal.index_ready()
     }
 
     closed spec fn inv(self) -> bool {
@@ -340,6 +342,7 @@ impl Implementation {
         // working backward from stuff we know to infer physical phase (used when applying system
         // invs to infer current state)
         &&& self.in_flight is Some ==> self.recovery_phase is ReadyForUserOperation
+        &&& self.model@.instance_id() == self.instance@.id()
     }
 
     // Recovery is complete -- journal index ready, map matches journal. We've established
@@ -1277,7 +1280,11 @@ impl Implementation {
             self.journal = JournalImpl::new(superblock.journal_snapshot);
 
             let mut i = 0;
+            // TODO: why do we need to clone here? Try removing.
             self.store = self.persistent_store.clone();
+            // Disk invariant: store must have agreed with journal start
+            // (before we begin advancing it during recovery).
+            self.store_lsn = self.journal.exec_seq_start();
 
             // Compute the next ghost model and transition our token
             let ghost psb = DiskLayout::spec_new().spec_parse(raw_page@);
@@ -1292,6 +1299,7 @@ impl Implementation {
                         },
                         in_flight: None,
                     },
+                    // TODO: don't we know the pj seqend right now?
                     persistent_journal_seq_end: arbitrary(),
                     in_flight: None,
                     sync_req_map: Map::empty(),
@@ -1346,10 +1354,10 @@ impl Implementation {
         if ready {
             self.recovery_phase = RecoveryPhase::ApplyingJournalToRecoverEphemeralMap;
 
+            let ghost pre_state = self.i();
             let tracked mut model = KVStoreTokenized::model::arbitrary();
             proof { tracked_swap(self.model.borrow_mut(), &mut model); }
 
-            let ghost pre_state = self.i();
             let ghost post_state = ConcreteProgramModel{
                 state: AtomicState {
                     recovery_state: RecoveryState::JournalIndexComplete,
@@ -1389,8 +1397,61 @@ impl Implementation {
         self.inv_api(api),
         self.recovery_phase is ReadyForUserOperation,
     {
-        assume( false );
-        false
+        if self.store_lsn < self.journal.exec_seq_end() {
+            Self::todo_placeholder();   // Go restore more blocks from journal
+            // this branch may return progress false if we are waiting for
+            // disk IO to fetch the next page.
+        }
+        {
+            self.recovery_phase = RecoveryPhase::ReadyForUserOperation;
+
+            let ghost pre_state = self.i();
+            let tracked mut model = KVStoreTokenized::model::arbitrary();
+            proof { tracked_swap(self.model.borrow_mut(), &mut model); }
+
+//             assert( model.value()@ == self.state() )@;
+            assert( model.value() == ConcreteProgramModel { state: pre_state } );
+            let ghost post_state = ConcreteProgramModel{
+                state: AtomicState {
+                    recovery_state: RecoveryState::RecoveryComplete,
+                    journal: self.journal@,
+                    persistent_journal_seq_end: arbitrary(),
+                    in_flight: None,
+                    sync_req_map: Map::empty(),
+                    ..pre_state
+                }
+            };
+
+            proof {
+                assert(AtomicState::internal_transitions(pre_state, post_state.state)) by {
+                    assume( false ); // TODO
+                };
+            }
+
+            assert( ConcreteProgramModel::next(
+                    ConcreteProgramModel { state: pre_state },
+                    post_state,
+                    ProgramLabel::Internal{}) );
+//             assert( model.instance_id() == (self.instance@).id() );
+            assert( model.value() == ConcreteProgramModel { state: pre_state } );
+            let tracked new_reply_token = self.instance.borrow().internal(
+                KVStoreTokenized::Label::InternalOp{},
+                post_state,
+                &mut model,
+            );
+            self.model = Tracked(model);
+
+            assert( self.i().recovery_state is RecoveryComplete  );
+            assert( self.inv_api(api) );
+        }
+        true
+    }
+
+    #[verifier::external_body]
+    fn todo_placeholder()
+        ensures false
+    {
+        panic!();
     }
 
     #[verifier::external_body]
@@ -1459,6 +1520,7 @@ impl KVStoreTrait for Implementation {
             recovery_phase: RecoveryPhase::FetchingSuperblock,
             sync_counter: 0,
             store: new_empty_vec_map(),
+            store_lsn: 7,
             journal: JournalImpl::new(placeholder_snapshot),
             cache: CacheImpl::new(/*100*/),
             in_flight: None,

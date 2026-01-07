@@ -139,6 +139,7 @@ impl JournalImpl {
         }
     }
 
+    // TODO this must be a placeholder, right? Tell me this is a placeholder.
     pub closed spec fn seq_start(&self) -> LSN {
         0
     }
