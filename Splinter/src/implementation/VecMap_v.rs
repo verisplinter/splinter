@@ -315,10 +315,7 @@ where Key: View + Injective + Eq + Structural + Clone
     pub fn compare_keys(k1: &Key, k2: &Key) -> (out: bool)
     ensures (*k1 == *k2) <==> out
     {
-        // *k1 == *k2
-        assume(false);  // TODO I don't understand rust
-        panic!()
-//         false
+        *k1 == *k2
     }
     
     pub fn insert(&mut self, k: Key, v: Value)
