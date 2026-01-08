@@ -827,9 +827,34 @@ impl Implementation {
                     let abstract_map_lbl = AbstractMap::Label::FreezeAsLabel{stamped_map: frozen_map};
                     
                     assert( frozen_map == pre_store.ephemeral->v.stamped_map ) by {
-                        // new_abstract_store was assigned self.i_ephemeral_store()->v.stamped_map
-                        // pre_store.ephemeral == i_ephemeral_store() by inv
-                        admit();  // TODO: connect the dots
+                        // new_abstract_store was assigned self.i_ephemeral_store()->v.stamped_map at line 746
+                        // At that point, self.store == old(self).store (swaps restore it)
+                        // and self.journal == old(self).journal (unchanged)
+                        // So self.i_ephemeral_store() == old(self).i_ephemeral_store()
+                        
+                        // By inv_running: old(self).state().store == old(self).view_store()
+                        // By definition: old(self).view_store().ephemeral == old(self).i_ephemeral_store()
+                        // So pre_store.ephemeral == old(self).i_ephemeral_store()
+                        
+                        // Therefore: frozen_map == new_abstract_store 
+                        //                       == self.i_ephemeral_store()->v.stamped_map
+                        //                       == old(self).i_ephemeral_store()->v.stamped_map
+                        //                       == pre_store.ephemeral->v.stamped_map
+                        
+                        assert( old(self).inv() );
+                        assert( old(self).ready_for_user_operation() );
+                        // inv_running gives us state().store == view_store()
+                        assert( old(self).state().store == old(self).view_store() );
+                        assert( pre_store == old(self).view_store() );
+                        assert( pre_store.ephemeral == old(self).i_ephemeral_store() );
+                        
+                        // self.i_ephemeral_store() == old(self).i_ephemeral_store() because
+                        // self.store and self.journal haven't changed
+                        assert( self.store@ == old(self).store@ );
+                        assert( self.journal@ == old(self).journal@ );
+                        assert( self.i_ephemeral_store() == old(self).i_ephemeral_store() );
+                        
+                        assert( frozen_map == self.i_ephemeral_store()->v.stamped_map );
                     };
                     assert( AbstractMap::State::next_by(pre_store.ephemeral->v, new_map, abstract_map_lbl,
                         AbstractMap::Step::freeze_as()) );
