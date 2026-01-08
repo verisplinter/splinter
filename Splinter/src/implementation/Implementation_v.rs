@@ -804,16 +804,15 @@ impl Implementation {
                 
                 if !sync_map {
                     assert( AbstractCrashAwareMap::State::next_by(pre_store, post_store, map_lbl,
-                        AbstractCrashAwareMap::Step::freeze_persistent_internal()) );
+                        AbstractCrashAwareMap::Step::freeze_persistent_internal()) );   // witness
                 } else {
-                    let frozen_map = new_abstract_store;
                     let new_map = pre_store.ephemeral->v;
                     assert( AbstractMap::State::next_by(pre_store.ephemeral->v, new_map,
-                        AbstractMap::Label::FreezeAsLabel{stamped_map: frozen_map}, AbstractMap::Step::freeze_as()) );
+                        AbstractMap::Label::FreezeAsLabel{stamped_map: new_abstract_store}, AbstractMap::Step::freeze_as()) ); // witness
                     assert( AbstractCrashAwareMap::State::next_by(pre_store, post_store, map_lbl,
-                        AbstractCrashAwareMap::Step::freeze_map_internal(frozen_map, new_map)) );
+                        AbstractCrashAwareMap::Step::freeze_map_internal(new_abstract_store, new_map)) ); // witness
                 }
-                assert( AtomicState::store_internal(old(self).state(), post_state.state) );
+//                 assert( AtomicState::store_internal(old(self).state(), post_state.state) );
                 
                 tracked_swap(self.model.borrow_mut(), &mut model);
                 self.instance.borrow().internal(
