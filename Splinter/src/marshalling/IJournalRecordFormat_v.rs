@@ -27,7 +27,7 @@ pub struct JournalHeader {
     pub start_lsn: LSN,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 #[verifier::ext_equal]
 pub struct IJournalHeader {
     pub prior_rec: Option<IAddress>,

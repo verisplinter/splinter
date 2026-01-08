@@ -107,7 +107,7 @@ impl Handle {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub enum IEntry{
     Empty,
     Reserved{addr: IAddress},

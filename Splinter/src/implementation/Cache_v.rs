@@ -19,7 +19,7 @@ pub type Slot = u32;
 //  Entry is separate from Status because there are some cases
 //  where we need to have shared access to the Entry while modifying
 //  the Status
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub enum Status {
     NotFilled,
     Clean,
