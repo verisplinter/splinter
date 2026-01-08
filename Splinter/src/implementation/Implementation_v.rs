@@ -1142,7 +1142,7 @@ impl Implementation {
             // maybe launch another superblock
             self.maybe_launch_superblock(api);
         } else {
-            api.log("handle_disk_response: received non superblock related disk response");
+            api.log("handle_disk_superblock_write_response: received non superblock related disk response");
             assert(false);
         }
     }
@@ -1178,6 +1178,7 @@ impl Implementation {
                     // disk request
                     assume(false);
                 }
+                Self::todo_placeholder();
             }
             Some(disk_request) => {
                 if disk_request.exec_addr() == superblock_addr() {
