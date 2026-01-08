@@ -44,6 +44,8 @@ state_machine!{ AbstractCrashAwareMap {
         /// in_flight when `Some` represents a snapshot of the map that is going
         /// to be persisted but hasn't been switched over to as our persistent state
         /// yet.
+
+        // rename to frozen, to avoid ambiguity with sending the superblock.
         pub in_flight: Option<StoreImage>,
     }
 

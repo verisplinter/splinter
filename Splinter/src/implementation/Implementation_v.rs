@@ -50,6 +50,7 @@ use crate::marshalling::WF_v::WF;
 use crate::implementation::OverflowFiction_v::*;
 use crate::abstract_system::AbstractCrashAwareMap_v;
 use crate::implementation::CacheImpl_v::CacheImpl;
+use crate::implementation::Cache_v::Cache;
 
 #[allow(unused_imports)]
 use vstd::multiset::*;
@@ -719,6 +720,8 @@ impl Implementation {
         let mut tmp_store = VecMap::new();
 
         let mut sb;
+        let mut self_in_flight;
+        let ghost mut new_abstract_store;
         if sync_map { // sync the ephemeral map with an empty journal
             api.log("send_superblock: sync store and truncate the journal");
             std::mem::swap(&mut self.store, &mut tmp_store);
@@ -734,13 +737,14 @@ impl Implementation {
             std::mem::swap(&mut self.store, &mut tmp_store);
 //             assert( sb@@ == pre_sb );
 
-            self.in_flight = Some(InFlight{
+            self_in_flight = Some(InFlight{
                 new_boundary_lsn: version,
                 freshest_rec: None,
                 new_persistent_lsn: version,
                 new_store: self.store.clone(),
             });
-        } else { // sync the ephemeral journal with the same persistent map
+            proof { new_abstract_store = self.i_ephemeral_store()->v.stamped_map; }
+        } else { // sync the ephemeral journal with the existing persistent map
             api.log("send_superblock: journal sync only");
 //             std::mem::swap(&mut self.journal, &mut tmp_journal);
             std::mem::swap(&mut self.persistent_store, &mut tmp_store);
@@ -759,7 +763,7 @@ impl Implementation {
 //             proof {
 //                 sb@.final_stamped_map_ensures();
 //             }
-            self.in_flight = Some(InFlight{
+            self_in_flight = Some(InFlight{
                 new_boundary_lsn: self.journal.exec_seq_start(),
                 freshest_rec: self.journal.get_snapshot().freshest_rec,
                 // TODO 7 placeholder: need to learn the persistent lsn described by freshest_rec
@@ -767,10 +771,39 @@ impl Implementation {
                 new_persistent_lsn: 7,
                 new_store: self.persistent_store.clone(),
             });
+            proof { new_abstract_store = self.i_persistent_store(); }
 
 //             assert(self.journal@@.discard_recent(version as nat).discard_old(self.journal.seq_start as nat) 
 //                 == self.journal@@.discard_recent(version as nat)); // ext_eq
         }
+
+        // First step: freeze the map, via a cache internal step
+        {
+            let tracked mut model = KVStoreTokenized::model::arbitrary();
+            let ghost post_state = ConcreteProgramModel {
+                state: AtomicState{
+                    store: AbstractCrashAwareMap::State{
+                        in_flight: Some(new_abstract_store),
+                        ..old(self).state().store
+                    },
+                    ..old(self).state()}
+            };
+
+            proof {
+                tracked_swap(self.model.borrow_mut(), &mut model);
+                self.instance.borrow().internal(
+                    KVStoreTokenized::Label::InternalOp,
+                    post_state,
+                    &mut model,
+                );
+            }
+            self.model = Tracked(model);
+        }
+
+        // Second step, which we can do right away because our store doesn't actually need to be
+        // cleaned from the cache yet: send the superblock containing the frozen map.
+        self.in_flight = self_in_flight;
+
         let ghost new_persistent_map = sb.store@;
 
         let req_id_perm = Tracked( api.send_disk_request_predict_id() );
@@ -803,18 +836,36 @@ impl Implementation {
             };
 
         proof {
-//             assert( disk_reqs == Multiset::singleton(
-//                 (disk_event.arrow_ExecuteSyncBegin_req_id(),
-//                 disk_request@))
-//             );   // extn
-//             assert( DiskLayout::spec_new().spec_parse(disk_request@->data) == pre_sb );
-//             assert( AtomicState::disk_transition(self.state(), post_state.state, disk_event, info.reqs, info.resps) );  // witness
+            // CONFLICT: The abstract spec execute_sync_begin (in AtomicState_v.rs) has a mismatch:
+            //
+            // 1. execute_sync_begin requires pre.in_flight is None (line 405)
+            //    - This is satisfied: we have no superblock write in flight
+            //
+            // 2. execute_sync_begin calls AbstractCrashAwareMap::State::next with CommitStartLabel
+            //    - This fires AbstractCrashAwareMap::commit_start
+            //    - commit_start requires pre.store.in_flight is Some (the map must be frozen)
+            //
+            // 3. But pre.store.in_flight is None because:
+            //    - inv_running says state.store == view_store()
+            //    - view_store().in_flight == i_inflight_store() 
+            //    - i_inflight_store() is None when self.in_flight is None
+            //
+            // The spec seems to expect the map to be frozen before execute_sync_begin,
+            // but there's no prior freeze step in the implementation.
+            //
+            // Options to resolve:
+            // (a) Update execute_sync_begin to incorporate the freeze (use InternalLabel to
+            //     trigger freeze_persistent_internal or freeze_map_internal, then commit_start)
+            // (b) Add a separate internal transition before the disk write that freezes the map
+            // (c) Rethink the invariant relationship between AtomicState.in_flight and 
+            //     AtomicState.store.in_flight
+            
+            assume( false );
         }
 
         // // take the transition, get the token
         let tracked mut model = KVStoreTokenized::model::arbitrary();
         proof { tracked_swap(self.model.borrow_mut(), &mut model); }
-        assume( false );
         let tracked new_reply_token = self.instance.borrow().disk_transitions(
             lbl,
             post_state,
