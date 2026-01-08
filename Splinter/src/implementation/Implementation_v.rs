@@ -124,7 +124,7 @@ pub type DiskReqShard = KVStoreTokenized::disk_requests_multiset<ConcreteProgram
 pub struct InFlight {
     // Together this is the implementation of a StampedMap
     new_boundary_lsn: ILsn,     // this will be the version of the new persistent map (when it lands)
-    freshest_rec: Pointer,
+    freshest_rec: Option<IAddress>,
     new_persistent_lsn: ILsn,   // this will be the seq_end of the persistent journal (when it lands)
     new_store: VecMap<Key, Value>,  // this will be the new persistent map
 }
@@ -698,133 +698,135 @@ impl Implementation {
         self.inv_api(api),
         self.ready_for_user_operation(),
     {
-//         proof { self.system_inv_implies_atomic_state_wf(); }
-// 
-//         assert( self.journal@@.wf() );
-//         assert( self.journal@.wf() );
-//         let version = self.journal.seq_end();
-//         let ghost pre_sb = self.state().ephemeral_sb();
-// 
+        proof { self.system_inv_implies_atomic_state_wf(); }
+
+        assert( self.journal@.wf() );
+        let version = self.journal.exec_seq_end();
+
 //         assert(self.journal@@.discard_recent(version as nat) == self.journal@@);
-// 
-//         // sync/truncate policy
-//         if self.sync_counter < 3 {
-//             self.sync_counter = self.sync_counter + 1;
-//         } else {
-//             self.sync_counter = 1;
-//         }
-//         // persist map if the counter says so and if there's actually journal messages to apply
-//         let sync_map = (self.sync_counter % 3) == 0 && self.journal.msg_history.len() > 0;
+
+        // sync/truncate policy
+        if self.sync_counter < 3 {
+            self.sync_counter = self.sync_counter + 1;
+        } else {
+            self.sync_counter = 1;
+        }
+        // persist map if the counter says so and if there's actually journal messages to apply
+        let sync_map = (self.sync_counter % 3) == 0 && !self.journal.is_empty();
 //         let ghost pre_sb = self.state().sync_sb(sync_map);
-// 
-//         let mut raw_page = Vec::new();
-//         let mut tmp_store = VecMap::new();
-//         let mut tmp_journal = JournalImpl::new();
-// 
-//         let mut sb;
-//         if sync_map { // sync the ephemeral map with an empty journal
-//             api.log("send_superblock: sync store and truncate the journal");
-//             tmp_journal.seq_start = version;
-//             std::mem::swap(&mut self.store, &mut tmp_store);
-//     
-//             sb = ISuperblock{
-//                 journal: tmp_journal,
-//                 store: tmp_store.v,
-//             };
-//             raw_page = DiskLayout::new().marshall(&sb);
-// 
-//             let ISuperblock{store: mut tmp_store_v, /*store: mut tmp_store,*/ ..} = sb;
-//             tmp_store.v = tmp_store_v;
-//             std::mem::swap(&mut self.store, &mut tmp_store);
+
+        let mut raw_page = Vec::new();
+        let mut tmp_store = VecMap::new();
+
+        let mut sb;
+        if sync_map { // sync the ephemeral map with an empty journal
+            api.log("send_superblock: sync store and truncate the journal");
+            std::mem::swap(&mut self.store, &mut tmp_store);
+    
+            sb = ISuperblock{
+                journal_snapshot: JournalSnapshot::new_empty(version),
+                store: tmp_store.v,
+            };
+            raw_page = DiskLayout::new().marshall(&sb);
+
+            let ISuperblock{store: mut tmp_store_v, /*store: mut tmp_store,*/ ..} = sb;
+            tmp_store.v = tmp_store_v;
+            std::mem::swap(&mut self.store, &mut tmp_store);
 //             assert( sb@@ == pre_sb );
-// 
-//             self.in_flight = Some(InFlight{
-//                 new_boundary_lsn: version,
-//                 new_store: self.store.clone(),
-//             });
-//         } else { // sync the ephemeral journal with the same persistent map
-//             api.log("send_superblock: journal sync only");
+
+            self.in_flight = Some(InFlight{
+                new_boundary_lsn: version,
+                freshest_rec: None,
+                new_persistent_lsn: version,
+                new_store: self.store.clone(),
+            });
+        } else { // sync the ephemeral journal with the same persistent map
+            api.log("send_superblock: journal sync only");
 //             std::mem::swap(&mut self.journal, &mut tmp_journal);
-//             std::mem::swap(&mut self.persistent_store, &mut tmp_store);
-// 
-//             sb = ISuperblock{
-//                 journal: tmp_journal,
-//                 store: tmp_store.v,
-//             };
-//             raw_page = DiskLayout::new().marshall(&sb);
-// 
-//             let ISuperblock{journal: mut tmp_journal, store: mut tmp_store_v, ..} = sb;
+            std::mem::swap(&mut self.persistent_store, &mut tmp_store);
+
+            sb = ISuperblock{
+                journal_snapshot: self.journal.get_snapshot(),
+                store: tmp_store.v,
+            };
+            raw_page = DiskLayout::new().marshall(&sb);
+
+            let ISuperblock{journal_snapshot: mut tmp_journal, store: mut tmp_store_v, ..} = sb;
 //             std::mem::swap(&mut self.journal, &mut tmp_journal);
-//             tmp_store.v = tmp_store_v;
-//             std::mem::swap(&mut self.persistent_store, &mut tmp_store);
-// 
-// //             proof {
-// //                 sb@.final_stamped_map_ensures();
-// //             }
-//             self.in_flight = Some(InFlight{
-//                 new_boundary_lsn: self.journal.seq_start,
-//                 new_store: self.persistent_store.clone(),
-//             });
-// 
+            tmp_store.v = tmp_store_v;
+            std::mem::swap(&mut self.persistent_store, &mut tmp_store);
+
+//             proof {
+//                 sb@.final_stamped_map_ensures();
+//             }
+            self.in_flight = Some(InFlight{
+                new_boundary_lsn: self.journal.exec_seq_start(),
+                freshest_rec: self.journal.get_snapshot().freshest_rec,
+                // TODO 7 placeholder: need to learn the persistent lsn described by freshest_rec
+                // (or by a freshest_rec None snapshot).
+                new_persistent_lsn: 7,
+                new_store: self.persistent_store.clone(),
+            });
+
 //             assert(self.journal@@.discard_recent(version as nat).discard_old(self.journal.seq_start as nat) 
 //                 == self.journal@@.discard_recent(version as nat)); // ext_eq
-//         }
-//         let ghost new_persistent_map = sb.store@;
-// 
-//         let req_id_perm = Tracked( api.send_disk_request_predict_id() );
-//         let ghost disk_req_id = req_id_perm@;
-//         let disk_request = IDiskRequest::WriteReq{to: superblock_addr(), data: raw_page};
-//         let ghost disk_event = DiskEvent::ExecuteSyncBegin{req: disk_request@, req_id: disk_req_id, sync_map};
-//         let ghost disk_reqs = multiset_map_singleton(disk_req_id, disk_request@);
-//         let ghost info = ProgramDiskInfo{ reqs: disk_reqs, resps: Multiset::empty() };
-// 
-//         let ghost inflight_info = InflightInfo{
-// //             new_persistent_map: ASuperblock::map_to_kmmap(new_persistent_map),
-//             new_persistent_map: arbitrary(),
-//             journal_version: version as nat,
-//             req_id: disk_req_id
-//         };
-//         let ghost post_state = ConcreteProgramModel {
-//             state: AtomicState{
-//                 in_flight: Some(inflight_info),
-//                 ..old(self).state()}
-//         };
-// 
-//         let tracked empty_disk_responses: DiskRespShard = DiskRespShard::empty(self.instance_id());
-// 
-//         let ghost lbl = KVStoreTokenized::Label::DiskOp{
-//                 disk_request_tuples: disk_reqs,
-//                 disk_response_tuples: empty_disk_responses.multiset(),
-//             };
-// 
-//         let ghost info = ProgramDiskInfo{
-//                 reqs: lbl->disk_request_tuples,
-//                 resps: lbl->disk_response_tuples,
-//             };
-// 
-//         proof {
+        }
+        let ghost new_persistent_map = sb.store@;
+
+        let req_id_perm = Tracked( api.send_disk_request_predict_id() );
+        let ghost disk_req_id = req_id_perm@;
+        let disk_request = IDiskRequest::WriteReq{to: superblock_addr(), data: raw_page};
+//         let ghost disk_event = DiskEvent::ExecuteSyncBegin{req: disk_request@, req_id: disk_req_id/*, sync_map*/};
+        let ghost disk_reqs = multiset_map_singleton(disk_req_id, disk_request@);
+        let ghost info = ProgramDiskInfo{ reqs: disk_reqs, resps: Multiset::empty() };
+
+        let ghost inflight_info = InflightInfo{
+            journal_version: version as nat,
+            req_id: disk_req_id
+        };
+        let ghost post_state = ConcreteProgramModel {
+            state: AtomicState{
+                in_flight: Some(inflight_info),
+                ..old(self).state()}
+        };
+
+        let tracked empty_disk_responses: DiskRespShard = DiskRespShard::empty(self.instance_id());
+
+        let ghost lbl = KVStoreTokenized::Label::DiskOp{
+                disk_request_tuples: disk_reqs,
+                disk_response_tuples: empty_disk_responses.multiset(),
+            };
+
+        let ghost info = ProgramDiskInfo{
+                reqs: lbl->disk_request_tuples,
+                resps: lbl->disk_response_tuples,
+            };
+
+        proof {
 //             assert( disk_reqs == Multiset::singleton(
 //                 (disk_event.arrow_ExecuteSyncBegin_req_id(),
 //                 disk_request@))
 //             );   // extn
 //             assert( DiskLayout::spec_new().spec_parse(disk_request@->data) == pre_sb );
 //             assert( AtomicState::disk_transition(self.state(), post_state.state, disk_event, info.reqs, info.resps) );  // witness
-//         }
-// 
-//         // // take the transition, get the token
-//         let tracked mut model = KVStoreTokenized::model::arbitrary();
-//         proof { tracked_swap(self.model.borrow_mut(), &mut model); }
-//         let tracked new_reply_token = self.instance.borrow().disk_transitions(
-//             lbl,
-//             post_state,
-//             &mut model,
-//             empty_disk_responses,
-//         );
-//         self.model = Tracked(model);
-//         std::mem::swap(&mut self.sync_requests.satisfied_reqs, &mut self.sync_requests.deferred_reqs);
-// 
-//         assert( new_reply_token.multiset() == multiset_map_singleton(req_id_perm@, disk_request@) );    // extn
-//         api.send_disk_request(disk_request, req_id_perm, Tracked(new_reply_token));
+        }
+
+        // // take the transition, get the token
+        let tracked mut model = KVStoreTokenized::model::arbitrary();
+        proof { tracked_swap(self.model.borrow_mut(), &mut model); }
+        assume( false );
+        let tracked new_reply_token = self.instance.borrow().disk_transitions(
+            lbl,
+            post_state,
+            &mut model,
+            empty_disk_responses,
+        );
+        self.model = Tracked(model);
+        std::mem::swap(&mut self.sync_requests.satisfied_reqs, &mut self.sync_requests.deferred_reqs);
+
+        assert( new_reply_token.multiset() == multiset_map_singleton(req_id_perm@, disk_request@) );    // extn
+        api.send_disk_request(disk_request, req_id_perm, Tracked(new_reply_token));
+        assume( false );
     }
 
     exec fn deliver_inflight_replies(&mut self, ready_reqs: &mut Vec<Request>, api: &mut ClientAPI<ConcreteProgramModel>)
@@ -1059,12 +1061,13 @@ impl Implementation {
                 in_flight: None,
                 ..old(self).state().store
             };
+            let ghost freshest_rec_a = match freshest_rec { None => None, Some(f) => Some(f@) };
             let ghost post_state = ConcreteProgramModel{ state: AtomicState{
                 in_flight: None,
                 journal: CachedJournal::State {
                     snapshot: CachedJournal_v::JournalSnapShot{
                         boundary_lsn: new_boundary_lsn as LSN,
-                        freshest_rec: freshest_rec,
+                        freshest_rec: freshest_rec_a,
                     },
                     status: Some(CachedJournal_v::JournalStatus{
                         lsn_addr_index: new_lsn_addr_index,

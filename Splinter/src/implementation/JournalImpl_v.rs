@@ -24,6 +24,8 @@ use crate::marshalling::Marshalling_v::Marshal;
 
 verus!{
 
+// TODO: this file uses u64 a bunch where we should say ILsn to capture intent
+
 // This is a silly index implementation, since it has an entry for every LSN :v)
 pub type LsnAddrIndexImpl = HashMapWithView<u64, IAddress>;
 
@@ -40,6 +42,18 @@ exec fn index_assign_lsns(selff: &mut LsnAddrIndexImpl, low_inclusive: ILsn, hig
 pub struct JournalSnapshot {
     pub boundary_lsn: u64,
     pub freshest_rec: Option<IAddress>,
+}
+
+impl JournalSnapshot {
+    pub open spec fn spec_new_empty(at_lsn: u64) -> Self {
+        JournalSnapshot{ boundary_lsn: at_lsn, freshest_rec: None }
+    }
+
+    pub exec fn new_empty(at_lsn: u64) -> (out: Self)
+        ensures out == Self::spec_new_empty(at_lsn)
+    {
+        JournalSnapshot{ boundary_lsn: at_lsn, freshest_rec: None }
+    }
 }
 
 pub open spec fn iaddr_view(ptr: Option<IAddress>) -> Option<Address>
@@ -177,6 +191,16 @@ impl JournalImpl {
             }
         }
     }
+
+    // TODO(delete): dead code
+//     pub exec fn new_empty(at_lsn: u64) -> (out: Self)
+//     ensures
+//         out.wf(),
+//         !out.index_ready(),
+//         out@.snapshot == JournalSnapshot::spec_new_empty(at_lsn)@,
+//     {
+//         Self::new(JournalSnapshot::new_empty(at_lsn))
+//     }
 
     pub exec fn new(snapshot: JournalSnapshot) -> (out: Self)
     ensures
@@ -337,6 +361,17 @@ impl JournalImpl {
     pub broadcast proof fn view_ensures(self)
         ensures self.index_ready() <==> (#[trigger] self@).status is Some
     {
+    }
+
+    pub fn is_empty(&self) -> bool
+    {
+        self.status.as_ref().unwrap().unmarshalled_tail.len() > 0 || self.snapshot.freshest_rec.is_some()
+    }
+
+    // Reveal snapshot for use in Implementation::send_superblock
+    pub fn get_snapshot(&self) -> JournalSnapshot
+    {
+        self.snapshot.clone()
     }
 }
 
