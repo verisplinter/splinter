@@ -808,10 +808,29 @@ impl Implementation {
                 // Help Verus see that freeze_persistent_internal applies when !sync_map
                 if !sync_map {
                     assert( new_abstract_store == pre_store.persistent ) by {
-                        // new_abstract_store was assigned self.i_persistent_store() in the else branch
-                        // view_store().persistent == i_persistent_store() by definition
-                        // pre_store == old(self).state().store == view_store() by inv_running
-                        admit();  // TODO: connect the dots
+                        // new_abstract_store was assigned self.i_persistent_store() at line 774
+                        // At that point, self.persistent_store == old(self).persistent_store (swaps restore it)
+                        // and self.journal == old(self).journal (unchanged)
+                        // So self.i_persistent_store() == old(self).i_persistent_store()
+                        
+                        // By inv_running: old(self).state().store == old(self).view_store()
+                        // By definition: old(self).view_store().persistent == old(self).i_persistent_store()
+                        // So pre_store.persistent == old(self).i_persistent_store()
+                        
+                        assert( old(self).inv() );
+                        assert( old(self).ready_for_user_operation() );
+                        // inv_running gives us state().store == view_store()
+                        assert( old(self).state().store == old(self).view_store() );
+                        assert( pre_store == old(self).view_store() );
+                        assert( pre_store.persistent == old(self).i_persistent_store() );
+                        
+                        // self.i_persistent_store() == old(self).i_persistent_store() because
+                        // self.persistent_store and self.journal haven't changed
+                        assert( self.persistent_store@ == old(self).persistent_store@ );
+                        assert( self.journal@ == old(self).journal@ );
+                        assert( self.i_persistent_store() == old(self).i_persistent_store() );
+                        
+                        assert( new_abstract_store == self.i_persistent_store() );
                     };
                     assert( AbstractCrashAwareMap::State::next_by(pre_store, post_store, map_lbl,
                         AbstractCrashAwareMap::Step::freeze_persistent_internal()) );
