@@ -471,11 +471,10 @@ impl AtomicState {
         }
     }
 
-    // NOTE: silly internal op for now
     pub open spec fn internal_transitions(pre: Self, post: Self) -> bool
     {
-        &&& pre == post 
         &&& pre.client_ready()
+        &&& Self::store_internal(pre, post)
     }
 
     pub open spec(checked) fn in_flight_sb(self) -> Superblock

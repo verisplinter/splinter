@@ -780,16 +780,66 @@ impl Implementation {
         // First step: freeze the map, via a cache internal step
         {
             let tracked mut model = KVStoreTokenized::model::arbitrary();
+            let ghost pre_store = old(self).state().store;
+            let ghost post_store = AbstractCrashAwareMap::State{
+                in_flight: Some(new_abstract_store),
+                ..pre_store
+            };
             let ghost post_state = ConcreteProgramModel {
                 state: AtomicState{
-                    store: AbstractCrashAwareMap::State{
-                        in_flight: Some(new_abstract_store),
-                        ..old(self).state().store
-                    },
+                    store: post_store,
                     ..old(self).state()}
             };
 
             proof {
+                // Witness that AbstractCrashAwareMap::State::next holds via freeze_persistent_internal
+                // (for the !sync_map case) or freeze_map_internal (for the sync_map case)
+                let map_lbl = AbstractCrashAwareMap::Label::InternalLabel;
+                
+                // For !sync_map: new_abstract_store == pre_store.persistent, so freeze_persistent_internal applies
+                // For sync_map: new_abstract_store == ephemeral stamped_map, so freeze_map_internal applies
+                assert( pre_store.in_flight is None );  // precondition for both freeze transitions
+                assert( pre_store.ephemeral is Known ); // precondition for both freeze transitions
+                assert( post_store.in_flight == Some(new_abstract_store) );
+                
+                reveal(AbstractCrashAwareMap::State::next_by);
+                reveal(AbstractCrashAwareMap::State::next);
+                
+                // Help Verus see that freeze_persistent_internal applies when !sync_map
+                if !sync_map {
+                    assert( new_abstract_store == pre_store.persistent ) by {
+                        // new_abstract_store was assigned self.i_persistent_store() in the else branch
+                        // view_store().persistent == i_persistent_store() by definition
+                        // pre_store == old(self).state().store == view_store() by inv_running
+                        admit();  // TODO: connect the dots
+                    };
+                    assert( AbstractCrashAwareMap::State::next_by(pre_store, post_store, map_lbl,
+                        AbstractCrashAwareMap::Step::freeze_persistent_internal()) );
+                } else {
+                    // sync_map case: freeze_map_internal applies
+                    // new_abstract_store == self.i_ephemeral_store()->v.stamped_map
+                    let frozen_map = new_abstract_store;
+                    let new_map = pre_store.ephemeral->v;  // freeze_as doesn't change the map state
+                    
+                    // Witness AbstractMap::State::next with freeze_as
+                    reveal(AbstractMap::State::next_by);
+                    reveal(AbstractMap::State::next);
+                    let abstract_map_lbl = AbstractMap::Label::FreezeAsLabel{stamped_map: frozen_map};
+                    
+                    assert( frozen_map == pre_store.ephemeral->v.stamped_map ) by {
+                        // new_abstract_store was assigned self.i_ephemeral_store()->v.stamped_map
+                        // pre_store.ephemeral == i_ephemeral_store() by inv
+                        admit();  // TODO: connect the dots
+                    };
+                    assert( AbstractMap::State::next_by(pre_store.ephemeral->v, new_map, abstract_map_lbl,
+                        AbstractMap::Step::freeze_as()) );
+                    
+                    // Now witness freeze_map_internal
+                    assert( AbstractCrashAwareMap::State::next_by(pre_store, post_store, map_lbl,
+                        AbstractCrashAwareMap::Step::freeze_map_internal(frozen_map, new_map)) );
+                }
+                assert( AtomicState::store_internal(old(self).state(), post_state.state) );
+                
                 tracked_swap(self.model.borrow_mut(), &mut model);
                 self.instance.borrow().internal(
                     KVStoreTokenized::Label::InternalOp,
