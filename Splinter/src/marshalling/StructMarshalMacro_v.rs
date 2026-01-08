@@ -1,8 +1,6 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
 
-#![allow(macro_expanded_macro_exports_accessed_by_absolute_paths)]
-
 //! Macro for generating struct marshallers
 //!
 //! This macro generates all the boilerplate for implementing Marshal and UniformSized

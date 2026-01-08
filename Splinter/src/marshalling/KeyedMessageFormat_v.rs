@@ -1,8 +1,6 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
 
-#![allow(macro_expanded_macro_exports_accessed_by_absolute_paths)]
-
 //! KeyedMessageFormat_v - marshaller for KeyedMessage using the struct_marshaller_2 macro
 
 use crate::abstract_system::MsgHistory_v::KeyedMessage;
