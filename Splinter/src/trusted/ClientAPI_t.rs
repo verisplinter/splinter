@@ -288,6 +288,7 @@ impl<ProgramModel: ProgramModelTrait> ClientAPI<ProgramModel>{
     {
         let id = self.id.fetch_add(1, Ordering::SeqCst);
         let disk = self.the_disk.disk_worker.clone();
+        println!("send_disk_request({:?})", &disk_req);
         let req = match disk_req {
             IDiskRequest::ReadReq{from} => {
                 thread::spawn(move ||
@@ -321,6 +322,7 @@ impl<ProgramModel: ProgramModelTrait> ClientAPI<ProgramModel>{
             Err(TryRecvError::Empty) => { None },
             Err(TryRecvError::Disconnected) => { panic!("disconnected!?") },
             Ok(ChannelResponse{id, value}) => {
+                println!("receive_disk_response -> id {:?}: {:?}", &id, &value);
                 return Some(DiskResponseRecord{id, disk_response: value, token: Tracked::assume_new()})
             }
         }

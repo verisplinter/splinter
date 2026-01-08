@@ -69,6 +69,7 @@ pub type Disk = Map<Address, RawPage>;
 //     pub content: Map<Address, RawPage>,
 // }
 
+#[derive(Debug)]
 pub enum GenericDiskRequest<A, D> {
     ReadReq{from: A},
     WriteReq{to: A, data: D},
@@ -97,6 +98,7 @@ impl<A: Copy, D> GenericDiskRequest<A, D> {
 
 pub type DiskRequest = GenericDiskRequest<Address, RawPage>;
 
+#[derive(Debug)]
 pub enum GenericDiskResponse<D> {
     ReadResp{data: D},
     WriteResp{},

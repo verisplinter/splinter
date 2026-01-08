@@ -674,11 +674,15 @@ impl Implementation {
         self.inv_api(api),
         self.ready_for_user_operation(),
     {
+        Self::debug_print(&"maybe_launch_superblock...");
         if self.sync_requests.deferred_reqs.len() == 0 {
+            Self::debug_print(&"  └─ nobody is waiting for a superblock send.");
             // nobody is waiting for a superblock send.
         } else if self.sync_requests.satisfied_reqs.len() == 0 {
+            Self::debug_print(&"  └─ send_superblock");
             self.send_superblock(api);
         } else {
+            Self::debug_print(&"  └─ another superblock in flight");
             // Someone is waiting to start a sync, but a superblock is already in-flight; we'll
             // consider this again when the disk response lands back here.
         }
