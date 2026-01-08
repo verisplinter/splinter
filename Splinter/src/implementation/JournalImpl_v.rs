@@ -364,6 +364,7 @@ impl JournalImpl {
     }
 
     pub fn is_empty(&self) -> bool
+    requires self.index_ready()
     {
         self.status.as_ref().unwrap().unmarshalled_tail.len() > 0 || self.snapshot.freshest_rec.is_some()
     }

@@ -319,7 +319,10 @@ impl<ProgramModel: ProgramModelTrait> ClientAPI<ProgramModel>{
         }
     {
         match self.the_disk.receiver.try_recv() {
-            Err(TryRecvError::Empty) => { None },
+            Err(TryRecvError::Empty) => {
+                println!("receive_disk_response: None");
+                None
+            },
             Err(TryRecvError::Disconnected) => { panic!("disconnected!?") },
             Ok(ChannelResponse{id, value}) => {
                 println!("receive_disk_response -> id {:?}: {:?}", &id, &value);
