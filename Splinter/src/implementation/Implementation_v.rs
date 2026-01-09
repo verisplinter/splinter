@@ -1003,40 +1003,64 @@ impl Implementation {
             // In sync_map case: both equal version
             // In !sync_map case: both relate to journal.seq_start
             assert( frozen_journal.boundary_lsn == new_abstract_store.seq_end ) by {
-                match motivation {
-                    SuperblockMotivation::PushMap => {
-                        // sb.journal_snapshot = JournalSnapshot::new_empty(version)
-                        // new_abstract_store = i_ephemeral_store()->v.stamped_map with seq_end = version
-                        assert( frozen_journal.boundary_lsn == version as nat );
-                        assert( new_abstract_store.seq_end == version as nat );
-                    },
-                    SuperblockMotivation::PushJournal => {
-                        // sb.journal_snapshot = self.journal.get_snapshot() = self.journal.snapshot
-                        // frozen_journal.boundary_lsn = self.journal.snapshot.boundary_lsn as LSN
-                        // new_abstract_store = i_persistent_store() with seq_end = journal.seq_start()
-                        // This equality should follow from journal invariants relating snapshot.boundary_lsn to seq_start()
-                        assume( frozen_journal.boundary_lsn == new_abstract_store.seq_end );
-                    },
-                }
+//                 match motivation {
+//                     SuperblockMotivation::PushMap => {
+//                         // sb.journal_snapshot = JournalSnapshot::new_empty(version)
+//                         // new_abstract_store = i_ephemeral_store()->v.stamped_map with seq_end = version
+//                         assert( frozen_journal.boundary_lsn == version as nat );
+//                         assert( new_abstract_store.seq_end == version as nat );
+//                     },
+//                     SuperblockMotivation::PushJournal => {
+//                         // sb.journal_snapshot = self.journal.get_snapshot()
+//                         // frozen_journal = sb@.journal = sb.journal_snapshot@
+//                         // frozen_journal.boundary_lsn = sb.journal_snapshot.boundary_lsn as nat
+//                         // new_abstract_store = i_persistent_store()
+//                         // new_abstract_store.seq_end = journal.seq_start()
+//                         // Both equal self.journal.get_snapshot().boundary_lsn
+//                         assert( frozen_journal == sb@.journal );
+//                         assert( sb@.journal.boundary_lsn == sb.journal_snapshot.boundary_lsn as nat );
+//                         // sb.journal_snapshot == self.journal.get_snapshot() by construction
+//                         // new_abstract_store.seq_end == self.journal.seq_start() by i_persistent_store def
+//                         // self.journal.seq_start() == self.journal.get_snapshot().boundary_lsn as nat
+//                         //   (since get_snapshot returns snapshot, and seq_start uses snapshot.boundary_lsn)
+//                         assert( new_abstract_store.seq_end == self.journal.seq_start() );
+//                         assert( frozen_journal.boundary_lsn == new_abstract_store.seq_end );
+//                     },
+//                 }
             };
             
             // pre.store.persistent.seq_end <= frozen_journal.boundary_lsn
             // pre.store.persistent = old(self).state().store.persistent = view_store().persistent
             // view_store().persistent.seq_end = i_persistent_store().seq_end = journal.seq_start()
             assert( pre.store.persistent.seq_end <= frozen_journal.boundary_lsn ) by {
-                // Connect pre.store.persistent to view_store
-                assert( old(self).state().store == old(self).view_store() );
-                assert( pre.store.persistent == old(self).view_store().persistent );
-                assert( pre.store.persistent == old(self).i_persistent_store() );
-                
-                // In sync_map case: frozen_journal.boundary_lsn == version == journal.seq_end()
-                // We need: journal.seq_start() <= journal.seq_end() (always true)
-                // In !sync_map case: frozen_journal.boundary_lsn == snapshot.boundary_lsn
-                // We need: journal.seq_start() <= snapshot.boundary_lsn (journal invariant)
-                
-                // TODO: prove this from journal invariants
-                // For now, this follows from journal wellformedness
-                assume( pre.store.persistent.seq_end <= frozen_journal.boundary_lsn );
+//                 // Connect pre.store.persistent to view_store
+// //                 assert( old(self).state().store == old(self).view_store() );
+// //                 assert( pre.store.persistent == old(self).view_store().persistent );
+// //                 assert( pre.store.persistent == old(self).i_persistent_store() );
+//                 // So pre.store.persistent.seq_end == old(self).journal.seq_start()
+//                 
+//                 match motivation {
+//                     SuperblockMotivation::PushMap => {
+//                         // frozen_journal.boundary_lsn == version == journal.seq_end()
+//                         // Need: journal.seq_start() <= journal.seq_end()
+//                         // This follows from journal wf: seq_start <= seq_end
+// //                         assert( frozen_journal.boundary_lsn == version as nat );
+// //                         assert( pre.store.persistent.seq_end == old(self).journal.seq_start() );
+// //                         // journal.seq_start() <= journal.seq_end() by wf
+// //                         assert( old(self).journal.seq_start() <= old(self).journal.seq_end() );
+//                         assert( old(self).journal.seq_end() == version as nat );
+//                     },
+//                     SuperblockMotivation::PushJournal => {
+//                         // frozen_journal.boundary_lsn == self.journal.seq_start()
+//                         // pre.store.persistent.seq_end == old(self).journal.seq_start()
+//                         // self.journal == old(self).journal (unchanged)
+//                         // So: old(self).journal.seq_start() <= self.journal.seq_start()
+//                         // Which is: seq_start <= seq_start, trivially true
+// //                         assert( frozen_journal.boundary_lsn == self.journal.seq_start() );
+// //                         assert( pre.store.persistent.seq_end == old(self).journal.seq_start() );
+// //                         assert( self.journal.seq_start() == old(self).journal.seq_start() );
+//                     },
+//                 }
             };
             assert( AbstractCrashAwareMap::State::next_by(pre.store, post.store, map_lbl,
                 AbstractCrashAwareMap::Step::commit_start()) );
@@ -1050,17 +1074,13 @@ impl Implementation {
             assert( post.journal == old(self).state().journal );
             assert( pre.journal == post.journal );
             
-            // Cache::Access with empty reads/writes
-            // The proof requires showing that union_prefer_right with empty map is identity
+            // Cache::Access with empty reads/writes should be a no-op
             reveal(Cache::State::next_by);
             reveal(Cache::State::next);
-            
-            // Cache::Access with empty writes should be a no-op
-            // The proof requires showing: when writes is empty, write_slots is empty,
-            // updated_entries/status_map have empty domain, and union_prefer_right with
-            // empty map is identity. This requires a map identity lemma.
-            assume( Cache::State::next(pre.cache, post.cache,
-                Cache::Label::Access{reads: reads, writes: Map::empty()}) );
+            // Use the helper lemma that proves access with empty reads/writes is a no-op
+            crate::implementation::Cache_v::Cache::State::access_empty_is_noop(pre.cache);
+            assert( pre.cache == post.cache );
+            assert( reads =~= Map::empty() );
             
             // Cache::EvictableCheck with empty addrs is trivial - forall is vacuously true
             assert( Cache::State::next_by(pre.cache, post.cache,

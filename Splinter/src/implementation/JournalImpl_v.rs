@@ -174,14 +174,36 @@ impl JournalImpl {
 
     // TODO this must be a placeholder, right? Tell me this is a placeholder.
     pub closed spec fn seq_start(&self) -> LSN {
-        0
+        self.snapshot.boundary_lsn as nat
     }
 
     pub exec fn exec_seq_start(&self) -> (out: u64)
     ensures out == self.seq_start()
     {
-        0
+        self.snapshot.boundary_lsn
     }
+
+//     pub closed spec fn seq_end(&self) -> LSN {
+//         if self.status.unmarshalled_tail.len() > 0 {
+//             return last
+//         } else self.snapshot.freshest_rec is Some {
+//             return last item in that rec
+//         } else {
+//             return self.snapshot.boundary_lsn
+//         }
+//     }
+// 
+//     pub exec fn exec_seq_end(&self) -> (out: u64)
+//     ensures out == self.seq_end()
+//     {
+//         if self.status.unmarshalled_tail.len() > 0 {
+//             return last
+//         } else self.snapshot.freshest_rec is Some {
+//             return last item in that rec
+//         } else {
+//             return self.snapshot.boundary_lsn
+//         }
+//     }
 
     pub closed spec fn index_ready(&self) -> bool
     {
@@ -476,7 +498,8 @@ impl JournalImpl {
     }
 
     // Reveal snapshot for use in Implementation::send_superblock
-    pub fn get_snapshot(&self) -> JournalSnapshot
+    pub fn get_snapshot(&self) -> (out: JournalSnapshot)
+    ensures out.boundary_lsn == self.seq_start()
     {
         self.snapshot.clone()
     }

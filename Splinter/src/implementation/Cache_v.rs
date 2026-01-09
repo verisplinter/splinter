@@ -467,6 +467,36 @@ state_machine!{ Cache {
         //     _ => { assert(false); }
         // }
     }
+    
+    /// When reads and writes are both empty, the access transition is a no-op.
+    /// This lemma witnesses that State::next holds for any state with itself.
+    pub proof fn access_empty_is_noop(s: State)
+    ensures
+        State::next(s, s, Label::Access{reads: Map::empty(), writes: Map::empty()})
+    {
+        reveal(State::next_by);
+        reveal(State::next);
+        
+        let lbl = Label::Access{reads: Map::<Address, RawPage>::empty(), writes: Map::<Address, RawPage>::empty()};
+        let write_slots = s.lookup_map.restrict(lbl->writes.dom()).values();
+
+        let updated_entries: Map<Slot, Entry> = Map::new(
+            |slot: Slot| write_slots.contains(slot),
+            |slot: Slot| Entry::Filled{
+                addr: s.entries[slot].get_addr(), 
+                data: lbl->writes[s.entries[slot].get_addr()]
+            });
+        assert( s.entries.union_prefer_right(updated_entries) =~= s.entries );  // extn
+
+        let updated_status_map: Map<Slot, Status> = Map::new(
+            |slot: Slot| write_slots.contains(slot),
+            |slot: Slot| Status::Dirty
+        );
+        assert( s.status_map.union_prefer_right(updated_status_map) =~= s.status_map ); // extn
+        
+        // Witness the step
+        assert( State::next_by(s, s, lbl, Step::access()) ); // step witness
+    }
 }}
 
 // TODO(verus): Surely this should be constructed by the macros.
