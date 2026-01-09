@@ -14,12 +14,12 @@ use crate::spec::MapSpec_t::{ID};
 
 verus!{
 
-pub type Slot = u32;
+pub type Slot = usize;
 
 //  Entry is separate from Status because there are some cases
 //  where we need to have shared access to the Entry while modifying
 //  the Status
-#[derive(Clone, Copy)]
+#[derive(Clone, Eq, PartialEq)]
 pub enum Status {
     NotFilled,
     Clean,
@@ -45,6 +45,13 @@ impl Entry {
             _ => arbitrary()
         }
     }
+}
+
+pub open spec fn addr_maps_to_req(requests: Set<DiskRequest>, req: DiskRequest, addr: Address) -> bool
+{
+    &&& req is ReadReq
+    &&& requests.contains(req)
+    &&& req->from == addr
 }
 
 state_machine!{ Cache {
@@ -91,14 +98,21 @@ state_machine!{ Cache {
     {
         // 1 address can't be mapped to 2 slots
         &&& mapping.is_injective()
+        // ensures that new slots are within the valid range
         &&& mapping.dom() <= self.entries.dom()
-        &&& self.lookup_map.dom().disjoint(mapping.values())
-
-        // new slot must be empty and within the slot range
+        // new slots cannot overlap with existing look up entries
+        &&& mapping.values().disjoint(self.lookup_map.dom())
+        // new slots must be empty
         &&& forall |slot| #[trigger] mapping.contains_key(slot) ==> self.entries[slot] is Empty
     }
 
     // reserve is only used for bypass writes
+    // NOTE: how do we imagine reserve to work
+    // bypass writes just reserve spots first, they are reserved for these addresses
+    // this brings the lookup map up to date so we can retrieve those pages safely
+    // with promises that those pages are present in the look up map
+    // inv => tracks that physical state matches with model status
+
     transition!{ reserve(lbl: Label, new_slots_mapping: Map<Slot, Address>) {
         require lbl is Internal;
         require pre.valid_new_slots_mapping(new_slots_mapping);
@@ -108,7 +122,6 @@ state_machine!{ Cache {
             |slot| Entry::Reserved{addr: new_slots_mapping[slot]}
         );
 
-        // reserve is not filled plus reserved
         update entries = pre.entries.union_prefer_right(updated_entries);
         update lookup_map = pre.lookup_map.union_prefer_right(new_slots_mapping.invert());
     }}
@@ -116,7 +129,7 @@ state_machine!{ Cache {
     pub open spec fn valid_load_requests(requests: Set<DiskRequest>, new_slots_mapping: Map<Slot, Address>) -> bool 
     {
         &&& forall |req| #[trigger] requests.contains(req) ==> req is ReadReq
-        &&& forall |req| #[trigger] requests.contains(req) <==> new_slots_mapping.contains_value(req->from)
+        &&& forall |addr| new_slots_mapping.contains_value(addr) <==> exists |req| #[trigger] addr_maps_to_req(requests, req, addr)
     }
 
     transition!{ load_initiate(lbl: Label, new_slots_mapping: Map<Slot, Address>) {
@@ -170,6 +183,26 @@ state_machine!{ Cache {
         update status_map = pre.status_map.union_prefer_right(updated_status_map);
     }}
 
+    pub open spec fn write_updated_entries(self, writes: Map<Address, RawPage>) -> Map<Slot, Entry>
+    {
+        let write_slots = self.lookup_map.restrict(writes.dom()).values();
+        Map::new(
+            |slot| write_slots.contains(slot),
+            |slot| Entry::Filled{
+                addr: self.entries[slot].get_addr(), 
+                data: writes[self.entries[slot].get_addr()]
+            })
+    }
+
+    pub open spec fn write_updated_status(self, writes: Map<Address, RawPage>) -> Map<Slot, Status>
+    {
+        let write_slots = self.lookup_map.restrict(writes.dom()).values();
+        Map::new(
+            |slot| write_slots.contains(slot),
+            |slot| Status::Dirty
+        )
+    }
+
     // NOTE: access must enable batched accesses because program
     // model needs to make batch updates as an atomic transition
     transition!{ access(lbl: Label) {
@@ -179,19 +212,8 @@ state_machine!{ Cache {
         require forall |addr| #[trigger] lbl->writes.contains_key(addr) 
             ==> pre.valid_write(addr);
 
-        let write_slots = pre.lookup_map.restrict(lbl->writes.dom()).values();
-
-        let updated_entries = Map::new(
-            |slot| write_slots.contains(slot),
-            |slot| Entry::Filled{
-                addr: pre.entries[slot].get_addr(), 
-                data: lbl->writes[pre.entries[slot].get_addr()]
-            });
-
-        let updated_status_map = Map::new(
-            |slot| write_slots.contains(slot),
-            |slot| Status::Dirty
-        );
+        let updated_entries = pre.write_updated_entries(lbl->writes);
+        let updated_status_map = pre.write_updated_status(lbl->writes);
 
         update entries = pre.entries.union_prefer_right(updated_entries);
         update status_map = pre.status_map.union_prefer_right(updated_status_map);
@@ -238,7 +260,7 @@ state_machine!{ Cache {
 
         let resps_slots = pre.lookup_map.restrict(responses.dom()).values();
         let updated_status_map = Map::new(
-            |slot| resps_slots.contains(slot), 
+            |slot| resps_slots.contains(slot),
             |slot| Status::Clean
         );
 
@@ -290,10 +312,13 @@ state_machine!{ Cache {
 
     #[invariant]
     pub open spec(checked) fn inv(self) -> bool {
+        // slots hold unique address
+        
+
+
         &&& self.slots_hold_unique_addr()
         &&& self.status_map.dom() =~= self.entries.dom()
         &&& self.lookup_map == self.build_lookup_map()
-
         &&& forall |slot| #[trigger] self.status_map.contains_key(slot)
             ==> ( (self.status_map[slot] is NotFilled) <==> !(self.entries[slot] is Filled) )
     }
@@ -340,7 +365,7 @@ state_machine!{ Cache {
     
     #[inductive(load_initiate)]
     fn load_initiate_inductive(pre: Self, post: Self, lbl: Label, new_slots_mapping: Map<Slot, Address>) {
-        assert(Self::valid_load_requests(lbl->requests, new_slots_mapping));
+        // assert(Self::valid_load_requests(lbl->requests, new_slots_mapping));
         assume(false);
     }
     

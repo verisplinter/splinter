@@ -115,20 +115,6 @@ pub enum IEntry{
     Filled{addr: IAddress},
 }
 
-// impl View for IEntry {
-//     type V = Entry;
-// 
-//     open spec fn view(&self) -> Self::V
-//     {
-//         match self {
-//             IEntry::Empty => Entry::Empty,
-//             IEntry::Reserved{addr} => Entry::Reserved{addr: addr@},
-//             IEntry::Loading{addr} => Entry::Loading{addr: addr@},
-//             IEntry::Filled{addr, data} => Entry::Filled{addr: addr@, data: data@},
-//         }
-//     }
-// }
-
 pub struct Metadata {
     entry: IEntry,
     status: Status,
@@ -356,7 +342,7 @@ impl CacheImpl {
             },
             Some(slot) => {
                 assert( self.lookup_map@.contains_value(*slot) );   // trigger lookup_map invariant
-                match self.metadata[Self::u32_to_usize(*slot)].entry {
+                match self.metadata[*slot].entry {
                     // inv violation
                     IEntry::Empty => { assert( false ); None }
                     // Waiting for a load. Or whatever reserved means.
@@ -448,7 +434,7 @@ impl CacheImpl {
         },
     {
         self.pages.push(None);
-        let mut taken = self.pages.swap_remove(Self::u32_to_usize(slot));
+        let mut taken = self.pages.swap_remove(slot);
         let out = match taken {
             // Somebody beat you to it
             None => { None },
@@ -488,15 +474,15 @@ impl CacheImpl {
         forall |i| 0<=i<CACHE_SIZE_PAGES && i != hdl.slot() as int ==>
             self.value_at_slot(i) == old(self).value_at_slot(i),
     {
-        self.pages[Self::u32_to_usize(hdl.slot)] = Some(hdl.page)
+        self.pages[hdl.slot] = Some(hdl.page)
     }
 
-    #[verifier::external_body]
-    pub fn u32_to_usize(x: u32) -> (out: usize)
-    ensures x == out
-    {
-        x.try_into().unwrap()
-    }
+    // #[verifier::external_body]
+    // pub fn u32_to_usize(x: u32) -> (out: usize)
+    // ensures x == out
+    // {
+    //     x.try_into().unwrap()
+    // }
 }
 
 }//verus!

@@ -49,8 +49,9 @@ use crate::marshalling::WF_v::WF;
 // use crate::marshalling::UniformSized_v::UniformSized;
 use crate::implementation::OverflowFiction_v::*;
 use crate::abstract_system::AbstractCrashAwareMap_v;
-use crate::implementation::CacheImpl_v::CacheImpl;
+// use crate::implementation::CacheImpl_v::CacheImpl;
 use crate::implementation::Cache_v::Cache;
+use crate::implementation::FracCacheImpl_v::*;
 
 #[allow(unused_imports)]
 use vstd::multiset::*;
@@ -154,25 +155,6 @@ closed spec(checked) fn view_as_kmmap(store: VecMap<Key, Value>) -> TotalKMMap
     SuperblockTypes_v::map_to_kmmap(store@)
 }
 
-// TODO(jonh): delete
-// proof fn vec_insert_is_kmmap_insert(old_store: Map<Key, Value>, new_store: Map<Key, Value>, key: Key, value: Value)
-// requires
-//     new_store == old_store.insert(key, value),
-// ensures ASuperblock::map_to_kmmap(new_store) == ASuperblock::map_to_kmmap(old_store.insert(key, value))
-// {
-// }
-// 
-// proof fn insert_is_apply(old_kmmap: TotalKMMap, new_kmmap: TotalKMMap, key: Key, value: Value, lsn: LSN)
-// requires
-//     new_kmmap == old_kmmap.insert(key, Message::Define{value})
-// ensures ({
-//     let puts = MsgHistory::singleton_at(lsn, KeyedMessage{key, message: Message::Define{value}});
-//     new_kmmap == puts.apply_to_stamped_map(StampedMap{value: old_kmmap, seq_end: lsn}).value
-//     })
-// {
-// }
-    
-
 // TODO replace with defn from MsgHistory
 closed spec(checked) fn map_plus_history(map: TotalKMMap, msg_history: MsgHistory) -> TotalKMMap
     recommends msg_history.wf()
@@ -205,6 +187,12 @@ enum SuperblockMotivation {
     PushJournal,
 }
 
+enum OutstandingReqInfo{
+    SuperBlockReq{},
+    CacheLoadReq{read_addr: IAddress, load_handle: MutHandle},
+    CacheWriteReq{write_addr: IAddress, handle: MutHandle},
+}
+
 // This struct supplies KVStoreTrait, which has both the entry point to the implementation and the
 // proof hooks to satisfy the refinement obligation trait.
 pub struct Implementation {
@@ -218,7 +206,7 @@ pub struct Implementation {
     // starts at persistent_store.version, ends matching store
     journal: JournalImpl,
     
-    cache: CacheImpl,
+    cache: FracCacheImpl,
 
     // this is a truncate in flight, only set when a truncation is occuring
     in_flight: Option<InFlight>,
@@ -235,7 +223,7 @@ pub struct Implementation {
 
     sync_requests: SyncRequestBuffer,
 
-    outstanding_requests: HashMapWithView<ID, IDiskRequest>,
+    outstanding_requests: HashMapWithView<ID, OutstandingReqInfo>,
 }
 
 impl Implementation {
@@ -282,7 +270,7 @@ impl Implementation {
         &&& self.sync_requests.buffered_reqs@.len() == 0
         &&& self.store.wf()
         &&& self.state().recovery_state is Begin
-        &&& self.cache.inv()
+        &&& self.cache.wf()
     }
 
     closed spec fn inv_running(self) -> bool {
@@ -300,6 +288,7 @@ impl Implementation {
         // model matches our interpretation of Implementation state struct
         &&& state.store == self.view_store()
         &&& state.journal == self.journal@
+        &&& state.cache == self.cache@
 
         // map and journal are at the same LSN
         &&& state.journal.seq_end() == state.ephemeral_map().seq_end
@@ -358,6 +347,7 @@ impl Implementation {
     spec fn inv_reading_journal(self) -> bool
     {
         &&& self.state().recovery_state is SuperblockAvailable
+        &&& self.state().journal == self.journal@
         &&& self.journal.wf()
         &&& !self.journal.index_ready()
     }
@@ -365,12 +355,15 @@ impl Implementation {
     spec fn inv_applying_journal(self) -> bool
     {
         &&& self.state().recovery_state is JournalIndexComplete
+        &&& self.state().journal == self.journal@
         &&& self.journal.wf()
         &&& self.journal.index_ready()
     }
 
     closed spec fn inv(self) -> bool {
-        &&& self.cache.inv()
+        &&& self.cache.wf()
+        &&& self.state().cache == self.cache@
+
         // from the physical phase field to stuff we know
         &&& self.recovery_phase is FetchingSuperblock ==> self.inv_recover()
         &&& self.recovery_phase is ReadingJournalIndex ==> self.inv_reading_journal()
@@ -1230,7 +1223,7 @@ impl Implementation {
         // Prove inv() conjuncts:
         
         // 1. cache.inv() - cache unchanged, so follows from old(self).inv()
-        assert( self.cache.inv() ) by {
+        assert( self.cache.wf() ) by {
             assert( self.cache == old(self).cache );
             // old(self).inv() ==> old(self).cache.inv()
         };
@@ -1702,17 +1695,22 @@ impl Implementation {
     }
 
     // In normal operations, we will see write acknowledgements to cache IO.
-    exec fn handle_disk_cache_response(&mut self, id: ID, disk_response: IDiskResponse, response_shard: Tracked<DiskRespShard>,
-        api: &mut ClientAPI<ConcreteProgramModel>)
-    requires
-        old(self).inv_api(old(api)),
-        old(self).good_disk_response(id, disk_response, response_shard@),
-        response_shard@.multiset() == multiset_map_singleton(id, disk_response@),
-    ensures
-        self.inv_api(api),
-        self.recovery_phase.advances(old(self).recovery_phase),
-    {
-    }
+    // exec fn handle_disk_cache_response(&mut self, id: ID, disk_response: IDiskResponse, response_shard: Tracked<DiskRespShard>,
+    //     handle: MutHandle, api: &mut ClientAPI<ConcreteProgramModel>)
+    // requires
+    //     old(self).inv_api(old(api)),
+    //     old(self).good_disk_response(id, disk_response, response_shard@),
+    //     response_shard@.multiset() == multiset_map_singleton(id, disk_response@),
+    //     old(self).cache.valid_load_handle(handle)
+    // ensures
+    //     self.inv_api(api),
+    //     self.recovery_phase.advances(old(self).recovery_phase),
+    // {
+
+
+    //     // load handle or write handle
+    //     // load response and write response
+    // }
 
     exec fn handle_disk_response(&mut self, id: ID, disk_response: IDiskResponse, response_shard: Tracked<DiskRespShard>,
         api: &mut ClientAPI<ConcreteProgramModel>)
@@ -1727,6 +1725,9 @@ impl Implementation {
     {
         match self.outstanding_requests.get(&id) {
             None => {
+                assume(false);
+                // no corresponding request
+                unreached::<nat>();
                 assert(false) by {
                     // TODO apply a system invariant: every disk response matches an outstanding
                     // disk request
@@ -1734,11 +1735,18 @@ impl Implementation {
                 }
                 Self::todo_placeholder();
             }
-            Some(disk_request) => {
-                if disk_request.exec_addr() == superblock_addr() {
-                    self.handle_disk_superblock_write_response(id, disk_response, response_shard, api);
-                } else {
-                    self.handle_disk_cache_response(id, disk_response, response_shard, api);
+            Some(req_info) => {
+                match req_info {
+                    OutstandingReqInfo::SuperBlockReq{} => {
+                        self.handle_disk_superblock_write_response(id, disk_response, response_shard, api);
+                    },
+                    OutstandingReqInfo::CacheLoadReq{read_addr, load_handle} => {
+                        assume(false);
+                        // self.handle_disk_cache_response(id, disk_response, response_shard, disk_request.handle, api);
+                    },
+                    OutstandingReqInfo::CacheWriteReq{write_addr, handle} => {
+                        assume(false);
+                    },
                 }
             }
         }
@@ -1837,8 +1845,8 @@ impl Implementation {
             assert( VecMap::unique_keys(superblock.store@) ) by {
                 assume( false );    // get this from a system invariant about the superblock on the disk
             }
-            self.persistent_store = VecMap::from_vec(superblock.store);
 
+            self.persistent_store = VecMap::from_vec(superblock.store);
             self.journal = JournalImpl::new(superblock.journal_snapshot);
 
             let mut i = 0;
@@ -1905,50 +1913,118 @@ impl Implementation {
 
     fn recover_read_journal_index(&mut self, api: &mut ClientAPI<ConcreteProgramModel>) -> (progress: bool)
     requires
+        old(self).inv(),
         old(self).inv_api(old(api)),
         old(self).recovery_phase is ReadingJournalIndex,
     ensures
+        self.inv(),
         self.inv_api(api),
         self.recovery_phase is ReadingJournalIndex || self.recovery_phase is ApplyingJournalToRecoverEphemeralMap,
     {
         assert( self.journal.wf() );
-        let (progress,ready) = self.journal.recover_index_step(&mut self.cache);
-        if ready {
-            self.recovery_phase = RecoveryPhase::ApplyingJournalToRecoverEphemeralMap;
+        
+        let ghost pre_state = self.model@.value();
+        let result = self.journal.recover_index_step(&mut self.cache);
 
-            let ghost pre_state = self.i();
-            let tracked mut model = KVStoreTokenized::model::arbitrary();
-            proof { tracked_swap(self.model.borrow_mut(), &mut model); }
+        match result {
+            RecoverIndexResult::CacheLoad{slot_handle, addr} => {
+                let tracked mut model = KVStoreTokenized::model::arbitrary();
+                proof { tracked_swap(self.model.borrow_mut(), &mut model); }
 
-            let ghost post_state = ConcreteProgramModel{
-                state: AtomicState {
-                    recovery_state: RecoveryState::JournalIndexComplete,
-                    journal: self.journal@,
-                    persistent_journal_seq_end: arbitrary(),
-                    in_flight: None,
-                    sync_req_map: Map::empty(),
-                    ..pre_state
-                }
-            };
+                let req_id_perm = Tracked( api.send_disk_request_predict_id() );
+                let disk_req = IDiskRequest::ReadReq{from: addr};
 
-            proof {
-                assert(AtomicState::internal_transitions(pre_state, post_state.state)) by {
-                    // AtomicState internal transition is currently a "silly" noop; needs to expand
-                    // to include journal internal
-                    assume( false ); // TODO
+                let ghost post_state = ConcreteProgramModel{
+                    state: AtomicState{
+                        journal: self.journal@,
+                        cache: self.cache@,
+                        outstanding_cache_reqs: pre_state.state.outstanding_cache_reqs.insert(req_id_perm@, addr@),
+                        ..pre_state.state
+                    }
                 };
+
+                let ghost disk_request_tuples =  Multiset::empty().insert((req_id_perm@, disk_req@));
+                let ghost disk_response_tuples = Multiset::empty();
+
+                proof {
+                    let program_lbl = ProgramLabel::DiskIO{info: ProgramDiskInfo{
+                        reqs: disk_request_tuples, 
+                        resps: disk_response_tuples, 
+                    }};
+                    let disk_event = DiskEvent::CacheIOBegin{req_map: map!{req_id_perm@ => disk_req@}};
+                    let cache_lbl = cache_load_label(&addr);
+                    assume(map_to_multiset(disk_event->req_map) == disk_request_tuples);
+                    assume(disk_event->req_map.values() == set!{disk_req@});
+
+                    assert(Cache::State::next(old(self).cache@, self.cache@, cache_lbl));
+                    assert(Cache::State::next(pre_state.state.cache, post_state.state.cache, cache_lbl));
+
+                    let updated_outstanding_cache_reqs = Map::new(|id| disk_event->req_map.contains_key(id), |id| disk_event->req_map[id].addr());
+                    let new_outstanding_cache_reqs = pre_state.state.outstanding_cache_reqs.union_prefer_right(updated_outstanding_cache_reqs);
+                    assume(post_state.state.outstanding_cache_reqs == new_outstanding_cache_reqs); // it's true just tedious work for now
+                    assert(AtomicState::cache_io_begin(pre_state.state, post_state.state, disk_event->req_map, disk_request_tuples, disk_response_tuples));
+                    assert(AtomicState::disk_transition(pre_state.state, post_state.state, disk_event, program_lbl->info.reqs, program_lbl->info.resps)); // witness
+                    assert(ConcreteProgramModel::valid_disk_transition(pre_state, post_state, program_lbl->info)); 
+                    assert(ConcreteProgramModel::next(pre_state, post_state, program_lbl)); 
+                }
+
+                let tracked empty_disk_responses: DiskRespShard = DiskRespShard::empty(self.instance_id());
+                let tracked new_disk_req_token = self.instance.borrow().disk_transitions(
+                    KVStoreTokenized::Label::DiskOp{
+                        disk_request_tuples,
+                        disk_response_tuples
+                    },
+                    post_state,
+                    &mut model,
+                    empty_disk_responses,
+                );
+                self.model = Tracked(model); 
+
+                let id = api.send_disk_request(disk_req, req_id_perm, Tracked(new_disk_req_token));
+                self.outstanding_requests.insert(id, OutstandingReqInfo::CacheLoadReq{read_addr: addr, load_handle: slot_handle});
+                assert( self.inv_api(api) );
+
+                return false; // cache waiting on data, not ready to make more progress
             }
+            RecoverIndexResult::IndexComplete{reads} => {
+                self.recovery_phase = RecoveryPhase::ApplyingJournalToRecoverEphemeralMap;
+                let tracked mut model = KVStoreTokenized::model::arbitrary();
+                proof { tracked_swap(self.model.borrow_mut(), &mut model); }
 
-            let tracked new_reply_token = self.instance.borrow().internal(
-                KVStoreTokenized::Label::InternalOp{},
-                post_state,
-                &mut model,
-            );
-            self.model = Tracked(model);
+                let ghost pre_state = self.i();
+                let ghost post_state = ConcreteProgramModel{
+                    state: AtomicState {
+                        recovery_state: RecoveryState::JournalIndexComplete,
+                        journal: self.journal@,
+                        persistent_journal_seq_end: arbitrary(), // why is this arbitrary
+                        in_flight: None,
+                        sync_req_map: Map::empty(),
+                        ..pre_state
+                    }
+                };
 
-            assert( self.i().recovery_state is JournalIndexComplete );
+                proof {
+                    assert(AtomicState::internal_transitions(pre_state, post_state.state)) by {
+                        // AtomicState internal transition is currently a "silly" noop; needs to expand
+                        // to include journal internal
+                        assume( false ); // TODO
+                    };
+                }
+
+                let tracked new_reply_token = self.instance.borrow().internal(
+                    KVStoreTokenized::Label::InternalOp{},
+                    post_state,
+                    &mut model,
+                );
+                self.model = Tracked(model);
+
+                // index complete means that we can now 
+                assert( self.i().recovery_state is JournalIndexComplete );
+                assume(false);
+            }
+            RecoverIndexResult::IndexProgress{} => { }
         }
-        progress
+        return true; // either index is complete or journal has made progress building the index
     }
 
     fn recover_apply_journal_to_recover_ephemeral_map(&mut self, api: &mut ClientAPI<ConcreteProgramModel>) -> (progress: bool)
@@ -2056,6 +2132,7 @@ impl KVStoreTrait for Implementation {
     closed spec fn wf_init(self) -> bool {
         &&& self.inv_recover()
         &&& self.state().recovery_state is Begin
+        &&& self.state().cache == self.cache@
     }
 
     closed spec fn instance_id(self) -> InstanceId
@@ -2066,6 +2143,7 @@ impl KVStoreTrait for Implementation {
     fn new() -> (out: Self)
         ensures out.wf_init()
     {
+        let cache = FracCacheImpl::new();
         let tracked (
             Tracked(instance),
             Tracked(model),         // non sharded model
@@ -2073,7 +2151,7 @@ impl KVStoreTrait for Implementation {
             Tracked(replies),       // reply perm map (multiset), empty
             Tracked(disk_requests),
             Tracked(disk_responses),
-        ) = KVStoreTokenized::Instance::initialize(ConcreteProgramModel{state: AtomicState::init(0)});
+        ) = KVStoreTokenized::Instance::initialize(ConcreteProgramModel{state: AtomicState::init(cache.total_slots() as nat)});
 
         // TODO maybe another Option<> wrapper?
         let placeholder_snapshot = JournalSnapshot{
@@ -2084,7 +2162,7 @@ impl KVStoreTrait for Implementation {
             store: new_empty_vec_map(),
             store_lsn: 7,
             journal: JournalImpl::new(placeholder_snapshot),
-            cache: CacheImpl::new(/*100*/),
+            cache,
             in_flight: None,
             persistent_store: new_empty_vec_map(),
             // persistent_version: 0,

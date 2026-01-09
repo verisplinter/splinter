@@ -10,6 +10,8 @@ use crate::marshalling::ResizableUniformSizedSeq_v::ResizableUniformSizedElement
 use crate::marshalling::KeyedMessageFormat_v::KeyedMessageFormat;
 use crate::spec::KeyType_t::*;
 use crate::spec::Messages_t::*;
+use crate::spec::AsyncDisk_t::RawPage;
+use crate::implementation::AtomicState_v::to_journal_reads;
 use crate::implementation::OverflowFiction_v::*;
 use crate::implementation::CachedJournal_v::CachedJournal;
 use crate::disk::GenericDisk_v::{Address, IAddress};
@@ -17,7 +19,8 @@ use crate::implementation::CachedJournal_v;
 use crate::implementation::JournalTypes_v::AJournal;
 use crate::implementation::JournalTypes_v::ILsn;
 use crate::implementation::JournalModel_v::LsnAddrIndex;
-use crate::implementation::CacheImpl_v::*;
+use crate::implementation::Cache_v::Cache;
+use crate::implementation::FracCacheImpl_v::*;
 use crate::marshalling::Slice_v::Slice;
 use crate::marshalling::IJournalRecordFormat_v::IJournalRecordFormat;
 use crate::marshalling::Marshalling_v::Marshal;
@@ -87,28 +90,31 @@ use crate::marshalling::WF_v::WF;
 impl WF for JournalSnapshot {}
 
 pub struct JournalStatus {
-    pub unmarshalled_tail: Vec<(Key,Value)>,
     pub lsn_addr_index: LsnAddrIndexImpl,
+    pub unmarshalled_tail: Vec<(Key,Value)>,
     pub unmarshalled_tail_start: ILsn,   // invariant to agree with freshest_rec contents / boundary_lsn
 }
 
 impl JournalStatus {
     spec fn wf(&self) -> bool
     {
+        // there should be no gap in between 
         true
     }
 
-    exec fn new(tail_start: ILsn) -> (out: Self)
-    ensures
-        out.wf(),
-        out.unmarshalled_tail_start == tail_start,
-    {
-        Self{
-            unmarshalled_tail: vec![],
-            lsn_addr_index: LsnAddrIndexImpl::new(),
-            unmarshalled_tail_start: tail_start,
-        }
-    }
+    // this new is fake
+    // exec fn new(tail_start: ILsn) -> (out: Self)
+    // ensures
+    //     out.wf(),
+    //     out.unmarshalled_tail_start == tail_start,
+    // {
+    //     // journal status should be fetching 
+    //     Self{
+    //         unmarshalled_tail: vec![],
+    //         lsn_addr_index: LsnAddrIndexImpl::new(),
+    //         unmarshalled_tail_start: tail_start,
+    //     }
+    // }
 
     closed spec fn tail_as_history(&self) -> MsgHistory
     {
@@ -133,11 +139,24 @@ pub struct IndexBuilder {
     next_head: JournalSnapshot,
 }
 
+pub enum RecoverIndexResult{
+    CacheLoad{slot_handle: MutHandle, addr: IAddress},
+    IndexComplete{reads: Ghost<Map<Address, RawPage>>},
+    IndexProgress{},
+}
+
 pub struct JournalImpl {
     snapshot: JournalSnapshot,
     index_builder: Option<IndexBuilder>,
     status: Option<JournalStatus>,
     fmt: IJournalRecordFormat,
+}
+
+pub open spec fn load_index_labels(reads: Map<Address, RawPage>) -> (Cache::Label, CachedJournal::Label)
+{
+    let cache_lbl = Cache::Label::Access{reads, writes: Map::empty()};
+    let journal_lbl = CachedJournal::Label::LoadIndex{reads: to_journal_reads(reads)};
+    (cache_lbl, journal_lbl)
 }
 
 impl JournalImpl {
@@ -226,65 +245,152 @@ impl JournalImpl {
     // but that's quadratric compute, and will eventually suck. I'm going to write it keeping
     // intermediate state. That state will need an invariant wrt the cache, which Implementation
     // will have to hang onto for us, unfortunately.
-    pub exec fn recover_index_step(&mut self, cache: &mut CacheImpl) -> (progress_ready: (bool, bool))
+    pub exec fn recover_index_step(&mut self, cache: &mut FracCacheImpl) 
+        -> (out: RecoverIndexResult) //(out: (bool, Option<(MutHandle, IAddress, Ghost<Cache::Label>)>, bool))
     requires
         old(self).wf(),
         !old(self).index_ready(),
-        old(cache).inv(),
-    ensures
-        self.wf(),
-        self@.wf(),
-        cache.inv(),
-        progress_ready.1 <==> self.index_ready(),
+        old(cache).wf(),
+    ensures ({
+        &&& self.wf()
+        &&& self@.wf()
+        &&& cache.wf()
+        &&& match out {
+            RecoverIndexResult::CacheLoad{slot_handle, addr} => {
+                &&& self@ == old(self)@
+                &&& cache.entry_fetched(&addr)
+                &&& cache.valid_load_handle(&addr, slot_handle)
+                &&& Cache::State::next(old(cache)@, cache@, cache_load_label(&addr))
+            },
+            RecoverIndexResult::IndexComplete{reads} => {
+                let (cache_lbl, journal_lbl) = load_index_labels(reads@);
+                &&& old(cache)@ == cache@
+                &&& self.index_ready()
+                &&& Cache::State::next(old(cache)@, cache@, cache_lbl)
+                &&& CachedJournal::State::next(old(self)@, self@, journal_lbl)
+            },
+            RecoverIndexResult::IndexProgress{} => {
+                &&& old(cache)@ == cache@
+                &&& self@ == old(self)@
+            }
+        }
+    })
     {
-        let mut progress = false;
-        let mut ready = false;
-        // swappery to deal with lack of &mut
+        let mut out = RecoverIndexResult::IndexProgress{};
         let mut index_builder = self.index_builder.take();
-//         let mut dummy: Option<IndexBuilder> = None;
-//         core::mem::swap(&mut self.index_builder, &mut dummy);
         index_builder = match index_builder {
-            None => { assert(false); None }, // !index_ready && wf ==> we have an index_builder.
+            // NOTE: builder becomes None when we are out of the building phase
+            None => { assert(false); None },
+            // NOTE: builder is a hint for continued fetch
             Some(mut builder) => {
                 match builder.next_head.freshest_rec {
-                    None => {
+                    None => { // this means all journal pages are fetched in cache, time to read indexes and build the pages
+                        // NOTE: a silly implementation that forgets all computed updates if page is not available
+                        let unmarshalled_tail = Vec::new();
+                        let ghost mut reads = map!{};
+                        
+                        reveal(Cache::State::next_by);
+                        reveal(Cache::State::next);
+                        reveal(CachedJournal::State::next_by);
+                        reveal(CachedJournal::State::next);
+
+                        // start reading 
+                        if let Some(addr) = self.snapshot.freshest_rec {
+
+
+                        // let mut root = None;
+                        // let mut next = self.snapshot.freshest_rec;
+                        // let mut index = LsnAddrIndexImpl::new();
+
+                        // while if let Some(addr) = next 
+                        //     invariant index@ == CachedJournal_v::build_lsn_addr_index_from_reads(reads, self.snapshot.boundary_lsn, root, )
+
                         // We got to the end of the journal linked list! We're done!
-                        self.status = Some(JournalStatus::new(builder.next_head.boundary_lsn));
-                        assert( self.snapshot.boundary_lsn <= self.status.unwrap().unmarshalled_tail_start ) by {
-                            assume( false ); // This needs to become an invariant of the builder process.
+                        // self.status = Some(JournalStatus::new(builder.next_head.boundary_lsn));
+                        // assert( self.snapshot.boundary_lsn <= self.status.unwrap().unmarshalled_tail_start ) by {
+                        //     assume( false ); // This needs to become an invariant of the builder process.
+                        // }
+
+                        // time to build the index?
+                        // TODO: build index exec fn
+                        // what has changed, nothing, in order to do this w
+                        // what happens if we are ready
+                        // we need to promise that journal index complete
+                        // we need two promises 
+
+        // let cache_lbl = Cache::Label::Access{reads: reads, writes: Map::empty()};
+        // let journal_lbl = CachedJournal::Label::LoadIndex{reads: to_journal_reads(reads)};
+                            assume(false);
+                        } else {
+                            self.status = Some(JournalStatus{
+                                unmarshalled_tail,
+                                lsn_addr_index: LsnAddrIndexImpl::new(),
+                                unmarshalled_tail_start: self.snapshot.boundary_lsn
+                            });
+
+                            proof {
+                                let (_, journal_lbl) = load_index_labels(reads);
+                                let ptr = old(self)@.snapshot.freshest_rec;
+                                let bdy = old(self)@.snapshot.boundary_lsn;
+                                let journal_reads = to_journal_reads(reads);
+                                let lsn_addr_index = CachedJournal_v::build_lsn_addr_index_from_reads(journal_reads, bdy, ptr, bdy);
+                                assert(self@.status.unwrap().lsn_addr_index == lsn_addr_index);
+                                assert(self@.status.unwrap().unmarshalled_tail == MsgHistory::empty_history_at(bdy));
+                                assert( CachedJournal::State::load_index(old(self)@, self@, journal_lbl));
+                                assert( CachedJournal::State::next_by(old(self)@, self@, journal_lbl, CachedJournal::Step::load_index{}) );
+                                assert( CachedJournal::State::next(old(self)@, self@, journal_lbl) );    
+                            }
                         }
 
-                        // Build the index all at once at the end in a while loop. We just know
-                        // (liveness fingers crossed) it's not going to have to pause for IO.
-//                         index: LsnAddrIndexImpl,
+                        proof {
+                            let (cache_lbl, _) = load_index_labels(reads);
+                            assert( old(cache)@ == cache@ );
+                            assert( self.index_ready() );
 
-                        // let the dummy object die, leaving the None in its place.
-                        progress = true;
-                        ready = true;
+                            let updated_entries = old(cache)@.write_updated_entries(cache_lbl->writes);
+                            let updated_status_map = old(cache)@.write_updated_status(cache_lbl->writes);
+
+                            assert(updated_entries =~= map!{});
+                            assert(old(cache)@.entries.union_prefer_right(updated_entries) =~= old(cache)@.entries);
+                            assert(updated_status_map =~= map!{});
+                            assert(old(cache)@.status_map.union_prefer_right(updated_status_map) =~= old(cache)@.status_map);
+                            assert( Cache::State::access(old(cache)@, cache@, cache_lbl));
+                            assert( Cache::State::next_by(old(cache)@, cache@, cache_lbl, Cache::Step::access{}) );
+                            assert( Cache::State::next(old(cache)@, cache@, cache_lbl) );               
+                        }
+                        out = RecoverIndexResult::IndexComplete{reads: Ghost(reads)};
                         None
                     },
                     Some(addr) => {
                         // Can we read the next page from the cache?
-                        match cache.read_or_fetch(&addr) {
-                            None => {
+                        match cache.fetch(&addr) {
+                            FetchErrorCode::LoadInitiate{slot_handle} => {
+                                // release previous handle
                                 // Cache is going to do a fetch and call us later. Bail out.
                                 // Re-construct the struct
+                                out = RecoverIndexResult::CacheLoad{slot_handle, addr};
                                 Some(builder)
                             },
-                            Some(raw_page) => {
-                                // Parse the page
-                                let all_slice = Slice::all(raw_page.borrow());
-                                assert( all_slice@.i(raw_page.value()) == raw_page.value() );
-                                assert( self.fmt.parsable(all_slice@.i(raw_page.value())) ) by {
+                            FetchErrorCode::Success{slot_handle} => {
+                                let all_slice = Slice::all(&slot_handle.rec);
+                                assert( all_slice@.i(slot_handle.rec@) == slot_handle.rec@ );
+                                assert( self.fmt.parsable(all_slice@.i(slot_handle.rec@)) ) by {
                                     assume( false ); // system invariant
                                 }
-                                let i_journal_record = self.fmt.exec_parse(&all_slice, raw_page.borrow());
-                                
-                                // Advance the pointer.
-                                builder.next_head.freshest_rec = i_journal_record.header.prior_rec;
-
-                                // Another invocation will do useful work without waiting for IO.
-                                progress = true;
+                                let i_journal_record = self.fmt.exec_parse(&all_slice, &slot_handle.rec);
+                                cache.handle_release(&addr, slot_handle);
+                                builder.next_head.freshest_rec = match i_journal_record.header.prior_rec 
+                                    {
+                                        None => None,
+                                        Some(iaddr) => { // cropped prior logic
+                                            if i_journal_record.header.start_lsn > self.snapshot.boundary_lsn {
+                                                Some(iaddr)
+                                            } else { None }
+                                        }
+                                    };
+                                Some(builder)
+                            },
+                            _ => {
                                 Some(builder)
                             },
                         }
@@ -294,7 +400,7 @@ impl JournalImpl {
         };
         core::mem::swap(&mut self.index_builder, &mut index_builder);
         assert( self.wf() );
-        (progress, ready)
+        out
     }
 
     pub exec fn insert(&mut self, key: Key, value: Value)

@@ -6,6 +6,7 @@ pub mod AtomicState_v;
 pub mod DiskLayout_v;
 pub mod Cache_v;
 pub mod CacheImpl_v;
+pub mod FracCacheImpl_v;
 pub mod CachedJournal_v;
 pub mod JournalModel_v; // copy of LikesJournal_v
 pub mod JournalImpl_v; // copy of LikesJournal_v

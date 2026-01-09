@@ -2,13 +2,20 @@
 use vstd::prelude::*;
 use vstd::prelude::*;
 
-use vstd::{multiset::Multiset};
+use vstd::{math, multiset::Multiset};
 use crate::spec::AsyncDisk_t::*;
 use crate::spec::MapSpec_t::*;
 use crate::trusted::SystemModel_t::*;
 use crate::trusted::RefinementObligation_t::*;
 use crate::trusted::ProgramModelTrait_t::*;
+use crate::disk::GenericDisk_v::Pointer;
+use crate::abstract_system::StampedMap_v::LSN;
+use crate::abstract_system::AbstractCrashAwareJournal_v::*;
+use crate::journal::LinkedJournal_v::DiskView;
 use crate::implementation::AtomicState_v::*;
+use crate::implementation::Cache_v::*;
+use crate::implementation::CachedJournal_v::*;
+use crate::implementation::JournalModel_v::*;
 use crate::implementation::ConcreteProgramModel_v::*;
 use crate::implementation::MultisetMapRelation_v::*;
 use crate::implementation::DiskLayout_v::*;
@@ -21,28 +28,194 @@ pub open spec fn multiset_to_set<V>(m: Multiset<V>) -> Set<V> {
     Set::new(|v| m.contains(v))
 }
 
+impl Cache::State {
+    pub open spec fn valid_clean_slot(self, slot: Slot) -> bool
+    {
+        &&& self.status_map.contains_key(slot)
+        &&& self.status_map[slot] is Clean
+    }
+
+    pub open spec fn valid_dirty_addr(self, addr: Address) -> bool
+    {
+        &&& self.lookup_map.contains_key(addr)
+        &&& (self.status_map[self.lookup_map[addr]] is Writeback 
+            || self.status_map[self.lookup_map[addr]] is Dirty)
+    }
+}
+
+proof fn build_lsn_addr_index_from_reads_refines(dv: DiskView, root: Pointer, curr_end: LSN)
+requires 
+    dv.buildable(root),
+    curr_end == dv.seq_end(root),
+ensures 
+    build_lsn_addr_index_from_reads(dv.entries, dv.boundary_lsn, root, curr_end)
+    == dv.build_lsn_addr_index(root)
+decreases curr_end
+{
+    if root is Some {
+        let curr_msgs = dv.entries[root.unwrap()].message_seq;
+        let start_lsn = math::max(dv.boundary_lsn as int, curr_msgs.seq_start as int) as nat;
+        let next_ptr = dv.entries[root.unwrap()].cropped_prior(dv.boundary_lsn);
+        build_lsn_addr_index_from_reads_refines(dv, next_ptr, start_lsn);
+    }
+}
+
 impl SystemModel::State<ConcreteProgramModel>  {
+    // we have to build the ephemeral journal
+    // because we are not tracking the freshest rec
+
+    // pub open spec fn persistent_journal(self) -> TruncatedJournal
+    // {
+    //     let full_disk =  Map::new(
+    //         |addr| self.disk.content.contains_key(addr),
+    //         |addr| raw_page_to_record(self.disk.content[addr])
+    //     );
+
+    //     let dv = DiskView{
+    //         boundary_lsn: self.program.state.store.persistent.seq_end,
+    //         entries: full_disk
+    //     };
+
+    //     let tj = TruncatedJournal {
+    //         freshest_rec: self.program.state.journal., // root address of journal
+    //         pub disk_view: DiskView,
+    //     }
+
+
+    //     tj.build_tight()
+    // }
+
+
+    // I think what I want to do is this 
+    // 1. have a version that passes all disk addresses to journal data
+    //    build lsn addr index based on that 
+    //    restrict the 
+
+    /*
+        ephemeral: 
+            ephemeral journal => likesjournal
+
+
+            I am confused because I tried to build a disk when there isn't one 
+            before I did this I did a whole other thing of 
+    */ 
+
+
+
+    // persistent is always part of the ephemeral 
+    // let's write the ephemeral first? 
+
+    // you have to merge with the cache?
+    // how do we get any of the persistet page addresses
+
+  
+
+    // pub open spec fn dirty_journal_cache(self) -> Map<Address, JournalRecord>
+    // {
+    //     Map::new(
+    //         |addr| self.cache.valid_dirty_addr(addr),
+    //         |addr| raw_page_to_record(self.cache.entries[self.cache.lookup_map[addr]]->data)
+    //     )
+    // }
+
+    // NOTE(JL): in our actual version where cache contains different types 
+    // of pages we will use the domain map of each component to determine marshalled type
+    // pub open spec fn ephemeral_disk(self) -> DiskView
+    // {
+    //     DiskView{
+    //         boundary_lsn: self.journal.boundary_lsn,
+    //         entries: self.persistent_journal_disk().union_prefer_right(self.dirty_journal_cache()),
+    //     }
+    // }
+
+    // pub open spec fn ephemeral_tj(self) -> TruncatedJournal
+    // {
+    //     TruncatedJournal{freshest_rec: self.journal.freshest_rec, disk_view: self.ephemeral_disk()}
+    // }
+
+    // // all relative to an ephemeral disk (cache+disk)
+    // pub open spec fn valid_journal_structure(self) -> bool 
+    // {
+    //     &&& self.ephemeral_tj().decodable()
+    //     &&& self.ephemeral_tj().seq_end() == self.journal.unmarshalled_tail.seq_start 
+    //     &&& self.journal.lsn_addr_index == self.ephemeral_tj().build_lsn_addr_index()
+    //     &&& self.journal.lsn_addr_index.values() =~= self.ephemeral_tj().disk_view.entries.dom()
+    // }
+
+    // i label to abstract coordination system 
+    pub open spec fn i_journal(self) -> AbstractCrashAwareJournal::State
+    {
+        arbitrary()
+
+    //     // LikesJournal::State{
+    //     //     journal: LinkedJournal::State{
+    //     //         truncated_journal: self.ephemeral_tj(),  
+    //     //         unmarshalled_tail: self.journal.unmarshalled_tail
+    //     //     },
+    //     //     lsn_addr_index: self.journal.lsn_addr_index,
+    //     // }
+
+    //     // how do we interpret 
+    //     // i journal
+    //     // msg history
+    }
+
+    // pub open spec fn i(self) -> CrashTolerantAsyncMap::State
+    // {
+
+        // if we can refine and prove in terms of abstract crash aware journal we should be ok
+
+        // our starting one is a stamped map
+        // let persistent = self.program.state.persistent; // store image
+        // applying this 
+
+
+        // let versions = 
+        // i_persistent 
+        // has to apply to the journal entry
+
+        // let async_ephemeral = EphemeralState{
+        //     requests: self.requests.dom(),
+        //     replies: self.replies.dom(),
+        // }
+
+        // CrashTolerantAsyncMap::State{
+        //     versions: arbitrary(),
+        //     async_ephemeral,
+        //     sync_requests: self.program.state.sync_req_map,
+        // }
+
+        // pub versions: FloatingSeq<Version>,
+        /// The async ephemeral state (set of outstanding client requests and replies).
+        /// See comments for EphemeralState struct
+    // }
+
     pub open spec fn inv(self) -> bool
     {
+        // let cache = self.program.state.cache;
+
         &&& self.program.state.wf()
         &&& self.disk.inv()
 
+        // &&& cache.clean_pages_agree_with_disk()
+        // &&& self.program.state.client_ready() ==> {
+        //     let index = self.program.state.journal.status.unwrap().lsn_addr_index;
+        //     &&& cache.dirty_pages_bounded_by_journal_index(index)
+        // }
+
+        // we do need to track the decodable part probably 
+        
+
+        // ephemeral map 
         // &&& self.ephemeral_map() == self.journal.journal.apply_to_stamped_map(self.persistent_map())
-        // TODO(move into inv)
         // &&& self.ephemeral_map() == self.journal.journal
         //         .discard_old(self.in_flight_map().seq_end)
         //         .apply_to_stamped_map(self.in_flight_map())
 
-        &&& self.in_flight_request_present()
         &&& self.persistent_sb_disk_inv()
-
-//         &&& self.no_writes_till_recovery_complete() // why should a property like this be an inv?
-        &&& self.at_most_one_oustanding_request_per_address()
-        &&& self.responses_consistent_with_disk()
-        &&& self.cache_consistent_with_outstanding_reqs()
-        // do we also need to require self.outstanding
-        // NOTE(disk): 1 outstanding IO for each loading/writeback page, reserved & filled (!writeback) -> 0 I/O
-
+        &&& self.no_writes_till_recovery_complete()
+        &&& self.outstanding_reqs_consistent()
+        &&& self.sync_requests_inv()
 
         // id history tracking
         &&& self.requests_have_unique_ids()
@@ -54,70 +227,47 @@ impl SystemModel::State<ConcreteProgramModel>  {
         &&& self.sync_req_ids_in_history()
         &&& self.sync_reply_ids_in_history()
         &&& self.program.state.client_ready() ==> self.program_sync_req_ids_in_history()
-
-        // disk write inv
-        &&& self.superblock_writes_inv()
-        &&& self.sync_requests_inv()
-        &&& DiskLayout::impl_inv(self.disk.content[spec_superblock_addr()])
     }
 
-    pub open spec fn in_flight_request_present(self) -> bool
-    {
-        &&& self.program.state.client_ready() ==> {
-            let in_flight = self.program.state.in_flight;
-            &&& in_flight is Some ==> {
-                let id = in_flight.unwrap().req_id;
-                &&& (self.disk.requests.contains_key(id) || self.disk.responses.contains_key(id))
-                &&& self.disk.requests.contains_key(id) ==>  {
-                    &&& self.disk.requests[id] is WriteReq
-                    &&& self.disk.requests[id]->to == spec_superblock_addr()                    
-                    &&& DiskLayout::spec_new().spec_parse(self.disk.requests[id]->data) == self.program.state.in_flight_sb()
-                }
-                &&& self.disk.responses.contains_key(id) ==>
-                    self.disk.responses[id] == DiskResponse::WriteResp{}
-            }
+    // pub open spec fn clean_pages_agree_with_disk(self) -> bool
+    // {
+    //     forall |slot| #[trigger] self.valid_clean_slot(slot)
+    //     ==> disk_content[self.entries[slot].get_addr()] == self.entries[slot]->data
+    // }
 
-            &&& in_flight is None ==> {
-                &&& forall |id| #[trigger] self.disk.requests.contains_key(id) //&& self.disk.requests[id] is WriteReq
-                    ==> self.disk.requests[id].addr() != spec_superblock_addr()
-                &&& forall |id| #[trigger] self.disk.responses.contains_key(id)
-                    ==> self.addr_for_id(id) != spec_superblock_addr()
-            }
-        }
-    }
+    // pub open spec fn dirty_pages_bounded_by_journal_index(self, lsn_addr_index: LsnAddrIndex) -> bool
+    // {
+    //     forall |addr| #[trigger] self.valid_dirty_addr(addr) 
+    //     ==> lsn_addr_index.contains_value(addr)
+    // }
 
     pub open spec fn persistent_sb_disk_inv(self) -> bool
     {
+        let state = self.program.state;
         &&& self.disk.content.contains_key(spec_superblock_addr())
         &&& {
             let sb : Superblock = DiskLayout::spec_new().spec_parse(self.disk.content[spec_superblock_addr()]);
             &&& sb.wf()
-            &&& if self.program.state.client_ready() {
-                    // on disk sb either contains inflight sb or persistent sb
-                    let in_flight = self.program.state.in_flight;
-                    if in_flight is Some && self.disk.responses.contains_key(in_flight.unwrap().req_id) {
-                        sb == self.program.state.in_flight_sb()
-                    } else {
-                        sb == self.program.state.persistent_sb()
-                    }
+            &&& state.client_ready() ==> 
+            {
+                if state.in_flight is Some && self.disk.responses.contains_key(state.in_flight.unwrap().req_id) {
+                    sb == state.in_flight_sb()
                 } else {
-                    forall |id| #![auto] self.disk.responses.contains_key(id) ==>
-                        self.disk.responses[id] == DiskResponse::ReadResp{data: self.disk.content[spec_superblock_addr()]}
+                    sb == state.persistent_sb()
                 }
+            }
         }
     }
 
-//     // NOTE:
-//     // pre recovery state constraint
-//     pub open spec fn no_writes_till_recovery_complete(self) -> bool
-//     {
-//         &&& self.program.state.recovery_state is Begin ==>
-//             self.disk.requests == Map::<ID, DiskRequest>::empty() && self.disk.responses == Map::<ID, DiskResponse>::empty()
-//         &&& self.program.state.recovery_state is AwaitingSuperblock ==> {
-//             &&& forall |id| #[trigger] self.disk.requests.contains_key(id) ==> !(self.disk.requests[id] is WriteReq)
-//             &&& forall |id| #[trigger] self.disk.responses.contains_key(id) ==> !(self.disk.responses[id] is WriteResp)
-//         }
-//     }
+    // NOTE: I think we needed this before to ensure that up until recovery is done all requests are read resps
+    // pre recovery state constraint
+    pub open spec fn no_writes_till_recovery_complete(self) -> bool
+    {
+        !(self.program.state.recovery_state is RecoveryComplete) ==> {
+            &&& forall |id| #[trigger] self.disk.requests.contains_key(id) ==> !(self.disk.requests[id] is WriteReq)
+            &&& forall |id| #[trigger] self.disk.responses.contains_key(id) ==> !(self.disk.responses[id] is WriteResp)
+        }
+    }
 
     pub open spec fn sync_requests_inv(self) -> bool
     {
@@ -127,79 +277,75 @@ impl SystemModel::State<ConcreteProgramModel>  {
             self.program.state.sync_req_map.dom().disjoint(self.sync_requests.dom())
     }
 
-    // assumes that all I/Os beside superblock are managed by the cache
-    pub open spec fn addr_for_id(self, id: ID) -> Address
+    // assumes all I/Os beside superblock are managed by the cache
+    pub open spec(checked) fn addr_for_id(self, id: ID) -> Address
     {
-        arbitrary()
-
-        // let cache = self.program.state.cache;
-        // if cache.outstanding_reqs.contains_key(id) {
-        //     cache.entries[cache.outstanding_reqs[id]].get_addr()
-        // } else {
-        //     spec_superblock_addr()
-        // }
-    }
-
-    pub open spec fn responses_consistent_with_disk(self) -> bool
-    {
-        forall |id| #[trigger] self.disk.responses.contains_key(id)
-        ==> {
-            &&& self.disk.content.contains_key(self.addr_for_id(id))
-            &&& self.disk.responses[id] is ReadResp /* && valid_checksum(self.disk.responses[id]->data)*/ ==>
-                self.disk.responses[id]->data == self.disk.content[self.addr_for_id(id)]
-            &&& self.disk.responses[id] is WriteResp ==> {
-                true
-                // TODO:
-                // let addr = self.addr_for_id(id);
-                // let disk_data = DiskLayout::spec_new().spec_parse(addr);
-                // &&& addr == spec_superblock_addr() ==> disk_data == self.program.state.in_flight_sb()
-                // &&& addr != spec_superblock_addr() ==> {
-                //     let cache = self.program.state.cache;
-                //     &&& cache.lookup_map.contains_key(addr)
-                //     &&& cache.entries[cache.lookup_map[addr]] is Filled
-                //     &&& disk_data == cache.entries[cache.lookup_map[addr]]->data
-                // }
-            }
+        let state = self.program.state;
+        if state.in_flight is Some && state.in_flight.unwrap().req_id == id {
+            spec_superblock_addr()
+        } else {
+            state.outstanding_cache_reqs[id]
         }
     }
 
-    pub open spec fn cache_consistent_with_outstanding_reqs(self) -> bool
+    // The reason we track these relations is so that we can bring them
+    // down to the implementation layer instead of proving them? 
+    // Q: does this mean we should remove the load request check in the state machine?
+    // outstanding reqs must be consistent with cache and disk
+    pub open spec(checked) fn outstanding_reqs_consistent(self) -> bool
+        recommends self.program.state.wf()
     {
-            //  &&& forall |addr| non_sb_addrs.contains(addr)
-            // <==> ({
-            //     let slot = self.cache.lookup_map[addr];
-            //     // every req must be a loading or writeback page
-            //     ||| self.entries[slot] is // the request is being mapped to  // requests  
-            //     ||| 
-            // })
-        // do we also need to require self.outstanding
-        // NOTE(disk): 1 outstanding IO for each loading/writeback page, reserved & filled (!writeback) -> 0 I/O
-        true
-    }
-        // do we also need to require self.outstanding
-        // NOTE(disk): 1 outstanding IO for each loading/writeback page, reserved & filled (!writeback) -> 0 I/O
+        let state = self.program.state;
+        let in_flight_sb_id = if state.in_flight is Some { set!{state.in_flight.unwrap().req_id} } else { set!{} };
 
-
-    // for request, we only make one request at a time, losing the addr makes it hard
-    // when we only have reply and can't restrict additional requests for an addr is present in the request queue
-    // right now this is fine because the only I/O is writing to superblock
-    pub open spec fn at_most_one_oustanding_request_per_address(self) -> bool
-    {
-        // TODO: temporary restriction only valid for the simple model
-        // &&& forall |id| #[trigger] self.disk.requests.contains_key(id) ==>
-        //         self.disk.requests[id].addr() == spec_superblock_addr()
-
-        // no concurrent requests on the same address
-        &&& forall |id1, id2| #[trigger] self.disk.requests.contains_key(id1) && #[trigger] self.disk.requests.contains_key(id2)
-            && id1 != id2 ==> self.disk.requests[id1].addr() != self.disk.requests[id2].addr()
-
-        // no concurrent responses on the same address
-        &&& forall |id1, id2| #[trigger] self.disk.responses.contains_key(id1) && #[trigger] self.disk.responses.contains_key(id2)
-            && id1 != id2 ==> self.addr_for_id(id1) != self.addr_for_id(id2)
-
-        // no concurrent request response on the same address
-        &&& forall |id1, id2| #[trigger] self.disk.requests.contains_key(id1) && #[trigger] self.disk.responses.contains_key(id2)
-            ==> self.disk.requests[id1].addr() != self.addr_for_id(id2)
+        // 1. all disk ids are bounded by cache reqs and inflight_sb
+        &&& self.disk.requests.dom() + self.disk.responses.dom() == state.outstanding_cache_reqs.dom() + in_flight_sb_id        
+        // 2. disk requests are correctly recorded
+        &&& forall |id| #[trigger] self.disk.requests.contains_key(id)
+        ==> {
+            let req = self.disk.requests[id];
+            &&& req.addr() == self.addr_for_id(id)
+            &&& req is ReadReq && state.outstanding_cache_reqs.contains_key(id) ==> {
+                let slot = state.cache.lookup_map[state.outstanding_cache_reqs[id]];
+                &&& state.cache.entries[slot] is Loading
+            }
+            &&& req is WriteReq ==> {
+                if state.outstanding_cache_reqs.contains_key(id) {
+                    let slot = state.cache.lookup_map[state.outstanding_cache_reqs[id]];
+                    &&& state.cache.status_map[slot] is Writeback
+                    &&& state.cache.entries[slot]->data == req->data
+                } else {
+                    &&& req->to == spec_superblock_addr()
+                    &&& state.in_flight is Some
+                    &&& state.in_flight.unwrap().req_id == id
+                    &&& DiskLayout::spec_new().spec_parse(req->data) == state.in_flight_sb()
+                }
+            }
+        }
+        // 3. disk responses are correctly reflected
+        &&& forall |id| #[trigger] self.disk.responses.contains_key(id) 
+        ==> {
+            let resp = self.disk.responses[id];
+            &&& resp is ReadResp ==> {
+                &&& resp->data == self.disk.content[self.addr_for_id(id)]
+                &&& state.outstanding_cache_reqs.contains_key(id) ==> {
+                    let slot = state.cache.lookup_map[state.outstanding_cache_reqs[id]];
+                    &&& state.cache.entries[slot] is Loading
+                }
+            }
+            &&& resp is WriteResp && state.outstanding_cache_reqs.contains_key(id) ==> {
+                let addr = state.outstanding_cache_reqs[id];
+                let slot = state.cache.lookup_map[addr];
+                &&& state.cache.status_map[slot] is Writeback
+                &&& self.disk.content[addr] == state.cache.entries[slot]->data
+                // SKIP the SB requirement because those are tracked by persistent sb inv
+                //     let disk_sb = self.disk.content[spec_superblock_addr()];
+                //     &&& state.in_flight is Some
+                //     &&& state.in_flight.unwrap().req_id == id
+                //     &&& DiskLayout::spec_new().spec_parse(disk_sb) == state.in_flight_sb()
+                // }
+            }
+        }
     }
 
     pub open spec(checked) fn requests_have_unique_ids(self) -> bool
@@ -259,13 +405,13 @@ impl SystemModel::State<ConcreteProgramModel>  {
 
     // TODO this is too specialized. It should probably become some indirection to a broad disk
     // invariant provided by the program.
-    pub open spec(checked) fn superblock_writes_inv(self) -> bool
-    {
-        forall |id| #![auto] self.disk.requests.contains_key(id) 
-            && self.disk.requests[id] is WriteReq 
-            && self.disk.requests[id]->to == spec_superblock_addr()
-            ==> DiskLayout::impl_inv(self.disk.requests[id]->data)
-    }
+    // pub open spec(checked) fn superblock_writes_inv(self) -> bool
+    // {
+    //     forall |id| #![auto] self.disk.requests.contains_key(id) 
+    //         && self.disk.requests[id] is WriteReq 
+    //         && self.disk.requests[id]->to == spec_superblock_addr()
+    //         ==> DiskLayout::impl_inv(self.disk.requests[id]->data)
+    // }
 
 //     // interpretation given no ephemeral state and only on persistent disk
 //     closed spec(checked) fn i_persistent(self) -> (mapspec: CrashTolerantAsyncMap::State)

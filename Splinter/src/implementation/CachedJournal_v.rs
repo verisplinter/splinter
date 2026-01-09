@@ -15,9 +15,8 @@ use crate::disk::GenericDisk_v::*;
 use crate::journal::LinkedJournal_v::*;
 use crate::implementation::JournalModel_v::*;
 
-// this is a version of the journal where 
+// this is a version of the journal where
 // content does not live in the journal disk view but accessed through the cache
-
 // to take just this we want to have an equivalent of crop but with lsnaddrindex
 
 verus!{
