@@ -657,11 +657,13 @@ impl Implementation {
         self.inv_api(api),
         self.ready_for_user_operation(),
     {
-        let ghost old_superblocking_reqs = old(self).sync_requests.superblocking_reqs@;
         let ghost old_buffered_reqs = old(self).sync_requests.buffered_reqs@;
+        let ghost old_journal_cleaning_reqs = old(self).sync_requests.journal_cleaning_reqs@;
+        let ghost old_superblocking_reqs = old(self).sync_requests.superblocking_reqs@;
         assert({
-            &&& forall |i| #![auto] 0 <= i < old_superblocking_reqs.len() ==> old_superblocking_reqs[i].id != req.id
             &&& forall |i| #![auto] 0 <= i < old_buffered_reqs.len() ==> old_buffered_reqs[i].id != req.id
+            &&& forall |i| #![auto] 0 <= i < old_journal_cleaning_reqs.len() ==> old_journal_cleaning_reqs[i].id != req.id
+            &&& forall |i| #![auto] 0 <= i < old_superblocking_reqs.len() ==> old_superblocking_reqs[i].id != req.id
         }) by {
             self.system_inv_sync_request_fresh_id(req, req_shard);
         }
@@ -693,7 +695,6 @@ impl Implementation {
             if r != req { assert( old(self).sync_requests.buffered_reqs@.contains(r) ); }
         }
 
-        assume( self.inv_api(api) );    // TOOD -- unbreak
         self.maybe_launch_superblock(api);
     }
 
@@ -1129,38 +1130,39 @@ impl Implementation {
             // And self.store@ = VecMap::seq_to_map(self.store.v@)
             // So we need: sb.store@ == self.store.v@ (the store was copied into sb)
             assert( sb@@.store == new_abstract_store ) by {
-                // In sync_map case: 
-                //   sb.store@ = old(self).store.v@ (captured before swap-back)
-                //   new_abstract_store = i_ephemeral_store()->v.stamped_map
-                //   i_ephemeral_store().value = view_as_kmmap(self.store) = map_to_kmmap(self.store@)
-                //   And self.store == old(self).store after swap-back
-                // In !sync_map case:
-                //   sb.store@ = old(self).persistent_store.v@ (captured before swap-back)
-                //   new_abstract_store = i_persistent_store()
-                //   i_persistent_store().value = view_as_kmmap(self.persistent_store)
-                //   And self.persistent_store == old(self).persistent_store after swap-back
+                // Work backwards from the goal.
+                // sb@@.store = arawstore_as_stamped_map(sb@.store, sb@.journal.boundary_lsn)
+                // new_abstract_store is set in the match branches above
                 
-                // The value maps are equal because they come from the same source
-                // The seq_end is also equal:
-                // - sync_map: both are version
-                // - !sync_map: both are journal.seq_start()
-                
-                // Connect view_as_kmmap to arawstore_as_stamped_map
-                // The Vec in sb.store came from self.store.v (sync_map) or self.persistent_store.v (!sync_map)
-                // After swap-back, self.store/persistent_store have the same contents
-                // 
-                // sb@@.store = arawstore_as_stamped_map(sb@.store, frozen_journal.boundary_lsn)
-                //            = StampedMap{value: map_to_kmmap(VecMap::seq_to_map(sb@.store)), seq_end: ...}
-                // new_abstract_store = StampedMap{value: view_as_kmmap(self.store), seq_end: ...}
-                //                    = StampedMap{value: map_to_kmmap(self.store@), seq_end: ...}
-                //                    = StampedMap{value: map_to_kmmap(VecMap::seq_to_map(self.store.v@)), seq_end: ...}
-                //
-                // Need: sb@.store == self.store.v@ (the Vec contents match)
-                // This is true because sb.store = tmp_store.v which held old(self).store.v,
-                // and after swap-back self.store.v == old(self).store.v
-                //
-                // For seq_end: in sync_map case both are version, in !sync_map both are journal.seq_start()
-                assume( sb@@.store == new_abstract_store );  // requires proving Vec contents preserved through swap
+                match motivation {
+                    SuperblockMotivation::PushMap => {
+                        // sb@.store == self.store.v@ (asserted in the match branch)
+                        // sb@.journal.boundary_lsn == version as nat
+                        // new_abstract_store == i_ephemeral_store()->v.stamped_map
+                        //   = StampedMap{value: view_as_kmmap(self.store), seq_end: self.journal.seq_end()}
+                        //   = StampedMap{value: map_to_kmmap(self.store@), seq_end: version as nat}
+                        // And sb@@.store = arawstore_as_stamped_map(sb@.store, version)
+                        //   = StampedMap{value: map_to_kmmap(VecMap::seq_to_map(sb@.store)), seq_end: version}
+                        // Since sb@.store == self.store.v@ and self.store@ = VecMap::seq_to_map(self.store.v@):
+                        //   sb@@.store.value == map_to_kmmap(self.store@) == new_abstract_store.value
+                        //   sb@@.store.seq_end == version == self.journal.seq_end() == new_abstract_store.seq_end
+                        assert( sb@.journal.boundary_lsn == version as nat );
+                        assert( version as nat == self.journal.seq_end() );
+                        assert( sb@.store == self.store.v@ );
+                        assert( self.store@ == VecMap::seq_to_map(self.store.v@) );
+                        // These facts should allow Verus to conclude equality
+                    },
+                    SuperblockMotivation::PushJournal => {
+                        // sb@.store == self.persistent_store.v@ (asserted in the match branch)
+                        // sb@.journal.boundary_lsn == self.journal.seq_start() 
+                        // new_abstract_store == i_persistent_store()
+                        //   = StampedMap{value: view_as_kmmap(self.persistent_store), seq_end: self.journal.seq_start()}
+                        assert( sb@.store == self.persistent_store.v@ );
+                        assert( self.persistent_store@ == VecMap::seq_to_map(self.persistent_store.v@) );
+                        // sb@.journal is from self.journal.get_snapshot()
+                        assert( sb@.journal.boundary_lsn == self.journal.seq_start() );
+                    },
+                }
             };
             
             assert( DiskLayout::spec_new().spec_parse(disk_request@->data) == expected_sb );
@@ -1370,14 +1372,13 @@ impl Implementation {
             assert( self.state().in_flight is Some <==> self.in_flight is Some );
             
             // state().in_flight is Some <==> self.sync_requests.in_flight()
-            // After swap: superblocking_reqs = old(self).sync_requests.buffered_reqs
-            // in_flight() = superblocking_reqs@.len() > 0
-            // Need: old(self).sync_requests.buffered_reqs@.len() > 0
-            // This follows from the precondition old(self).sync_requests.journal_cleaning_reqs.len() > 0
-            
-            // After std::mem::swap: superblocking_reqs@.len() == old(self).sync_requests.buffered_reqs@.len()
-            assert( self.sync_requests.superblocking_reqs@.len() == old(self).sync_requests.buffered_reqs@.len() );
-            // in_flight() is defined as superblocking_reqs@.len() > 0
+            // At line 1205 we did: swap(superblocking_reqs, buffered_reqs)
+            // So: self.sync_requests.superblocking_reqs == old(self).sync_requests.buffered_reqs
+            // in_flight() = superblocking_reqs.len() > 0
+            // We need: old(self).sync_requests.buffered_reqs.len() > 0
+            // 
+            // FIXME: The current precondition only guarantees journal_cleaning_reqs.len() > 0,
+            // not buffered_reqs.len() > 0. May need a precondition update.
             assume( self.sync_requests.in_flight() );
             // state().in_flight is Some (proven above)
             assert( self.state().in_flight is Some <==> self.sync_requests.in_flight() );
