@@ -41,7 +41,7 @@ pub type Perm = Frac<Slot,2>;
 // is it possible for verus for verification purposes to view all fields as pub (as long as one field is marked so)
 // regardless of the annotation?
 
-#[derive(Clone)]
+#[derive(Clone,Copy)]
 pub enum IEntry{
     Empty,
     Reserved{addr: IAddress},

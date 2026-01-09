@@ -19,7 +19,7 @@ pub type Slot = usize;
 //  Entry is separate from Status because there are some cases
 //  where we need to have shared access to the Entry while modifying
 //  the Status
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 pub enum Status {
     NotFilled,
     Clean,
