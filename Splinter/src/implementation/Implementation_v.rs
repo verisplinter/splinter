@@ -716,9 +716,8 @@ impl Implementation {
                     return;
                 }
                 // "now" lsn is at least as new as than all the buffered reqs
-                self.sync_requests.journal_cleaning_target_lsn = 7; // self.journal.exec_get_seq_end();
+                self.sync_requests.journal_cleaning_target_lsn = self.journal.exec_seq_end();
                 std::mem::swap(&mut self.sync_requests.buffered_reqs, &mut self.sync_requests.journal_cleaning_reqs);
-                assume( self.inv_api(api) );    // TODO -- unbreak
             }
             Self::debug_print(&"  └─ send_superblock");
             self.send_superblock(api, SuperblockMotivation::PushJournal);

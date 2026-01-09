@@ -183,47 +183,42 @@ impl JournalImpl {
         self.snapshot.boundary_lsn
     }
 
-//     pub closed spec fn seq_end(&self) -> LSN {
-//         if self.status.unmarshalled_tail.len() > 0 {
-//             return last
-//         } else self.snapshot.freshest_rec is Some {
-//             return last item in that rec
+//     pub closed spec fn last_marshalled_lsn(&self) -> LSN {
+//         if self.snapshot.freshest_rec is Some {
+//             // last item in that rec
+//             7 as nat // well poop
 //         } else {
-//             return self.snapshot.boundary_lsn
+//             self.snapshot.boundary_lsn as LSN
 //         }
 //     }
 // 
-//     pub exec fn exec_seq_end(&self) -> (out: u64)
-//     ensures out == self.seq_end()
-//     {
-//         if self.status.unmarshalled_tail.len() > 0 {
-//             return last
-//         } else self.snapshot.freshest_rec is Some {
-//             return last item in that rec
-//         } else {
-//             return self.snapshot.boundary_lsn
+//     pub exec fn exec_last_marshalled_lsn(&self) -> ILsn {
+//         match self.snapshot.freshest_rec {
+//             Some(ptr) => {
+//                 // last item in that rec
+//                 7 // well poop, I think we're going to want to maintain an index var and invariant
+//             },
+//             None => { self.snapshot.boundary_lsn },
 //         }
 //     }
 
-    pub closed spec fn index_ready(&self) -> bool
-    {
-        self.status is Some
-    }
-
-    pub closed spec(checked) fn seq_end(&self) -> LSN
-    recommends self.index_ready()
-    {
-        self.status.unwrap().tail_as_history().seq_end
-    }
-
-    pub exec fn exec_seq_end(&self) -> (out: u64)
-    requires self.index_ready()
-    ensures out == self.seq_end()
-    {
+    pub closed spec fn seq_end(&self) -> LSN {
         match &self.status {
             None => 0,
             Some(status) => {
-                // this cheat is incurrent a runtime check, ugh
+                status.unmarshalled_tail_start as nat + status.unmarshalled_tail.len() as nat
+            }
+        }
+    }
+
+    pub exec fn exec_seq_end(&self) -> (out: ILsn)
+    ensures out == self.seq_end()
+    {
+//         self.exec_last_marshalled_lsn() + self.status.unmarshalled_tail.len()
+        match &self.status {
+            None => 0,
+            Some(status) => {
+                // this cheat is incurring a runtime check, ugh
                 if u64::MAX - status.unmarshalled_tail_start < status.unmarshalled_tail.len() as u64 {
                     convert_overflow_into_liveness_failure();
                 }
@@ -232,6 +227,34 @@ impl JournalImpl {
             }
         }
     }
+
+    pub closed spec fn index_ready(&self) -> bool
+    {
+        self.status is Some
+    }
+
+//     pub closed spec(checked) fn seq_end(&self) -> LSN
+//     recommends self.index_ready()
+//     {
+//         self.status.unwrap().tail_as_history().seq_end
+//     }
+
+//     pub exec fn exec_seq_end(&self) -> (out: u64)
+//     requires self.index_ready()
+//     ensures out == self.seq_end()
+//     {
+//         match &self.status {
+//             None => 0,
+//             Some(status) => {
+//                 // this cheat is incurring a runtime check, ugh
+//                 if u64::MAX - status.unmarshalled_tail_start < status.unmarshalled_tail.len() as u64 {
+//                     convert_overflow_into_liveness_failure();
+//                 }
+// 
+//                 status.unmarshalled_tail_start + status.unmarshalled_tail.len() as u64
+//             }
+//         }
+//     }
 
     // TODO(delete): dead code
 //     pub exec fn new_empty(at_lsn: u64) -> (out: Self)
