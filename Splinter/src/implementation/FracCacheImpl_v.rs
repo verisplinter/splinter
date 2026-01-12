@@ -227,6 +227,11 @@ impl FracCacheImpl {
         self.lookup_map@.contains_key(addr@)
     }
 
+    pub proof fn entry_fetched_lemma()
+        ensures forall |slf: Self, addr: &IAddress| #![auto] slf.entry_fetched(addr) ==> slf@.lookup_map.contains_key(addr@)
+    {
+    }
+
     pub closed spec fn lookup_addr_slot(self, addr: &IAddress) -> Slot
         recommends self.entry_fetched(addr)
     {
@@ -262,7 +267,7 @@ impl FracCacheImpl {
     }
 
     pub open spec(checked) fn entry_token_unchanged(&self, other: Self) -> bool
-        recommends self.total_slots() == other.total_slots()
+        recommends self.wf(), other.wf(), self.total_slots() == other.total_slots()
     {
         forall |i| 0 <= i < self.total_slots() ==> 
             #[trigger] self.entry_token_id(i) == other.entry_token_id(i)
@@ -277,7 +282,7 @@ impl FracCacheImpl {
     }
 
     pub closed spec(checked) fn entries_same_except(&self, other: Self, idx: usize) -> bool
-        recommends idx < self.total_slots()
+        recommends self.wf(), other.wf(), idx < self.total_slots()
     {
         &&& forall |i| 0 <= i < self.total_slots() && i != idx 
             ==> {
