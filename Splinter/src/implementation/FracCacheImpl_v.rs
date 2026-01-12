@@ -93,11 +93,11 @@ impl View for FracCacheImpl {
 }
 
 pub enum FetchErrorCode {
-    Awaiting,
     Success{slot_handle: MutHandle},
     CacheFull, // all slots are filled, no available entries to evict without writeback
     // WritebackEviction, // slots are filled, have to writeback to evict, require additional calls
-    LoadInitiate{slot_handle: MutHandle},
+    LoadInitiate{slot_handle: MutHandle},   // cache is asking caller to initiate the disk IO on cache's behalf
+    Awaiting,   // IO request has been sent, haven't heard back yet.
 }
 
 pub open spec fn cache_load_label(addr: &IAddress) -> Cache::Label
