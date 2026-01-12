@@ -407,8 +407,19 @@ impl AtomicState {
         // checks that map has been frozen
         &&& AbstractCrashAwareMap::State::next(pre.store, post.store, map_lbl)
 
-        // checks that frozen journal has been flushed
+        // CachedJournal::freeze_for_commit is going to point at some frozen freshest_rec, and
+        // needs to verify that the highest lsn recorded in that freshest_rec matches
+        // frozen_seq_end. You might think "hey, just have an index that remembers what the last
+        // lsn is in the last marshalled page", but we might want to reach back some depth into the
+        // journal (to defer writing dirty journal pages in the case where we're updating an
+        // ancient map and we haven't been asked to sync for a week). You might think "hey, we
+        // *have* the lsn_addr_index, just query that for the high end of the range!" But the
+        // ultimate system will have an au_addr_index, not a page-granularity index, and we want to
+        // be able to push a single journal page at a time (in the case where we're syncing
+        // frequently and we don't want to burn an AU on a single journal record).
+        // So, the journal needs to read this page from the cache.
         &&& Cache::State::next(pre.cache, post.cache, cache_lbl1)
+        // checks that frozen journal has been flushed
         &&& Cache::State::next(pre.cache, post.cache, cache_lbl2)
         &&& CachedJournal::State::next(pre.journal, post.journal, journal_lbl)
 
