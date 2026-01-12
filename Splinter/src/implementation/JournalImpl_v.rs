@@ -522,7 +522,9 @@ impl JournalImpl {
 
     // Reveal snapshot for use in Implementation::send_superblock
     pub fn get_snapshot(&self) -> (out: JournalSnapshot)
-    ensures out.boundary_lsn == self.seq_start()
+    ensures 
+        out.boundary_lsn == self.seq_start(),
+        out@ == self@.snapshot,
     {
         self.snapshot.clone()
     }
