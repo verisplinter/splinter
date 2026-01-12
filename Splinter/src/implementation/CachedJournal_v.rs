@@ -152,6 +152,8 @@ state_machine!{ CachedJournal {
         require messages == reads[ptr.unwrap()].message_seq.maybe_discard_old(pre.snapshot.boundary_lsn);
     }}
 
+    // depth is a count of fresh recs to ignore: it lets us throw away fresh marshalled pages that
+    // aren't yet evictable so we can get on with the superblock write.
     transition!{ freeze_for_commit(lbl: Label, depth: nat) {
         require pre.status is Some;
 
