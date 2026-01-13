@@ -150,6 +150,19 @@ impl FracCacheImpl {
         &&& forall |slot: Slot| #![auto] slot < self.total_slots() ==>
             (self.lookup_map@.contains_value(slot) <==> !(self.metadata[slot as int].entry is Empty))
     }
+    
+    closed spec fn lookup_map_bijection(self) -> bool
+    {
+        // If metadata[slot] is Filled{addr}, then lookup_map@[addr@] == slot
+        forall |slot: Slot| slot < self.total_slots() ==> {
+            match #[trigger] self.metadata[slot as int].entry {
+                IEntry::Filled{addr} => {
+                    self.lookup_map@.contains_key(addr@) && self.lookup_map@[addr@] == slot
+                },
+                _ => true,
+            }
+        }
+    }
 
     // if these are things proven in the cache layer then we don't need to do this here
     closed spec fn metadata_consistent_with_slots(self) -> bool
@@ -187,6 +200,7 @@ impl FracCacheImpl {
         &&& self.perms_consistent_with_slots()
         &&& self.metadata_consistent_with_slots()
         &&& self.lookup_map_consistent_with_slots()
+        &&& self.lookup_map_bijection()
     }
 
     closed spec fn view_entry_at(self, k: Slot) -> Entry
@@ -230,6 +244,27 @@ impl FracCacheImpl {
     pub proof fn entry_fetched_lemma()
         ensures forall |slf: Self, addr: &IAddress| #![auto] slf.entry_fetched(addr) ==> slf@.lookup_map.contains_key(addr@)
     {
+    }
+
+    pub proof fn lookup_addr_slot_lemma()
+        ensures forall |slf: Self, addr: &IAddress| #![auto]
+            slf.entry_fetched(addr) ==> slf.lookup_addr_slot(addr) == slf@.lookup_map[addr@]
+    {
+        // lookup_addr_slot is defined as lookup_map@[addr@], so this is trivial
+    }
+    
+    pub proof fn lookup_map_bijection_lemma()
+        ensures forall |slf: Self, slot: Slot| #![auto]
+            slf.wf() && slot < slf.total_slots() && slf@.entries[slot] is Filled ==> {
+                let addr = slf@.entries[slot].get_addr();
+                slf@.lookup_map.contains_key(addr) && slf@.lookup_map[addr] == slot
+            }
+    {
+        // Follows from lookup_map_bijection invariant in wf()
+        // slf@.entries[slot] is Filled iff slf.metadata[slot].entry is Filled (by view_entry_at definition)
+        // When both are Filled, they have the same address
+        // slf@.lookup_map == slf.lookup_map@ by definition of view
+        // So the abstract property follows from the concrete invariant
     }
 
     pub closed spec fn lookup_addr_slot(self, addr: &IAddress) -> Slot
