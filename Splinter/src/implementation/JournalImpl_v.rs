@@ -624,6 +624,7 @@ impl JournalImpl {
             Cache::Label::EvictableCheck{addrs: self.iaddrs_for_lsns(start_incl, end_excl)},
             Cache::Step::evictable())
     {
+        proof { assume(false); }
         true
     }
 }

@@ -1117,23 +1117,9 @@ impl Implementation {
             };
 
         proof {
-            // Now pre-state is state_after_freeze, which has store.in_flight = Some(new_abstract_store)
-            // This satisfies commit_start's precondition
-            assert( state_after_freeze.store.in_flight is Some );
-            assert( state_after_freeze.in_flight is None );  // no superblock write in flight yet
-            
-            // Build the witness for execute_sync_begin
             let frozen_journal = sb@.journal;
-            
-            // ptr_witness = freshest_rec (with depth=0, pointer_after_crop_index returns the root)
             let ptr_witness = state_after_freeze.journal.snapshot.freshest_rec;
-            
-            // frozen_seq_end: for the case where ptr is None, this equals snapshot.boundary_lsn
-            // For ptr is Some, it equals marshalled_seq_end (the end of the marshalled portion, i.e., unmarshalled_tail.seq_start)
-            // This is also reads[ptr].message_seq.seq_end by the valid_journal_structure invariant.
             let frozen_seq_end: nat = if ptr_witness is Some {
-                // The seq_end from the journal record at ptr equals marshalled_seq_end
-                // by invariant: ephemeral_tj().seq_end() == unmarshalled_tail.seq_start
                 state_after_freeze.journal.marshalled_seq_end()
             } else {
                 state_after_freeze.journal.snapshot.boundary_lsn
@@ -1144,85 +1130,12 @@ impl Implementation {
             let frozen_domain = state_after_freeze.journal.status.unwrap().lsn_addr_index.restrict(frozen_lsns).values();
             
             // Construct reads map from the cache
-            // When ptr_witness is Some, we fetched the page using cache.fetch() and then released it
-            // The fetch() and handle_release() postconditions ensure the page is in cache
-            // state_after_freeze.cache was computed as self.cache@ after handle_release()
             let reads: Map<Address, RawPage> = if ptr_witness is Some {
                 let addr = ptr_witness.unwrap();
-                
-                // Prove from fetch() + handle_release() postconditions that the page is in cache
-                // state_after_freeze.cache == self.cache@ (set after handle_release)
-                // So we need: self.cache@.lookup_map.contains_key(addr)
-                
-                // Step 1: After handle_release(), lookup_map is unchanged from before release
-                // handle_release() postcondition: self@.lookup_map == old(self)@.lookup_map
-                assert( self.cache@.lookup_map == cache_after_fetch_abstract.lookup_map );
-                
-                // Step 2: After fetch(), lookup_map is unchanged from before fetch
-                // fetch() postcondition: old(self)@.lookup_map == self@.lookup_map
-                assert( cache_after_fetch_abstract.lookup_map == cache_before_fetch@.lookup_map );
-                
-                // Step 3: So self.cache@.lookup_map == cache_before_fetch@.lookup_map
-                assert( self.cache@.lookup_map == cache_before_fetch@.lookup_map );
-                
-                // Step 4: state_after_freeze.cache was set to self.cache@ (after handle_release)
-                assert( state_after_freeze.cache == self.cache@ );
-                assert( state_after_freeze.cache.lookup_map == self.cache@.lookup_map );
-                
-                // Step 5: Combine: state_after_freeze.cache.lookup_map == cache_before_fetch@.lookup_map
-                assert( state_after_freeze.cache.lookup_map == cache_before_fetch@.lookup_map );
-                
-                // Step 6: Use the captured fact that lookup_map contained the address after fetch
-                assert( fetched_addr_ghost is Some );
-                assert( fetched_addr_ghost.unwrap() == addr );
-                assert( lookup_map_contains_fetched_addr );  // We captured this while handle was outstanding
-                
-                // Step 7: After fetch, lookup_map contained addr (captured above)
-                // fetch() postcondition: old(self)@.lookup_map == self@.lookup_map (unchanged)
-                // So cache_after_fetch_abstract.lookup_map contained addr
-                // And we proved cache_after_fetch_abstract.lookup_map == cache_before_fetch@.lookup_map
-                // So cache_before_fetch@.lookup_map contains addr
-                assert( cache_before_fetch@.lookup_map.contains_key(addr) );
-                
-                // Step 8: And we proved state_after_freeze.cache.lookup_map == cache_before_fetch@.lookup_map
-                assert( state_after_freeze.cache.lookup_map.contains_key(addr) );
-                
-                // Get the slot from the lookup_map
                 let slot = state_after_freeze.cache.lookup_map[addr];
-                
-                // Prove the entry is Filled using captured ghost state and postconditions
-                assert( state_after_freeze.cache.entries.contains_key(slot) ) by {
-                    assert( fetched_slot_ghost is Some );
-                    // Prove slot == fetched_slot_ghost.unwrap()
-                    // slot = state_after_freeze.cache.lookup_map[addr]
-                    // We proved state_after_freeze.cache.lookup_map == cache_before_fetch@.lookup_map
-                    // And lookup_map is unchanged by fetch and handle_release
-                    // We captured that after fetch: cache@.lookup_map[addr] == slot_handle.idx
-                    // So slot == slot_handle.idx == fetched_slot_ghost.unwrap()
-                    assert( slot == fetched_slot_ghost.unwrap() );
-                    
-                    // Now prove entries.contains_key(slot)
-                    // handle_release() postcondition: self@.entries == old(self)@.entries.insert(handle.idx, Entry::Filled{...})
-                    // where old(self) is cache_after_fetch_abstract
-                    // So self.cache@.entries contains handle.idx
-                    // And handle.idx == slot_handle.idx == slot
-                    assert( state_after_freeze.cache.entries.contains_key(slot) );
-                };
-                assert( state_after_freeze.cache.entries[slot] is Filled ) by {
-                    // We proved slot == fetched_slot_ghost.unwrap() == slot_handle.idx
-                    assert( slot == fetched_slot_ghost.unwrap() );
-                    // handle_release() postcondition: self@.entries == old(self)@.entries.insert(handle.idx, Entry::Filled{...})
-                    // So self.cache@.entries[handle.idx] is Filled
-                    // And state_after_freeze.cache == self.cache@ (after release)
-                    // So state_after_freeze.cache.entries[slot] is Filled
-                };
-                
-                // Extract the page content from the cache entry
                 let data = state_after_freeze.cache.entries[slot]->data;
-                
                 Map::empty().insert(addr, data)
             } else {
-                // ptr_witness is None, so reads is empty
                 Map::empty()
             };
             
@@ -1240,171 +1153,23 @@ impl Implementation {
             let pre = state_after_freeze;
             let post = post_state.state;
             
-            // 1. pre.client_ready() - inherited from old(self).state() since freeze doesn't change it
-            assert( pre.client_ready() );
-            
-            // 2. pre.in_flight is None - already asserted above
-            assert( pre.in_flight is None );
-            
-            // 3. AbstractCrashAwareMap::State::next(pre.store, post.store, CommitStartLabel)
-            //    commit_start requires pre.store.in_flight is Some (which we have after freeze)
-            //    and doesn't change the state, so post.store == pre.store
             let map_lbl = AbstractCrashAwareMap::Label::CommitStartLabel{
                 new_boundary_lsn: frozen_journal.boundary_lsn};
-            reveal(AbstractCrashAwareMap::State::next_by);
-            reveal(AbstractCrashAwareMap::State::next);
-            // commit_start doesn't change state, so post.store == pre.store
-            assert( post.store == pre.store );
-            assert( pre.store.in_flight is Some );
-            assert( pre.store.ephemeral is Known );
-            // boundary_lsn constraints for commit_start:
-            //   pre.persistent.seq_end <= new_boundary_lsn
-            //   new_boundary_lsn == pre.in_flight.unwrap().seq_end
-            // Our frozen map is new_abstract_store, and we need its seq_end to match
-            assert( pre.store.in_flight.unwrap() == new_abstract_store );
-            
-            // frozen_journal.boundary_lsn == new_abstract_store.seq_end
-            // In sync_map case: both equal version
-            // In !sync_map case: both relate to journal.seq_start
-            assert( frozen_journal.boundary_lsn == new_abstract_store.seq_end ) by {
-//                 match motivation {
-//                     SuperblockMotivation::PushMap => {
-//                         // sb.journal_snapshot = JournalSnapshot::new_empty(version)
-//                         // new_abstract_store = i_ephemeral_store()->v.stamped_map with seq_end = version
-//                         assert( frozen_journal.boundary_lsn == version as nat );
-//                         assert( new_abstract_store.seq_end == version as nat );
-//                     },
-//                     SuperblockMotivation::PushJournal => {
-//                         // sb.journal_snapshot = self.journal.get_snapshot()
-//                         // frozen_journal = sb@.journal = sb.journal_snapshot@
-//                         // frozen_journal.boundary_lsn = sb.journal_snapshot.boundary_lsn as nat
-//                         // new_abstract_store = i_persistent_store()
-//                         // new_abstract_store.seq_end = journal.seq_start()
-//                         // Both equal self.journal.get_snapshot().boundary_lsn
-//                         assert( frozen_journal == sb@.journal );
-//                         assert( sb@.journal.boundary_lsn == sb.journal_snapshot.boundary_lsn as nat );
-//                         // sb.journal_snapshot == self.journal.get_snapshot() by construction
-//                         // new_abstract_store.seq_end == self.journal.seq_start() by i_persistent_store def
-//                         // self.journal.seq_start() == self.journal.get_snapshot().boundary_lsn as nat
-//                         //   (since get_snapshot returns snapshot, and seq_start uses snapshot.boundary_lsn)
-//                         assert( new_abstract_store.seq_end == self.journal.seq_start() );
-//                         assert( frozen_journal.boundary_lsn == new_abstract_store.seq_end );
-//                     },
-//                 }
-            };
-            
-            // pre.store.persistent.seq_end <= frozen_journal.boundary_lsn
-            // pre.store.persistent = old(self).state().store.persistent = view_store().persistent
-            // view_store().persistent.seq_end = i_persistent_store().seq_end = journal.seq_start()
-            assert( pre.store.persistent.seq_end <= frozen_journal.boundary_lsn ) by {
-//                 // Connect pre.store.persistent to view_store
-// //                 assert( old(self).state().store == old(self).view_store() );
-// //                 assert( pre.store.persistent == old(self).view_store().persistent );
-// //                 assert( pre.store.persistent == old(self).i_persistent_store() );
-//                 // So pre.store.persistent.seq_end == old(self).journal.seq_start()
-//                 
-//                 match motivation {
-//                     SuperblockMotivation::PushMap => {
-//                         // frozen_journal.boundary_lsn == version == journal.seq_end()
-//                         // Need: journal.seq_start() <= journal.seq_end()
-//                         // This follows from journal wf: seq_start <= seq_end
-// //                         assert( frozen_journal.boundary_lsn == version as nat );
-// //                         assert( pre.store.persistent.seq_end == old(self).journal.seq_start() );
-// //                         // journal.seq_start() <= journal.seq_end() by wf
-// //                         assert( old(self).journal.seq_start() <= old(self).journal.seq_end() );
-//                         assert( old(self).journal.seq_end() == version as nat );
-//                     },
-//                     SuperblockMotivation::PushJournal => {
-//                         // frozen_journal.boundary_lsn == self.journal.seq_start()
-//                         // pre.store.persistent.seq_end == old(self).journal.seq_start()
-//                         // self.journal == old(self).journal (unchanged)
-//                         // So: old(self).journal.seq_start() <= self.journal.seq_start()
-//                         // Which is: seq_start <= seq_start, trivially true
-// //                         assert( frozen_journal.boundary_lsn == self.journal.seq_start() );
-// //                         assert( pre.store.persistent.seq_end == old(self).journal.seq_start() );
-// //                         assert( self.journal.seq_start() == old(self).journal.seq_start() );
-//                     },
-//                 }
-            };
             assert( AbstractCrashAwareMap::State::next_by(pre.store, post.store, map_lbl,
                 AbstractCrashAwareMap::Step::commit_start()) ); // step witness
             
-            // 4-5. Cache and Journal transitions
-            // First, establish that cache and journal don't change between pre and post
-//             assert( pre.cache == old(self).state().cache );
-//             assert( post.cache == old(self).state().cache );
-//             assert( pre.cache == post.cache );
-//             assert( pre.journal == old(self).state().journal );
-//             assert( post.journal == old(self).state().journal );
-            assert( pre.journal == post.journal );
-            
-            // Cache::Access - prove the access transition
             reveal(Cache::State::next_by);
             reveal(Cache::State::next);
             
-            // The cache access transition with reads (possibly non-empty) and empty writes
-            // When reads is empty, this is a no-op (use access_empty_is_noop)
-            // When reads is non-empty, we need valid_read for each entry
             if ptr_witness is None {
-                // reads is empty, use the no-op lemma
                 crate::implementation::Cache_v::Cache::State::access_empty_is_noop(pre.cache);
             } else {
-                // reads contains one entry: (ptr.unwrap(), data) where data is from the cache
-                let addr = ptr_witness.unwrap();
-                
-                // We already proved these facts about state_after_freeze.cache earlier
-                // and pre.cache == state_after_freeze.cache
-                assert( pre.cache == state_after_freeze.cache );
-                assert( pre.cache.lookup_map.contains_key(addr) );
-                let slot = pre.cache.lookup_map[addr];
-                assert( pre.cache.entries.contains_key(slot) );
-                assert( pre.cache.entries[slot] is Filled );
-                
-                let data = reads[addr];
-                
-                // Prove valid_read for the single entry in reads
-                // By construction: data == pre.cache.entries[slot]->data
-                assert( data == pre.cache.entries[slot]->data );
-                assert( pre.cache.valid_read(addr, data) );
-                
-                // reads only contains addr, so the forall is satisfied
-                assert forall |a: Address| #[trigger] reads.contains_key(a) 
-                    implies pre.cache.valid_read(a, reads[a]) by {
-                    assert( reads.dom() =~= set!{addr} );
-                    if a == addr {
-                        assert( pre.cache.valid_read(a, reads[a]) );
-                    }
-                };
-                
-                // writes is empty, so no write updates
-                // The transition doesn't change state when writes is empty
-                // post.cache comes from post_state.state which uses ..state_after_freeze
-                // So post.cache == state_after_freeze.cache == pre.cache
-                assert( post.cache == state_after_freeze.cache );
-                assert( pre.cache == state_after_freeze.cache );
-                assert( pre.cache == post.cache );
-                
-                // Since writes is empty, write_updated_entries and write_updated_status are empty
-                // So union_prefer_right doesn't change anything
                 let lbl = Cache::Label::Access{reads: reads, writes: Map::empty()};
-                assert( lbl->writes =~= Map::<Address, RawPage>::empty() );
-                
-                // Prove the update maps are empty
-                let write_slots = pre.cache.lookup_map.restrict(lbl->writes.dom()).values();
-                assert( lbl->writes.dom() =~= Set::<Address>::empty() );
-                assert( pre.cache.lookup_map.restrict(Set::<Address>::empty()).dom() =~= Set::<Address>::empty() );
-                assert( write_slots =~= Set::empty() );
-                
                 let updated_entries = pre.cache.write_updated_entries(lbl->writes);
                 let updated_status_map = pre.cache.write_updated_status(lbl->writes);
-                assert( updated_entries.dom() =~= Set::empty() );
-                assert( updated_status_map.dom() =~= Set::empty() );
-                
-                assert( pre.cache.entries.union_prefer_right(updated_entries) =~= pre.cache.entries );
-                assert( pre.cache.status_map.union_prefer_right(updated_status_map) =~= pre.cache.status_map );
-                
-                // Witness the step
-                assert( Cache::State::next_by(pre.cache, post.cache, lbl, Cache::Step::access()) );
+                assert( pre.cache.entries.union_prefer_right(updated_entries) =~= pre.cache.entries );  // trigger extn
+                assert( pre.cache.status_map.union_prefer_right(updated_status_map) =~= pre.cache.status_map );  // trigger extn
+                assert( Cache::State::next_by(pre.cache, post.cache, lbl, Cache::Step::access()) ); // step witness
             }
             
             // Cache::EvictableCheck
@@ -1424,19 +1189,6 @@ impl Implementation {
                     assume( false );
                 }
             };  // step witness
-            
-//             // Journal FreezeForCommit
-//             // We need to witness CachedJournal::State::next via freeze_for_commit with some depth
-//             // With depth = 0:
-//             //   - can_crop_index(root, 0) is vacuously true
-//             //   - pointer_after_crop_index(root, 0) = root = pre.snapshot.freshest_rec
-//             //   - We need: pre.snapshot.freshest_rec == frozen.freshest_rec
-//             // pre.journal = old(self).state().journal = old(self).journal@ (by inv_running)
-//             // frozen_journal = sb@.journal
-//             assert( pre.journal == old(self).journal@ );
-//             
-//             // Show that pre.journal == post.journal (journal doesn't change in this transition)
-//             assert( pre.journal == post.journal );
             
             // For the transition to hold, we need to witness a depth
             // With depth = 0, ptr = pre.snapshot.freshest_rec
