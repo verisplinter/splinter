@@ -909,11 +909,20 @@ impl Implementation {
                     },
                     None => { (None, None) },
                 };
-                
+
                 sb = ISuperblock{
                     journal_snapshot: journal_snapshot,
                     store: tmp_store.v,
                 };
+
+//                 let frozen_journal = sb@.journal;
+//                 let frozen_lsns = Set::new(|lsn: LSN| frozen_journal.boundary_lsn <= lsn && lsn < frozen_seq_end);
+//                 let frozen_domain = state_after_freeze.journal.status.unwrap().lsn_addr_index.restrict(frozen_lsns).values();
+//                 if !self.journal.is_clean(&self.cache, frozen_journal.boundary_lsn, frozen_seq_end) {
+//                     api.log("Unimplemented: async journal clean pages");
+//                     Self::todo_placeholder();
+//                     return;
+//                 }
                 
                 // Release the handle - this puts the page back in cache
                 // handle_release ensures the cache state is the same (entries, lookup_map, status_map)

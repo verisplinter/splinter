@@ -383,6 +383,25 @@ impl FracCacheImpl {
         }
     }
 
+    pub exec fn evictable(self, addr: &IAddress) -> (out: bool)
+    requires
+        self.wf(),
+    ensures
+        out ==> Cache::State::evictable(self@, self@, Cache::Label::EvictableCheck{addrs: set![addr@]}),
+    {
+        match self.lookup_map.get(addr) {
+            None => { true },
+            Some(slot) => {
+                assert( self.lookup_map@.contains_value(*slot) );   // trigger lookup_map_inv
+                let meta = &self.metadata[*slot];
+                if let IEntry::Filled{addr} = meta.entry {
+                    match meta.status { Status::Clean => { true }, _ => { false }, }
+                } else {
+                    false
+                }
+            },
+        }
+    }
 
     // views might not work if it has to do with handle access
     pub exec fn fetch(&mut self, addr: &IAddress) -> (err: FetchErrorCode)

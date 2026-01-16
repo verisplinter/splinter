@@ -604,6 +604,28 @@ impl JournalImpl {
     {
         self.snapshot.clone()
     }
+
+    // TODO close?
+    pub open spec fn lsn_range(start_incl: LSN, end_excl: LSN) -> Set<LSN>
+    {
+        Set::new(|lsn: LSN| start_incl <= lsn && lsn < end_excl)
+    }
+
+    // TODO close?
+    pub open spec fn iaddrs_for_lsns(self, start_incl: LSN, end_excl: LSN) -> Set<Address>
+    recommends self.index_ready()
+    {
+        self@.status.unwrap().lsn_addr_index.restrict(Self::lsn_range(start_incl, end_excl)).values()
+    }
+
+    pub exec fn lsns_are_clean(&self, cache: &FracCacheImpl, start_incl: LSN, end_excl: LSN) -> (clean: bool)
+    ensures clean ==>
+        Cache::State::next_by(cache@, cache@,
+            Cache::Label::EvictableCheck{addrs: self.iaddrs_for_lsns(start_incl, end_excl)},
+            Cache::Step::evictable())
+    {
+        true
+    }
 }
 
 impl View for JournalImpl {
