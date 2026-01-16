@@ -1,7 +1,7 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
 use vstd::{prelude::*};
-use crate::abstract_system::MsgHistory_v::KeyedMessage;
+use crate::abstract_system::MsgHistory_v::{MsgHistory, KeyedMessage};
 use crate::marshalling::Marshalling_v::Marshal;
 use crate::marshalling::Marshalling_v::Parsedview;
 use crate::marshalling::IntegerMarshalling_v::*;
@@ -16,6 +16,7 @@ use crate::abstract_system::StampedMap_v::LSN;
 use crate::disk::GenericDisk_v::IAddress;
 use crate::marshalling::OptionFormat_v::OptionFormat;
 use crate::marshalling::IAddressFormat_v::IAddressFormat;
+use crate::journal::LinkedJournal_v::JournalRecord;
 
 verus! {
 
@@ -51,6 +52,24 @@ impl Parsedview<JournalHeader> for IJournalHeader {
 pub struct AJournalRecord {
     pub header: JournalHeader,
     pub messages: Seq<KeyedMessage>,
+}
+
+impl View for AJournalRecord {
+    type V = JournalRecord;
+    open spec fn view(&self) -> Self::V
+    {
+        let bdy = self.header.start_lsn;
+        let seq_end = bdy + self.messages.len();
+
+        JournalRecord{
+            message_seq: MsgHistory{
+                msgs: Map::new(|lsn: nat| bdy <= lsn < seq_end, |lsn: nat| self.messages[lsn-bdy]),
+                seq_start: bdy, 
+                seq_end: seq_end,
+            },
+            prior_rec: self.header.prior_rec,
+        }
+    }
 }
 
 #[verifier::ext_equal]

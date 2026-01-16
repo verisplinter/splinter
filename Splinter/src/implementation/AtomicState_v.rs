@@ -68,7 +68,7 @@ pub enum DiskEvent{
     InitiateRecovery{req_id: ID},
     SuperblockRecovery{req_id: ID, raw_page: RawPage},
     // superblock write
-    ExecuteSyncBegin{req_id: ID, req: DiskRequest, frozen_journal: JournalSnapShot, 
+    ExecuteSyncBegin{req_id: ID, req: DiskRequest, frozen_journal: JournalSnapshot, 
         frozen_seq_end: LSN, frozen_domain: Set<Address>, reads: Map<Address, RawPage>},
     ExecuteSyncEnd{discard_addrs: Set<Address>},
     // other I/Os
@@ -383,7 +383,7 @@ impl AtomicState {
     // superblock sync
     pub open spec fn execute_sync_begin(pre: Self, post: Self, 
         req_id: ID, req: DiskRequest, reqs: Multiset<(ID, DiskRequest)>, resps: Multiset<(ID, DiskResponse)>, 
-        frozen_journal: JournalSnapShot, frozen_seq_end: LSN, frozen_domain: Set<Address>, reads: Map<Address, RawPage>) -> bool
+        frozen_journal: JournalSnapshot, frozen_seq_end: LSN, frozen_domain: Set<Address>, reads: Map<Address, RawPage>) -> bool
     {
         let map_lbl = AbstractCrashAwareMap::Label::CommitStartLabel{new_boundary_lsn: frozen_journal.boundary_lsn};
         let cache_lbl1 = Cache::Label::Access{reads: reads, writes: Map::empty()};
@@ -509,7 +509,7 @@ impl AtomicState {
 
         Superblock{
             store: self.in_flight_map(),
-            journal: JournalSnapShot{boundary_lsn: self.in_flight_map().seq_end, freshest_rec},
+            journal: JournalSnapshot{boundary_lsn: self.in_flight_map().seq_end, freshest_rec},
         }
     }
 
@@ -532,7 +532,7 @@ impl AtomicState {
 
         Superblock{
             store: self.persistent_map(),
-            journal: JournalSnapShot{boundary_lsn: self.persistent_map().seq_end, freshest_rec},
+            journal: JournalSnapshot{boundary_lsn: self.persistent_map().seq_end, freshest_rec},
         }
     }
 }

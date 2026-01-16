@@ -14,7 +14,7 @@ use crate::spec::AsyncDisk_t::RawPage;
 use crate::implementation::AtomicState_v::to_journal_reads;
 use crate::implementation::OverflowFiction_v::*;
 use crate::implementation::CachedJournal_v::CachedJournal;
-use crate::disk::GenericDisk_v::{Address, IAddress};
+use crate::disk::GenericDisk_v::{Address, IAddress, Pointer};
 use crate::implementation::CachedJournal_v;
 use crate::implementation::JournalTypes_v::AJournal;
 use crate::implementation::JournalTypes_v::ILsn;
@@ -22,7 +22,7 @@ use crate::implementation::JournalModel_v::LsnAddrIndex;
 use crate::implementation::Cache_v::Cache;
 use crate::implementation::FracCacheImpl_v::*;
 use crate::marshalling::Slice_v::Slice;
-use crate::marshalling::IJournalRecordFormat_v::IJournalRecordFormat;
+use crate::marshalling::IJournalRecordFormat_v::{IJournalRecord, IJournalRecordFormat};
 use crate::marshalling::Marshalling_v::Marshal;
 
 verus!{
@@ -42,20 +42,20 @@ exec fn index_assign_lsns(selff: &mut LsnAddrIndexImpl, low_inclusive: ILsn, hig
 }
 
 #[derive(Debug, Copy, Clone)]
-pub struct JournalSnapshot {
+pub struct IJournalSnapshot {
     pub boundary_lsn: u64,
     pub freshest_rec: Option<IAddress>,
 }
 
-impl JournalSnapshot {
+impl IJournalSnapshot {
     pub open spec fn spec_new_empty(at_lsn: u64) -> Self {
-        JournalSnapshot{ boundary_lsn: at_lsn, freshest_rec: None }
+        IJournalSnapshot{ boundary_lsn: at_lsn, freshest_rec: None }
     }
 
     pub exec fn new_empty(at_lsn: u64) -> (out: Self)
         ensures out == Self::spec_new_empty(at_lsn)
     {
-        JournalSnapshot{ boundary_lsn: at_lsn, freshest_rec: None }
+        IJournalSnapshot{ boundary_lsn: at_lsn, freshest_rec: None }
     }
 }
 
@@ -67,8 +67,16 @@ pub open spec fn iaddr_view(ptr: Option<IAddress>) -> Option<Address>
     }
 }
 
-impl View for JournalSnapshot {
-    type V = CachedJournal_v::JournalSnapShot;
+
+#[verifier::external_body]
+fn please_panic()
+    ensures false
+{
+    panic!();
+}
+
+impl View for IJournalSnapshot {
+    type V = CachedJournal_v::JournalSnapshot;
 
     open spec fn view(&self) -> Self::V {
         Self::V{
@@ -78,8 +86,8 @@ impl View for JournalSnapshot {
     }
 }
 
-impl Parsedview<CachedJournal_v::JournalSnapShot> for JournalSnapshot {
-    open spec fn parsedv(&self) -> CachedJournal_v::JournalSnapShot
+impl Parsedview<CachedJournal_v::JournalSnapshot> for IJournalSnapshot {
+    open spec fn parsedv(&self) -> CachedJournal_v::JournalSnapshot
     {
         self@
     }
@@ -87,34 +95,20 @@ impl Parsedview<CachedJournal_v::JournalSnapShot> for JournalSnapshot {
 
 use crate::marshalling::WF_v::WF;
 
-impl WF for JournalSnapshot {}
+impl WF for IJournalSnapshot {}
 
-pub struct JournalStatus {
+pub struct IJournalStatus {
     pub lsn_addr_index: LsnAddrIndexImpl,
     pub unmarshalled_tail: Vec<(Key,Value)>,
     pub unmarshalled_tail_start: ILsn,   // invariant to agree with freshest_rec contents / boundary_lsn
 }
 
-impl JournalStatus {
+impl IJournalStatus {
     spec fn wf(&self) -> bool
     {
         // there should be no gap in between 
         true
     }
-
-    // this new is fake
-    // exec fn new(tail_start: ILsn) -> (out: Self)
-    // ensures
-    //     out.wf(),
-    //     out.unmarshalled_tail_start == tail_start,
-    // {
-    //     // journal status should be fetching 
-    //     Self{
-    //         unmarshalled_tail: vec![],
-    //         lsn_addr_index: LsnAddrIndexImpl::new(),
-    //         unmarshalled_tail_start: tail_start,
-    //     }
-    // }
 
     closed spec fn tail_as_history(&self) -> MsgHistory
     {
@@ -125,7 +119,7 @@ impl JournalStatus {
     }
 }
 
-impl View for JournalStatus {
+impl View for IJournalStatus {
     type V = CachedJournal_v::JournalStatus;
     closed spec fn view(&self) -> Self::V {
         Self::V {
@@ -136,7 +130,7 @@ impl View for JournalStatus {
 }
 
 pub struct IndexBuilder {
-    next_head: JournalSnapshot,
+    next_head: IJournalSnapshot,
 }
 
 pub enum RecoverIndexResult{
@@ -146,9 +140,9 @@ pub enum RecoverIndexResult{
 }
 
 pub struct JournalImpl {
-    snapshot: JournalSnapshot,
+    snapshot: IJournalSnapshot,
     index_builder: Option<IndexBuilder>,
-    status: Option<JournalStatus>,
+    status: Option<IJournalStatus>,
     fmt: IJournalRecordFormat,
 }
 
@@ -159,20 +153,36 @@ pub open spec fn load_index_labels(reads: Map<Address, RawPage>) -> (Cache::Labe
     (cache_lbl, journal_lbl)
 }
 
+impl IJournalRecord {
+    exec fn seq_end(&self) -> (out: ILsn)
+        requires self.wf()
+        ensures out@ == self.parsedv().header.start_lsn + self.parsedv().messages.len()
+    {
+        assume(self.header.start_lsn + (self.messages.len() as u64) < u64::MAX);
+        self.header.start_lsn + self.messages.len() as u64
+    }
+
+    exec fn cropped_prior(self, bdy: ILsn) -> (out: Option<IAddress>)
+        requires self.wf()
+        ensures ({
+            let i_result = self.parsedv()@.cropped_prior(bdy as nat);
+            &&& i_result is None ==> out is None
+            &&& i_result is Some ==> i_result == Some(out.unwrap()@)
+        })
+    {
+        if bdy < self.header.start_lsn { self.header.prior_rec } else { None }
+    }
+}
+
 impl JournalImpl {
     pub closed spec fn wf(&self) -> bool {
         &&& self.fmt.valid()
         &&& match self.status {
-            None => {
-                self.index_builder is Some
-            },
-            Some(status) => {
-                self.snapshot.boundary_lsn <= status.unmarshalled_tail_start
-            }
+            None => { self.index_builder is Some },
+            Some(status) => { self.snapshot.boundary_lsn <= status.unmarshalled_tail_start }
         }
     }
 
-    // TODO this must be a placeholder, right? Tell me this is a placeholder.
     pub closed spec fn seq_start(&self) -> LSN {
         self.snapshot.boundary_lsn as nat
     }
@@ -181,6 +191,19 @@ impl JournalImpl {
     ensures out == self.seq_start()
     {
         self.snapshot.boundary_lsn
+    }
+
+    pub closed spec fn freshest_rec(&self) -> Pointer
+    {
+        self.snapshot@.freshest_rec
+    }
+
+    pub exec fn exec_freshest_rec(&self) -> (out: Option<IAddress>)
+    ensures 
+        out is None ==> self.freshest_rec() is None,
+        out is Some ==> self.freshest_rec() == Some(out.unwrap()@)
+    {
+        self.snapshot.freshest_rec
     }
 
 //     pub closed spec fn last_marshalled_lsn(&self) -> LSN {
@@ -261,12 +284,12 @@ impl JournalImpl {
 //     ensures
 //         out.wf(),
 //         !out.index_ready(),
-//         out@.snapshot == JournalSnapshot::spec_new_empty(at_lsn)@,
+//         out@.snapshot == IJournalSnapshot::spec_new_empty(at_lsn)@,
 //     {
-//         Self::new(JournalSnapshot::new_empty(at_lsn))
+//         Self::new(IJournalSnapshot::new_empty(at_lsn))
 //     }
 
-    pub exec fn new(snapshot: JournalSnapshot) -> (out: Self)
+    pub exec fn new(snapshot: IJournalSnapshot) -> (out: Self)
     ensures
         out.wf(),
         !out.index_ready(),
@@ -333,25 +356,78 @@ impl JournalImpl {
                         // NOTE: a silly implementation that forgets all computed updates if page is not available
                         let unmarshalled_tail = Vec::new();
                         let ghost mut reads = map!{};
-                        
+
                         reveal(Cache::State::next_by);
                         reveal(Cache::State::next);
                         reveal(CachedJournal::State::next_by);
                         reveal(CachedJournal::State::next);
 
-                        // start reading 
+                        // journal is not empty
                         if let Some(addr) = self.snapshot.freshest_rec {
+                            let bdy = self.snapshot.boundary_lsn;
+                            match cache.fetch(&addr) {
+                                FetchErrorCode::Success{slot_handle} => {
+                                    proof{ reads = reads.insert(addr@, slot_handle.rec@); }
 
+                                    // unmarshall and parse the journal record
+                                    let all_slice = Slice::all(&slot_handle.rec);
+                                    assert( all_slice@.i(slot_handle.rec@) == slot_handle.rec@ );
+                                    assert( self.fmt.parsable(all_slice@.i(slot_handle.rec@)) ) by { assume( false ); }
+
+                                    let i_journal_record = self.fmt.exec_parse(&all_slice, &slot_handle.rec);
+                                    let i_seq_end = i_journal_record.seq_end();
+                                    cache.handle_release(&addr, slot_handle);
+
+                                    if bdy > i_seq_end { // invalid format
+                                        please_panic();
+                                    }
+                                    assert(bdy <= i_seq_end);
+
+                                    // let next_ptr = if 
+                                    // while 
+
+
+                                    // you want to 
+                                    // let lsn_addr_index = build_lsn_addr_index_from_reads(reads, bdy, ptr, seq_end);
+
+                                    
+        // let seq_end = if ptr is Some { reads[ptr.unwrap()].message_seq.seq_end } else { bdy };
+        // let lsn_addr_index = build_lsn_addr_index_from_reads(reads, bdy, ptr, seq_end);
+
+                                // builder.next_head.freshest_rec = match i_journal_record.header.prior_rec 
+                                //     {
+                                //         None => None,
+                                //         Some(iaddr) => { // cropped prior logic
+                                //             if i_journal_record.header.start_lsn > self.snapshot.boundary_lsn {
+                                //                 Some(iaddr)
+                                //             } else { None }
+                                //         }
+                                //     };
+
+                                    // slot_handle give us Irawpage
+                                    // safe path
+                                },
+                                // TODO: handle more gracefully, fetch initiate should return 
+                                // have a load_abort to give up the slot and remove the load
+                                _ => {
+                                    // we can also just set builder back to freshest rec, 
+                                    // but panic here bc our current testing shouldn't reach that case
+                                    please_panic(); 
+                                } 
+                            }
+                            // fetch the page from cache
 
                         // let mut root = None;
                         // let mut next = self.snapshot.freshest_rec;
                         // let mut index = LsnAddrIndexImpl::new();
 
                         // while if let Some(addr) = next 
+
+                        // i think you bdy just has to keep changing
                         //     invariant index@ == CachedJournal_v::build_lsn_addr_index_from_reads(reads, self.snapshot.boundary_lsn, root, )
 
                         // We got to the end of the journal linked list! We're done!
-                        // self.status = Some(JournalStatus::new(builder.next_head.boundary_lsn));
+                        // self.status = Some(IJournalStatus::new(builder.next_head.boundary_lsn));
                         // assert( self.snapshot.boundary_lsn <= self.status.unwrap().unmarshalled_tail_start ) by {
                         //     assume( false ); // This needs to become an invariant of the builder process.
                         // }
@@ -367,7 +443,7 @@ impl JournalImpl {
         // let journal_lbl = CachedJournal::Label::LoadIndex{reads: to_journal_reads(reads)};
                             assume(false);
                         } else {
-                            self.status = Some(JournalStatus{
+                            self.status = Some(IJournalStatus{
                                 unmarshalled_tail,
                                 lsn_addr_index: LsnAddrIndexImpl::new(),
                                 unmarshalled_tail_start: self.snapshot.boundary_lsn
@@ -467,7 +543,7 @@ impl JournalImpl {
         // Since we don't have &mut results in verus yet, we need to swap the
         // option out of self, deconstruct it, do the work we want on the inner struct,
         // then reassemble the option and swap it back in. 🫤
-        let mut dummy: Option<JournalStatus> = None;
+        let mut dummy: Option<IJournalStatus> = None;
         core::mem::swap(&mut self.status, &mut dummy);
         dummy = match dummy {
             None => { None },
@@ -521,7 +597,7 @@ impl JournalImpl {
     }
 
     // Reveal snapshot for use in Implementation::send_superblock
-    pub fn get_snapshot(&self) -> (out: JournalSnapshot)
+    pub fn get_snapshot(&self) -> (out: IJournalSnapshot)
     ensures 
         out.boundary_lsn == self.seq_start(),
         out@ == self@.snapshot,

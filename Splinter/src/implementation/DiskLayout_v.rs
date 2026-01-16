@@ -9,7 +9,7 @@ use crate::spec::ImplDisk_t::*;
 // use crate::spec::FloatingSeq_t::*;
 use crate::implementation::SuperblockTypes_v::*;
 use crate::implementation::JournalTypes_v::*;
-use crate::implementation::CachedJournal_v::JournalSnapShot;
+use crate::implementation::CachedJournal_v::JournalSnapshot;
 use crate::implementation::JournalImpl_v;
 use crate::marshalling::ISuperblockFormat_v::*;
 use crate::marshalling::Marshalling_v::*;
@@ -136,7 +136,7 @@ impl DiskLayout {
         &&& disk.contains_key(spec_superblock_addr())
         &&& Superblock{
             store: StampedMap_v::empty(),
-            journal: JournalSnapShot{
+            journal: JournalSnapshot{
                 boundary_lsn: 0,
                 freshest_rec: None,
             },
@@ -146,7 +146,7 @@ impl DiskLayout {
     pub exec fn exec_mkfs(&self) -> (out: Vec<u8>)
     requires self.wf()
     {
-        let journal_snapshot = JournalImpl_v::JournalSnapshot {
+        let journal_snapshot = JournalImpl_v::IJournalSnapshot {
             boundary_lsn: 0,
             freshest_rec: None,
         };

@@ -135,7 +135,7 @@ state_machine!{ JournalCoordinationSystem{
     // label should 
     pub enum Label {
         ReadForRecovery{messages: MsgHistory},
-        FreezeForCommit{frozen: JournalSnapShot},
+        FreezeForCommit{frozen: JournalSnapshot},
         QueryEndLsn{end_lsn: LSN},
         Put{messages: MsgHistory},
         DiscardOld{start_lsn: LSN, require_end: LSN},
@@ -237,7 +237,7 @@ state_machine!{ JournalCoordinationSystem{
         update disk = new_disk;
     }}
 
-    pub open spec fn tj_from_reads_and_snapshot(snapshot: JournalSnapShot, reads: Map<Address, RawPage>) -> TruncatedJournal
+    pub open spec fn tj_from_reads_and_snapshot(snapshot: JournalSnapshot, reads: Map<Address, RawPage>) -> TruncatedJournal
     {
         let dv = DiskView{
             boundary_lsn: snapshot.boundary_lsn,
@@ -251,7 +251,7 @@ state_machine!{ JournalCoordinationSystem{
 
     // NOTE: 
     init!{ initialize(disk: AsyncDisk::State, cache: Cache::State, journal: CachedJournal::State, 
-        snapshot: JournalSnapShot, reads: Map<Address, RawPage>) {
+        snapshot: JournalSnapshot, reads: Map<Address, RawPage>) {
         // NOTE: this isn't a crash aware composed system so init does not initializes 
         // from fully empty state and looks a bit weird. The main goal is just to refine
         // page walks on cached pages to page walks over the projected disk
@@ -701,7 +701,7 @@ state_machine!{ JournalCoordinationSystem{
 
     #[inductive(initialize)]
     fn initialize_inductive(post: Self, disk: AsyncDisk::State, cache: Cache::State, 
-        journal: CachedJournal::State, snapshot: JournalSnapShot, reads: Map<Address, RawPage>) 
+        journal: CachedJournal::State, snapshot: JournalSnapshot, reads: Map<Address, RawPage>) 
     {
         let cache_lbl = Cache::Label::Access{reads: reads, writes: Map::empty()};
         reveal(Cache::State::next);

@@ -4,8 +4,8 @@
 //! ISuperblockFormat_v - marshaller for ISuperblock using the struct_marshaller_2 macro
 
 use crate::implementation::SuperblockTypes_v::{ASuperblock, ISuperblock};
-use crate::implementation::JournalImpl_v::JournalSnapshot as IJournalSnapshot;
-use crate::marshalling::JournalSnapshotFormat_v::JournalSnapshotFormat;
+use crate::implementation::JournalImpl_v::IJournalSnapshot;
+use crate::marshalling::IJournalSnapshotFormat_v::IJournalSnapshotFormat;
 use crate::marshalling::KeyValueFormat_v::KeyValueFormat;
 use crate::marshalling::ResizableUniformSizedSeq_v::ResizableUniformSizedElementSeqFormat;
 use crate::marshalling::IntegerMarshalling_v::IntFormat;
@@ -55,7 +55,7 @@ proof fn isuperblock_postcondition_proof(
         field2_value.wf(),
         fmt.parsable(slice@.i(data@)),
         // Facts from macro (try_parse postconditions):
-        Parsedview::<crate::implementation::CachedJournal_v::JournalSnapShot>::parsedv(&field1_value) == fmt.field1_fmt.parse(field1_slice@.i(data@)),
+        Parsedview::<crate::implementation::CachedJournal_v::JournalSnapshot>::parsedv(&field1_value) == fmt.field1_fmt.parse(field1_slice@.i(data@)),
         Parsedview::<Seq<(crate::spec::KeyType_t::Key, crate::spec::Messages_t::Value)>>::parsedv(&field2_value) == fmt.field2_fmt.parse(field2_slice@.i(data@)),
         // Slice relationships:
         field1_slice@.i(data@) == slice@.i(data@).subrange(0, fmt.field1_fmt.uniform_size() as int),
@@ -77,7 +77,7 @@ proof fn isuperblock_postcondition_proof(
     // For field1 (journal_snapshot):
     // JournalSnapshot::parsedv() = JournalSnapshot@
     // From requires: field1_value.parsedv() == fmt.field1_fmt.parse(...)
-    assert(field1_value@ == Parsedview::<crate::implementation::CachedJournal_v::JournalSnapShot>::parsedv(&field1_value));
+    assert(field1_value@ == Parsedview::<crate::implementation::CachedJournal_v::JournalSnapshot>::parsedv(&field1_value));
     assert(result.parsedv().journal == field1_value@);
     assert(result.parsedv().journal == fmt.field1_fmt.parse(idata.subrange(0, f1_end)));
     assert(fmt.parse(idata).journal == fmt.field1_fmt.parse(idata.subrange(0, f1_end)));
@@ -102,9 +102,9 @@ struct_marshaller_2! {
     field1: {
         impl_field: journal_snapshot,
         spec_field: journal,
-        formatter_type: JournalSnapshotFormat,
-        formatter_spec_new: JournalSnapshotFormat::spec_new(),
-        formatter_new: JournalSnapshotFormat::new(),
+        formatter_type: IJournalSnapshotFormat,
+        formatter_spec_new: IJournalSnapshotFormat::spec_new(),
+        formatter_new: IJournalSnapshotFormat::new(),
     },
     field2: {
         impl_field: store,

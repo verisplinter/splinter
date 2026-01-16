@@ -76,9 +76,9 @@ pub open spec(checked) fn build_lsn_addr_index_from_reads(reads: Map<Address, Jo
     }
 }
 
-pub struct JournalSnapShot {
+pub struct JournalSnapshot {
     pub boundary_lsn: LSN, 
-    pub freshest_rec: Pointer,
+    pub freshest_rec: Pointer, // lsn 
 }
 
 pub struct JournalStatus {
@@ -88,7 +88,7 @@ pub struct JournalStatus {
 
 state_machine!{ CachedJournal {
     fields{
-        pub snapshot: JournalSnapShot,
+        pub snapshot: JournalSnapshot,
         pub status: Option<JournalStatus>,
     }
 
@@ -128,7 +128,7 @@ state_machine!{ CachedJournal {
     {
         LoadIndex{reads: Map<Address, JournalRecord>},
         ReadForRecovery{messages: MsgHistory, reads: Map<Address, JournalRecord>},
-        FreezeForCommit{frozen: JournalSnapShot, frozen_seq_end: LSN, frozen_domain: Set<Address>, reads: Map<Address, JournalRecord>},
+        FreezeForCommit{frozen: JournalSnapshot, frozen_seq_end: LSN, frozen_domain: Set<Address>, reads: Map<Address, JournalRecord>},
         QueryEndLsn{end_lsn: LSN},
         Put{messages: MsgHistory},
         // TODOO(remove): require_end 
@@ -157,7 +157,7 @@ state_machine!{ CachedJournal {
     transition!{ freeze_for_commit(lbl: Label, depth: nat) {
         require pre.status is Some;
 
-    // FreezeForCommit{frozen: JournalSnapShot, frozen_domain: Set<Address>, reads: Map<Address, JournalRecord>},
+    // FreezeForCommit{frozen: JournalSnapshot, frozen_domain: Set<Address>, reads: Map<Address, JournalRecord>},
         require let Label::FreezeForCommit{frozen, frozen_seq_end, frozen_domain, reads} = lbl;
         require pre.seq_start() <= frozen.boundary_lsn;
         require pre.can_crop_index(pre.snapshot.freshest_rec, depth);
@@ -199,7 +199,7 @@ state_machine!{ CachedJournal {
         let new_lsn_addr_index = lsn_addr_index_discard_up_to(pre.status.unwrap().lsn_addr_index, lbl->start_lsn);
         require lbl->discard_addrs == pre.status.unwrap().lsn_addr_index.values() - new_lsn_addr_index.values();
 
-        update snapshot = JournalSnapShot{boundary_lsn: lbl->start_lsn, freshest_rec: new_freshest_rec};
+        update snapshot = JournalSnapshot{boundary_lsn: lbl->start_lsn, freshest_rec: new_freshest_rec};
         update status = Some(JournalStatus{lsn_addr_index: new_lsn_addr_index, ..pre.status.unwrap()});
     }}
 
@@ -215,7 +215,7 @@ state_machine!{ CachedJournal {
         let new_record = JournalRecord{message_seq: marshalled_msgs, prior_rec: pre.snapshot.freshest_rec};
         require lbl->writes == Map::empty().insert(addr, new_record);
 
-        update snapshot = JournalSnapShot{freshest_rec: Some(addr), ..pre.snapshot};
+        update snapshot = JournalSnapshot{freshest_rec: Some(addr), ..pre.snapshot};
         update status = Some(JournalStatus{
             lsn_addr_index: lsn_addr_index_append_record(pre.status.unwrap().lsn_addr_index, marshalled_msgs, addr), 
             unmarshalled_tail:  pre.status.unwrap().unmarshalled_tail.discard_old(cut)});
@@ -241,7 +241,7 @@ state_machine!{ CachedJournal {
     }}
 
     // this makes it so that we can't really initialize everything in a single transition
-    init!{ initialize(snapshot: JournalSnapShot) {        
+    init!{ initialize(snapshot: JournalSnapshot) {        
         init snapshot = snapshot;
         init status = None;
     }}
@@ -268,7 +268,7 @@ state_machine!{ CachedJournal {
     fn load_index_inductive(pre: Self, post: Self, lbl: Label) { }
     
     #[inductive(initialize)]
-    pub fn initialize_inductive(post: Self, snapshot: JournalSnapShot) {
+    pub fn initialize_inductive(post: Self, snapshot: JournalSnapshot) {
     }
 
 }}

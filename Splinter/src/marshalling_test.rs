@@ -30,9 +30,9 @@ use crate::marshalling::StaticallySized_v::*;
 // use crate::marshalling::HashMapFormat_v::*;  // TODO: This module doesn't exist
 use vstd::std_specs::hash::*;
 use crate::marshalling::IAddressFormat_v::*;
-use crate::marshalling::JournalSnapshotFormat_v::*;
+use crate::marshalling::IJournalSnapshotFormat_v::*;
 use crate::disk::GenericDisk_v::IAddress;
-use crate::implementation::JournalImpl_v::JournalSnapshot;
+use crate::implementation::JournalImpl_v::IJournalSnapshot;
 
 use vstd::prelude::*;
 use vstd::bytes::*;
@@ -243,11 +243,11 @@ exec fn test_iaddress_parse(data: &Vec<u8>, end: usize) -> Option<IAddress>
 // Test for JournalSnapshot2Format
 exec fn test_journal_snapshot_marshalling() -> (Vec<u8>, usize)
 {
-    let snapshot = JournalSnapshot { 
+    let snapshot = IJournalSnapshot { 
         boundary_lsn: 12345, 
         freshest_rec: Some(IAddress { au: 42, page: 7 })
     };
-    let fmt = JournalSnapshotFormat::new();
+    let fmt = IJournalSnapshotFormat::new();
     
     let req = fmt.exec_size(&snapshot);
     let mut data = prealloc(req);
@@ -258,11 +258,11 @@ exec fn test_journal_snapshot_marshalling() -> (Vec<u8>, usize)
 
 exec fn test_journal_snapshot_marshalling_none() -> (Vec<u8>, usize)
 {
-    let snapshot = JournalSnapshot { 
+    let snapshot = IJournalSnapshot { 
         boundary_lsn: 99999, 
         freshest_rec: None
     };
-    let fmt = JournalSnapshotFormat::new();
+    let fmt = IJournalSnapshotFormat::new();
     
     let req = fmt.exec_size(&snapshot);
     let mut data = prealloc(req);
@@ -271,10 +271,10 @@ exec fn test_journal_snapshot_marshalling_none() -> (Vec<u8>, usize)
     (data, end)
 }
 
-exec fn test_journal_snapshot_parse(data: &Vec<u8>, end: usize) -> Option<JournalSnapshot>
+exec fn test_journal_snapshot_parse(data: &Vec<u8>, end: usize) -> Option<IJournalSnapshot>
     requires data.len() >= end,
 {
-    let fmt = JournalSnapshotFormat::new();
+    let fmt = IJournalSnapshotFormat::new();
     let slice = Slice { start: 0, end };
     let ovalue = fmt.try_parse(&slice, data);
     ovalue

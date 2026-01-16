@@ -35,7 +35,7 @@ impl JournalCoordinationSystem::State {
         }
     }
 
-    pub open spec fn tj_at(self, snapshot: JournalSnapShot) -> TruncatedJournal
+    pub open spec fn tj_at(self, snapshot: JournalSnapshot) -> TruncatedJournal
     {
         let disk = self.ephemeral_disk();
         TruncatedJournal{
@@ -310,7 +310,7 @@ impl JournalCoordinationSystem::State {
             LikesJournal::Step::freeze_for_commit(depth)));
     }
 
-    proof fn init_refines(self, disk: AsyncDisk::State, cache: Cache::State, journal: CachedJournal::State, snapshot: JournalSnapShot, reads: Map<Address, RawPage>) 
+    proof fn init_refines(self, disk: AsyncDisk::State, cache: Cache::State, journal: CachedJournal::State, snapshot: JournalSnapshot, reads: Map<Address, RawPage>) 
         requires self.inv(), JournalCoordinationSystem::State::initialize(self, disk, cache, journal, snapshot, reads), 
         ensures LikesJournal::State::initialize(self.i(), self.ephemeral_tj())
     {

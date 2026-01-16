@@ -10,11 +10,11 @@ use crate::implementation::CachedJournal_v;
 use crate::marshalling::Marshalling_v::Parsedview;
 use crate::marshalling::WF_v::WF;
 use crate::implementation::JournalTypes_v::*;
-use crate::implementation::JournalImpl_v;
+use crate::implementation::JournalImpl_v::IJournalSnapshot;
+use crate::implementation::CachedJournal_v::JournalSnapshot;
 use crate::spec::TotalKMMap_t::*;
 use crate::abstract_system::MsgHistory_v::MsgHistory;
 use crate::abstract_system::StampedMap_v::*;
-use crate::implementation::CachedJournal_v::JournalSnapShot;
 
 verus! {
 
@@ -50,7 +50,7 @@ pub type RawStore = Vec<(Key, Value)>;
 
 pub struct Superblock {
     pub store: StampedMap,
-    pub journal: CachedJournal_v::JournalSnapShot,
+    pub journal: JournalSnapshot,
 }
 
 pub open spec(checked) fn singleton_floating_seq(at_index: nat, kmmap: TotalKMMap) -> FloatingSeq<Version>
@@ -70,7 +70,7 @@ impl Superblock {
 
 pub struct ASuperblock {
     pub store: ARawStore,
-    pub journal: JournalSnapShot,
+    pub journal: JournalSnapshot,
     // need version so recovery knows the shape of the (mostly-empty) history to reconstruct (the LSN)
     // Wait no this is dumb; the journal contains its start LSN, which must match the store's LSN.
 //     pub version_index: u64,
@@ -96,7 +96,7 @@ impl View for ASuperblock {
 
 #[derive(Debug)]
 pub struct ISuperblock {
-    pub journal_snapshot: JournalImpl_v::JournalSnapshot,
+    pub journal_snapshot: IJournalSnapshot,
     pub store: RawStore,  // TODO: try
     // need version so recovery knows the shape of the (mostly-empty) history to reconstruct (the LSN)
     // pub version_index: u64,

@@ -780,6 +780,35 @@ impl Implementation {
                 // We'll revisit this later.
                 proof { assert(false); }
                 return;
+                // // sync the ephemeral map with an empty journal
+                // api.log("send_superblock: sync store and truncate the journal");
+                // std::mem::swap(&mut self.store, &mut tmp_store);
+        
+                // sb = ISuperblock{
+                //     journal_snapshot: IJournalSnapshot::new_empty(version),
+                //     store: tmp_store.v,
+                // };
+                // raw_page = DiskLayout::new().marshall(&sb);
+
+                // let ISuperblock{store: mut tmp_store_v, /*store: mut tmp_store,*/ ..} = sb;
+                // tmp_store.v = tmp_store_v;
+                // std::mem::swap(&mut self.store, &mut tmp_store);
+                
+                // // After swap-back: self.store.v@ == sb@.store (the Vec contents are the same)
+                // // sb.store was tmp_store.v which held old(self).store.v
+                // // After swap-back, self.store.v == old(self).store.v
+                // // And tmp_store_v came from sb.store, so they're all the same Vec
+                // proof {
+                //     assert( self.store.v@ == sb@.store );
+                // }
+
+                // self_in_flight = Some(InFlight{
+                //     new_boundary_lsn: version,
+                //     freshest_rec: None,
+                //     new_persistent_lsn: version,
+                //     new_store: self.store.clone(),
+                // });
+                // proof { new_abstract_store = self.i_ephemeral_store()->v.stamped_map; }
             },
             SuperblockMotivation::PushJournal => {
                 // sync the ephemeral journal with the existing persistent map
@@ -950,7 +979,7 @@ impl Implementation {
                 
                 self_in_flight = Some(InFlight{
                     new_boundary_lsn: self.journal.exec_seq_start(),
-                    freshest_rec: self.journal.get_snapshot().freshest_rec,
+                    freshest_rec: self.journal.exec_freshest_rec(),
                     // TODO 7 placeholder: need to learn the persistent lsn described by freshest_rec
                     // (or by a freshest_rec None snapshot).
                     new_persistent_lsn: 7,
@@ -2025,7 +2054,7 @@ impl Implementation {
             let ghost post_state = ConcreteProgramModel{ state: AtomicState{
                 in_flight: None,
                 journal: CachedJournal::State {
-                    snapshot: CachedJournal_v::JournalSnapShot{
+                    snapshot: CachedJournal_v::JournalSnapshot{
                         boundary_lsn: new_boundary_lsn as LSN,
                         freshest_rec: freshest_rec_a,
                     },
@@ -2567,7 +2596,7 @@ impl KVStoreTrait for Implementation {
         ) = KVStoreTokenized::Instance::initialize(ConcreteProgramModel{state: AtomicState::init(cache.total_slots() as nat)});
 
         // TODO maybe another Option<> wrapper?
-        let placeholder_snapshot = JournalSnapshot{
+        let placeholder_snapshot = IJournalSnapshot{
             boundary_lsn: 0, freshest_rec: None, };
         let selff = Implementation{
             recovery_phase: RecoveryPhase::FetchingSuperblock,

@@ -1,10 +1,10 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
 
-//! JournalSnapshotFormat_v - marshaller for JournalSnapshot using the struct_marshaller_2 macro
+//! IJournalSnapshotFormat_v - marshaller for JournalSnapshot using the struct_marshaller_2 macro
 
-use crate::implementation::JournalImpl_v::JournalSnapshot;
-use crate::implementation::CachedJournal_v::JournalSnapShot;
+use crate::implementation::JournalImpl_v::IJournalSnapshot;
+use crate::implementation::CachedJournal_v::JournalSnapshot;
 use crate::disk::GenericDisk_v::IAddress;
 use crate::marshalling::NatFormat_v::NatFormat;
 use crate::marshalling::IAddressFormat_v::IAddressFormat;
@@ -22,29 +22,28 @@ verus! {
 proof fn journal_snapshot_wf_proof(
     boundary_lsn: u64,
     freshest_rec: Option<IAddress>,
-    js: JournalSnapshot
 )
     requires
         boundary_lsn.wf(),
         freshest_rec.wf(),
-        js.boundary_lsn == boundary_lsn,
-        js.freshest_rec == freshest_rec,
-    ensures
-        js.wf(),
+    ensures ({
+        let snapshot = IJournalSnapshot{boundary_lsn, freshest_rec};
+        snapshot.wf()
+    })
 {
     // JournalSnapshot::wf() returns true unconditionally
 }
 
-// Postcondition proof for JournalSnapshotFormat::try_parse
+// Postcondition proof for IJournalSnapshotFormat::try_parse
 proof fn journal_snapshot_postcondition_proof(
-    fmt: &JournalSnapshotFormat,
+    fmt: &IJournalSnapshotFormat,
     slice: &Slice,
     data: &Vec<u8>,
     field1_slice: &Slice,
     field1_value: u64,
     field2_slice: &Slice,
     field2_value: Option<IAddress>,
-    result: JournalSnapshot,
+    result: IJournalSnapshot,
 )
     requires
         fmt.valid(),
@@ -63,13 +62,14 @@ proof fn journal_snapshot_postcondition_proof(
             fmt.field1_fmt.uniform_size() as int,
             fmt.field1_fmt.uniform_size() as int + fmt.field2_fmt.uniform_size() as int),
     ensures
-        result.parsedv() == fmt.parse(slice@.i(data@)),
         result.wf(),
+        result.parsedv() == fmt.parse(slice@.i(data@))
 {
     // JournalSnapshot::wf() returns true unconditionally
+    let result = IJournalSnapshot{boundary_lsn: field1_value, freshest_rec: field2_value};
 
-    // result.parsedv() = result@ = JournalSnapShot { boundary_lsn: result.boundary_lsn as nat, freshest_rec: iaddr_view(result.freshest_rec) }
-    // fmt.parse(...) = JournalSnapShot { boundary_lsn: fmt.field1_fmt.parse(...), freshest_rec: fmt.field2_fmt.parse(...) }
+    // result.parsedv() = result@ = JournalSnapshot { boundary_lsn: result.boundary_lsn as nat, freshest_rec: iaddr_view(result.freshest_rec) }
+    // fmt.parse(...) = JournalSnapshot { boundary_lsn: fmt.field1_fmt.parse(...), freshest_rec: fmt.field2_fmt.parse(...) }
     let idata = slice@.i(data@);
     let f1_end = fmt.field1_fmt.uniform_size() as int;
     let f2_end = f1_end + fmt.field2_fmt.uniform_size() as int;
@@ -87,9 +87,9 @@ proof fn journal_snapshot_postcondition_proof(
 } // verus!
 
 struct_marshaller_2! {
-    format_name: JournalSnapshotFormat,
-    impl_type: JournalSnapshot,
-    spec_type: JournalSnapShot,
+    format_name: IJournalSnapshotFormat,
+    impl_type: IJournalSnapshot,
+    spec_type: JournalSnapshot,
     wf_proof: journal_snapshot_wf_proof,
     postcondition_proof: journal_snapshot_postcondition_proof,
     field1: {
