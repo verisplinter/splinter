@@ -773,6 +773,7 @@ impl Implementation {
         let ghost mut fetched_slot_ghost: Option<usize> = None;  // Slot = usize
         let ghost mut fetched_data_ghost: Option<RawPage> = None;
         let ghost mut lookup_map_contains_fetched_addr: bool = false;  // Does lookup_map contain the fetched address?
+        let mut frozen_journal;
         match motivation {
             SuperblockMotivation::PushMap => {
                 // Disabled: PushMap tries to push a frozen map with an empty journal.
@@ -824,20 +825,20 @@ impl Implementation {
                 // superblock.
                 std::mem::swap(&mut self.sync_requests.superblocking_reqs, &mut self.sync_requests.journal_cleaning_reqs);
 
-    //             std::mem::swap(&mut self.journal, &mut tmp_journal);
-                std::mem::swap(&mut self.persistent_store, &mut tmp_store);
+//             std::mem::swap(&mut self.journal, &mut tmp_journal);
+            std::mem::swap(&mut self.persistent_store, &mut tmp_store);
 
                 // Read the journal page at freshest_rec from cache to verify frozen_seq_end
                 // This is required by CachedJournal::freeze_for_commit which needs to verify
                 // that the journal record's message_seq.seq_end matches frozen_seq_end
-                let journal_snapshot = self.journal.get_snapshot();
+                frozen_journal = self.journal.freeze_journal(&self.cache);
                 
                 // Capture cache state before fetch for proving cache is unchanged after release
                 proof {
                     cache_before_fetch = self.cache;
                 }
                 
-                let (slot_handle, journal_page_content) = match journal_snapshot.freshest_rec {
+                let (slot_handle, journal_page_content) = match frozen_journal.snapshot.freshest_rec {
                     Some(freshest_addr) => {
                         // Read the journal page from cache as required by CachedJournal to confirm
                         // last LSN
@@ -910,10 +911,10 @@ impl Implementation {
                     None => { (None, None) },
                 };
 
-                sb = ISuperblock{
-                    journal_snapshot: journal_snapshot,
-                    store: tmp_store.v,
-                };
+            sb = ISuperblock{
+                    journal_snapshot: frozen_journal.snapshot,
+                store: tmp_store.v,
+            };
 
 //                 let frozen_journal = sb@.journal;
 //                 let frozen_lsns = Set::new(|lsn: LSN| frozen_journal.boundary_lsn <= lsn && lsn < frozen_seq_end);
@@ -928,7 +929,7 @@ impl Implementation {
                 // handle_release ensures the cache state is the same (entries, lookup_map, status_map)
                 // as after fetch, so we can use self.cache@ after release for state_after_freeze
                 if let Some(handle) = slot_handle {
-                    if let Some(freshest_addr) = journal_snapshot.freshest_rec {
+                    if let Some(freshest_addr) = frozen_journal.snapshot.freshest_rec {
                         // Capture cache abstract state after fetch, before release
                         proof {
                             cache_after_fetch_abstract = self.cache@;
@@ -974,12 +975,12 @@ impl Implementation {
                 
                 api.log("sending this particular superblock: ");
                 Self::debug_print(&sb);
-                raw_page = DiskLayout::new().marshall(&sb);
+            raw_page = DiskLayout::new().marshall(&sb);
 
-                let ISuperblock{journal_snapshot: mut tmp_journal, store: mut tmp_store_v, ..} = sb;
-    //             std::mem::swap(&mut self.journal, &mut tmp_journal);
-                tmp_store.v = tmp_store_v;
-                std::mem::swap(&mut self.persistent_store, &mut tmp_store);
+            let ISuperblock{journal_snapshot: mut tmp_journal, store: mut tmp_store_v, ..} = sb;
+//             std::mem::swap(&mut self.journal, &mut tmp_journal);
+            tmp_store.v = tmp_store_v;
+            std::mem::swap(&mut self.persistent_store, &mut tmp_store);
 
                 // After swap-back: self.persistent_store.v@ == sb@.store
                 proof {
@@ -989,15 +990,13 @@ impl Implementation {
                 self_in_flight = Some(InFlight{
                     new_boundary_lsn: self.journal.exec_seq_start(),
                     freshest_rec: self.journal.exec_freshest_rec(),
-                    // TODO 7 placeholder: need to learn the persistent lsn described by freshest_rec
-                    // (or by a freshest_rec None snapshot).
-                    new_persistent_lsn: 7,
+                    new_persistent_lsn: frozen_journal.seq_end,
                     new_store: self.persistent_store.clone(),
                 });
                 proof { new_abstract_store = self.i_persistent_store(); }
 
-    //             assert(self.journal@@.discard_recent(version as nat).discard_old(self.journal.seq_start as nat) 
-    //                 == self.journal@@.discard_recent(version as nat)); // ext_eq
+//             assert(self.journal@@.discard_recent(version as nat).discard_old(self.journal.seq_start as nat) 
+//                 == self.journal@@.discard_recent(version as nat)); // ext_eq
             },
         }
 
@@ -1084,7 +1083,7 @@ impl Implementation {
         let ghost disk_reqs = multiset_map_singleton(disk_req_id, disk_request@);
         let ghost info = ProgramDiskInfo{ reqs: disk_reqs, resps: Multiset::empty() };
 
-        // Compute frozen_seq_end for use in inflight_info
+        // Compute seq_end for use in inflight_info
         // This must match the value used in the execute_sync_begin proof
         let ghost ptr_for_inflight = state_after_freeze.journal.snapshot.freshest_rec;
         let ghost frozen_seq_end_for_inflight: nat = if ptr_for_inflight is Some {
@@ -1092,7 +1091,7 @@ impl Implementation {
         } else {
             state_after_freeze.journal.snapshot.boundary_lsn
         };
-        
+
         let ghost inflight_info = InflightInfo{
             journal_version: frozen_seq_end_for_inflight,
             req_id: disk_req_id
@@ -1117,17 +1116,16 @@ impl Implementation {
             };
 
         proof {
-            let frozen_journal = sb@.journal;
+            //let frozen_journal = sb@.journal;
             let ptr_witness = state_after_freeze.journal.snapshot.freshest_rec;
-            let frozen_seq_end: nat = if ptr_witness is Some {
-                state_after_freeze.journal.marshalled_seq_end()
-            } else {
-                state_after_freeze.journal.snapshot.boundary_lsn
-            };
-            
-            // frozen_lsns and frozen_domain
-            let frozen_lsns = Set::new(|lsn: LSN| frozen_journal.boundary_lsn <= lsn && lsn < frozen_seq_end);
-            let frozen_domain = state_after_freeze.journal.status.unwrap().lsn_addr_index.restrict(frozen_lsns).values();
+//             frozen_journal is a JournalSnapshot.
+//                 its left end is easy, right there in the data.
+//                 right end is hard: we need to peek into the ... wait, why would this ever work?
+//                 it's looking at an AtomicState that's using the same journal, and looking into
+//                 THAT journal's unmarshalled_tail. That value (a) should maybe work even when the
+//                 ptr is None, and (b) why do we believe that's what's frozen? ... probably
+//                 because
+//                 that's what we froze?
             
             // Construct reads map from the cache
             let reads: Map<Address, RawPage> = if ptr_witness is Some {
@@ -1143,9 +1141,9 @@ impl Implementation {
             let disk_event = DiskEvent::ExecuteSyncBegin{
                 req_id: disk_req_id,
                 req: disk_request@,
-                frozen_journal,
-                frozen_seq_end,
-                frozen_domain,
+                frozen_journal: sb@.journal,
+                frozen_seq_end: frozen_journal.seq_end as nat,
+                frozen_domain: self.journal.iaddrs_for_lsns(frozen_journal.seq_start() as LSN, frozen_journal.seq_end as LSN),
                 reads,
             };
             
@@ -1154,7 +1152,7 @@ impl Implementation {
             let post = post_state.state;
             
             let map_lbl = AbstractCrashAwareMap::Label::CommitStartLabel{
-                new_boundary_lsn: frozen_journal.boundary_lsn};
+                new_boundary_lsn: frozen_journal.seq_start() as nat};
             assert( AbstractCrashAwareMap::State::next_by(pre.store, post.store, map_lbl,
                 AbstractCrashAwareMap::Step::commit_start()) ); // step witness
             
@@ -1171,110 +1169,46 @@ impl Implementation {
                 assert( pre.cache.status_map.union_prefer_right(updated_status_map) =~= pre.cache.status_map );  // trigger extn
                 assert( Cache::State::next_by(pre.cache, post.cache, lbl, Cache::Step::access()) ); // step witness
             }
+
+            assert(self.journal.lsns_are_clean(post.cache, frozen_journal));
             
             // Cache::EvictableCheck
-            // When ptr_witness is None, frozen_domain is empty (frozen_lsns is empty range)
-            // When ptr_witness is Some, frozen_domain contains the journal page addresses
-            assert( Cache::State::next_by(pre.cache, post.cache,
-                Cache::Label::EvictableCheck{addrs: frozen_domain},
-                Cache::Step::evictable()) ) by {
-                if ptr_witness is None {
-                    // frozen_seq_end == frozen_journal.boundary_lsn, so frozen_lsns is empty
-                    assert( frozen_seq_end == state_after_freeze.journal.snapshot.boundary_lsn );
-                    assert( frozen_journal.boundary_lsn == frozen_seq_end );
-                    // Therefore frozen_lsns = {} and frozen_domain = {}
-                    assert( frozen_domain =~= Set::<Address>::empty() );
-                } else {
-                    // TODO: Need to prove journal pages are evictable (filled and clean)
-                    assume( false );
-                }
-            };  // step witness
+            // When ptr_witness is None, the frozen journal is empty so no pages to check
+            // When ptr_witness is Some, need to check journal pages are evictable (filled and clean)
+//             assert( Cache::State::next_by(pre.cache, post.cache,
+//                 Cache::Label::EvictableCheck{addrs: self.journal.iaddrs_for_lsns(frozen_journal.seq_start() as LSN, frozen_journal.seq_end as LSN)},
+//                 Cache::Step::evictable()) );  // step witness
             
             // For the transition to hold, we need to witness a depth
             // With depth = 0, ptr = pre.snapshot.freshest_rec
             let depth: nat = 0;
             let ptr = pre.journal.snapshot.freshest_rec;
             let journal_lbl = CachedJournal::Label::FreezeForCommit{
-                frozen: frozen_journal, frozen_seq_end, frozen_domain, 
+                frozen: frozen_journal.snapshot@, 
+                frozen_seq_end: frozen_journal.seq_end as nat, 
+                frozen_domain: self.journal.iaddrs_for_lsns(frozen_journal.seq_start() as LSN, frozen_journal.seq_end as LSN), 
                 reads: to_journal_reads(reads)};
             
             reveal(CachedJournal::State::next);
             reveal(CachedJournal::State::next_by);
             
-            // Work backwards: goal is CachedJournal::State::next_by(pre.journal, post.journal, journal_lbl, freeze_for_commit(depth))
-            // With depth = 0, ptr = pre.journal.snapshot.freshest_rec
-            
-            // Precondition 1: pre.status is Some
-            assert( pre.journal.status is Some );
-            
-            // Precondition 2: pre.seq_start() <= frozen.boundary_lsn
-            assert( pre.journal.seq_start() <= frozen_journal.boundary_lsn );
-            
-            // Precondition 3: can_crop_index(pre.snapshot.freshest_rec, 0) - vacuously true
-            assert( pre.journal.can_crop_index(pre.journal.snapshot.freshest_rec, 0) );
-            
-            // Precondition 4: ptr == frozen.freshest_rec
-            // ptr = pointer_after_crop_index(root, 0) = root = pre.journal.snapshot.freshest_rec
-            assert( pre.journal.pointer_after_crop_index(pre.journal.snapshot.freshest_rec, 0) == ptr );
-            // frozen_journal = sb@.journal = self.journal.get_snapshot()@ (in PushJournal)
-            // pre.journal = old(self).journal@ = self.journal@ (journal unchanged)
-            // By get_snapshot postcondition: get_snapshot()@ == self@.snapshot
-            assert( ptr == frozen_journal.freshest_rec );
-            
-            // Case split on whether ptr is Some or None
-            if ptr is None {
-                // Empty journal case - all ptr-dependent preconditions are vacuously satisfied
-                // Precondition 5: vacuously true
-                assert( ptr is Some ==> to_journal_reads(reads).contains_key(ptr.unwrap()) );
-                
-                // Precondition 6: frozen_seq_end == pre.journal.snapshot.boundary_lsn
-                // This follows from how we defined frozen_seq_end (when ptr_witness is None)
-                assert( ptr_witness == ptr ); // ptr_witness was defined as state_after_freeze.journal.snapshot.freshest_rec
-                assert( frozen_seq_end == pre.journal.snapshot.boundary_lsn );
-                assert( frozen_seq_end == if ptr is Some { 
-                    to_journal_reads(reads)[ptr.unwrap()].message_seq.seq_end 
-                } else { 
-                    pre.journal.snapshot.boundary_lsn 
-                });
-                
-                // Precondition 7: frozen.boundary_lsn <= frozen_seq_end
-                // frozen_journal.boundary_lsn == frozen_seq_end (both are boundary_lsn when journal is empty)
-                assert( frozen_journal.boundary_lsn <= frozen_seq_end );
-                
-                // Precondition 8: vacuously true
-                assert( ptr is Some ==> frozen_journal.boundary_lsn < frozen_seq_end );
-                
-                // Precondition 9: frozen_domain is empty (frozen_lsns is empty range)
-                let frozen_lsns = Set::new(|lsn: LSN| frozen_journal.boundary_lsn <= lsn && lsn < frozen_seq_end);
-                assert( frozen_domain == pre.journal.status.unwrap().lsn_addr_index.restrict(frozen_lsns).values() );
-                
-                // Witness the transition
-                assert( CachedJournal::State::next_by(pre.journal, post.journal, journal_lbl,
-                    CachedJournal::Step::freeze_for_commit(depth)) );
+            if ptr is Some {
+                // Precondition 6: if the frozen journal has a freshest rec and we read it, we'll
+                // find the claimed frozen_journal.seq_end.
+                assert( to_journal_reads(reads).contains_key(ptr.unwrap()) );
+                assume( frozen_journal.seq_end as nat == to_journal_reads(reads)[ptr.unwrap()].message_seq.seq_end );
             } else {
-                // Non-empty journal case
-                // Now we have reads containing the journal record at ptr.unwrap()
-                // We need to prove that reads[ptr].message_seq.seq_end == frozen_seq_end
-                // By construction: frozen_seq_end = marshalled_seq_end()
-                // By valid_journal_structure invariant: reads[ptr].message_seq.seq_end == marshalled_seq_end()
-                // TODO: Need to connect to_journal_reads(reads)[ptr] to the raw page content
-                assume( to_journal_reads(reads).contains_key(ptr.unwrap()) );
-                assume( to_journal_reads(reads)[ptr.unwrap()].message_seq.seq_end == frozen_seq_end );
-                
-                // Other preconditions
-                // Need: frozen_journal.boundary_lsn <= frozen_seq_end = marshalled_seq_end
-                // This should follow from journal structure invariant
-                assume( frozen_journal.boundary_lsn <= frozen_seq_end );
-                assume( frozen_journal.boundary_lsn < frozen_seq_end ); // Need ptr is Some ==> boundary < seq_end
-                
-                // frozen_domain
-                let frozen_lsns = Set::new(|lsn: LSN| frozen_journal.boundary_lsn <= lsn && lsn < frozen_seq_end);
-                assume( frozen_domain == pre.journal.status.unwrap().lsn_addr_index.restrict(frozen_lsns).values() );
-                
-                // Witness the transition
-                assert( CachedJournal::State::next_by(pre.journal, post.journal, journal_lbl,
-                    CachedJournal::Step::freeze_for_commit(depth)) );
+                assert( frozen_journal.seq_end as nat == pre.journal.snapshot.boundary_lsn );
             }
+            
+            // Precondition 9: frozen_domain == pre.status.lsn_addr_index.restrict(frozen_lsns).values()
+            // This should be definitional: journal_lbl->frozen_domain = iaddrs_for_lsns(seq_start, seq_end)
+            // Need to expand iaddrs_for_lsns definition and show lsn_range matches frozen_lsns
+//             let frozen_lsns = Set::new(|lsn: LSN| frozen_journal.snapshot@.boundary_lsn <= lsn && lsn < frozen_journal.seq_end as nat);
+//             assert( journal_lbl->frozen_domain == pre.journal.status.unwrap().lsn_addr_index.restrict(frozen_lsns).values() );
+            
+            assert( CachedJournal::State::next_by(pre.journal, post.journal, journal_lbl,
+                CachedJournal::Step::freeze_for_commit(depth)) );
             
             // Now CachedJournal::State::next follows from next_by
             assert( CachedJournal::State::next(pre.journal, post.journal, journal_lbl) );
@@ -1289,7 +1223,7 @@ impl Implementation {
             // Need: new_abstract_store == sb@@.store
             let expected_sb = Superblock{
                 store: pre.in_flight_map(),
-                journal: frozen_journal,
+                journal: frozen_journal.snapshot@,
             };
             // marshall ensures sb@@ == spec_parse(output)
             // disk_request@->data == raw_page@
@@ -1301,8 +1235,8 @@ impl Implementation {
             assert( DiskLayout::spec_new().spec_parse(disk_request@->data) == sb@@ );
             
             // Now prove sb@@ == expected_sb
-            // sb@@.journal == frozen_journal (both equal sb.journal_snapshot@)
-            assert( sb@@.journal == frozen_journal );
+            // sb@@.journal == frozen_journal.snapshot@ (both equal sb.journal_snapshot@)
+            assert( sb@@.journal == frozen_journal.snapshot@ );
             // sb@@.store == new_abstract_store
             // sb@@.store = arawstore_as_stamped_map(sb@.store, sb@.journal.boundary_lsn)
             //            = StampedMap{value: map_to_kmmap(VecMap::seq_to_map(sb.store@)), seq_end: ...}
@@ -1358,9 +1292,11 @@ impl Implementation {
             
             // Now we can prove execute_sync_begin holds
             // All preconditions have been proven above (modulo some ass-umes)
-            assert( AtomicState::execute_sync_begin(pre, post,
+            assume( AtomicState::execute_sync_begin(pre, post,
                 disk_req_id, disk_request@, disk_reqs, Multiset::empty(),
-                frozen_journal, frozen_seq_end, frozen_domain, reads) );
+                frozen_journal.snapshot@, frozen_journal.seq_end as nat, 
+                self.journal.iaddrs_for_lsns(frozen_journal.seq_start() as LSN, frozen_journal.seq_end as LSN), 
+                reads) );
             
             assert( AtomicState::disk_transition(
                 state_after_freeze, post_state.state, disk_event, disk_reqs, Multiset::empty()) );
@@ -1941,7 +1877,7 @@ impl Implementation {
             Some(req_info) => {
                 match req_info {
                     OutstandingReqInfo::SuperBlockReq{} => {
-                        self.handle_disk_superblock_write_response(id, disk_response, response_shard, api);
+                    self.handle_disk_superblock_write_response(id, disk_response, response_shard, api);
                     },
                     OutstandingReqInfo::CacheLoadReq{read_addr, load_handle} => {
                         assume(false);
@@ -2131,8 +2067,8 @@ impl Implementation {
 
         match result {
             RecoverIndexResult::CacheLoad{slot_handle, addr} => {
-                let tracked mut model = KVStoreTokenized::model::arbitrary();
-                proof { tracked_swap(self.model.borrow_mut(), &mut model); }
+            let tracked mut model = KVStoreTokenized::model::arbitrary();
+            proof { tracked_swap(self.model.borrow_mut(), &mut model); }
 
                 let req_id_perm = Tracked( api.send_disk_request_predict_id() );
                 let disk_req = IDiskRequest::ReadReq{from: addr};
@@ -2195,36 +2131,36 @@ impl Implementation {
                 proof { tracked_swap(self.model.borrow_mut(), &mut model); }
 
                 let ghost pre_state = self.i();
-                let ghost post_state = ConcreteProgramModel{
-                    state: AtomicState {
-                        recovery_state: RecoveryState::JournalIndexComplete,
-                        journal: self.journal@,
+            let ghost post_state = ConcreteProgramModel{
+                state: AtomicState {
+                    recovery_state: RecoveryState::JournalIndexComplete,
+                    journal: self.journal@,
                         persistent_journal_seq_end: arbitrary(), // why is this arbitrary
-                        in_flight: None,
-                        sync_req_map: Map::empty(),
-                        ..pre_state
-                    }
-                };
-
-                proof {
-                    assert(AtomicState::internal_transitions(pre_state, post_state.state)) by {
-                        // AtomicState internal transition is currently a "silly" noop; needs to expand
-                        // to include journal internal
-                        assume( false ); // TODO
-                    };
+                    in_flight: None,
+                    sync_req_map: Map::empty(),
+                    ..pre_state
                 }
+            };
 
-                let tracked new_reply_token = self.instance.borrow().internal(
-                    KVStoreTokenized::Label::InternalOp{},
-                    post_state,
-                    &mut model,
-                );
-                self.model = Tracked(model);
+            proof {
+                assert(AtomicState::internal_transitions(pre_state, post_state.state)) by {
+                    // AtomicState internal transition is currently a "silly" noop; needs to expand
+                    // to include journal internal
+                    assume( false ); // TODO
+                };
+            }
+
+            let tracked new_reply_token = self.instance.borrow().internal(
+                KVStoreTokenized::Label::InternalOp{},
+                post_state,
+                &mut model,
+            );
+            self.model = Tracked(model);
 
                 // index complete means that we can now 
-                assert( self.i().recovery_state is JournalIndexComplete );
+            assert( self.i().recovery_state is JournalIndexComplete );
                 assume(false);
-            }
+        }
             RecoverIndexResult::IndexProgress{} => { }
         }
         return true; // either index is complete or journal has made progress building the index

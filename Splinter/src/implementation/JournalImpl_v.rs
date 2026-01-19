@@ -97,6 +97,21 @@ use crate::marshalling::WF_v::WF;
 
 impl WF for IJournalSnapshot {}
 
+pub struct FrozenJournal {
+    pub snapshot: IJournalSnapshot,
+    pub seq_end: ILsn,
+}
+
+impl FrozenJournal {
+    pub open spec fn wf(self) -> bool {
+        &&& self.seq_start() <= self.seq_end
+        &&& self.snapshot.freshest_rec is None ==> self.seq_end == self.snapshot.boundary_lsn
+        &&& self.snapshot.freshest_rec is Some ==> self.seq_start() < self.seq_end
+    }
+
+    pub open spec fn seq_start(self) -> ILsn { self.snapshot.boundary_lsn }
+}
+
 pub struct IJournalStatus {
     pub lsn_addr_index: LsnAddrIndexImpl,
     pub unmarshalled_tail: Vec<(Key,Value)>,
@@ -596,37 +611,61 @@ impl JournalImpl {
         self.status.as_ref().unwrap().unmarshalled_tail.len() > 0 || self.snapshot.freshest_rec.is_some()
     }
 
-    // Reveal snapshot for use in Implementation::send_superblock
-    pub fn get_snapshot(&self) -> (out: IJournalSnapshot)
+    // Provide a frozen snapshot for use in Implementation::send_superblock
+    // Design intent:
+    // - this exec call is really cheap, so it can be used both to "probe" what LSN we are able to
+    // freeze to, as well as to capture that frozen sequence and use it in the superblock.
+    // - This interface gives the journal design freedom to decide how to respond: A smarter
+    // journal could keep track of what prior pages are clean and return just those. A lazy
+    // journal (right now) just returns whatever it has lying around.
+    // - The caller can use it in "probe" mode to decide that the LSN hasn't advanced enough,
+    // and call some other interface to ask the journal to push the clean mark forward by cleaning
+    // cache pages.
+
+    pub exec fn freeze_journal(&self, cache: &FracCacheImpl) -> (out: FrozenJournal)
+    requires
+        self.index_ready()
     ensures 
-        out.boundary_lsn == self.seq_start(),
-        out@ == self@.snapshot,
-    {
-        self.snapshot.clone()
+        out.wf(),
+        out.snapshot.boundary_lsn == self.seq_start(),
+        out.snapshot@ == self@.snapshot,
+        self.lsns_are_clean(cache@, out),
+    {   
+        assume(false);  // left off -- need to check and prove lsns_are_clean!
+        FrozenJournal{
+            snapshot: self.snapshot.clone(),
+            seq_end: self.status.as_ref().unwrap().unmarshalled_tail_start,
+        }
     }
 
-    // TODO close?
     pub open spec fn lsn_range(start_incl: LSN, end_excl: LSN) -> Set<LSN>
     {
         Set::new(|lsn: LSN| start_incl <= lsn && lsn < end_excl)
     }
 
-    // TODO close?
+    // Open because this definition gets used proving the refinement CachedJournal::Step::freeze_for_commit(depth) in Implementation
     pub open spec fn iaddrs_for_lsns(self, start_incl: LSN, end_excl: LSN) -> Set<Address>
     recommends self.index_ready()
     {
         self@.status.unwrap().lsn_addr_index.restrict(Self::lsn_range(start_incl, end_excl)).values()
     }
 
-    pub exec fn lsns_are_clean(&self, cache: &FracCacheImpl, start_incl: LSN, end_excl: LSN) -> (clean: bool)
-    ensures clean ==>
-        Cache::State::next_by(cache@, cache@,
-            Cache::Label::EvictableCheck{addrs: self.iaddrs_for_lsns(start_incl, end_excl)},
-            Cache::Step::evictable())
+    pub open spec fn lsns_are_clean(&self, cache: Cache::State, out: FrozenJournal) -> bool
     {
-        proof { assume(false); }
-        true
+        Cache::State::next_by(cache, cache,
+            Cache::Label::EvictableCheck{addrs: self.iaddrs_for_lsns(out.seq_start() as LSN, out.seq_end as LSN)},
+            Cache::Step::evictable())
     }
+
+//     // TODO maybe fold this promise right into a smarter freeze_journal, and then add a method that
+//     // advances the clean watermark and provides a callback to let the caller know it could maybe
+//     // sync more stuff now.
+//     pub exec fn check_lsns_are_clean(&self, cache: &FracCacheImpl, out: FrozenJournal) -> (clean: bool)
+//     ensures clean ==> self.lsns_are_clean(cache@, out)
+//     {
+//         proof { assume(false); }
+//         true
+//     }
 }
 
 impl View for JournalImpl {
