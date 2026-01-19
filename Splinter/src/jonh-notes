@@ -1,0 +1,86 @@
+# Current status:
+Executable side
+
+cargo verus verify
+tocuh storage.bin
+cargo verus build
+RUST_BACKTRACE=1 ./target/debug/verisplinter
+
+Currently broken at Implementation.rs:1392 : false placeholder
+
+# Commands
+verus -Zunpretty=expanded src/main.rs> /tmp/foo
+time verus src/main.rs --verify-module implementation::Implementation_v
+~/bin/verus-watcher.py -w 'src/**/*.rs' -w 'src/**/**/*.rs' verus src/main.rs --expand-errors --multiple-errors 5 --verify-module implementation::Implementation_v
+
+------------------------------------------------------------------------------
+
+left off thread in dying cursor:
+
+Okay, I tightened up the assumes down to a single closely-related pair at 1169-1170 (read 'em) that say "if we were to read the cache at the frozen freshest rec, we'd find a JournalRecord that terminates where frozen_journal.seq_end says it does." Why do we think that's true? Because freeze_journal() is going to make it true. Two subproblems:
+1. How would freeze_journal express this promise? Would it say something about cache@?
+2. How does freeze_journal *know* this promise? The journal knows that it can pick any page from the active journal and have that be the frozen freshest_rec, and the set of LSNs on that page will be exactly the LSNs in the lsn_to_addr_index. That connection ultimately is coming from a system-level invariant, because it's a statement about the disk as a whole; the currently-running journal doesn't even have to have seen a particular page to know this is true.
+Discuss.
+
+My Recommendation
+Don't put this in freeze_journal() postcondition at all!
+Instead, use the system invariant directly in the send_superblock proof:
+Assert self.inv() → which includes the journal coordination system invariant
+From inv(), extract that the cache contains the right page with the right content
+Use that to prove line 1170
+The pattern would be:
+if ptr is Some {    let addr = ptr.unwrap();    // From inv: ephemeral disk has valid journal structure    assert( self.inv() );    // From valid_journal_structure: page at addr parses to match seq_end    // From cache read: reads[addr] == cache page data == ephemeral disk page    assume( frozen_journal.seq_end as nat == to_journal_reads(reads)[addr].message_seq.seq_end );}
+The assume stays until you flesh out the system invariant that connects:
+JournalImpl.status.unmarshalled_tail_start
+JournalCoordinationSystem.valid_journal_structure
+The actual bytes in the cache/disk
+This is the right place for the assume - it's a system invariant boundary, not a JournalImpl API boundary.
+
+
+------------------------------------------------------------------------------
+
+~/bin/verus-watcher.py -w "*/*.rs" -w "*.rs"  verus sequential_main.rs --compile
+
+Verification side
+
+- Placeholder data structures -- get plumbing in place
+    - empty store + journal-fits-in-superblock.
+        - Put only, no get
+        - forces marshalling with journal
+    - vecmap store + journal, everything fits in superblock.
+        - services Gets
+
+- Real data structures
+    - pry journal out of superblock and use block indirection instead
+        - journal structure follows allocationjournal (implement the real thing)
+        - exercises coordination system protocol
+        - need to begin implementing allocation
+    - replace vecmap with betree
+        - maybe b+tree is still just inline vecmaps?
+            (bring down allocationbetree, but not b+tree)
+
+------------------------------------------------------------------------------
+
+What's missing?
+Sync:
+- send_superblock is all missing
+- handle_disk_superblock_write_response is broken in the middle
+- the journal never marshals the unmarshalled tail, which will involve the cache
+- preparing to send a superblock will require learning the journal pages are
+    all clean.
+
+Recovery:
+- handle_disk_cache_response unwritten, because there's no cache
+- no journal index recovery procedure
+- no map journal replay recovery procedure
+
+handle_query works because the map is all in memory.
+handle_put works because the journal can be appended without the cache
+
+------------------------------------------------------------------------------
+
+Things Jon needs
+
+🦆 JL: CachedJournal needs a view up to something with a MsgHistory, surely?
+🦆 CH: Can I return slice refs?
+
