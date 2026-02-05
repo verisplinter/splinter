@@ -1706,7 +1706,7 @@ impl<T> LinkedBetree<T> {
             self.valid_ranking(r1), 
             self.valid_ranking(r2),
         ensures 
-            self.reachable_betree_addrs_using_ranking(r1) == self.reachable_betree_addrs_using_ranking(r2)
+            (#[trigger] self.reachable_betree_addrs_using_ranking(r1)) == (#[trigger] self.reachable_betree_addrs_using_ranking(r2))
         decreases 
             self.get_rank(r1)
     {
@@ -1987,9 +1987,9 @@ impl<T> LinkedBetree<T> {
         let reachable_buffers = self.reachable_buffer_addrs();
         let split_reachable_buffers = left.reachable_buffer_addrs() + right.reachable_buffer_addrs();
 
-        assert forall |i| 0 <= i < pivot_idx ==> 
+        assert forall |i| 0 <= i < pivot_idx implies 
             left.root().flushed.offsets[i] == self.root().flushed.offsets[i] by {} // trigger
-        assert forall |i| 0 <= i < right.root().flushed.offsets.len() ==> 
+        assert forall |i| 0 <= i < right.root().flushed.offsets.len() implies 
             right.root().flushed.offsets[i] == self.root().flushed.offsets[i + pivot_idx] by {} // trigger
 
         left.reachable_betree_addrs_using_ranking_closed(ranking);
@@ -2148,8 +2148,8 @@ impl<T> LinkedBetree<T> {
         assert(new_parent.wf());
 
         assert(result.dv.valid_ranking(new_ranking)) by {
-            assert forall |i| #[trigger] new_child.valid_child_index(i) ==> old_child.valid_child_index(i) by {} // trigger
-            assert forall |i| #[trigger] new_parent.valid_child_index(i) ==> self.root().valid_child_index(i) by {} // trigger
+            assert forall |i| #[trigger] new_child.valid_child_index(i) implies old_child.valid_child_index(i) by {} // trigger
+            assert forall |i| #[trigger] new_parent.valid_child_index(i) implies self.root().valid_child_index(i) by {} // trigger
         }
 
         assert(buffer_gc <= self.root().buffers.len()) by {
@@ -2344,7 +2344,7 @@ impl<T: Buffer> LinkedBetree<T>{
 
         let new_root = result.dv.entries[new_addrs.addr1];
         assert forall |i| #[trigger] new_root.valid_child_index(i) 
-            ==> self.root().valid_child_index(i) by {} // trigger
+            implies self.root().valid_child_index(i) by {} // trigger
         assert(result.dv.valid_ranking(new_ranking));
 
         new_ranking

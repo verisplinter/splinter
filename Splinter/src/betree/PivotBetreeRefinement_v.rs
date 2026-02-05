@@ -189,8 +189,8 @@ impl BetreeNode {
         ensures self.split_index(pivot_idx).0.wf(), self.split_index(pivot_idx).1.wf()
     {
         let (new_left, new_right) = self.split_index(pivot_idx);
-        assert forall |i| new_left.valid_child_index(i) ==> self.valid_child_index(i) by {}
-        assert forall |i| new_right.valid_child_index(i) ==> self.valid_child_index(i+pivot_idx) by {}
+        assert forall |i| new_left.valid_child_index(i) implies self.valid_child_index(i) by {}
+        assert forall |i| new_right.valid_child_index(i) implies self.valid_child_index(i+pivot_idx) by {}
         assert(new_left.wf_children());
         assert(new_right.wf_children());
     }
@@ -205,7 +205,7 @@ impl BetreeNode {
 
         self->pivots.insert_wf(child_idx as int + 1, self.split_element(request));
 
-        assert forall |i| #[trigger] new_parent.valid_child_index(i) ==> 
+        assert forall |i| #[trigger] new_parent.valid_child_index(i) implies 
         ({
             &&& i < child_idx ==> self.valid_child_index(i) 
             &&& i > child_idx + 1 ==> self.valid_child_index((i-1) as nat)
@@ -376,16 +376,57 @@ impl BetreeNode {
         let i_result = self.i().split(left_keys, right_keys);
 
         self.split_parent_wf(request);
+        self.split_keys_agrees_with_domains(request);
+
         let child_idx = request.get_child_idx();
+        let child_domain = self.child_domain(child_idx);
         let r = self->pivots.route(key);
 
-        if r < child_idx {
-            assert(Element::lte(result->pivots.pivots[r], to_element(key))); // trigger for route_is_lemma
-
+        // Key is outside the split child domain, so it cannot route to child_idx.
+        assert(!child_domain.contains(key));
+        assert(r != child_idx) by {
+            assert(self->pivots.bounded_key(key));
+            assert(self->pivots.bounded_key(key)) by {
+                assert(self.my_domain().contains(key));
+                assert(Element::lte(self->pivots.pivots[0], to_element(key)));
+                assert(Element::lt(to_element(key), self->pivots.pivots.last()));
+            }
+            self->pivots.route_lemma(key);
+            if r == child_idx {
+                assert(child_domain.contains(key));
+                assert(false);
+            }
         }
 
+        // Show the child chosen by split_parent is unchanged for this key.
+        if r < child_idx {
+            // Pivots and children before the insertion are unchanged.
+            assert(result->pivots.pivots[r] == self->pivots.pivots[r]);
+            assert(result->pivots.pivots[r+1] == self->pivots.pivots[r+1]);
+            result->pivots.route_is_lemma(key, r);
+            assert(result.child(key) == result->children[r]);
+            assert(result->children[r] == self->children[r]);
+            assert(self.child(key) == self->children[r]);
+        } else {
+            // r > child_idx (since r != child_idx).
+            assert(child_idx < r);
+            assert(result->pivots.pivots[r+1] == self->pivots.pivots[r]);
+            assert(result->pivots.pivots[r+2] == self->pivots.pivots[r+1]);
+            result->pivots.route_is_lemma(key, r+1);
+            assert(result.child(key) == result->children[r+1]);
+            assert(result->children[r+1] == self->children[r]);
+            assert(self.child(key) == self->children[r]);
+        }
+
+        // Relate the i-views.
         self.i_children_lemma();
         result.i_children_lemma();
+
+        assert(result.i_children().map[key] == result.i_child(key));
+        assert(result.i_child(key) == self.i_child(key));
+        assert(i_result.child(key) == self.i().child(key));
+        assert(self.i().child(key) == self.i_children().map[key]);
+
         assert(result.i_children().map[key] == i_result.child(key));
     }
 
@@ -428,7 +469,7 @@ impl BetreeNode {
     {
         let result = self.promote(domain).merge_buffer(buffer);
         assert(self.promote(domain).wf());
-        assert forall |i| #[trigger] result.valid_child_index(i) ==> self.promote(domain).valid_child_index(i) by {}
+        assert forall |i| #[trigger] result.valid_child_index(i) implies self.promote(domain).valid_child_index(i) by {}
         assert(result.wf());
     }
 
@@ -443,7 +484,7 @@ impl BetreeNode {
         let old_child = self->children[child_idx as int];
         let new_child = old_child.promote(child_domain).merge_buffer(moved_buffer);
         old_child.promote_and_merge_wf(child_domain, moved_buffer);
-        assert forall |i| #[trigger] result.valid_child_index(i) ==> self.valid_child_index(i) by {}
+        assert forall |i| #[trigger] result.valid_child_index(i) implies self.valid_child_index(i) by {}
     }
 
     proof fn promote_and_merge_commutes_with_i(self, domain: Domain, new_buffer: SimpleBuffer)
@@ -456,7 +497,7 @@ impl BetreeNode {
         let b = self.i().promote().merge_buffer(new_buffer);
 
         if self is Node {
-            assert forall |i| #[trigger] a.valid_child_index(i) ==> self.promote(domain).valid_child_index(i) by {}
+            assert forall |i| #[trigger] a.valid_child_index(i) implies self.promote(domain).valid_child_index(i) by {}
             self.i_children_seq_same(a, 0);
         } else {
             a.i_children_lemma();
@@ -619,7 +660,7 @@ impl Path{
             if result is Node {
                 self.replaced_children_matching_domains(replacement);
                 assert(self.node.wf_children());
-                assert forall |i| #[trigger] result.valid_child_index(i) ==> self.node.valid_child_index(i) by {}
+                assert forall |i| #[trigger] result.valid_child_index(i) implies self.node.valid_child_index(i) by {}
                 assert(result.wf_children());
             }
         }
@@ -639,7 +680,7 @@ impl Path{
         if 0 < self.subpath().depth {
             self.subpath().replaced_children_matching_domains(replacement);
         } else {
-            assert forall |i| #[trigger] self.node.valid_child_index(i) ==> new_children[i as int].wf() by {}
+            assert forall |i| #[trigger] self.node.valid_child_index(i) implies new_children[i as int].wf() by {}
         }
     }
 

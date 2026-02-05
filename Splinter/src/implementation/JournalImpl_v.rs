@@ -18,7 +18,7 @@ use crate::disk::GenericDisk_v::{Address, IAddress, Pointer};
 use crate::implementation::CachedJournal_v;
 use crate::implementation::JournalTypes_v::AJournal;
 use crate::implementation::JournalTypes_v::ILsn;
-use crate::implementation::JournalModel_v::LsnAddrIndex;
+use crate::allocation_layer::LikesJournal_v::LsnAddrIndex;
 use crate::implementation::Cache_v::Cache;
 use crate::implementation::FracCacheImpl_v::*;
 use crate::marshalling::Slice_v::Slice;

@@ -38,7 +38,7 @@ use crate::implementation::AtomicState_v::*;
 use crate::implementation::MultisetMapRelation_v::*;
 use crate::implementation::VecMap_v::*;
 use crate::implementation::JournalTypes_v::{ILsn};
-use crate::implementation::JournalModel_v::lsn_addr_index_discard_up_to;
+use crate::allocation_layer::LikesJournal_v::lsn_addr_index_discard_up_to;
 use crate::implementation::JournalImpl_v::*;
 use crate::implementation::SuperblockTypes_v;
 use crate::implementation::SuperblockTypes_v::*;

@@ -8,6 +8,8 @@ pub mod marshalling;
 pub mod abstract_system;
 pub mod disk;
 pub mod journal;
+pub mod allocation_layer;
+pub mod betree;
 
 use crate::trusted::TrustedEntry_t; // Auditor's "entry point": Auditor starts reading here
 use crate::implementation::Implementation_v;  // Implementor's entry point: Execution starts here

@@ -18,7 +18,7 @@ use crate::abstract_system::MsgHistory_v::*;
 use crate::journal::LinkedJournal_v::*;
 use crate::implementation::CachedJournal_v::*;
 use crate::implementation::Cache_v::*;
-use crate::implementation::JournalModel_v::*;
+use crate::allocation_layer::LikesJournal_v::*;
 use crate::implementation::JournalCoordinationSystem_v::*;
 
 verus!{

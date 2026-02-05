@@ -28,8 +28,8 @@ use crate::abstract_system::StampedMap_v::*;
 use crate::abstract_system::MsgHistory_v::*;
 
 verus! {
-/// Introduces aulikes to track the life time of disk data structures in terms of Allocation Unit.
-/// Incorporates read only reference tracking for determining GC
+// Introduces aulikes to track the life time of disk data structures in terms of Allocation Unit.
+// Incorporates read only reference tracking for determining GC
 
 state_machine!{ AllocationBetree {
     fields {

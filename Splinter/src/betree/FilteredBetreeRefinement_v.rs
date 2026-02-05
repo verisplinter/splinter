@@ -233,7 +233,7 @@ impl BetreeNode {
     {
         let result = self.extend_buffer_seq(buffers);
         assert(self.wf_children());
-        assert forall |i| #[trigger] result.valid_child_index(i) ==> self.valid_child_index(i) by {}
+        assert forall |i| #[trigger] result.valid_child_index(i) implies self.valid_child_index(i) by {}
         assert(result.wf_children());
     }
 
@@ -353,8 +353,8 @@ impl BetreeNode {
             self.split_index(pivot_idx).1.wf(),
     {
         let (new_left, new_right) = self.split_index(pivot_idx);
-        assert forall |i| new_left.valid_child_index(i) ==> self.valid_child_index(i) by {}
-        assert forall |i| new_right.valid_child_index(i) ==> self.valid_child_index(i+pivot_idx) by {}
+        assert forall |i| new_left.valid_child_index(i) implies self.valid_child_index(i) by {}
+        assert forall |i| new_right.valid_child_index(i) implies self.valid_child_index(i+pivot_idx) by {}
         assert(new_left.wf_children());
         assert(new_right.wf_children());
     }
@@ -369,7 +369,7 @@ impl BetreeNode {
 
         self->pivots.insert_wf(child_idx as int + 1, self.split_element(request));
 
-        assert forall |i| #[trigger] new_parent.valid_child_index(i) ==> 
+        assert forall |i| #[trigger] new_parent.valid_child_index(i) implies 
         ({
             &&& i < child_idx ==> self.valid_child_index(i) 
             &&& i > child_idx + 1 ==> self.valid_child_index((i-1) as nat)
@@ -584,7 +584,7 @@ impl BetreeNode {
         assert(child.wf()); // trigger
         child.promote(child_domain).extend_buffer_seq_wf(buffers_to_child);
         assert(new_child.wf());
-        assert forall |i| #[trigger] result.valid_child_index(i) ==> self.valid_child_index(i) by {}
+        assert forall |i| #[trigger] result.valid_child_index(i) implies self.valid_child_index(i) by {}
     }
 
     proof fn active_slice_equiv_apply_filter(self, child_idx: nat)
@@ -717,7 +717,7 @@ impl BetreeNode {
         ensures self.compact(start, end, compacted_buffer).wf()
     {
         let result = self.compact(start, end, compacted_buffer);
-        assert forall |i| #[trigger] result.valid_child_index(i) ==> self.valid_child_index(i) by {}
+        assert forall |i| #[trigger] result.valid_child_index(i) implies self.valid_child_index(i) by {}
     }
 
     proof fn compact_buffer_property(self, start: nat, end: nat, compacted_buffer: SimpleBuffer)
@@ -989,7 +989,7 @@ impl Path{
             if result is Node {
                 self.replaced_children_matching_domains(replacement);
                 assert(self.node.wf_children());
-                assert forall |i| #[trigger] result.valid_child_index(i) ==> self.node.valid_child_index(i) by {}
+                assert forall |i| #[trigger] result.valid_child_index(i) implies self.node.valid_child_index(i) by {}
                 assert(result.wf_children());
             }
         }

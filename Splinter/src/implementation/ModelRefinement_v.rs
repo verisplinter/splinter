@@ -15,7 +15,7 @@ use crate::journal::LinkedJournal_v::DiskView;
 use crate::implementation::AtomicState_v::*;
 use crate::implementation::Cache_v::*;
 use crate::implementation::CachedJournal_v::*;
-use crate::implementation::JournalModel_v::*;
+use crate::allocation_layer::LikesJournal_v::*;
 use crate::implementation::ConcreteProgramModel_v::*;
 use crate::implementation::MultisetMapRelation_v::*;
 use crate::implementation::DiskLayout_v::*;

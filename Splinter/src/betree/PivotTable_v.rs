@@ -130,9 +130,9 @@ impl PivotTable {
 
     pub broadcast proof fn route_is_lemma(self, key: Key, r: int)
         requires self.wf(), 0 <= r < self.num_ranges(),
-            Element::lte(self.pivots[r], to_element(key)),
+            #[trigger] Element::lte(self.pivots[r], to_element(key)),
             Element::lt(to_element(key), self.pivots[r+1])
-        ensures self.bounded_key(key), self.route(key) == r
+        ensures self.bounded_key(key), (#[trigger] self.route(key) == r)
     {
         Element::strictly_sorted_implies_sorted(self.pivots);
         Element::largest_lte_lemma(self.pivots, to_element(key), self.route(key));

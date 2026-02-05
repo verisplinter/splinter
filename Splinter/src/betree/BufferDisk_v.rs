@@ -128,7 +128,7 @@ impl BufferDisk<SimpleBuffer> {
             other.valid_buffers(buffers),
             self.agrees_with(other),
         ensures 
-            self.i_buffer_seq(buffers) == other.i_buffer_seq(buffers)
+            (#[trigger] self.i_buffer_seq(buffers)) == (#[trigger] other.i_buffer_seq(buffers))
     {
         let i_this = self.i_buffer_seq(buffers);
         let i_other = other.i_buffer_seq(buffers);

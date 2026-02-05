@@ -5,6 +5,7 @@ use vstd::prelude::*;
 //use vstd::prelude_macros::*;
 use vstd::prelude::*;
 use vstd::{map::*, seq_lib::*, set_lib::*, multiset::*};
+use vstd::map_lib::lemma_values_finite;
 
 use crate::spec::KeyType_t::*;
 use crate::spec::Messages_t::*;
@@ -18,6 +19,7 @@ use crate::betree::PivotTable_v::PivotTable;
 use crate::betree::LinkedBetree_v::*;
 use crate::betree::LinkedBranch_v;
 use crate::betree::LinkedBranch_v::Refinement_v;
+use crate::betree::Utils_v::lemma_union_set_of_sets_subset;
 use crate::betree::PivotBranch_v;
 use crate::betree::PivotBranchRefinement_v;
 use crate::allocation_layer::Likes_v::*;
@@ -607,7 +609,73 @@ impl AllocationBranchBetree::State {
         // 
         // new_branch.valid_subdisk_preserves_valid_sealed_branch(bdv.get_branch(new_branch.root), new_branch.get_summary());
 
-        assert(new_branch.disk_view.is_sub_disk(bdv.to_branch_disk())); // meow
+        // Prove sub-disk relation: new_branch entries are retained in the post buffer disk.
+        assert(new_branch.disk_view.is_sub_disk(bdv.to_branch_disk())) by {
+            let pre_buffer_dv = pre.betree.linked.buffer_dv;
+            let full_buffer_dv = pre_buffer_dv.entries.union_prefer_right(new_branch.disk_view.entries);
+
+            let new_compactors = pre.compactors.remove(input_idx);
+            let (new_betree_aus, new_branch_aus) = AllocationBetree::State::internal_compact_complete_au_likes(
+                path, start, end, linked_new_addrs, path_addrs, pre.betree_aus, pre.branch_aus);
+            let branch_deallocs = pre.branch_summary.dom() - new_branch_aus.dom() - read_ref_aus(new_compactors);
+            let new_branch_summary = pre.branch_summary.insert(new_branch.root.au, new_branch.get_summary())
+                .remove_keys(branch_deallocs);
+            let new_summary_aus = summary_aus(new_branch_summary);
+            let post_buffer_domain = restrict_domain_au(full_buffer_dv, new_summary_aus);
+
+            // From the transition definition.
+            assert(bdv.entries == full_buffer_dv.restrict(post_buffer_domain));
+
+            // Sealed branch summary contains all entries' AUs.
+            assert(pre.wip_branches[branch_idx].inv());
+            assert(pre.wip_branches[branch_idx].branch_sealed());
+            assert(new_branch.valid_sealed_branch());
+            assert(new_branch.tight_disk_view_with_summary());
+
+            // new_branch.root.au is preserved in new_branch_aus, so it is not removed.
+            let add_buffer_aus = to_au_likes(compact_add_buffers(linked_new_addrs));
+            to_au_likes_singleton(linked_new_addrs.addr2);
+            assert(add_buffer_aus.contains(linked_new_addrs.addr2.au));
+            assert(add_buffer_aus <= new_branch_aus);
+            assert(new_branch_aus.contains(linked_new_addrs.addr2.au));
+            assert(new_branch_aus.dom().contains(new_branch.root.au));
+            assert(!branch_deallocs.contains(new_branch.root.au));
+
+            assert(new_branch_summary.contains_key(new_branch.root.au)); // trigger
+
+            // Show every entry of new_branch is kept by the post buffer domain.
+            assert forall |addr: Address| #![auto] new_branch.disk_view.entries.contains_key(addr)
+            implies post_buffer_domain.contains(addr) by {
+                assert(new_branch.disk_view.entries.dom().contains(addr));
+                assert(new_branch.full_repr().contains(addr));
+                assert(new_branch.get_summary().contains(addr.au));
+                assert(new_branch_summary[new_branch.root.au] == new_branch.get_summary());
+                assert(new_branch_summary.values().contains(new_branch.get_summary()));
+                // Establish finiteness of summary values via the post-state invariant.
+                assert(post.branch_summary == new_branch_summary);
+                let (_, post_branch_likes) = post.betree.linked.transitive_likes();
+                let post_compactor_roots = CompactorInput::input_roots(post.compactors);
+                let post_branch_roots = post_branch_likes.dom() + post_compactor_roots;
+                CompactorInput::input_roots_finite(post.compactors);
+                to_au_likes_domain(post_branch_likes);
+                to_aus_additive(post_branch_likes.dom(), post_compactor_roots);
+                post.betree.linked.buffer_dv.build_branch_summary_finite(post_branch_roots);
+                assert(post.branch_summary =~= post.betree.linked.buffer_dv.build_branch_summary(post_branch_roots));
+                assert(new_branch_summary.values().finite());
+                lemma_union_set_of_sets_subset(new_branch_summary.values(), new_branch.get_summary());
+                assert(new_summary_aus.contains(addr.au));
+                assert(full_buffer_dv.contains_key(addr));
+            }
+
+            // Therefore entries are preserved in bdv.
+            assert forall |addr: Address| #![auto] new_branch.disk_view.entries.contains_key(addr)
+            implies bdv.entries.contains_key(addr) && bdv.entries[addr] == new_branch.disk_view.entries[addr] by {
+                assert(post_buffer_domain.contains(addr));
+                assert(bdv.entries.contains_key(addr));
+                assert(bdv.entries[addr] == full_buffer_dv[addr]);
+                assert(full_buffer_dv[addr] == new_branch.disk_view.entries[addr]);
+            }
+        } // meow
         // bdv is the larger new_branch d
 
         assume(bdv.get_branch(new_branch.root).inv());

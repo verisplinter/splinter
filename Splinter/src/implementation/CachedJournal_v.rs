@@ -13,7 +13,7 @@ use crate::abstract_system::StampedMap_v::LSN;
 use crate::abstract_system::MsgHistory_v::*;
 use crate::disk::GenericDisk_v::*;
 use crate::journal::LinkedJournal_v::*;
-use crate::implementation::JournalModel_v::*;
+use crate::allocation_layer::LikesJournal_v::*;
 
 // this is a version of the journal where
 // content does not live in the journal disk view but accessed through the cache
