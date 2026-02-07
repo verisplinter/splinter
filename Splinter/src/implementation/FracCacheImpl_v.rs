@@ -421,7 +421,7 @@ impl FracCacheImpl {
                     &&& old(self)@.lookup_map == self@.lookup_map
                     &&& old(self)@.status_map == self@.status_map
                 },
-                FetchErrorCode::CacheFull => old(self) == self,
+                FetchErrorCode::CacheFull => *old(self) == *self,
                 FetchErrorCode::LoadInitiate{slot_handle} => {
                     &&& self.entry_fetched(addr)
                     &&& self.valid_load_handle(addr, slot_handle)
@@ -480,7 +480,7 @@ impl FracCacheImpl {
         while slot < CACHE_SIZE_RECS
         invariant 
             old(self).wf(),
-            self == old(self),
+            *self == *old(self),
             slot <= self.total_slots(),
         decreases 
             self.total_slots() - slot,

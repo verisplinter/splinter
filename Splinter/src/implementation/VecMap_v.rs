@@ -341,7 +341,7 @@ where Key: View + Injective + Eq + Structural + Clone
             test_k == k,
             write_k == k,
             forall |i| #![auto] 0 <= i < idx ==> self.v[i].0 != k,
-            old(self) == self,
+            *old(self) == *self,
         decreases len - idx
         {
             if Self::compare_keys(&self.v[idx].0, &test_k) {
