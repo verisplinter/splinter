@@ -1,18 +1,81 @@
-# Splinter Verification 
+# Verified SplinterDB Implementation
 
-Work on verifying an implementation of the SplinterDB key-value store.
+This project is an implementation of the
+(SplinterDB key-value store)[https://splinterdb.org/]
+statically verified to maintain functional correctness and
+crash safety for every possible execution.
 
-Initially this work was being done in Dafny. The Dafny proofs live in this folder (`verified-betrfs/Splinter/`).
+## Motivation and Design
 
-We are now working on a Rust implementation (and corresponding proof of correctness) using `verus` which lives in
-`verified-betrfs/Splinter/src/`.
+This work follows on
+(VeriBetrFS)[https://github.com/vmware-labs/verified-betrfs] which appeared at
+(OSDI 2020)[https://www.usenix.org/conference/osdi20/presentation/hance].
+VeriBetrFS didn't achieve the performance we wanted, due to several simplifying
+compromises. This Splinter design improves on VeriBetrFS with:
+
+    * small cache granularity (4K vs 8MB) to increase the cache size measured
+      by count of leaves,
+    * page-managed cache units to avoid malloc-incurred external fragmentation
+      and need for overprovisioned headroom,
+    * incremental parsing (pointer chasing) to minimize compute work reading data out of tree leaves
+
+The VeriSplinter work also had a confusing, irregular proof organization.
+One of our goals in this work was to demonstrate that a small toolkit
+(refinement and composition of labeled-transition atomic state machines)
+is sufficient to organize all of the modules, even as VeriSplinter design
+has greater complexity than VeriBetrFS.
+
+## Evolution
+
+VeriBetrFS reasoned about I/O concurrency and nondeterministic crashes.
+Our initial goal with Verified Splinter was to remain focused
+on a single-threaded implementation.
+
+Concurrent with this work, Hance et al developed
+(VerusSync)[https://www.andrew.cmu.edu/user/bparno/papers/hance_thesis.pdf]
+which provides a way to refine a shared-memory concurrent implementation to an
+atomic state machine model. While VeriSplinter is still single-threaded, we
+employ VerusSync to enable a more natural binding between the implementation
+code and the atomic state machine models than appeared in the predecessor
+systems.
+
+We began building this work in Dafny. As the (Verus)[https://github.com/verus-lang/verus] language improved -- in no small part due to feedback from this work! -- we ported all of our state machine models into Verus and
+built the implementation there. You can still find the original Dafny
+models in the git history.
 
 ## Proof Layout
 
 For a diagram of the refinement proof structure we're building in the `verus` see [`splinter/docs/refinement-hierarchy.svg proof`](https://github.com/vmware-labs/verified-betrfs/blob/splinter/docs/refinement-hierarchy.svg).
 
+# Setting up first verification/build
 
-## Commands
+Get the verisplinter source:
+```
+git clone git@github.com:verisplinter/splinter.git
+```
+
+Get a [verus binary](https://github.com/verus-lang/verus/releases).
+For example:
+```
+mkdir verus-install
+cd verus-install
+wget https://github.com/verus-lang/verus/releases/download/release%2F0.2026.01.30.44ebdee/verus-0.2026.01.30.44ebdee-x86-linux.zip
+unzip verus-0.2026.01.30.44ebdee-x86-linux.zip
+rustup install 1.93.0-x86_64-unknown-linux-gnu # or whatever version verus demands
+ln -sf $(pwd)/verus-x86-linux/cargo-verus ~/.cargo/bin/cargo-verus
+cd ..
+```
+
+Verify & build:
+```
+cd splinter/Splinter
+cargo verus verify
+```
+
+(If the version of verus you downloaded doesn't match Cargo.toml from
+the repo, you may need to update Cargo.toml.)
+
+## Handy commands
 
 `$verus -Zunpretty=expanded bundle.rs` to get expanded macro representation of a verus file.
 
@@ -43,6 +106,3 @@ git push --all target
 echo Pushed all branches.
 ```
 
-## Verus
-
-We use it. "Documentation" here: https://github.com/verus-lang/verus/tree/main/source/pervasive
