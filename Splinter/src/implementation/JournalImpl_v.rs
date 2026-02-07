@@ -667,6 +667,11 @@ impl JournalImpl {
 //         proof { assume(false); }
 //         true
 //     }
+
+    pub exec fn clean_for_commit(&self, cache: Cache::State) -> bool
+    {
+        false
+    }
 }
 
 impl View for JournalImpl {

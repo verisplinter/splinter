@@ -817,6 +817,11 @@ impl Implementation {
 
                 let ready = true; // self.journal.clean_for_commit(self.sync_requests.journal_cleaning_target_lsn);
                 if !ready { return }
+                // TODO(real boy): clean_for_commit should ensure:
+                //   journal_cleaning_target_lsn <= marshalled_seq_end() (marshalled far enough)
+                //   lsns_are_clean (all pages in frozen range are Clean in cache)
+                // For now, assume the marshalled-far-enough obligation:
+                assume( self.sync_requests.journal_cleaning_target_lsn <= self.journal@.marshalled_seq_end() );
 
                 assert( old(self).sync_requests.superblocking_reqs.len() == 0 );  // by in_flight is None invariant
 
@@ -1318,7 +1323,6 @@ impl Implementation {
             empty_disk_responses,
         );
         self.model = Tracked(model);
-        std::mem::swap(&mut self.sync_requests.superblocking_reqs, &mut self.sync_requests.buffered_reqs);
 
         assert( new_reply_token.multiset() == multiset_map_singleton(req_id_perm@, disk_request@) );    // extn
         api.send_disk_request(disk_request, req_id_perm, Tracked(new_reply_token));
@@ -1393,9 +1397,8 @@ impl Implementation {
         // self.state() comes from self.model which now has post_state.state
         // post_state.state.in_flight = Some(inflight_info)
         
-        // sync_requests.in_flight() - we swapped superblocking/buffered
-        // Before: superblocking_reqs was empty, buffered_reqs had pending syncs
-        // After swap: superblocking_reqs has the old buffered_reqs, buffered_reqs is empty
+        // sync_requests.in_flight() - line 826 promoted journal_cleaning → superblocking
+        // superblocking = old journal_cleaning (non-empty by precondition)
         // in_flight() checks if superblocking_reqs is non-empty
         
         proof {
@@ -1488,19 +1491,29 @@ impl Implementation {
             assert( self.state().in_flight is Some <==> self.in_flight is Some );
             
             // state().in_flight is Some <==> self.sync_requests.in_flight()
-            // At line 1205 we did: swap(superblocking_reqs, buffered_reqs)
-            // So: self.sync_requests.superblocking_reqs == old(self).sync_requests.buffered_reqs
-            // in_flight() = superblocking_reqs.len() > 0
-            // We need: old(self).sync_requests.buffered_reqs.len() > 0
-            // 
-            // FIXME: The current precondition only guarantees journal_cleaning_reqs.len() > 0,
-            // not buffered_reqs.len() > 0. May need a precondition update.
-            assume( self.sync_requests.in_flight() );
-            // state().in_flight is Some (proven above)
+            // Line 826 swapped superblocking (empty) with journal_cleaning (non-empty by precondition).
+            // No second swap anymore, so superblocking = old journal_cleaning.
+            // in_flight() = superblocking.len() > 0 = old(journal_cleaning).len() > 0.
+            assert( self.sync_requests.in_flight() );
             assert( self.state().in_flight is Some <==> self.sync_requests.in_flight() );
+
+            // sync_reqs_in_version(superblocking_reqs, sync_version):
+            // superblocking_reqs = old journal_cleaning_reqs (from swap at 826).
+            // From old inv_running: sync_reqs_in_version(journal_cleaning_reqs, journal_cleaning_target_lsn).
+            // From line 818 assume: journal_cleaning_target_lsn <= marshalled_seq_end().
+            // frozen_seq_end = marshalled_seq_end() (from freeze_journal ensures).
+            // sync_version = inflight_info.journal_version = frozen_seq_end.
+            // So sync_req_map[id] <= journal_cleaning_target_lsn <= sync_version.
+            let sync_version = self.state().in_flight.unwrap().journal_version;
+            assert( self.sync_requests.journal_cleaning_target_lsn <= sync_version );
+            assert( old(self).sync_reqs_in_version(
+                old(self).sync_requests.journal_cleaning_reqs@,
+                old(self).sync_requests.journal_cleaning_target_lsn as nat) );
+            assert( self.sync_requests.superblocking_reqs@ == old(self).sync_requests.journal_cleaning_reqs@ );
+            assert( self.state().sync_req_map == old(self).state().sync_req_map );
         }
-        
-        assume( self.inv() );
+
+        assert( self.inv() );
         assert( self.inv_api(api) );
     }
 
