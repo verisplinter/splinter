@@ -669,6 +669,8 @@ impl JournalImpl {
 //     }
 
     pub exec fn clean_for_commit(&self, cache: Cache::State) -> bool
+    requires
+        self.index_ready()
     {
         false
     }
