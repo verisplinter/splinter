@@ -624,15 +624,16 @@ impl JournalImpl {
 
     pub exec fn freeze_journal(&self, cache: &FracCacheImpl) -> (out: FrozenJournal)
     requires
-        self.index_ready()
+        self.index_ready(),
+        self.marshalled_pages_are_clean(cache@),
     ensures
         out.wf(),
         out.snapshot.boundary_lsn == self.seq_start(),
         out.snapshot@ == self@.snapshot,
         out.seq_end as nat == self@.marshalled_seq_end(),
         self.lsns_are_clean(cache@, out),
-    {   
-        assume(false);  // left off -- need to check and prove lsns_are_clean!
+    {
+        assume(false);  // TODO: prove lsns_are_clean from precondition
         FrozenJournal{
             snapshot: self.snapshot.clone(),
             seq_end: self.status.as_ref().unwrap().unmarshalled_tail_start,
@@ -649,6 +650,15 @@ impl JournalImpl {
     recommends self.index_ready()
     {
         self@.status.unwrap().lsn_addr_index.restrict(Self::lsn_range(start_incl, end_excl)).values()
+    }
+
+    /// All marshalled journal pages are Filled+Clean in cache.
+    pub open spec fn marshalled_pages_are_clean(&self, cache: Cache::State) -> bool
+    recommends self.index_ready()
+    {
+        Cache::State::next_by(cache, cache,
+            Cache::Label::EvictableCheck{addrs: self.iaddrs_for_lsns(self.seq_start() as LSN, self@.marshalled_seq_end())},
+            Cache::Step::evictable())
     }
 
     pub open spec fn lsns_are_clean(&self, cache: Cache::State, out: FrozenJournal) -> bool
@@ -668,10 +678,20 @@ impl JournalImpl {
 //         true
 //     }
 
-    pub exec fn clean_for_commit(&self, cache: Cache::State) -> bool
+    /// Check whether the journal is marshalled and clean up to target_lsn.
+    /// Returns true iff:
+    ///   - target_lsn <= marshalled_seq_end (marshalled far enough)
+    ///   - all journal page addrs in [seq_start, marshalled_seq_end) are Filled+Clean in cache
+    /// If not ready, may do work (marshal tail, poke cache to flush) and return false;
+    /// caller should retry later.
+    pub exec fn clean_for_commit(&self, cache: &FracCacheImpl, target_lsn: ILsn) -> (ready: bool)
     requires
-        self.index_ready()
+        self.index_ready(),
+    ensures
+        ready ==> target_lsn <= self@.marshalled_seq_end(),
+        ready ==> self.marshalled_pages_are_clean(cache@),
     {
+        assume(false);  // TODO: real implementation
         false
     }
 }

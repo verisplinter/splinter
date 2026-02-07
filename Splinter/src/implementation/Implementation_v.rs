@@ -815,13 +815,8 @@ impl Implementation {
                 // sync the ephemeral journal with the existing persistent map
                 api.log("send_superblock: journal sync only");
 
-                let ready = true; // self.journal.clean_for_commit(self.sync_requests.journal_cleaning_target_lsn);
+                let ready = self.journal.clean_for_commit(&self.cache, self.sync_requests.journal_cleaning_target_lsn);
                 if !ready { return }
-                // TODO(real boy): clean_for_commit should ensure:
-                //   journal_cleaning_target_lsn <= marshalled_seq_end() (marshalled far enough)
-                //   lsns_are_clean (all pages in frozen range are Clean in cache)
-                // For now, assume the marshalled-far-enough obligation:
-                assume( self.sync_requests.journal_cleaning_target_lsn <= self.journal@.marshalled_seq_end() );
 
                 assert( old(self).sync_requests.superblocking_reqs.len() == 0 );  // by in_flight is None invariant
 
