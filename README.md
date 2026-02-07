@@ -64,9 +64,7 @@ and map.
 
 # Building and running
 
-Install Verus.
-
-Run `cd Splinter/src; verus sequential_main.rs --compile`.
+See (Splinter/README)[/verisplinter/splinter/blob/main/Splinter/README.md]
 
 # Contributing
 
