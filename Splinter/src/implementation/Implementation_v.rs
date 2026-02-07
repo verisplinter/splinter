@@ -1290,9 +1290,7 @@ impl Implementation {
                 // multiset_map_singleton == Multiset::singleton by definition
             };
             
-            // Now we can prove execute_sync_begin holds
-            // All preconditions have been proven above (modulo some ass-umes)
-            assume( AtomicState::execute_sync_begin(pre, post,
+            assert( AtomicState::execute_sync_begin(pre, post,
                 disk_req_id, disk_request@, disk_reqs, Multiset::empty(),
                 frozen_journal.snapshot@, frozen_journal.seq_end as nat, 
                 self.journal.iaddrs_for_lsns(frozen_journal.seq_start() as LSN, frozen_journal.seq_end as LSN), 
@@ -2233,7 +2231,7 @@ impl Implementation {
 
     #[verifier::external_body]
     fn exec_mkfs(api: &mut ClientAPI<ConcreteProgramModel>)
-    ensures api == old(api) // liiiies
+    ensures *api == *old(api) // liiiies
     {
         let raw_page = DiskLayout::new().exec_mkfs();
 //         Self::debug_print_raw_page(&raw_page);

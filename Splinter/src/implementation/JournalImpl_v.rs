@@ -625,10 +625,11 @@ impl JournalImpl {
     pub exec fn freeze_journal(&self, cache: &FracCacheImpl) -> (out: FrozenJournal)
     requires
         self.index_ready()
-    ensures 
+    ensures
         out.wf(),
         out.snapshot.boundary_lsn == self.seq_start(),
         out.snapshot@ == self@.snapshot,
+        out.seq_end as nat == self@.marshalled_seq_end(),
         self.lsns_are_clean(cache@, out),
     {   
         assume(false);  // left off -- need to check and prove lsns_are_clean!
