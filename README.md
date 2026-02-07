@@ -64,7 +64,7 @@ and map.
 
 # Building and running
 
-See [Splinter/README](/verisplinter/splinter/blob/main/Splinter/README.md)
+See [Splinter/README](/Splinter/README.md)
 
 # Contributing
 
