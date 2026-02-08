@@ -7,6 +7,7 @@ pub mod DiskLayout_v;
 pub mod Cache_v;
 pub mod FracCacheImpl_v;
 pub mod CachedJournal_v;
+pub mod ILsnAddrIndex_v;
 pub mod JournalImpl_v; // copy of LikesJournal_v
 // pub mod JournalCoordinationSystem_v;
 // pub mod JournalCoordinationRefinement_v; // TODO

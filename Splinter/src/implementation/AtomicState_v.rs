@@ -14,6 +14,8 @@ use crate::implementation::SuperblockTypes_v::*;
 use crate::implementation::Cache_v::*;
 use crate::implementation::CachedJournal_v::*;
 use crate::journal::LinkedJournal_v::{JournalRecord};
+use crate::marshalling::IJournalRecordFormat_v::IJournalRecordFormat;
+use crate::marshalling::Marshalling_v::Marshal;
 
 use crate::abstract_system::AbstractJournal_v::*;
 use crate::abstract_system::AbstractMap_v::*;
@@ -108,10 +110,14 @@ pub open spec fn map_to_multiset<K,V>(m: Map<K,V>) -> Multiset<(K,V)>
     m.kv_pairs().to_multiset()
 }
 
-// TODO: not sure where 
-pub closed spec fn raw_page_to_record(raw_page: RawPage) -> (out: JournalRecord)
+pub open spec fn raw_page_to_record(raw_page: RawPage) -> (out: JournalRecord)
 {
-    arbitrary()
+    let fmt = IJournalRecordFormat::spec_new();
+    if fmt.parsable(raw_page) {
+        fmt.parse(raw_page).view()
+    } else {
+        arbitrary()
+    }
 }
 
 pub open spec fn to_journal_reads(reads: Map<Address, RawPage>) -> Map<Address, JournalRecord>

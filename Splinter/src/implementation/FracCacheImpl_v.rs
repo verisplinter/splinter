@@ -416,6 +416,7 @@ impl FracCacheImpl {
                     &&& self.entry_token_unchanged(*old(self))
                     &&& self.entry_fetched_same_except(*old(self), addr)
                     &&& self.entries_same_except(*old(self), slot_handle.idx)
+                    &&& old(self)@.valid_read(addr@, slot_handle.rec@)
                     &&& old(self)@.entries == self@.entries.insert(slot_handle.idx, 
                             Entry::Filled{addr: addr@, data: slot_handle.rec@} ) // slot type
                     &&& old(self)@.lookup_map == self@.lookup_map

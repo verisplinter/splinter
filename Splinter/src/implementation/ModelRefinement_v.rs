@@ -43,20 +43,20 @@ impl Cache::State {
     }
 }
 
-proof fn build_lsn_addr_index_from_reads_refines(dv: DiskView, root: Pointer, curr_end: LSN)
+proof fn build_lsn_addr_index_from_reads_refines(dv: DiskView, root: Pointer)
 requires 
     dv.buildable(root),
-    curr_end == dv.seq_end(root),
+    // curr_end == dv.seq_end(root),
 ensures 
-    build_lsn_addr_index_from_reads(dv.entries, dv.boundary_lsn, root, curr_end)
+    build_lsn_addr_index_from_reads(dv.entries, dv.boundary_lsn, root)
     == dv.build_lsn_addr_index(root)
-decreases curr_end
+decreases dv.the_rank_of(root)
 {
     if root is Some {
         let curr_msgs = dv.entries[root.unwrap()].message_seq;
         let start_lsn = math::max(dv.boundary_lsn as int, curr_msgs.seq_start as int) as nat;
         let next_ptr = dv.entries[root.unwrap()].cropped_prior(dv.boundary_lsn);
-        build_lsn_addr_index_from_reads_refines(dv, next_ptr, start_lsn);
+        build_lsn_addr_index_from_reads_refines(dv, next_ptr);
     }
 }
 

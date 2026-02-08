@@ -22,10 +22,9 @@ verus!{
 //////////////////////////////////////////////////////////////////////////////
 pub type LsnAddrIndex = Map<LSN, Address>;
 
-pub open spec(checked) fn lsn_disjoint(lsn_index: Set<LSN>, msgs: MsgHistory) -> bool
+pub open spec(checked) fn lsn_disjoint(lsn_index: Set<LSN>, start: LSN, end: LSN) -> bool
 {
-    forall |lsn| msgs.seq_start <= lsn < msgs.seq_end
-        ==> !lsn_index.contains(lsn)
+    forall |lsn| start <= lsn < end ==> !lsn_index.contains(lsn)
 }
 
 pub open spec fn lsn_addr_index_discard_up_to(lsn_addr_index: LsnAddrIndex, bdy: LSN) -> (out: LsnAddrIndex)
@@ -50,28 +49,24 @@ pub open spec(checked) fn singleton_index(start: LSN, end: LSN, value: Address) 
     Map::new(|x: LSN| start <= x < end, |x:LSN| value)
 }
 
-pub open spec(checked) fn lsn_addr_index_append_record(lsn_addr_index: LsnAddrIndex, msgs: MsgHistory, addr: Address) -> LsnAddrIndex
-recommends
-    msgs.wf(),
-    msgs.seq_start < msgs.seq_end,  // non-empty
+pub open spec(checked) fn lsn_addr_index_append_record(lsn_addr_index: LsnAddrIndex, start: LSN, end: LSN, addr: Address) -> LsnAddrIndex
+recommends start < end,  // non-empty
 {
-    let update = singleton_index(msgs.seq_start, msgs.seq_end, addr);
+    let update = singleton_index(start, end, addr);
     lsn_addr_index.union_prefer_right(update)
 }
 
-pub proof fn lsn_addr_index_append_record_ensures(lsn_addr_index: LsnAddrIndex, msgs: MsgHistory, addr: Address)
-requires
-    msgs.wf(),
-    msgs.seq_start < msgs.seq_end,  // non-empty
+pub proof fn lsn_addr_index_append_record_ensures(lsn_addr_index: LsnAddrIndex, start: LSN, end: LSN, addr: Address)
+requires start < end,  // non-empty
 ensures
-    lsn_disjoint(lsn_addr_index.dom(), msgs) ==>
-        lsn_addr_index_append_record(lsn_addr_index, msgs, addr).values()
+    lsn_disjoint(lsn_addr_index.dom(), start, end) ==>
+        lsn_addr_index_append_record(lsn_addr_index, start, end, addr).values()
         == lsn_addr_index.values() + set![addr],
 {
-    let out = lsn_addr_index_append_record(lsn_addr_index, msgs, addr);
+    let out = lsn_addr_index_append_record(lsn_addr_index, start, end, addr);
     // TODO(chris): Dafny needed only one line of proof for this mess; does our stdlib need some
     // better triggers? I wonder if it's down to contains-vs-contains_key
-    if lsn_disjoint(lsn_addr_index.dom(), msgs) {
+    if lsn_disjoint(lsn_addr_index.dom(), start, end) {
         let sum = lsn_addr_index.values() + set![addr];
         // TODO(chris): #[auto] doesn't work in the assert-forall context?
         assert forall |a| #[trigger] sum.contains(a) implies out.values().contains(a) by {
@@ -80,7 +75,7 @@ ensures
                 let lsn = choose |lsn| #![auto] lsn_addr_index.contains_key(lsn) && lsn_addr_index[lsn] == a;
                 assert( out.contains_key(lsn) );
             } else {
-                assert( out.contains_key(msgs.seq_start) );
+                assert( out.contains_key(start) );
             }
         };
         assert( out.values() =~= lsn_addr_index.values() + set![addr] );
@@ -743,10 +738,13 @@ state_machine!{ LikesJournal {
         require LinkedJournal::State::next_by(pre.journal, new_journal, 
             Self::lbl_i(lbl), LinkedJournal::Step::internal_journal_marshal(cut, addr));
 
+        let msgs = pre.journal.unmarshalled_tail.discard_recent(cut);
+
         update journal = new_journal;
         update lsn_addr_index = lsn_addr_index_append_record(
             pre.lsn_addr_index,
-            pre.journal.unmarshalled_tail.discard_recent(cut),
+            msgs.seq_start,
+            msgs.seq_end,
             addr);
     } }
 
