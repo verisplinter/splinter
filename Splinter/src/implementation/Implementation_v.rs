@@ -755,24 +755,13 @@ impl Implementation {
     {
         proof { self.system_inv_implies_atomic_state_wf(); }
 
-        assert( self.journal@.wf() );
-        let version = self.journal.exec_seq_end();
-
-//         assert(self.journal@@.discard_recent(version as nat) == self.journal@@);
-
         let mut raw_page = Vec::new();
         let mut tmp_store = VecMap::new();
 
         let mut sb;
         let mut self_in_flight;
         let ghost mut new_abstract_store;
-        let ghost mut cache_before_fetch = self.cache;  // Track cache state for proving it's unchanged
-        let ghost mut cache_after_fetch_abstract: Cache::State = arbitrary();  // Cache state after fetch, before release
-        // Ghost state captured while handle is outstanding, for use in proof
-        let ghost mut fetched_addr_ghost: Option<Address> = None;
-        let ghost mut fetched_slot_ghost: Option<usize> = None;  // Slot = usize
-        let ghost mut fetched_data_ghost: Option<RawPage> = None;
-        let ghost mut lookup_map_contains_fetched_addr: bool = false;  // Does lookup_map contain the fetched address?
+        let ghost mut cache_before_fetch = self.cache;
         let mut frozen_journal;
         match motivation {
             SuperblockMotivation::PushMap => {
@@ -818,14 +807,11 @@ impl Implementation {
                 let ready = self.journal.clean_for_commit(&self.cache, self.sync_requests.journal_cleaning_target_lsn);
                 if !ready { return }
 
-                assert( old(self).sync_requests.superblocking_reqs.len() == 0 );  // by in_flight is None invariant
-
                 // Okay, the journal is clean up to the point of journal_cleaning_target_lsn, which
                 // means the journal_cleaning_reqs are now eligible to be delivered in a
                 // superblock.
                 std::mem::swap(&mut self.sync_requests.superblocking_reqs, &mut self.sync_requests.journal_cleaning_reqs);
 
-//             std::mem::swap(&mut self.journal, &mut tmp_journal);
             std::mem::swap(&mut self.persistent_store, &mut tmp_store);
 
                 // Read the journal page at freshest_rec from cache to verify frozen_seq_end
@@ -838,68 +824,19 @@ impl Implementation {
                     cache_before_fetch = self.cache;
                 }
                 
-                let (slot_handle, journal_page_content) = match frozen_journal.snapshot.freshest_rec {
+                let slot_handle = match frozen_journal.snapshot.freshest_rec {
                     Some(freshest_addr) => {
-                        // Read the journal page from cache as required by CachedJournal to confirm
-                        // last LSN
                         let fetch_result = self.cache.fetch(&freshest_addr);
                         match fetch_result {
                             FetchErrorCode::Success{slot_handle} => {
-                                // Capture the page content for use in the proof
-                                let page_content = slot_handle.rec.clone();
-                                
-                                // Capture ghost state while we have the handle outstanding
-                                // fetch() postcondition guarantees:
-                                // - self.entry_fetched(addr) which means self.cache.lookup_map@.contains_key(addr@)
-                                // - old(self)@.entries == self@.entries.insert(slot_handle.idx, Entry::Filled{addr, data: slot_handle.rec@})
-                                // - old(self)@.lookup_map == self@.lookup_map
                                 proof {
-                                    fetched_addr_ghost = Some(freshest_addr@);
-                                    fetched_slot_ghost = Some(slot_handle.idx);
-                                    fetched_data_ghost = Some(slot_handle.rec@);
-                                    
-                                    // fetch() postcondition gives us: self.entry_fetched(addr)
-                                    assert( self.cache.entry_fetched(&freshest_addr) );
-                                    
-                                    // Use entry_fetched_lemma to connect entry_fetched to lookup_map.contains_key
                                     FracCacheImpl::entry_fetched_lemma();
-                                    assert( self.cache@.lookup_map.contains_key(freshest_addr@) );
-                                    
-                                    // Capture the slot from lookup_map
-                                    let captured_slot = self.cache@.lookup_map[freshest_addr@];
-                                    
-                                    // Use lookup_addr_slot to get the slot for this address
-                                    // fetch() postcondition gives us: self.entry_fetched(addr)
-                                    assert( self.cache.entry_fetched(&freshest_addr) );
-                                    let slot_from_lookup = self.cache.lookup_addr_slot(&freshest_addr);
-                                    
-                                    // Use lemma to connect lookup_addr_slot to the view
                                     FracCacheImpl::lookup_addr_slot_lemma();
-                                    assert( slot_from_lookup == self.cache@.lookup_map[freshest_addr@] );
-                                    assert( captured_slot == slot_from_lookup );
-                                    
-                                    // Now we need: slot_from_lookup == slot_handle.idx
-                                    // fetch() postcondition: old(self)@.entries == self@.entries.insert(slot_handle.idx, Entry::Filled{addr: addr@, ...})
-                                    // This means cache_before_fetch@.entries[slot_handle.idx] is Filled{addr: freshest_addr@, ...}
-                                    assert( cache_before_fetch@.entries.contains_key(slot_handle.idx) );
-                                    assert( cache_before_fetch@.entries[slot_handle.idx] is Filled );
-                                    assert( cache_before_fetch@.entries[slot_handle.idx].get_addr() == freshest_addr@ );
-                                    
-                                    // Use lookup_map_bijection_lemma
-                                    assert( cache_before_fetch.wf() );  // From precondition
+                                    assert( cache_before_fetch@.entries[slot_handle.idx].get_addr() == freshest_addr@ );  // trigger
+                                    assert( cache_before_fetch.wf() );  // trigger
                                     FracCacheImpl::lookup_map_bijection_lemma();
-                                    assert( cache_before_fetch@.lookup_map[freshest_addr@] == slot_handle.idx );
-                                    
-                                    // lookup_map is unchanged by fetch
-                                    assert( self.cache@.lookup_map == cache_before_fetch@.lookup_map );
-                                    assert( slot_from_lookup == slot_handle.idx );
-                                    assert( captured_slot == slot_handle.idx );
-                                    
-                                    // Capture facts for use later in the proof
-                                    lookup_map_contains_fetched_addr = true;
                                 }
-                                
-                                (Some(slot_handle), Some((freshest_addr, page_content)))
+                                Some(slot_handle)
                             },
                             _ => {
                                 api.log("Unimplemented: async journal read in send_superblock");
@@ -908,7 +845,7 @@ impl Implementation {
                             }
                         }
                     },
-                    None => { (None, None) },
+                    None => { None },
                 };
 
             sb = ISuperblock{
@@ -916,59 +853,11 @@ impl Implementation {
                 store: tmp_store.v,
             };
 
-//                 let frozen_journal = sb@.journal;
-//                 let frozen_lsns = Set::new(|lsn: LSN| frozen_journal.boundary_lsn <= lsn && lsn < frozen_seq_end);
-//                 let frozen_domain = state_after_freeze.journal.status.unwrap().lsn_addr_index.restrict(frozen_lsns).values();
-//                 if !self.journal.is_clean(&self.cache, frozen_journal.boundary_lsn, frozen_seq_end) {
-//                     api.log("Unimplemented: async journal clean pages");
-//                     Self::todo_placeholder();
-//                     return;
-//                 }
-                
-                // Release the handle - this puts the page back in cache
-                // handle_release ensures the cache state is the same (entries, lookup_map, status_map)
-                // as after fetch, so we can use self.cache@ after release for state_after_freeze
+                // Release the handle - fetch+release round-trip is a no-op on cache state
                 if let Some(handle) = slot_handle {
                     if let Some(freshest_addr) = frozen_journal.snapshot.freshest_rec {
-                        // Capture cache abstract state after fetch, before release
-                        proof {
-                            cache_after_fetch_abstract = self.cache@;
-                        }
-                        
                         self.cache.handle_release(&freshest_addr, handle);
-                        
-                        // Prove cache is unchanged: fetch() followed by handle_release() with the same handle
-                        // is a no-op on the cache state
-                        proof {
-                            // fetch() postcondition: old(self)@.entries == self@.entries.insert(slot_handle.idx, Entry::Filled{addr, data: slot_handle.rec@})
-                            // This means: cache_before_fetch@.entries == cache_after_fetch_abstract.entries.insert(slot_handle.idx, Entry::Filled{...})
-                            // In other words: cache_after_fetch_abstract.entries is MISSING slot_handle.idx (it's in the handle)
-                            // And: cache_after_fetch_abstract.entries.insert(slot_handle.idx, Entry::Filled{...}) == cache_before_fetch@.entries
-                            
-                            // handle_release() postcondition: self@.entries == old(self)@.entries.insert(handle.idx, Entry::Filled{addr, data: handle.rec@})
-                            // where old(self)@ is cache_after_fetch_abstract
-                            // This means: self.cache@.entries == cache_after_fetch_abstract.entries.insert(handle.idx, Entry::Filled{...})
-                            
-                            // Since handle.idx == slot_handle.idx and handle.rec == slot_handle.rec (we didn't modify it),
-                            // we have: self.cache@.entries == cache_after_fetch_abstract.entries.insert(slot_handle.idx, Entry::Filled{...})
-                            //                                == cache_before_fetch@.entries  (from fetch postcondition above)
-                            
-                            // Similarly for lookup_map:
-                            // fetch() postcondition: old(self)@.lookup_map == self@.lookup_map
-                            // So: cache_before_fetch@.lookup_map == cache_after_fetch_abstract.lookup_map
-                            
-                            // handle_release() postcondition: self@.lookup_map == old(self)@.lookup_map
-                            // So: self.cache@.lookup_map == cache_after_fetch_abstract.lookup_map == cache_before_fetch@.lookup_map
-                            
-                            // Similarly for status_map:
-                            // fetch() postcondition: old(self)@.status_map == self@.status_map
-                            // handle_release() postcondition: self@.status_map == old(self)@.status_map
-                            // So: self.cache@.status_map == cache_before_fetch@.status_map
-                            
-                            // Therefore: self.cache@ == cache_before_fetch@
-                            // This is what matters for the proof - the abstract view is unchanged
-                            assert( self.cache@ == cache_before_fetch@ );
-                        }
+                        // cache@ == cache_before_fetch@ follows from fetch+release round-trip
                     }
                 }
                 
@@ -977,15 +866,10 @@ impl Implementation {
                 Self::debug_print(&sb);
             raw_page = DiskLayout::new().marshall(&sb);
 
-            let ISuperblock{journal_snapshot: mut tmp_journal, store: mut tmp_store_v, ..} = sb;
-//             std::mem::swap(&mut self.journal, &mut tmp_journal);
+            let ISuperblock{store: mut tmp_store_v, ..} = sb;
             tmp_store.v = tmp_store_v;
             std::mem::swap(&mut self.persistent_store, &mut tmp_store);
 
-                // After swap-back: self.persistent_store.v@ == sb@.store
-                proof {
-                    assert( self.persistent_store.v@ == sb@.store );
-                }
                 
                 self_in_flight = Some(InFlight{
                     new_boundary_lsn: self.journal.exec_seq_start(),
@@ -994,9 +878,6 @@ impl Implementation {
                     new_store: self.persistent_store.clone(),
                 });
                 proof { new_abstract_store = self.i_persistent_store(); }
-
-//             assert(self.journal@@.discard_recent(version as nat).discard_old(self.journal.seq_start as nat) 
-//                 == self.journal@@.discard_recent(version as nat)); // ext_eq
             },
         }
 
@@ -1029,8 +910,7 @@ impl Implementation {
                 reveal(AbstractCrashAwareMap::State::next);
                 reveal(AbstractMap::State::next_by);
                 reveal(AbstractMap::State::next);
-                assert( old(self).state().store == old(self).view_store() );  // trigger for ext eq
-                
+
                 match motivation {
                     SuperblockMotivation::PushMap => {
                         let new_map = pre_store.ephemeral->v;
@@ -1059,29 +939,10 @@ impl Implementation {
         // cleaned from the cache yet: send the superblock containing the frozen map.
         self.in_flight = self_in_flight;
         
-        // Capture the branch-dependent equality for the proof later
-        // In both branches: Some(new_abstract_store) == i_inflight_store()
-        // This follows from clone() ensuring out == self
-        proof {
-            // In sync_map case:
-            //   new_abstract_store = StampedMap{value: view_as_kmmap(self.store), seq_end: version}
-            //   self.in_flight.unwrap().new_store = self.store.clone() == self.store
-            //   self.in_flight.unwrap().new_boundary_lsn = version
-            // In !sync_map case:
-            //   new_abstract_store = StampedMap{value: view_as_kmmap(self.persistent_store), seq_end: seq_start}
-            //   self.in_flight.unwrap().new_store = self.persistent_store.clone() == self.persistent_store
-            //   self.in_flight.unwrap().new_boundary_lsn = seq_start
-            assert( Some(new_abstract_store) == self.i_inflight_store() );
-        }
-
-        let ghost new_persistent_map = sb.store@;
-
         let req_id_perm = Tracked( api.send_disk_request_predict_id() );
         let ghost disk_req_id = req_id_perm@;
         let disk_request = IDiskRequest::WriteReq{to: superblock_addr(), data: raw_page};
-//         let ghost disk_event = DiskEvent::ExecuteSyncBegin{req: disk_request@, req_id: disk_req_id/*, sync_map*/};
         let ghost disk_reqs = multiset_map_singleton(disk_req_id, disk_request@);
-        let ghost info = ProgramDiskInfo{ reqs: disk_reqs, resps: Multiset::empty() };
 
         // inflight_info records the frozen journal's seq_end (the clean watermark)
         let ghost inflight_info = InflightInfo{
@@ -1151,12 +1012,10 @@ impl Implementation {
                 let lbl = Cache::Label::Access{reads: reads, writes: Map::empty()};
                 let updated_entries = pre.cache.write_updated_entries(lbl->writes);
                 let updated_status_map = pre.cache.write_updated_status(lbl->writes);
-                assert( pre.cache.entries.union_prefer_right(updated_entries) =~= pre.cache.entries );  // trigger extn
-                assert( pre.cache.status_map.union_prefer_right(updated_status_map) =~= pre.cache.status_map );  // trigger extn
-                assert( Cache::State::next_by(pre.cache, post.cache, lbl, Cache::Step::access()) ); // step witness
+                assert( pre.cache.entries.union_prefer_right(updated_entries) =~= pre.cache.entries );  // extn
+                assert( pre.cache.status_map.union_prefer_right(updated_status_map) =~= pre.cache.status_map );  // extn
+                assert( Cache::State::next_by(pre.cache, post.cache, lbl, Cache::Step::access()) ); // witness
             }
-
-            assert(self.journal.lsns_are_clean(post.cache, frozen_journal));
 
             let journal_lbl = CachedJournal::Label::FreezeForCommit{
                 frozen: frozen_journal.snapshot@,
@@ -1167,15 +1026,6 @@ impl Implementation {
             reveal(CachedJournal::State::next);
             reveal(CachedJournal::State::next_by);
 
-            if ptr_witness is Some {
-                // freshest_rec_page_agrees: page at frozen freshest_rec has matching seq_end
-                assert( to_journal_reads(reads).contains_key(ptr_witness.unwrap()) );
-                assert( frozen_journal.seq_end as nat == to_journal_reads(reads)[ptr_witness.unwrap()].message_seq.seq_end );
-            } else {
-                // When freshest_rec is None, wf() gives us seq_end == boundary_lsn
-                assert( frozen_journal.seq_end as nat == frozen_journal.snapshot@.boundary_lsn );
-            }
-
             // CachedJournal::freeze_for_commit at depth 0:
             // out.snapshot@ == self@.snapshot means frozen freshest_rec == pre freshest_rec,
             // so pointer_after_crop_index(ptr, 0) == ptr == frozen.freshest_rec.
@@ -1185,91 +1035,17 @@ impl Implementation {
                 CachedJournal::Step::freeze_for_commit(0nat)) );
             
             // 6. Disk request matches superblock
-            assert( disk_request@ is WriteReq );
-            assert( disk_request@->to == spec_superblock_addr() );
             // The superblock we're writing matches what execute_sync_begin expects
             // expected_sb.store = pre.in_flight_map() = new_abstract_store
             // expected_sb.journal = frozen_journal = sb@.journal
             // sb@@ comes from DiskLayout::marshall postcondition
             // Need: new_abstract_store == sb@@.store
-            let expected_sb = Superblock{
-                store: pre.in_flight_map(),
-                journal: frozen_journal.snapshot@,
-            };
-            // marshall ensures sb@@ == spec_parse(output)
-            // disk_request@->data == raw_page@
-            assert( pre.in_flight_map() == new_abstract_store );
-            
-            // Prove that spec_parse(disk_request@->data) == expected_sb
-            // From marshall postcondition: sb@@ == DiskLayout::spec_new().spec_parse(raw_page@)
-            // And disk_request@->data == raw_page@ (by construction)
-            assert( DiskLayout::spec_new().spec_parse(disk_request@->data) == sb@@ );
-            
-            // Now prove sb@@ == expected_sb
-            // sb@@.journal == frozen_journal.snapshot@ (both equal sb.journal_snapshot@)
-            assert( sb@@.journal == frozen_journal.snapshot@ );
-            // sb@@.store == new_abstract_store
-            // sb@@.store = arawstore_as_stamped_map(sb@.store, sb@.journal.boundary_lsn)
-            //            = StampedMap{value: map_to_kmmap(VecMap::seq_to_map(sb.store@)), seq_end: ...}
-            // new_abstract_store = StampedMap{value: view_as_kmmap(self.store), seq_end: ...}
-            //                    = StampedMap{value: map_to_kmmap(self.store@), seq_end: ...}
-            // And self.store@ = VecMap::seq_to_map(self.store.v@)
-            // So we need: sb.store@ == self.store.v@ (the store was copied into sb)
-            assert( sb@@.store == new_abstract_store ) by {
-                // Work backwards from the goal.
-                // sb@@.store = arawstore_as_stamped_map(sb@.store, sb@.journal.boundary_lsn)
-                // new_abstract_store is set in the match branches above
-                
-                match motivation {
-                    SuperblockMotivation::PushMap => {
-                        // sb@.store == self.store.v@ (asserted in the match branch)
-                        // sb@.journal.boundary_lsn == version as nat
-                        // new_abstract_store == i_ephemeral_store()->v.stamped_map
-                        //   = StampedMap{value: view_as_kmmap(self.store), seq_end: self.journal.seq_end()}
-                        //   = StampedMap{value: map_to_kmmap(self.store@), seq_end: version as nat}
-                        // And sb@@.store = arawstore_as_stamped_map(sb@.store, version)
-                        //   = StampedMap{value: map_to_kmmap(VecMap::seq_to_map(sb@.store)), seq_end: version}
-                        // Since sb@.store == self.store.v@ and self.store@ = VecMap::seq_to_map(self.store.v@):
-                        //   sb@@.store.value == map_to_kmmap(self.store@) == new_abstract_store.value
-                        //   sb@@.store.seq_end == version == self.journal.seq_end() == new_abstract_store.seq_end
-                        assert( sb@.journal.boundary_lsn == version as nat );
-                        assert( version as nat == self.journal.seq_end() );
-                        assert( sb@.store == self.store.v@ );
-                        assert( self.store@ == VecMap::seq_to_map(self.store.v@) );
-                        // These facts should allow Verus to conclude equality
-                    },
-                    SuperblockMotivation::PushJournal => {
-                        // sb@.store == self.persistent_store.v@ (asserted in the match branch)
-                        // sb@.journal.boundary_lsn == self.journal.seq_start() 
-                        // new_abstract_store == i_persistent_store()
-                        //   = StampedMap{value: view_as_kmmap(self.persistent_store), seq_end: self.journal.seq_start()}
-                        assert( sb@.store == self.persistent_store.v@ );
-                        assert( self.persistent_store@ == VecMap::seq_to_map(self.persistent_store.v@) );
-                        // sb@.journal is from self.journal.get_snapshot()
-                        assert( sb@.journal.boundary_lsn == self.journal.seq_start() );
-                    },
-                }
-            };
-            
-            assert( DiskLayout::spec_new().spec_parse(disk_request@->data) == expected_sb );
-            
-            // 7. post has correct shape  
-            assert( post.in_flight == Some(inflight_info) );
-            // reqs is a singleton as expected
+            // marshall ensures sb@@ == spec_parse(output), and disk_request@->data == raw_page@
+            assert( sb@@.store == new_abstract_store );  // trigger
             assert( disk_reqs == Multiset::singleton((disk_req_id, disk_request@)) ) by {
                 assert( disk_reqs == multiset_map_singleton(disk_req_id, disk_request@) );
-                // multiset_map_singleton == Multiset::singleton by definition
             };
-            
-            assert( AtomicState::execute_sync_begin(pre, post,
-                disk_req_id, disk_request@, disk_reqs, Multiset::empty(),
-                frozen_journal.snapshot@, frozen_journal.seq_end as nat, 
-                self.journal.iaddrs_for_lsns(frozen_journal.seq_start() as LSN, frozen_journal.seq_end as LSN), 
-                reads) );
-            
-            assert( AtomicState::disk_transition(
-                state_after_freeze, post_state.state, disk_event, disk_reqs, Multiset::empty()) );
-            
+
             // Witness the existential in valid_disk_transition
             let pre_model = ConcreteProgramModel{state: state_after_freeze};
             assert( ConcreteProgramModel::valid_disk_transition(pre_model, post_state, info) ) by {
@@ -1279,7 +1055,6 @@ impl Implementation {
             };
         }
 
-        // // take the transition, get the token
         let tracked mut model = KVStoreTokenized::model::arbitrary();
         proof { tracked_swap(self.model.borrow_mut(), &mut model); }
         let tracked new_reply_token = self.instance.borrow().disk_transitions(
@@ -1290,200 +1065,13 @@ impl Implementation {
         );
         self.model = Tracked(model);
 
-        assert( new_reply_token.multiset() == multiset_map_singleton(req_id_perm@, disk_request@) );    // extn
         api.send_disk_request(disk_request, req_id_perm, Tracked(new_reply_token));
         
-        // Postcondition 1: ready_for_user_operation()
-        // recovery_phase is unchanged, so this follows from the precondition
-        assert( self.recovery_phase == old(self).recovery_phase );
-        assert( self.ready_for_user_operation() );
-        
-        // Postcondition 2: inv_api(api)
-        // This requires showing the invariant holds after all transitions
-        // Prove inv_api(api):
-        // 1. api.instance_id() == self.instance_id() - unchanged
-        assert( api.instance_id() == self.instance_id() );
-        
-        // 2. self.inv() requires several parts. Let's prove what we can:
-        
-        // cache view is unchanged - we fetched a handle and released it back without modification
-        // This was proven in the proof block after handle_release() above
-        assert( self.cache@ == old(self).cache@ );
-        
-        // recovery_phase is unchanged
-        assert( self.recovery_phase == old(self).recovery_phase );
-        
-        // in_flight is now Some
-        assert( self.in_flight is Some );
-        
-        // instance is unchanged
-        assert( self.instance == old(self).instance );
-        
-        // The model was updated via disk_transitions to post_state
-        // model@.instance_id() == instance@.id() should hold from the token system
-        
-        // For inv_running, key properties:
-        // - self.store == old(self).store (after swap-back)
-        // - self.persistent_store == old(self).persistent_store (after swap-back)
-        // - self.journal == old(self).journal (unchanged)
-        // - self.in_flight is Some, and state().in_flight is Some (from post_state)
-        
-        // Prove inv() conjuncts:
-        
-        // 1. cache.inv() - cache view unchanged, and wf() is maintained by fetch() and handle_release()
-        assert( self.cache.wf() ) by {
-            // fetch() ensures self.wf(), and handle_release() ensures self.wf()
-            // So self.cache.wf() holds after both operations
-        };
-        
-        // 2. recovery_phase implications - recovery_phase unchanged
-        // We're in ReadyForUserOperation, so we need inv_running()
-        
-        // 3. in_flight is Some ==> recovery_phase is ReadyForUserOperation
-        // Both are true, so implication holds
-        assert( self.in_flight is Some ==> self.recovery_phase is ReadyForUserOperation );
-        
-        // 4. model@.instance_id() == instance@.id()
-        // This should follow from the token system - the model comes from disk_transitions
-        // which borrows from instance, so the instance_id is preserved
-        
-        // 5. inv_running() - try to prove individual conjuncts
-        
-        // store.wf() and persistent_store are unchanged
-        assert( self.store.wf() ) by { assert( self.store == old(self).store ); };
-        assert( self.journal.wf() ) by { assert( self.journal == old(self).journal ); };
-        assert( self.journal.index_ready() ) by { assert( self.journal == old(self).journal ); };
-        
-        // state().recovery_state - should be RecoveryComplete since we set it via post_state
-        // post_state.state has recovery_state from state_after_freeze which has it from old(self).state()
-        
-        // state().in_flight is Some <==> self.in_flight is Some
-        // Both are Some now
-        assert( self.in_flight is Some );
-        // self.state() comes from self.model which now has post_state.state
-        // post_state.state.in_flight = Some(inflight_info)
-        
-        // sync_requests.in_flight() - line 826 promoted journal_cleaning → superblocking
-        // superblocking = old journal_cleaning (non-empty by precondition)
-        // in_flight() checks if superblocking_reqs is non-empty
-        
         proof {
-            // After disk_transitions:
-            // The postcondition ensures model.value() == post_state
-            // We assigned self.model = Tracked(model)
-            // So self.model@.value() == post_state
-            assert( self.model@.value() == post_state );
-            
-            // Therefore self.state() == post_state.state
             assert( self.state() == post_state.state );
-            
-            // Now we can trace the structure of self.state():
-            // post_state.state = AtomicState{in_flight: Some(inflight_info), ..state_after_freeze}
-            // state_after_freeze = AtomicState{store: frozen_store, ..old(self).state()}
-            
-            // So:
-            assert( self.state().in_flight == Some(inflight_info) );
-            assert( self.state().store == frozen_store );
-            assert( self.state().journal == old(self).state().journal );
-            assert( self.state().recovery_state == old(self).state().recovery_state );
-            assert( self.state().cache == old(self).state().cache );
-            
-            // From old(self).inv_running():
-            // old(self).state().journal == old(self).journal@
-            // And self.journal == old(self).journal
-            // So self.state().journal == self.journal@
-            
-            // From old(self).inv_running():
-            // old(self).state().recovery_state is RecoveryComplete
-            // So self.state().recovery_state is RecoveryComplete
-            
-            // state().in_flight is Some - proven above
-            assert( self.state().in_flight is Some );
-            
-            // self.in_flight is Some - proven earlier
-            
-            // state().in_flight is Some <==> self.in_flight is Some - both are Some
-            
-            // Now prove state().store == view_store()
-            // self.state().store = frozen_store
-            // frozen_store = AbstractCrashAwareMap::State{in_flight: Some(new_abstract_store), 
-            //                                              persistent: old(self).state().store.persistent,
-            //                                              ephemeral: old(self).state().store.ephemeral}
-            //
-            // view_store() = AbstractCrashAwareMap::State{persistent: i_persistent_store(),
-            //                                              ephemeral: i_ephemeral_store(),
-            //                                              in_flight: i_inflight_store()}
-            //
-            // By old(self).inv_running(): old(self).state().store == old(self).view_store()
-            // So: frozen_store.persistent == old(self).i_persistent_store() == self.i_persistent_store()
-            //     frozen_store.ephemeral == old(self).i_ephemeral_store() == self.i_ephemeral_store()
-            //     (since self.store == old(self).store and self.persistent_store == old(self).persistent_store)
-            
-            assert( frozen_store.persistent == self.i_persistent_store() ) by {
-                assert( self.persistent_store == old(self).persistent_store );
-                assert( self.journal == old(self).journal );
-                // old(self).state().store.persistent == old(self).i_persistent_store() by inv_running
-                // frozen_store.persistent == old(self).state().store.persistent by construction
-            };
-            
-            assert( frozen_store.ephemeral == self.i_ephemeral_store() ) by {
-                assert( self.store == old(self).store );
-                assert( self.journal == old(self).journal );
-                // old(self).state().store.ephemeral == old(self).i_ephemeral_store() by inv_running
-                // frozen_store.ephemeral == old(self).state().store.ephemeral by construction
-            };
-            
-            // The tricky part: frozen_store.in_flight == self.i_inflight_store()
-            // We proved Some(new_abstract_store) == self.i_inflight_store() earlier
-            // frozen_store.in_flight = Some(new_abstract_store)
-            // So frozen_store.in_flight == self.i_inflight_store()
-            assert( frozen_store.in_flight == self.i_inflight_store() );
-            
-            assert( self.state().store == self.view_store() );
-            
-            // state().journal == self.journal@
-            // self.state().journal == old(self).state().journal (proven above)
-            // old(self).state().journal == old(self).journal@ (by old(self).inv_running())
-            // old(self).journal@ == self.journal@ (since self.journal == old(self).journal)
-            assert( self.state().journal == self.journal@ );
-            
-            // state().recovery_state is RecoveryComplete
-            assert( self.state().recovery_state is RecoveryComplete );
-            
-            // state().in_flight is Some <==> self.in_flight is Some
-            // Both are Some
-            assert( self.state().in_flight is Some );
-            assert( self.in_flight is Some );
-            assert( self.state().in_flight is Some <==> self.in_flight is Some );
-            
-            // state().in_flight is Some <==> self.sync_requests.in_flight()
-            // Line 826 swapped superblocking (empty) with journal_cleaning (non-empty by precondition).
-            // No second swap anymore, so superblocking = old journal_cleaning.
-            // in_flight() = superblocking.len() > 0 = old(journal_cleaning).len() > 0.
-            assert( self.sync_requests.in_flight() );
-            assert( self.state().in_flight is Some <==> self.sync_requests.in_flight() );
-
-            // new_boundary_lsn = self.journal.seq_start() <= marshalled_seq_end
             self.journal.seq_start_le_marshalled_end();
-
-            // sync_reqs_in_version(superblocking_reqs, sync_version):
-            // superblocking_reqs = old journal_cleaning_reqs (from swap at 826).
-            // From old inv_running: sync_reqs_in_version(journal_cleaning_reqs, journal_cleaning_target_lsn).
-            // From line 818 assume: journal_cleaning_target_lsn <= marshalled_seq_end().
-            // frozen_seq_end = marshalled_seq_end() (from freeze_journal ensures).
-            // sync_version = inflight_info.journal_version = frozen_seq_end.
-            // So sync_req_map[id] <= journal_cleaning_target_lsn <= sync_version.
-            let sync_version = self.state().in_flight.unwrap().journal_version;
-            assert( self.sync_requests.journal_cleaning_target_lsn <= sync_version );
-            assert( old(self).sync_reqs_in_version(
-                old(self).sync_requests.journal_cleaning_reqs@,
-                old(self).sync_requests.journal_cleaning_target_lsn as nat) );
-            assert( self.sync_requests.superblocking_reqs@ == old(self).sync_requests.journal_cleaning_reqs@ );
-            assert( self.state().sync_req_map == old(self).state().sync_req_map );
         }
 
-        assert( self.inv() );
-        assert( self.inv_api(api) );
     }
 
     exec fn deliver_inflight_replies(&mut self, ready_reqs: &mut Vec<Request>, api: &mut ClientAPI<ConcreteProgramModel>)
