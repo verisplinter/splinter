@@ -250,14 +250,32 @@ impl ILsnAddrIndex {
         }
     }
 
+    // external_body workaround for:
+    // error: complex arguments to &mut parameters are currently unsupported
     #[verifier::external_body]
+    exec fn reverse_bounds(&mut self)
+    ensures self.bounds@ == old(self).bounds@.reverse()
+    {
+        self.bounds.reverse();
+    }
+
+    // external_body workaround for:
+    // error: complex arguments to &mut parameters are currently unsupported
+    #[verifier::external_body]
+    exec fn reverse_addrs(&mut self)
+    ensures self.addrs@ == old(self).addrs@.reverse()
+    {
+        self.addrs.reverse();
+    }
+
     pub exec fn reverse(&mut self)
         requires old(self).wf()
         ensures self.wf(), old(self)@ == self@, self.ascending == !old(self).ascending, 
             old(self).seq_end() == self.seq_end(), old(self).seq_start() == self.seq_start(),
     {
-        self.bounds.reverse();
-        self.addrs.reverse();
+        self.reverse_bounds();
+        self.reverse_addrs();
+
         self.ascending = !(self.ascending);
     }
 
