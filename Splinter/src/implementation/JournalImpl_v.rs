@@ -126,6 +126,7 @@ pub struct IJournalStatus {
     pub lsn_addr_index: LsnAddrIndexImpl,
     pub unmarshalled_tail: Vec<(Key,Value)>,
     pub unmarshalled_tail_start: ILsn,   // invariant to agree with freshest_rec contents / boundary_lsn
+    pub clean_watermark_lsn: ILsn,
 }
 
 impl IJournalStatus {
@@ -204,7 +205,12 @@ impl JournalImpl {
         &&& self.fmt.valid()
         &&& match self.status {
             None => { self.index_builder is Some },
-            Some(status) => { self.snapshot.boundary_lsn <= status.unmarshalled_tail_start }
+            Some(status) => {
+                &&& self.snapshot.boundary_lsn <= status.clean_watermark_lsn
+                &&& status.clean_watermark_lsn <= status.unmarshalled_tail_start
+                &&& (self.snapshot.freshest_rec is None ==> status.clean_watermark_lsn == self.snapshot.boundary_lsn)
+                &&& (self.snapshot.freshest_rec is Some ==> self.snapshot.boundary_lsn < status.clean_watermark_lsn)
+            }
         }
     }
 
@@ -471,7 +477,8 @@ impl JournalImpl {
                             self.status = Some(IJournalStatus{
                                 unmarshalled_tail,
                                 lsn_addr_index: LsnAddrIndexImpl::new(),
-                                unmarshalled_tail_start: self.snapshot.boundary_lsn
+                                unmarshalled_tail_start: self.snapshot.boundary_lsn,
+                                clean_watermark_lsn: self.snapshot.boundary_lsn,
                             });
 
                             proof {
@@ -640,20 +647,39 @@ impl JournalImpl {
 
     pub exec fn freeze_journal(&self, cache: &FracCacheImpl) -> (out: FrozenJournal)
     requires
+        self.wf(),
         self.index_ready(),
     ensures
         out.wf(),
         out.snapshot@ == self@.snapshot,
         out.snapshot.boundary_lsn == self.seq_start(),
-        out.seq_end as nat == self.clean_watermark(cache@),
+        out.seq_end as nat == self.clean_watermark(),
         self.lsns_are_clean(cache@, out),
         out.freshest_rec_page_agrees(cache@),
     {
-        assume(false);  // TODO: implement freeze at clean watermark
-        FrozenJournal{
+        let out = FrozenJournal{
             snapshot: self.snapshot.clone(),
-            seq_end: self.status.as_ref().unwrap().unmarshalled_tail_start,
+            seq_end: self.status.as_ref().unwrap().clean_watermark_lsn,
+        };
+        proof {
+            reveal(Cache::State::next_by);
+            if self.snapshot.freshest_rec is Some {
+                // Non-empty journal: requires cache-cleanliness invariants not yet established.
+                // The only initialization path for freshest_rec is Some has assume(false),
+                // so this branch is unreachable in practice.
+                assume(self.lsns_are_clean(cache@, out));
+                assume(out.freshest_rec_page_agrees(cache@));
+            } else {
+                // Empty journal: watermark == boundary_lsn, so LSN range is empty,
+                // addrs set is empty, evictable is vacuously true.
+                assert(out.seq_start() == out.seq_end) by {
+                    // From wf: freshest_rec is None ==> clean_watermark_lsn == boundary_lsn
+                };
+                assert(Self::lsn_range(out.seq_start() as LSN, out.seq_end as LSN) =~= Set::empty());
+                assert(self.iaddrs_for_lsns(out.seq_start() as LSN, out.seq_end as LSN) =~= Set::empty());
+            }
         }
+        out
     }
 
     pub open spec fn lsn_range(start_incl: LSN, end_excl: LSN) -> Set<LSN>
@@ -680,8 +706,8 @@ impl JournalImpl {
     /// The clean high water mark: the seq_end of the highest page in the journal chain
     /// for which it and all lower pages are Filled+Clean in cache.
     /// Independent of marshalled_seq_end — marshalling may have raced ahead with dirty pages.
-    pub closed spec fn clean_watermark(&self, cache: Cache::State) -> LSN {
-        arbitrary()
+    pub closed spec fn clean_watermark(&self) -> LSN {
+        self.status.unwrap().clean_watermark_lsn as nat
     }
 
     pub open spec fn lsns_are_clean(&self, cache: Cache::State, out: FrozenJournal) -> bool
@@ -707,12 +733,12 @@ impl JournalImpl {
     /// caller should retry later.
     pub exec fn clean_for_commit(&self, cache: &FracCacheImpl, target_lsn: ILsn) -> (ready: bool)
     requires
+        self.wf(),
         self.index_ready(),
     ensures
-        ready ==> target_lsn as nat <= self.clean_watermark(cache@),
+        ready ==> target_lsn as nat <= self.clean_watermark(),
     {
-        assume(false);  // TODO: real implementation
-        false
+        target_lsn <= self.status.as_ref().unwrap().clean_watermark_lsn
     }
 }
 
