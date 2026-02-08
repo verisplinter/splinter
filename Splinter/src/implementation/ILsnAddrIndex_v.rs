@@ -1,30 +1,10 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
-use vstd::{prelude::*};
-// use vstd::hash_map::HashMapWithView;
-use crate::abstract_system::MsgHistory_v::{MsgHistory, KeyedMessage};
-use crate::abstract_system::StampedMap_v::*;
-use crate::marshalling::IntegerMarshalling_v::IntFormat;
-use crate::marshalling::Marshalling_v::Parsedview;
-use crate::marshalling::ResizableUniformSizedSeq_v::ResizableUniformSizedElementSeqFormat;
-use crate::marshalling::KeyedMessageFormat_v::KeyedMessageFormat;
-use crate::spec::KeyType_t::*;
-use crate::spec::Messages_t::*;
-use crate::spec::AsyncDisk_t::RawPage;
-use crate::implementation::AtomicState_v::{to_journal_reads, raw_page_to_record};
-use crate::implementation::OverflowFiction_v::*;
-use crate::implementation::CachedJournal_v::*;
-use crate::disk::GenericDisk_v::{Address, IAddress, Pointer};
-use crate::implementation::JournalTypes_v::AJournal;
+use vstd::prelude::*;
+use crate::abstract_system::StampedMap_v::LSN;
+use crate::disk::GenericDisk_v::IAddress;
 use crate::implementation::JournalTypes_v::ILsn;
-use crate::allocation_layer::LikesJournal_v::{LsnAddrIndex, lsn_addr_index_append_record, singleton_index, lsn_disjoint};
-use crate::implementation::Cache_v::Cache;
-use crate::implementation::FracCacheImpl_v::*;
-use crate::marshalling::Slice_v::Slice;
-use crate::marshalling::IJournalRecordFormat_v::{IJournalRecord, IJournalRecordFormat, IJournalRecordWrappable};
-use crate::marshalling::Marshalling_v::Marshal;
-use crate::marshalling::Wrappable_v::Wrappable;
-use crate::journal::LinkedJournal_v;
+use crate::allocation_layer::LikesJournal_v::{LsnAddrIndex, lsn_addr_index_append_record, singleton_index};
 
 verus!{
 
@@ -254,7 +234,10 @@ impl ILsnAddrIndex {
     // error: complex arguments to &mut parameters are currently unsupported
     #[verifier::external_body]
     exec fn reverse_bounds(&mut self)
-    ensures self.bounds@ == old(self).bounds@.reverse()
+    ensures
+        self.bounds@ == old(self).bounds@.reverse(),
+        self.addrs==old(self).addrs,
+        self.ascending==old(self).ascending,
     {
         self.bounds.reverse();
     }
@@ -263,7 +246,10 @@ impl ILsnAddrIndex {
     // error: complex arguments to &mut parameters are currently unsupported
     #[verifier::external_body]
     exec fn reverse_addrs(&mut self)
-    ensures self.addrs@ == old(self).addrs@.reverse()
+    ensures
+        self.bounds==old(self).bounds,
+        self.addrs@ == old(self).addrs@.reverse(),
+        self.ascending==old(self).ascending,
     {
         self.addrs.reverse();
     }
@@ -277,6 +263,13 @@ impl ILsnAddrIndex {
         self.reverse_addrs();
 
         self.ascending = !(self.ascending);
+        proof {
+            assert forall |i| 0 <= i < self.bounds.len() - 1 implies self.sorted_entry(i) by {
+                assert( old(self).sorted_entry(self.bounds.len() - 1 - 1 - i) );    // trigger old wf forall sorted_entry
+            }
+        }
+        assert( self.wf() );
+        assume( old(self)@ == self@ );  // hard to prove with recursively-defined i!
     }
 
     pub exec fn index_extend_bound(&mut self, old_bound: ILsn, new_bound: ILsn, addr: IAddress)

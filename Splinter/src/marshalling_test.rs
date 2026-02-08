@@ -15,6 +15,8 @@ pub mod marshalling;
 pub mod abstract_system;
 pub mod disk;
 pub mod journal;
+pub mod allocation_layer;
+pub mod betree;
 use crate::marshalling::IntegerMarshalling_v::*;
 use crate::marshalling::Marshalling_v::*;
 use crate::marshalling::SeqMarshalling_v::*;
