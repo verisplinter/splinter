@@ -1,15 +1,11 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
 use vstd::{prelude::*};
-// use vstd::hash_map::HashMapWithView;
 use crate::abstract_system::MsgHistory_v::{MsgHistory, KeyedMessage};
-use crate::abstract_system::StampedMap_v::*;
-use crate::marshalling::IntegerMarshalling_v::IntFormat;
+use crate::abstract_system::StampedMap_v::LSN;
 use crate::marshalling::Marshalling_v::Parsedview;
-use crate::marshalling::ResizableUniformSizedSeq_v::ResizableUniformSizedElementSeqFormat;
-use crate::marshalling::KeyedMessageFormat_v::KeyedMessageFormat;
-use crate::spec::KeyType_t::*;
-use crate::spec::Messages_t::*;
+use crate::spec::KeyType_t::Key;
+use crate::spec::Messages_t::Value;
 use crate::spec::AsyncDisk_t::RawPage;
 use crate::implementation::AtomicState_v::{to_journal_reads, raw_page_to_record};
 use crate::implementation::OverflowFiction_v::*;
