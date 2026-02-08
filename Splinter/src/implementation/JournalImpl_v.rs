@@ -11,7 +11,7 @@ use crate::marshalling::KeyedMessageFormat_v::KeyedMessageFormat;
 use crate::spec::KeyType_t::*;
 use crate::spec::Messages_t::*;
 use crate::spec::AsyncDisk_t::RawPage;
-use crate::implementation::AtomicState_v::to_journal_reads;
+use crate::implementation::AtomicState_v::{to_journal_reads, raw_page_to_record};
 use crate::implementation::OverflowFiction_v::*;
 use crate::implementation::CachedJournal_v::CachedJournal;
 use crate::disk::GenericDisk_v::{Address, IAddress, Pointer};
@@ -110,6 +110,16 @@ impl FrozenJournal {
     }
 
     pub open spec fn seq_start(self) -> ILsn { self.snapshot.boundary_lsn }
+
+    /// The page at this frozen journal's freshest_rec, parsed via raw_page_to_record,
+    /// has message_seq.seq_end matching this frozen journal's seq_end.
+    pub open spec fn freshest_rec_page_agrees(self, cache: Cache::State) -> bool {
+        self.snapshot@.freshest_rec is Some ==> {
+            let addr = self.snapshot@.freshest_rec.unwrap();
+            &&& cache.lookup_map.contains_key(addr)
+            &&& raw_page_to_record(cache.entries[cache.lookup_map[addr]]->data).message_seq.seq_end == self.seq_end as nat
+        }
+    }
 }
 
 pub struct IJournalStatus {
@@ -605,6 +615,12 @@ impl JournalImpl {
     {
     }
 
+    pub proof fn seq_start_le_marshalled_end(&self)
+        requires self.wf(), self.index_ready()
+        ensures self.seq_start() as nat <= self@.status.unwrap().unmarshalled_tail.seq_start
+    {
+    }
+
     pub fn is_empty(&self) -> bool
     requires self.index_ready()
     {
@@ -625,15 +641,15 @@ impl JournalImpl {
     pub exec fn freeze_journal(&self, cache: &FracCacheImpl) -> (out: FrozenJournal)
     requires
         self.index_ready(),
-        self.marshalled_pages_are_clean(cache@),
     ensures
         out.wf(),
-        out.snapshot.boundary_lsn == self.seq_start(),
         out.snapshot@ == self@.snapshot,
-        out.seq_end as nat == self@.marshalled_seq_end(),
+        out.snapshot.boundary_lsn == self.seq_start(),
+        out.seq_end as nat == self.clean_watermark(cache@),
         self.lsns_are_clean(cache@, out),
+        out.freshest_rec_page_agrees(cache@),
     {
-        assume(false);  // TODO: prove lsns_are_clean from precondition
+        assume(false);  // TODO: implement freeze at clean watermark
         FrozenJournal{
             snapshot: self.snapshot.clone(),
             seq_end: self.status.as_ref().unwrap().unmarshalled_tail_start,
@@ -661,6 +677,13 @@ impl JournalImpl {
             Cache::Step::evictable())
     }
 
+    /// The clean high water mark: the seq_end of the highest page in the journal chain
+    /// for which it and all lower pages are Filled+Clean in cache.
+    /// Independent of marshalled_seq_end — marshalling may have raced ahead with dirty pages.
+    pub closed spec fn clean_watermark(&self, cache: Cache::State) -> LSN {
+        arbitrary()
+    }
+
     pub open spec fn lsns_are_clean(&self, cache: Cache::State, out: FrozenJournal) -> bool
     {
         Cache::State::next_by(cache, cache,
@@ -678,18 +701,15 @@ impl JournalImpl {
 //         true
 //     }
 
-    /// Check whether the journal is marshalled and clean up to target_lsn.
-    /// Returns true iff:
-    ///   - target_lsn <= marshalled_seq_end (marshalled far enough)
-    ///   - all journal page addrs in [seq_start, marshalled_seq_end) are Filled+Clean in cache
+    /// Check whether the journal is clean up to target_lsn.
+    /// Returns true iff target_lsn <= clean_watermark (all pages up to there are Filled+Clean).
     /// If not ready, may do work (marshal tail, poke cache to flush) and return false;
     /// caller should retry later.
     pub exec fn clean_for_commit(&self, cache: &FracCacheImpl, target_lsn: ILsn) -> (ready: bool)
     requires
         self.index_ready(),
     ensures
-        ready ==> target_lsn <= self@.marshalled_seq_end(),
-        ready ==> self.marshalled_pages_are_clean(cache@),
+        ready ==> target_lsn as nat <= self.clean_watermark(cache@),
     {
         assume(false);  // TODO: real implementation
         false
