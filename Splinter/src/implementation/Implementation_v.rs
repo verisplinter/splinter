@@ -812,7 +812,7 @@ impl Implementation {
                 // superblock.
                 std::mem::swap(&mut self.sync_requests.superblocking_reqs, &mut self.sync_requests.journal_cleaning_reqs);
 
-            std::mem::swap(&mut self.persistent_store, &mut tmp_store);
+                std::mem::swap(&mut self.persistent_store, &mut tmp_store);
 
                 // Read the journal page at freshest_rec from cache to verify frozen_seq_end
                 // This is required by CachedJournal::freeze_for_commit which needs to verify
@@ -848,10 +848,10 @@ impl Implementation {
                     None => { None },
                 };
 
-            sb = ISuperblock{
+                sb = ISuperblock{
                     journal_snapshot: frozen_journal.snapshot,
-                store: tmp_store.v,
-            };
+                    store: tmp_store.v,
+                };
 
                 // Release the handle - fetch+release round-trip is a no-op on cache state
                 if let Some(handle) = slot_handle {
@@ -864,13 +864,12 @@ impl Implementation {
                 
                 api.log("sending this particular superblock: ");
                 Self::debug_print(&sb);
-            raw_page = DiskLayout::new().marshall(&sb);
+                raw_page = DiskLayout::new().marshall(&sb);
 
-            let ISuperblock{store: mut tmp_store_v, ..} = sb;
-            tmp_store.v = tmp_store_v;
-            std::mem::swap(&mut self.persistent_store, &mut tmp_store);
+                let ISuperblock{store: mut tmp_store_v, ..} = sb;
+                tmp_store.v = tmp_store_v;
+                std::mem::swap(&mut self.persistent_store, &mut tmp_store);
 
-                
                 self_in_flight = Some(InFlight{
                     new_boundary_lsn: self.journal.exec_seq_start(),
                     freshest_rec: self.journal.exec_freshest_rec(),
