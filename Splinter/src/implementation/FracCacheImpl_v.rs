@@ -18,7 +18,7 @@ use crate::disk::GenericDisk_v::{IAddress};
 // use crate::implementation::JournalTypes_v::AJournal;
 // use crate::implementation::JournalTypes_v::ILsn;
 // use crate::implementation::JournalModel_v::LsnAddrIndex;
-use crate::spec::AsyncDisk_t::{RawPage, DiskRequest, DiskResponse};
+use crate::spec::AsyncDisk_t::{RawPage, DiskRequest, DiskResponse, Address};
 use crate::implementation::Cache_v::*;
 use vstd::std_specs::hash::obeys_key_model;
 
@@ -82,13 +82,7 @@ impl View for FracCacheImpl {
 
     closed spec fn view(&self) -> Self::V
     {
-        let entries = Map::new(|k: Slot| k < self.total_slots(), |k| self.view_entry_at(k));
-        let status_map = Map::new(|k: Slot| k < self.total_slots(), |k| self.metadata[k as int].status);
-        Cache::State{
-            entries,
-            status_map,
-            lookup_map: self.lookup_map@,
-        }
+        self.view_state()
     }
 }
 
@@ -150,20 +144,23 @@ impl FracCacheImpl {
         &&& forall |slot: Slot| #![auto] slot < self.total_slots() ==>
             (self.lookup_map@.contains_value(slot) <==> !(self.metadata[slot as int].entry is Empty))
     }
-    
+
     closed spec fn lookup_map_bijection(self) -> bool
     {
-        // If metadata[slot] is Filled{addr}, then lookup_map@[addr@] == slot
-        forall |slot: Slot| slot < self.total_slots() ==> {
-            match #[trigger] self.metadata[slot as int].entry {
-                IEntry::Filled{addr} => {
-                    self.lookup_map@.contains_key(addr@) && self.lookup_map@[addr@] == slot
-                },
-                _ => true,
-            }
+        let entries = self.view_entries();
+        forall |slot| #[trigger] entries.contains_key(slot) ==> match entries[slot] {
+            Entry::Filled{addr, ..} => {
+                self.lookup_map@.contains_key(addr) && self.lookup_map@[addr] == slot
+            },
+            _ => true,
         }
     }
 
+    closed spec fn lookup_map_injective(self) -> bool
+    {
+        self.lookup_map@.is_injective()
+    }
+    
     // if these are things proven in the cache layer then we don't need to do this here
     closed spec fn metadata_consistent_with_slots(self) -> bool
         recommends self.lookup_map_consistent_with_slots()
@@ -201,6 +198,34 @@ impl FracCacheImpl {
         &&& self.metadata_consistent_with_slots()
         &&& self.lookup_map_consistent_with_slots()
         &&& self.lookup_map_bijection()
+        &&& self.lookup_map_injective()
+    }
+
+    closed spec fn view_state(self) -> Cache::State
+    {
+        Cache::State{
+            entries: self.view_entries(),
+            status_map: Map::new(|k: Slot| k < self.total_slots(), |k| self.metadata[k as int].status),
+            lookup_map: self.lookup_map@,
+        }
+    }
+
+    closed spec fn view_entries(self) -> Map<Slot, Entry>
+    {
+        Map::new(|k: Slot| k < self.total_slots(), |k| {
+            match self.metadata[k as int].entry {
+                IEntry::Empty => Entry::Empty,
+                IEntry::Reserved{addr} => Entry::Reserved{addr: addr@},
+                IEntry::Loading{addr} => Entry::Loading{addr: addr@},
+                IEntry::Filled{addr} => Entry::Filled{
+                    addr: addr@,
+                    // NOTE: changed from empty_page to arbitrary because we want to 
+                    // support loading directly into the page
+                    data: if self.internal_slots[k as int] is None { Self::empty_page() }
+                            else { self.internal_slots[k as int].unwrap()@ }
+                },
+            }
+        })
     }
 
     closed spec fn view_entry_at(self, k: Slot) -> Entry
@@ -241,32 +266,6 @@ impl FracCacheImpl {
         self.lookup_map@.contains_key(addr@)
     }
 
-    pub proof fn entry_fetched_lemma()
-        ensures forall |slf: Self, addr: &IAddress| #![auto] slf.entry_fetched(addr) ==> slf@.lookup_map.contains_key(addr@)
-    {
-    }
-
-    pub proof fn lookup_addr_slot_lemma()
-        ensures forall |slf: Self, addr: &IAddress| #![auto]
-            slf.entry_fetched(addr) ==> slf.lookup_addr_slot(addr) == slf@.lookup_map[addr@]
-    {
-        // lookup_addr_slot is defined as lookup_map@[addr@], so this is trivial
-    }
-    
-    pub proof fn lookup_map_bijection_lemma()
-        ensures forall |slf: Self, slot: Slot| #![auto]
-            slf.wf() && slot < slf.total_slots() && slf@.entries[slot] is Filled ==> {
-                let addr = slf@.entries[slot].get_addr();
-                slf@.lookup_map.contains_key(addr) && slf@.lookup_map[addr] == slot
-            }
-    {
-        // Follows from lookup_map_bijection invariant in wf()
-        // slf@.entries[slot] is Filled iff slf.metadata[slot].entry is Filled (by view_entry_at definition)
-        // When both are Filled, they have the same address
-        // slf@.lookup_map == slf.lookup_map@ by definition of view
-        // So the abstract property follows from the concrete invariant
-    }
-
     pub closed spec fn lookup_addr_slot(self, addr: &IAddress) -> Slot
         recommends self.entry_fetched(addr)
     {
@@ -299,6 +298,156 @@ impl FracCacheImpl {
         &&& self.valid_handle(handle)
         &&& self.lookup_addr_slot(addr) == handle.idx
         &&& self.slot_entry(handle.idx) == IEntry::Loading{addr: *addr}
+    }
+
+    pub open spec fn valid_load_handles_preserved(self, old: Self) -> bool
+        recommends self.wf(), old.wf()
+    {
+        forall |addr: IAddress, handle: MutHandle|
+            #![trigger old.valid_load_handle(&addr, handle)]
+            old.entry_fetched(&addr) && old.valid_load_handle(&addr, handle)
+            ==> self.entry_fetched(&addr) && self.valid_load_handle(&addr, handle)
+    }
+
+    pub open spec fn valid_load_handles_preserved_except(self, old: Self, except: IAddress) -> bool
+        recommends self.wf(), old.wf()
+    {
+        forall |addr: IAddress, handle: MutHandle|
+            #![trigger old.valid_load_handle(&addr, handle)]
+            addr != except
+            && old.entry_fetched(&addr)
+            && old.valid_load_handle(&addr, handle)
+            ==> self.entry_fetched(&addr) && self.valid_load_handle(&addr, handle)
+    }
+
+    proof fn valid_load_handles_preserved_if_maps_same(old: Self, new: Self)
+        requires
+            new.lookup_map@ == old.lookup_map@,
+            new.metadata == old.metadata,
+            new.entry_token_unchanged(old),
+        ensures
+            new.valid_load_handles_preserved(old),
+    {
+        assert forall |addr: IAddress, handle: MutHandle|
+            old.entry_fetched(&addr) && old.valid_load_handle(&addr, handle)
+            implies new.entry_fetched(&addr) && new.valid_load_handle(&addr, handle)
+        by {
+            assert(new.entry_fetched(&addr)) by {
+                assert(old.entry_fetched(&addr));
+                assert(old.lookup_map@.contains_key(addr@));
+                assert(new.lookup_map@.contains_key(addr@));
+            }
+            assert(new.valid_handle(handle)) by {
+                assert(old.valid_handle(handle));
+                assert(new.entry_token_unchanged(old));
+                assert(new.entry_token_id(handle.idx) == old.entry_token_id(handle.idx));
+            }
+            assert(new.lookup_addr_slot(&addr) == old.lookup_addr_slot(&addr)) by {
+                assert(new.lookup_map@ == old.lookup_map@);
+            }
+            assert(new.slot_entry(handle.idx) == old.slot_entry(handle.idx));
+        }
+    }
+
+    pub proof fn valid_load_handles_preserved_transitive(old: Self, mid: Self, new: Self)
+        requires
+            old.wf(), mid.wf(), new.wf(),
+            mid.valid_load_handles_preserved(old),
+            new.valid_load_handles_preserved(mid),
+        ensures
+            new.valid_load_handles_preserved(old),
+    {
+        assert forall |addr: IAddress, handle: MutHandle|
+            old.entry_fetched(&addr) && old.valid_load_handle(&addr, handle)
+            implies new.entry_fetched(&addr) && new.valid_load_handle(&addr, handle)
+        by {
+            assert(mid.entry_fetched(&addr) && mid.valid_load_handle(&addr, handle));
+            assert(new.entry_fetched(&addr) && new.valid_load_handle(&addr, handle));
+        }
+    }
+
+    proof fn slot_entry_same_except(old: Self, new: Self, except_idx: usize, idx: usize)
+        requires
+            old.wf(),
+            new.wf(),
+            except_idx < new.total_slots(),
+            new.entries_same_except(old, except_idx),
+            idx < new.total_slots(),
+            idx != except_idx,
+        ensures
+            new.slot_entry(idx) == old.slot_entry(idx),
+    {
+        assert(new.entries_same_except(old, except_idx));
+        let i = idx as int;
+        assert(0 <= i);
+        assert(i < new.total_slots());
+        assert(i != except_idx);
+        assert({
+            &&& new.perms@[i] == old.perms@[i]
+            &&& new.internal_slots[i] == old.internal_slots[i]
+            &&& new.metadata[i] == old.metadata[i]
+        }) by {
+            assert(new.entries_same_except(old, except_idx));
+        }
+    }
+
+    proof fn valid_load_handles_preserved_except_from_same(old: Self, new: Self, except: IAddress, except_idx: usize)
+        requires
+            old.wf(),
+            new.wf(),
+            new.entry_fetched_same_except(old, &except),
+            except_idx < new.total_slots(),
+            new.entries_same_except(old, except_idx),
+            new.entry_token_unchanged(old),
+            forall |addr2: IAddress, handle2: MutHandle|
+                addr2 != except
+                && old.entry_fetched(&addr2)
+                && old.valid_load_handle(&addr2, handle2)
+                ==> handle2.idx != except_idx,
+        ensures
+            new.valid_load_handles_preserved_except(old, except),
+    {
+        assert forall |addr2: IAddress, handle2: MutHandle|
+            addr2 != except
+            && old.entry_fetched(&addr2)
+            && old.valid_load_handle(&addr2, handle2)
+            implies new.entry_fetched(&addr2) && new.valid_load_handle(&addr2, handle2)
+        by {
+            assert(new.entry_fetched(&addr2)) by {
+                assert(new.entry_fetched_same_except(old, &except));
+            }
+            assert(new.lookup_addr_slot(&addr2) == old.lookup_addr_slot(&addr2)) by {
+                assert(new.entry_fetched_same_except(old, &except));
+                assert(new.entry_fetched(&addr2));
+            }
+            assert(handle2.idx != except_idx);
+            assert(new.valid_handle(handle2));
+            assert(handle2.idx < new.total_slots());
+            Self::slot_entry_same_except(old, new, except_idx, handle2.idx);
+        }
+    }
+
+    proof fn valid_load_handles_preserved_from_except_if_missing(old: Self, new: Self, except: IAddress)
+        requires
+            old.wf(),
+            new.wf(),
+            new.valid_load_handles_preserved_except(old, except),
+            !old.entry_fetched(&except),
+        ensures
+            new.valid_load_handles_preserved(old),
+    {
+        assert forall |addr2: IAddress, handle2: MutHandle|
+            old.entry_fetched(&addr2) && old.valid_load_handle(&addr2, handle2)
+            implies new.entry_fetched(&addr2) && new.valid_load_handle(&addr2, handle2)
+        by {
+            if addr2 == except {
+                assert(!old.entry_fetched(&except));
+                assert(false);
+            }
+            assert(new.entry_fetched(&addr2) && new.valid_load_handle(&addr2, handle2)) by {
+                assert(new.valid_load_handles_preserved_except(old, except));
+            }
+        }
     }
 
     pub open spec(checked) fn entry_token_unchanged(&self, other: Self) -> bool
@@ -408,6 +557,7 @@ impl FracCacheImpl {
         requires old(self).wf()
         ensures 
             self.wf(),
+            self.valid_load_handles_preserved(*old(self)),
             match err {
                 FetchErrorCode::Awaiting => old(self)@ =~= self@,
                 FetchErrorCode::Success{slot_handle} => {
@@ -416,6 +566,8 @@ impl FracCacheImpl {
                     &&& self.entry_token_unchanged(*old(self))
                     &&& self.entry_fetched_same_except(*old(self), addr)
                     &&& self.entries_same_except(*old(self), slot_handle.idx)
+                    &&& old(self).slot_entry(slot_handle.idx) == (IEntry::Filled{addr: *addr})
+                    &&& self.slot_entry(slot_handle.idx) == (IEntry::Filled{addr: *addr})
                     &&& old(self)@.valid_read(addr@, slot_handle.rec@)
                     &&& old(self)@.entries == self@.entries.insert(slot_handle.idx, 
                             Entry::Filled{addr: addr@, data: slot_handle.rec@} ) // slot type
@@ -436,7 +588,8 @@ impl FracCacheImpl {
         if self.lookup_map.contains_key(addr) {
             let slot = *self.lookup_map.get(addr).unwrap();
             self.internal_slots.push(None);
-            assert(self.lookup_map@.contains_value(slot)); // trigger
+            // trigger
+            assert(self.lookup_map@.contains_value(slot));
 
             let mut taken = self.internal_slots.swap_remove(slot);
             let mut slot_handle = match taken {
@@ -456,21 +609,18 @@ impl FracCacheImpl {
                     }
                 }
             };
-            assert(!(old(self).metadata[slot as int].entry is Empty));
-            assert(old(self).internal_slots[slot as int] is Some);
-
             proof {
-                let target_addr = addr@;
                 match old(self).metadata[slot as int].entry {
-                    IEntry::Empty{} => { assert(false); },
-                    IEntry::Filled{addr} => {
+                    IEntry::Empty{} => { },
+                    IEntry::Filled{addr: entry_addr} => {
                         // address if it was filled it must have this same address
-                        assume(target_addr == addr@);
-                        assert(old(self)@.entries[slot] == Entry::Filled{addr: addr@, data: slot_handle.rec@}); 
+                        reveal(FracCacheImpl::view_entries);
+                        // trigger
+                        assert(old(self).view_entries().contains_key(slot)) by {
+                            assert(slot < old(self).total_slots());
+                        }
                     },
                     _ => {
-                        assert(old(self).internal_slots[slot as int] is None); 
-                        assert(false);
                     },
                 }
             }
@@ -487,18 +637,17 @@ impl FracCacheImpl {
             self.total_slots() - slot,
         {
             if let IEntry::Empty = self.metadata[slot].entry {
+                let status = self.metadata[slot].status;
                 self.lookup_map.insert(*addr, slot);
                 self.metadata[slot] = Metadata{
-                    status: self.metadata[slot].status.clone(), 
+                    status, 
                     entry: IEntry::Loading{addr: *addr}};
-
-                assume(old(self).metadata[slot as int].status == self.metadata[slot as int].status);
 
                 self.internal_slots.push(None);
                 let mut taken = self.internal_slots.swap_remove(slot);
                 let slot_handle = 
                     match taken {
-                        None => { assert(false); unreached() },
+                        None => { unreached() },
                         Some(rec) => {
                             let tracked perm = self.perms.borrow_mut().tracked_remove(slot as int);
                             let tracked handle_perm = perm.split(1);
@@ -513,33 +662,61 @@ impl FracCacheImpl {
                         }
                     };
 
+                // trigger
                 assert(self.lookup_map_inv()) by {
                     assert forall |i| #[trigger] self.lookup_map@.contains_value(i) 
                     implies i < self.total_slots() by {
                         if i != slot {
+                            // trigger
                             assert(old(self).lookup_map@.contains_value(i)); // trigger
                         }
                     }
                 }
 
+                // trigger
                 assert(self.lookup_map_consistent_with_slots()) by {
                     assert forall |i: Slot| #![auto] i < self.total_slots()
                     implies self.lookup_map@.contains_value(i) <==> !(self.metadata[i as int].entry is Empty)
                     by {
                         if self.lookup_map@.contains_value(i) && i != slot {
+                            // trigger
                             assert(old(self).lookup_map@.contains_value(i)); // trigger
                         }
 
                         if !(self.metadata[i as int].entry is Empty) {
                             if i == slot {
+                                // trigger
                                 assert(self.lookup_map@.contains_pair(addr@, slot));
-                                assert(self.lookup_map@.contains_value(i));
                             } else {
+                                // trigger
                                 assert(old(self).lookup_map@.contains_value(i)); // trigger
                                 let other_addr = choose |other_addr| #[trigger] old(self).lookup_map@.contains_key(other_addr)
                                     && old(self).lookup_map@[other_addr] == i;
+                                // trigger
                                 assert(self.lookup_map@.contains_pair(other_addr, i));
                             }
+                        }
+                    }
+                }
+                // trigger
+                assert(self.lookup_map_injective()) by {
+                    // trigger
+                    assert forall |addr1: Address, addr2: Address| #![auto]
+                        self.lookup_map@.contains_key(addr1)
+                        && self.lookup_map@.contains_key(addr2)
+                        && self.lookup_map@[addr1] == self.lookup_map@[addr2]
+                        implies addr1 == addr2
+                    by {
+                        if addr1 == addr@ {
+                            if addr2 == addr@ {
+                            } else {
+                                // trigger
+                                assert(old(self).lookup_map@.contains_value(slot));
+                            }
+                        } else if addr2 == addr@ {
+                            // trigger
+                            assert(old(self).lookup_map@.contains_value(slot));
+                        } else {
                         }
                     }
                 }
@@ -549,46 +726,51 @@ impl FracCacheImpl {
 
                 proof {
                     let new_slots_mapping = map!{slot => addr@};
-                    assume(new_slots_mapping.invert() =~= map!{addr@ => slot}); // TODO: don't want to prove this
+                    // trigger
+                    assert(new_slots_mapping.invert() =~= map!{addr@ => slot}) by {
+                        // show both maps contain exactly the pair (addr@, slot)
+                        // trigger
+                        assert(new_slots_mapping.contains_pair(slot, addr@));
+                    }
 
+                    // trigger
                     assert forall |slot_addr| true
                     implies new_slots_mapping.contains_value(slot_addr) <==> 
                         exists |req| #[trigger] addr_maps_to_req(cache_lbl->requests, req, slot_addr)
                     by {
                         if new_slots_mapping.contains_value(slot_addr) {
-                            assert(slot_addr == addr@);
+                            // trigger
                             assert(addr_maps_to_req(cache_lbl->requests, load_request, addr@));
                         }
                         if exists |req| addr_maps_to_req(cache_lbl->requests, req, slot_addr) {
-                            let req = choose |req| #[trigger] addr_maps_to_req(cache_lbl->requests, req, slot_addr);
-                            assert(req == load_request);
-                            assert(slot_addr == addr@);
-                            assert(new_slots_mapping.contains_pair(slot, slot_addr));
                         }
                     }
-                    assert(Cache::State::valid_load_requests(cache_lbl->requests, new_slots_mapping));
-
-                    let new_entry = Entry::Loading{addr: addr@};
                     let updated_entries = Map::new(
                         |slot| new_slots_mapping.contains_key(slot),
                         |slot| Entry::Loading{addr: new_slots_mapping[slot]}
                     );
-                    assert(updated_entries =~= map!{slot => new_entry});
+                    // extn
                     assert(self@.entries =~= old(self)@.entries.union_prefer_right(updated_entries)); // ext_eq
+                    // extn
                     assert(self@.lookup_map =~= old(self)@.lookup_map.union_prefer_right(new_slots_mapping.invert())); // ext_eq
-                    assert(self@.status_map.dom() =~= old(self)@.status_map.dom());
+                    // extn
                     assert(self@.status_map =~= old(self)@.status_map);
-                    assert(Cache::State::load_initiate(old(self)@, self@, cache_lbl, new_slots_mapping));
-
                     reveal(Cache::State::next_by);
+                    // trigger
                     assert(Cache::State::next_by(old(self)@, self@, cache_lbl, Cache::Step::load_initiate(new_slots_mapping)));
                     reveal(Cache::State::next);
                 }
                 
-                assert(self.valid_load_handle(addr, slot_handle));
+                proof {
+                    Self::valid_load_handles_preserved_except_from_same(*old(self), *self, *addr, slot_handle.idx);
+                    Self::valid_load_handles_preserved_from_except_if_missing(*old(self), *self, *addr);
+                }
                 return FetchErrorCode::LoadInitiate{slot_handle};
             }
             slot = slot+1;
+        }
+        proof {
+            Self::valid_load_handles_preserved_if_maps_same(*old(self), *self);
         }
         return FetchErrorCode::CacheFull;
     }
@@ -604,6 +786,7 @@ impl FracCacheImpl {
             &&& self.wf()
             &&& self.entry_token_unchanged(*old(self))
             &&& self.entry_fetched_same_except(*old(self), addr)
+            &&& self.valid_load_handles_preserved_except(*old(self), *addr)
             &&& Cache::State::next(old(self)@, self@, cache_lbl)
         })
     {
@@ -614,8 +797,6 @@ impl FracCacheImpl {
             perm.agree(&handle_perm);
             perm.combine(handle_perm);
             perm.bounded();
-            assert(self.internal_slots[idx as int] is None);
-            assert(perm.frac() == 2);
             self.perms.borrow_mut().tracked_insert(idx as int, perm);
         }
 
@@ -628,10 +809,17 @@ impl FracCacheImpl {
             let resp = DiskResponse::ReadResp{data: handle.rec@};
             let cache_lbl = Cache::Label::DiskOps{requests: set!{}, responses: map!{addr@ => resp}};
 
-            assert(old(self)@.valid_load_responses(cache_lbl->responses));
-            assert(old(self)@.lookup_map.restrict(cache_lbl->responses.dom()) =~= map!{addr@ => idx});
             let slot_addr_map = old(self)@.lookup_map.restrict(cache_lbl->responses.dom()).invert();
-            assume(slot_addr_map =~= map!{idx => addr@});
+            // trigger
+            assert(slot_addr_map =~= map!{idx => addr@}) by {
+                // the restrict map has exactly the pair (addr@ -> idx), so its invert is (idx -> addr@)
+                // trigger
+                assert(old(self)@.lookup_map.restrict(cache_lbl->responses.dom()).contains_pair(addr@, idx));
+
+                reveal(Map::invert);
+                // show slot_addr_map maps idx to addr@
+                // show there are no other keys
+            }
 
             let updated_entries = Map::new(
                 |slot| slot_addr_map.contains_key(slot),
@@ -640,17 +828,17 @@ impl FracCacheImpl {
                     data: cache_lbl->responses[slot_addr_map[slot]]->data
                 }
             );
-            assert(updated_entries =~= map!{idx => Entry::Filled{addr: addr@, data: rec@}});
 
             let updated_status_map = Map::new(
                 |slot| slot_addr_map.contains_key(slot),
                 |slot| Status::Clean
             );
-            assert(updated_status_map =~= map!{idx => Status::Clean});
+            // extn
             assert(self@.entries =~= old(self)@.entries.union_prefer_right(updated_entries));
+            // extn
             assert(self@.status_map =~= old(self)@.status_map.union_prefer_right(updated_status_map));
-            assert(Cache::State::load_complete(old(self)@, self@, cache_lbl));
             reveal(Cache::State::next_by);
+            // trigger
             assert(Cache::State::next_by(old(self)@, self@, cache_lbl, Cache::Step::load_complete()));
             reveal(Cache::State::next);
         }
@@ -661,10 +849,12 @@ impl FracCacheImpl {
             old(self).wf(),
             old(self).valid_handle(handle),
             old(self).entry_fetched(addr),
+            old(self).slot_entry(handle.idx) == (IEntry::Filled{addr: *addr}),
         ensures ({
             &&& self.wf()
             &&& self.entry_token_unchanged(*old(self))
             &&& self.entry_fetched_same_except(*old(self), addr)
+            &&& self.valid_load_handles_preserved(*old(self))
             &&& self@.entries == old(self)@.entries.insert(handle.idx,
                 Entry::Filled{addr: addr@, data: handle.rec@})
             &&& self@.lookup_map == old(self)@.lookup_map
@@ -678,12 +868,20 @@ impl FracCacheImpl {
             perm.agree(&handle_perm);
             perm.combine(handle_perm);
             perm.bounded();
-            assert(self.internal_slots[idx as int] is None);
-            assert(perm.frac() == 2);
             self.perms.borrow_mut().tracked_insert(idx as int, perm);
+            // relate perms view to the old one (remove + insert at same index)
         }
         self.internal_slots[idx] = Some(rec);
-        assume(false);
+        proof {
+            // vector update view for internal_slots
+
+            // show view entries updated only at idx
+            reveal(FracCacheImpl::view_entries);
+            // extn
+            assert(self@.entries == old(self)@.entries.insert(idx, Entry::Filled{addr: addr@, data: rec@}));
+
+            // wf follows since we only changed internal_slots at idx and restored the perm fraction
+        }
     }
 }
 

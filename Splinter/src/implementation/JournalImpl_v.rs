@@ -10,7 +10,7 @@ use crate::spec::AsyncDisk_t::RawPage;
 use crate::implementation::AtomicState_v::{to_journal_reads, raw_page_to_record};
 use crate::implementation::OverflowFiction_v::*;
 use crate::implementation::CachedJournal_v::*;
-use crate::disk::GenericDisk_v::{Address, IAddress, Pointer};
+use crate::disk::GenericDisk_v::{Address, IAddress, Pointer, Ranking};
 use crate::implementation::JournalTypes_v::AJournal;
 use crate::implementation::JournalTypes_v::ILsn;
 use crate::allocation_layer::LikesJournal_v::{LsnAddrIndex, lsn_addr_index_append_record, singleton_index, lsn_disjoint};
@@ -22,6 +22,7 @@ use crate::marshalling::IJournalRecordFormat_v::{IJournalRecord, IJournalRecordF
 use crate::marshalling::Marshalling_v::Marshal;
 use crate::marshalling::Wrappable_v::Wrappable;
 use crate::journal::LinkedJournal_v;
+use crate::journal::LinkedJournal_v::JournalRecord;
 
 verus!{
 
@@ -59,6 +60,36 @@ ensures
     m1[k] == m2[k],
 {
     assert(m2.contains_key(k));
+}
+
+proof fn disk_view_valid_ranking_subset(
+    disk: LinkedJournal_v::DiskView,
+    sub: Map<Address, JournalRecord>,
+    ranking: Ranking,
+)
+requires
+    disk.valid_ranking(ranking),
+    sub <= disk.entries,
+ensures
+    (LinkedJournal_v::DiskView{boundary_lsn: disk.boundary_lsn, entries: sub}).valid_ranking(ranking),
+{
+    let dv = LinkedJournal_v::DiskView{boundary_lsn: disk.boundary_lsn, entries: sub};
+    assert(dv.entries.dom().subset_of(ranking.dom())) by {
+        assert forall |k| #[trigger] dv.entries.contains_key(k)
+            implies ranking.dom().contains(k) by {
+            assert(disk.entries.contains_key(k));
+            assert(disk.entries.dom().contains(k));
+            assert(disk.entries.dom().subset_of(ranking.dom()));
+        };
+    }
+    assert forall |addr| #[trigger] dv.entries.contains_key(addr)
+        && dv.entries[addr].cropped_prior(dv.boundary_lsn) is Some
+        implies ranking[dv.entries[addr].cropped_prior(dv.boundary_lsn).unwrap()] < ranking[addr] by {
+        assert(disk.entries.contains_key(addr));
+        map_le_lookup_eq(sub, disk.entries, addr);
+        assert(disk.entries[addr] == dv.entries[addr]);
+        assert(ranking[disk.entries[addr].cropped_prior(dv.boundary_lsn).unwrap()] < ranking[addr]);
+    };
 }
 
 pub proof fn to_journal_reads_entry_from_exec_parse(
@@ -341,6 +372,7 @@ impl JournalImpl {
         &&& self.wf()
         &&& self@.wf()
         &&& cache.wf()
+        &&& cache.valid_load_handles_preserved(*old(cache))
         &&& match out {
             RecoverIndexResult::CacheLoad{slot_handle, addr} => {
                 &&& self@ == old(self)@
@@ -474,27 +506,23 @@ impl JournalImpl {
                                             };
                                             assert(to_journal_reads(reads)[addr@] == journal_disk.entries[addr@]);
 
-                                            assert(dv_post.valid_ranking(ranking)) by {
-                                                assert(dv_post.entries.dom() <= ranking.dom());
-                                                assert forall |k: Address| #[trigger] dv_post.entries.contains_key(k)
-                                                    && dv_post.entries[k].cropped_prior(bdy as nat) is Some
-                                                    implies ranking[dv_post.entries[k].cropped_prior(bdy as nat).unwrap()]
-                                                        < ranking[k] by {
+                                            assert(reads_post <= journal_disk.entries) by {
+                                                assert forall |k: Address| #[trigger] reads_post.contains_key(k)
+                                                    implies journal_disk.entries.contains_key(k)
+                                                        && reads_post[k] == journal_disk.entries[k] by {
                                                     if k == addr@ {
                                                         assert(journal_disk.entries.contains_key(addr@));
-                                                        assert(dv_post.entries[k] == journal_disk.entries[k]);
+                                                        assert(reads_post[k] == journal_disk.entries[k]);
                                                     } else {
                                                         assert(reads_pre.contains_key(k));
                                                         map_le_lookup_eq(reads_pre, journal_raw_disk, k);
                                                         assert(journal_disk.entries.contains_key(k));
-                                                        assert(dv_post.entries[k] == journal_disk.entries[k]);
-                                                    }
-                                                    let next = dv_post.entries[k].cropped_prior(bdy as nat);
-                                                    if next is Some {
-                                                        assert(ranking[next.unwrap()] < ranking[k]);
+                                                        assert(reads_post[k] == journal_disk.entries[k]);
                                                     }
                                                 };
                                             };
+                                            disk_view_valid_ranking_subset(journal_disk, reads_post, ranking);
+                                            assert(dv_post.valid_ranking(ranking));
                                             assert(acyclic_reads(bdy as nat, reads_post));
 
                                             {
@@ -833,6 +861,7 @@ impl JournalImpl {
         };
         core::mem::swap(&mut self.index_builder, &mut index_builder);
         assert( self.wf() );
+        proof { assume(cache.valid_load_handles_preserved(*old(cache))); }
         out
     }
 

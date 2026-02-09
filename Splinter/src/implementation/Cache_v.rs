@@ -312,10 +312,7 @@ state_machine!{ Cache {
 
     #[invariant]
     pub open spec(checked) fn inv(self) -> bool {
-        // slots hold unique address
-        
-
-
+        // slots hold unique addres
         &&& self.slots_hold_unique_addr()
         &&& self.status_map.dom() =~= self.entries.dom()
         &&& self.lookup_map == self.build_lookup_map()
@@ -349,14 +346,128 @@ state_machine!{ Cache {
     requires self.slots_hold_unique_addr()
     ensures ({
         let lookup_map = self.build_lookup_map();
-        &&& lookup_map.is_injective()
-        &&& forall |addr| #[trigger] lookup_map.contains_key(addr) 
-            <==> self.non_empty_slot(lookup_map[addr]) 
-        &&& forall |addr| #[trigger] lookup_map.contains_key(addr) 
-            ==> self.entries[lookup_map[addr]].get_addr() == addr
+        self.build_lookup_map_props(lookup_map)
     }) {
-        assume(false);
+        let lookup_map = self.build_lookup_map();
+        reveal(Cache::State::build_lookup_map);
+
+        let filled_slot_addr_map = Map::new(
+            |slot| self.entries.contains_key(slot) && self.entries[slot] is Filled,
+            |slot| self.entries[slot].get_addr()
+        );
+
+        assert(lookup_map == filled_slot_addr_map.invert());
+
+        // Prove the filled-slot map is injective using unique addresses.
+        assert(filled_slot_addr_map.is_injective()) by {
+            assert forall |s1: Slot, s2: Slot|
+                s1 != s2
+                && filled_slot_addr_map.contains_key(s1)
+                && filled_slot_addr_map.contains_key(s2)
+                implies filled_slot_addr_map[s1] != filled_slot_addr_map[s2]
+            by {
+                assert(self.entries.contains_key(s1));
+                assert(self.entries.contains_key(s2));
+                assert(self.entries[s1] is Filled);
+                assert(self.entries[s2] is Filled);
+                assert(self.non_empty_slot(s1));
+                assert(self.non_empty_slot(s2));
+                assert(self.entries[s1].get_addr() != self.entries[s2].get_addr());
+                assert(filled_slot_addr_map[s1] == self.entries[s1].get_addr());
+                assert(filled_slot_addr_map[s2] == self.entries[s2].get_addr());
+            }
+        }
+
+        // Invert of any map is injective; plus the inverse agrees on original keys.
+        filled_slot_addr_map.lemma_invert_is_injective();
+
+        assert(self.build_lookup_map_props(lookup_map)) by {
+            assert(lookup_map.is_injective()) by {
+                assert(lookup_map == filled_slot_addr_map.invert());
+                assert(filled_slot_addr_map.invert().is_injective());
+            }
+
+            assert forall |addr| #[trigger] lookup_map.contains_key(addr) implies {
+                let slot = lookup_map[addr];
+                &&& self.entries.contains_key(slot)
+                &&& self.entries[slot] is Filled
+                &&& self.entries[slot].get_addr() == addr
+            } by {
+                // Unfold invert to relate lookup_map to filled_slot_addr_map.
+                reveal(Map::invert);
+                assert(lookup_map == filled_slot_addr_map.invert());
+                assert(filled_slot_addr_map.contains_value(addr)) by {
+                    assert(lookup_map.contains_key(addr));
+                }
+                let s = choose |s: Slot| #[trigger] filled_slot_addr_map.contains_key(s)
+                    && filled_slot_addr_map[s] == addr;
+                assert(filled_slot_addr_map.contains_pair(s, addr));
+                assert(lookup_map[addr] == s);
+                assert(filled_slot_addr_map.contains_pair(lookup_map[addr], addr));
+                assert(self.entries.contains_key(lookup_map[addr]));
+                assert(self.entries[lookup_map[addr]] is Filled);
+                assert(filled_slot_addr_map[lookup_map[addr]] == self.entries[lookup_map[addr]].get_addr());
+                assert(filled_slot_addr_map[lookup_map[addr]] == addr);
+            }
+
+            assert forall |slot| #[trigger] self.entries.contains_key(slot)
+            implies match self.entries[slot] {
+                Entry::Filled{addr, ..} => {
+                    lookup_map.contains_key(addr) && lookup_map[addr] == slot
+                },
+                _ => true,
+            } by {
+                if self.entries[slot] is Filled {
+                    let addr = self.entries[slot].get_addr();
+                    assert(filled_slot_addr_map.contains_pair(slot, addr));
+                    assert(filled_slot_addr_map.contains_value(addr));
+                    reveal(Map::invert);
+                    assert(lookup_map == filled_slot_addr_map.invert());
+                    assert(lookup_map.contains_key(addr)) by {
+                        assert(filled_slot_addr_map.contains_value(addr));
+                    }
+                    assert(filled_slot_addr_map[slot] == addr);
+                    // show lookup_map[addr] must be this slot, by injectivity
+                    reveal(Map::invert);
+                    assert(filled_slot_addr_map.contains_pair(lookup_map[addr], addr)) by {
+                        assert(lookup_map.contains_key(addr));
+                        assert(filled_slot_addr_map.contains_value(addr));
+                        let s = choose |s: Slot| filled_slot_addr_map.contains_pair(s, addr);
+                        assert(filled_slot_addr_map.contains_pair(s, addr));
+                        assert(lookup_map[addr] == s);
+                    }
+                    assert(filled_slot_addr_map.contains_key(slot));
+                    assert(filled_slot_addr_map.contains_key(lookup_map[addr]));
+                    if lookup_map[addr] != slot {
+                        assert(filled_slot_addr_map[lookup_map[addr]] != filled_slot_addr_map[slot]) by {
+                            assert(filled_slot_addr_map.is_injective());
+                        }
+                        assert(filled_slot_addr_map[lookup_map[addr]] == addr);
+                        assert(false);
+                    }
+                }
+            }
+        }
     }
+
+    pub open spec fn build_lookup_map_props(self, lookup_map: Map<Address, Slot>) -> bool
+    {
+        &&& lookup_map.is_injective()
+        &&& forall |addr| #[trigger] lookup_map.contains_key(addr) ==> {
+            let slot = lookup_map[addr];
+            &&& self.entries.contains_key(slot)
+            &&& self.entries[slot] is Filled
+            &&& self.entries[slot].get_addr() == addr
+        }
+        &&& forall |slot| #[trigger] self.entries.contains_key(slot)
+            ==> match self.entries[slot] {
+                Entry::Filled{addr, ..} => {
+                    lookup_map.contains_key(addr) && lookup_map[addr] == slot
+                },
+                _ => true,
+            }
+    }
+
 
     #[inductive(reserve)]
     fn reserve_inductive(pre: Self, post: Self, lbl: Label, new_slots_mapping: Map<Slot, Address>) { 

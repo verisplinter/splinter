@@ -216,7 +216,7 @@ pub struct Implementation {
     persistent_store: VecMap<Key, Value>,
 
     // token for the program model variable
-    model: Tracked<ModelShard>, // 
+    model: Tracked<ModelShard>,
 
     // we do not own a mutable reference to this
     instance: Tracked<KVStoreTokenized::Instance<ConcreteProgramModel>>,
@@ -227,26 +227,6 @@ pub struct Implementation {
 }
 
 impl Implementation {
-    // closed spec(checked) fn view_as_kmmap(self) -> TotalKMMap
-    // {
-    //     ASuperblock::map_to_kmmap(self.store@)
-    // }
-
-    // TODO delete this is nonsense now we have a real store
-//     broadcast proof fn view_as_kmmap_ensures(self)
-//         requires self.persistent_version() <= self.version(), self.journal.seq_start == 0
-//         ensures #[trigger] self.view_as_kmmap() =~= MsgHistory::map_plus_history(StampedMap_v::empty(), self.journal@@).value
-//     { 
-//         assert(self.journal@@.discard_recent((self.journal@@.seq_end) as nat) =~= self.journal@@);
-//     }
-
-    // closed spec(checked) fn persistent_map_plus_history(self) -> TotalKMMap
-    // {
-    //     let sb = ISuperblock { journal: self.journal, store: self.persistent_store.v };
-    //     sb@@.store.appv.kmmap
-    // }
-
-    // view as floating version should be maintained the same
 
     pub closed spec fn i(self) -> AtomicState {
         self.state()
@@ -271,6 +251,19 @@ impl Implementation {
         &&& self.store.wf()
         &&& self.state().recovery_state is Begin
         &&& self.cache.wf()
+    }
+
+    closed spec fn outstanding_requests_wf(self) -> bool
+    {
+        forall |id| #[trigger] self.outstanding_requests@.contains_key(id) ==> {
+            match self.outstanding_requests@[id] {
+                OutstandingReqInfo::CacheLoadReq{read_addr, load_handle} => {
+                    &&& self.cache.entry_fetched(&read_addr)
+                    &&& self.cache.valid_load_handle(&read_addr, load_handle)
+                },
+                _ => { true }
+            }
+        }
     }
 
     closed spec fn inv_running(self) -> bool {
@@ -363,6 +356,7 @@ impl Implementation {
     closed spec fn inv(self) -> bool {
         &&& self.cache.wf()
         &&& self.state().cache == self.cache@
+        &&& self.outstanding_requests_wf()
 
         // from the physical phase field to stuff we know
         &&& self.recovery_phase is FetchingSuperblock ==> self.inv_recover()
@@ -830,11 +824,8 @@ impl Implementation {
                         match fetch_result {
                             FetchErrorCode::Success{slot_handle} => {
                                 proof {
-                                    FracCacheImpl::entry_fetched_lemma();
-                                    FracCacheImpl::lookup_addr_slot_lemma();
                                     assert( cache_before_fetch@.entries[slot_handle.idx].get_addr() == freshest_addr@ );  // trigger
                                     assert( cache_before_fetch.wf() );  // trigger
-                                    FracCacheImpl::lookup_map_bijection_lemma();
                                 }
                                 Some(slot_handle)
                             },
@@ -1442,15 +1433,41 @@ impl Implementation {
                 Self::todo_placeholder();
             }
             Some(req_info) => {
+                assert(self.outstanding_requests@.contains_key(id));
+                assert(*req_info == self.outstanding_requests@[id]);
                 match req_info {
                     OutstandingReqInfo::SuperBlockReq{} => {
-                    self.handle_disk_superblock_write_response(id, disk_response, response_shard, api);
+                        self.handle_disk_superblock_write_response(id, disk_response, response_shard, api);
                     },
                     OutstandingReqInfo::CacheLoadReq{read_addr, load_handle} => {
+                        // cache load request 
+
+                        // we get a stored read_addr and load_handle
+                        // we should remember that load_handle is a valid load handle 
+                        // that we can invoke load_release on
+                        // cache load request
+                        // read adder load_handle
+
+                        // we want to load it to release 
+
+                        // disk_response
+                        proof {
+                            assert(self.outstanding_requests@[id] == *req_info);
+                            let ghost info = self.outstanding_requests@[id];
+                            match info {
+                                OutstandingReqInfo::CacheLoadReq{read_addr: ra, load_handle: lh} => {
+                                    assert(self.cache.entry_fetched(&ra));
+                                    assert(self.cache.valid_load_handle(&ra, lh));
+                                },
+                                _ => { assert(false); }
+                            }
+                        }
                         assume(false);
                         // self.handle_disk_cache_response(id, disk_response, response_shard, disk_request.handle, api);
                     },
                     OutstandingReqInfo::CacheWriteReq{write_addr, handle} => {
+                        // cache write request
+
                         assume(false);
                     },
                 }
@@ -1630,12 +1647,55 @@ impl Implementation {
         assert( self.journal.wf() );
         
         let ghost pre_state = self.model@.value();
+        let ghost pre_outstanding = self.outstanding_requests@;
+        // let ghost pre_outstanding_wf = self.outstanding_requests_wf();
+        let ghost cache_before_index = self.cache;
         let result = self.journal.recover_index_step(&mut self.cache);
+        proof {
+            assert(self.cache.valid_load_handles_preserved(cache_before_index));
+        }
 
         match result {
             RecoverIndexResult::CacheLoad{slot_handle, addr} => {
             let tracked mut model = KVStoreTokenized::model::arbitrary();
             proof { tracked_swap(self.model.borrow_mut(), &mut model); }
+
+                let ghost old_outstanding = self.outstanding_requests@;
+                proof {
+                    assert(self.outstanding_requests@ == pre_outstanding);
+                    let ghost pre_wf_expansion =
+                        forall |id| #[trigger] pre_outstanding.contains_key(id) ==> {
+                            match pre_outstanding[id] {
+                                OutstandingReqInfo::CacheLoadReq{read_addr, load_handle} => {
+                                    &&& cache_before_index.entry_fetched(&read_addr)
+                                    &&& cache_before_index.valid_load_handle(&read_addr, load_handle)
+                                },
+                                _ => { true }
+                            }
+                        };
+                    assert(pre_wf_expansion);
+                        assert forall |id2| #[trigger] old_outstanding.contains_key(id2) implies {
+                            match old_outstanding[id2] {
+                                OutstandingReqInfo::CacheLoadReq{read_addr, load_handle} => {
+                                    &&& self.cache.entry_fetched(&read_addr)
+                                    &&& self.cache.valid_load_handle(&read_addr, load_handle)
+                                },
+                                _ => { true }
+                            }
+                        } by {
+                            match old_outstanding[id2] {
+                                OutstandingReqInfo::CacheLoadReq{read_addr, load_handle} => {
+                                    assert(pre_wf_expansion);
+                                    assert(cache_before_index.entry_fetched(&read_addr));
+                                    assert(cache_before_index.valid_load_handle(&read_addr, load_handle));
+                                    assert(self.cache.valid_load_handles_preserved(cache_before_index));
+                                    assert(self.cache.entry_fetched(&read_addr));
+                                    assert(self.cache.valid_load_handle(&read_addr, load_handle));
+                                },
+                                _ => { }
+                            }
+                        }
+                }
 
                 let req_id_perm = Tracked( api.send_disk_request_predict_id() );
                 let disk_req = IDiskRequest::ReadReq{from: addr};
@@ -1684,10 +1744,63 @@ impl Implementation {
                     &mut model,
                     empty_disk_responses,
                 );
-                self.model = Tracked(model); 
+                self.model = Tracked(model);
 
                 let id = api.send_disk_request(disk_req, req_id_perm, Tracked(new_disk_req_token));
                 self.outstanding_requests.insert(id, OutstandingReqInfo::CacheLoadReq{read_addr: addr, load_handle: slot_handle});
+                proof {
+                    let ghost new_info = OutstandingReqInfo::CacheLoadReq{read_addr: addr, load_handle: slot_handle};
+                    assert(self.cache.entry_fetched(&addr));
+                    assert(self.cache.valid_load_handle(&addr, slot_handle));
+                    assert(self.outstanding_requests@ == old_outstanding.insert(id, new_info));
+                    let ghost old_wf_expansion =
+                        forall |id3| #[trigger] old_outstanding.contains_key(id3) ==> {
+                            match old_outstanding[id3] {
+                                OutstandingReqInfo::CacheLoadReq{read_addr, load_handle} => {
+                                    &&& self.cache.entry_fetched(&read_addr)
+                                    &&& self.cache.valid_load_handle(&read_addr, load_handle)
+                                },
+                                _ => { true }
+                            }
+                        };
+                    assert(self.outstanding_requests_wf()) by {
+                        assert forall |id2| #[trigger] self.outstanding_requests@.contains_key(id2) implies {
+                            match self.outstanding_requests@[id2] {
+                                OutstandingReqInfo::CacheLoadReq{read_addr, load_handle} => {
+                                    &&& self.cache.entry_fetched(&read_addr)
+                                    &&& self.cache.valid_load_handle(&read_addr, load_handle)
+                                },
+                                _ => { true }
+                            }
+                        } by {
+                            if id2 == id {
+                                assert(self.outstanding_requests@[id2] == new_info);
+                                assert(self.cache.entry_fetched(&addr));
+                                assert(self.cache.valid_load_handle(&addr, slot_handle));
+                            } else {
+                                assert(self.outstanding_requests@[id2] == old_outstanding[id2]) by {
+                                    vstd::map::axiom_map_insert_different(old_outstanding, id2, id, new_info);
+                                }
+                                assert(old_outstanding.contains_key(id2)) by {
+                                    vstd::map::axiom_map_insert_domain(old_outstanding, id, new_info);
+                                    assert(self.outstanding_requests@.dom() == old_outstanding.dom().insert(id));
+                                    assert(self.outstanding_requests@.dom().contains(id2));
+                                    broadcast use vstd::set::group_set_axioms;
+                                    assert(old_outstanding.dom().insert(id).contains(id2) == old_outstanding.dom().contains(id2));
+                                    assert(old_outstanding.dom().contains(id2));
+                                }
+                                assert(old_wf_expansion);
+                                assert(match old_outstanding[id2] {
+                                    OutstandingReqInfo::CacheLoadReq{read_addr, load_handle} => {
+                                        &&& self.cache.entry_fetched(&read_addr)
+                                        &&& self.cache.valid_load_handle(&read_addr, load_handle)
+                                    },
+                                    _ => { true }
+                                });
+                            }
+                        }
+                    }
+                }
                 assert( self.inv_api(api) );
 
                 return false; // cache waiting on data, not ready to make more progress
@@ -1839,6 +1952,7 @@ impl KVStoreTrait for Implementation {
         &&& self.inv_recover()
         &&& self.state().recovery_state is Begin
         &&& self.state().cache == self.cache@
+        &&& self.outstanding_requests@.dom() == Set::<ID>::empty()
     }
 
     closed spec fn instance_id(self) -> InstanceId
