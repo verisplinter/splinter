@@ -204,10 +204,11 @@ impl ILsnAddrIndex {
             old(self).wf(),
             old(self).seq_start() == old_lower_bound,
             new_lower_bound < old_lower_bound,
-        ensures 
+        ensures
             self.wf(),
-            self.seq_end() == new_lower_bound,
-            self@ == lsn_addr_index_append_record(old(self)@, old_lower_bound as nat, new_lower_bound as nat, addr@),
+            self.seq_start() == new_lower_bound,
+            self.seq_end() == old(self).seq_end(),
+            self@ == lsn_addr_index_append_record(old(self)@, new_lower_bound as nat, old_lower_bound as nat, addr@),
     {
         assume( false );
         self.bounds.push(new_lower_bound);

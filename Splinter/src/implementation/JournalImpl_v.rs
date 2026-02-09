@@ -382,7 +382,7 @@ impl JournalImpl {
 
                             // NOTE: journal disk should carry an inv that any clean address the cache has
                             // have the same content as the journal disk and is a parsable journal page
-                            while index.exec_seq_end() != bdy
+                            while index.exec_seq_start() != bdy
                             invariant 
                                 index.wf(),
                                 cache.wf(),
@@ -403,7 +403,7 @@ impl JournalImpl {
                                 acyclic_reads(bdy as nat, to_journal_reads(reads)),
                                 !index_initialized ==> curr == self.snapshot.freshest_rec,
                                 index_initialized ==> {
-                                    &&& index.seq_start() == seq_end
+                                    &&& index.seq_end() == seq_end
                                     &&& reads.contains_key(root@)
                                     &&& index@ =~= build_lsn_addr_index_from_reads(to_journal_reads(reads), bdy as nat, self@.snapshot.freshest_rec)
                                 },
@@ -485,8 +485,8 @@ impl JournalImpl {
                                                 assert(end_lsn == end as nat);
                                                 assert(index@ == lsn_addr_index_append_record(
                                                     old_index,
-                                                    end_lsn,
                                                     start_lsn,
+                                                    end_lsn,
                                                     addr@,
                                                 ));
                                                 assume(lsn_disjoint(old_index.dom(), start_lsn, end_lsn));
