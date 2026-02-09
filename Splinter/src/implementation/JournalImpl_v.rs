@@ -142,7 +142,6 @@ impl IJournalStatus {
     spec fn wf(&self) -> bool
     {
         &&& self.lsn_addr_index.wf()
-        &&& self.lsn_addr_index.ascending
     }
 
     closed spec fn tail_as_history(&self) -> MsgHistory
@@ -360,7 +359,7 @@ impl JournalImpl {
                         if let Some(root) = curr {
                             let mut end = u64::MAX;
                             let mut index_initialized = false;
-                            index = ILsnAddrIndex::new(end, false);
+                            index = ILsnAddrIndex::new(end);
 
                             // -------------- Assumption from system invariants -----------------
                             // NOTE: Cached Journal contains no internal disk, has to cross layers
@@ -383,10 +382,9 @@ impl JournalImpl {
 
                             // NOTE: journal disk should carry an inv that any clean address the cache has
                             // have the same content as the journal disk and is a parsable journal page
-                            while index.exec_seq_start() != bdy
+                            while index.exec_seq_end() != bdy
                             invariant 
                                 index.wf(),
-                                !index.ascending,
                                 cache.wf(),
                                 cache@ == old(cache)@,
                                 bdy == self.snapshot.boundary_lsn,
@@ -405,7 +403,7 @@ impl JournalImpl {
                                 acyclic_reads(bdy as nat, to_journal_reads(reads)),
                                 !index_initialized ==> curr == self.snapshot.freshest_rec,
                                 index_initialized ==> {
-                                    &&& index.seq_end() == seq_end
+                                    &&& index.seq_start() == seq_end
                                     &&& reads.contains_key(root@)
                                     &&& index@ =~= build_lsn_addr_index_from_reads(to_journal_reads(reads), bdy as nat, self@.snapshot.freshest_rec)
                                 },
@@ -462,7 +460,7 @@ impl JournalImpl {
                                         let ghost was_initialized = index_initialized;
                                         if !index_initialized {
                                             // assume(bdy < end);
-                                            index = ILsnAddrIndex::new(end, false); 
+                                            index = ILsnAddrIndex::new(end); 
                                             index_initialized = true;
                                             assert(index@ == Map::<LSN, Address>::empty());
                                         }
@@ -476,7 +474,7 @@ impl JournalImpl {
                                         assume(start < old_bound);
                                         // adjacency of journal records
                                         assume(end == old_bound);
-                                        index.index_extend_bound(old_bound, start, addr);
+                                        index.index_prepend_record(old_bound, start, addr);
                                         proof {
                                             if index_initialized {
                                                 let ptr2_data = to_journal_reads(reads)[addr@];
@@ -487,8 +485,8 @@ impl JournalImpl {
                                                 assert(end_lsn == end as nat);
                                                 assert(index@ == lsn_addr_index_append_record(
                                                     old_index,
-                                                    start_lsn,
                                                     end_lsn,
+                                                    start_lsn,
                                                     addr@,
                                                 ));
                                                 assume(lsn_disjoint(old_index.dom(), start_lsn, end_lsn));
@@ -610,8 +608,6 @@ impl JournalImpl {
                                                     assert(index_pre.seq_end() == end);
                                                     assert(end as nat == seq_end);
                                                 }
-                                                assert(!index_pre.ascending);
-                                                assert(!index.ascending);
                                                 assert(index.seq_end() == index_pre.seq_end());
                                                 assert(index.seq_end() == seq_end);
                                             }
@@ -753,7 +749,6 @@ impl JournalImpl {
                             if !index_initialized {
                                 please_panic(); // something's wrong o.o
                             }
-                            index.reverse();
                             assert(index@ =~= build_lsn_addr_index_from_reads(to_journal_reads(reads), bdy as nat, self@.snapshot.freshest_rec));
                         } else {
                             // self.status = Some(IJournalStatus{
@@ -775,7 +770,7 @@ impl JournalImpl {
                             //     assert( CachedJournal::State::next_by(old(self)@, self@, journal_lbl, CachedJournal::Step::load_index{}) );
                             //     assert( CachedJournal::State::next(old(self)@, self@, journal_lbl) );    
                             // }
-                            index = ILsnAddrIndex::new(bdy, true);
+                            index = ILsnAddrIndex::new(bdy);
                         }
 
                         let i_seq_end = index.exec_seq_end();
