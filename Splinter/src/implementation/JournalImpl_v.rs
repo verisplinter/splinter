@@ -51,6 +51,16 @@ pub open spec fn iaddr_view(ptr: Option<IAddress>) -> Option<Address>
     }
 }
 
+proof fn map_le_lookup_eq<V>(m1: Map<Address, V>, m2: Map<Address, V>, k: Address)
+requires
+    m1 <= m2,
+    m1.contains_key(k),
+ensures
+    m1[k] == m2[k],
+{
+    assert(m2.contains_key(k));
+}
+
 pub proof fn to_journal_reads_entry_from_exec_parse(
     fmt: IJournalRecordFormat,
     reads: Map<Address, RawPage>,
@@ -185,6 +195,24 @@ pub open spec fn load_index_labels(reads: Map<Address, RawPage>) -> (Cache::Labe
     let cache_lbl = Cache::Label::Access{reads, writes: Map::empty()};
     let journal_lbl = CachedJournal::Label::LoadIndex{reads: to_journal_reads(reads)};
     (cache_lbl, journal_lbl)
+}
+
+pub open spec fn cache_matches_raw_disk(cache: Cache::State, disk: Map<Address, RawPage>) -> bool
+{
+    forall |addr, data| #[trigger] cache.valid_read(addr, data)
+        ==> disk.contains_key(addr) && disk[addr] == data
+}
+
+pub open spec fn journal_raw_disk_inv(fmt: IJournalRecordFormat, disk: Map<Address, RawPage>) -> bool
+{
+    forall |addr| #[trigger] disk.contains_key(addr) ==> fmt.parsable(disk[addr])
+}
+
+pub open spec fn journal_disk_inv(disk: LinkedJournal_v::DiskView, root: Pointer) -> bool
+{
+    &&& disk.acyclic()
+    &&& disk.decodable(root)
+    &&& disk.boundary_lsn < disk.entries[root.unwrap()].message_seq.seq_end
 }
 
 impl IJournalRecord {
@@ -340,7 +368,13 @@ impl JournalImpl {
             // NOTE: builder becomes None when we are out of the building phase
             None => { assert(false); None },
             // NOTE: builder is a hint for continued fetch
-            Some(mut builder) => {
+            Some(mut builder) => { 
+                // -------------- Assumption from system invariants -----------------
+                let ghost journal_raw_disk : Map<Address, RawPage> = arbitrary(); 
+                assume(journal_raw_disk_inv(self.fmt, journal_raw_disk));
+                assume(cache_matches_raw_disk(cache@, journal_raw_disk));
+                // -------------- End of system invariants assumptions -----------------
+
                 match builder.next_head.freshest_rec {
                     None => {
                         reveal(Cache::State::next_by);
@@ -366,16 +400,15 @@ impl JournalImpl {
                             // faking from system invariant (should be opened on the caller side and passed in)
                             // modularity issue, this might also be relevant to our passing commands back and forth problem
                             // how would wee use this when facing concurrency?
-                            let ghost journal_raw_disk : Map<Address, RawPage> = arbitrary(); 
-                            assert forall |addr| journal_raw_disk.contains_key(addr) 
-                            implies #[trigger] self.fmt.parsable(journal_raw_disk[addr]) by { assume(false); }
-
                             let ghost journal_disk = LinkedJournal_v::DiskView{boundary_lsn: bdy as nat, entries: to_journal_reads(journal_raw_disk)};
-                            assume(journal_disk.acyclic());
-                            assume(journal_disk.decodable(iaddr_view(curr)));
+                            assume(journal_disk_inv(journal_disk, iaddr_view(curr)));
+                            assert(journal_disk.acyclic());
+                            assert(journal_disk.decodable(iaddr_view(curr)));
+                            let ghost ranking = journal_disk.the_ranking();
+                            assert(journal_disk.valid_ranking(ranking)); // witness
 
                             let ghost seq_end = journal_disk.entries[root@].message_seq.seq_end;
-                            assume(bdy < seq_end);
+                            assert(bdy < seq_end);
                             // -------------- End of system invariants assumptions -----------------
 
                             assert(bdy <= index.seq_start());
@@ -387,14 +420,14 @@ impl JournalImpl {
                                 index.wf(),
                                 cache.wf(),
                                 cache@ == old(cache)@,
-                                bdy == self.snapshot.boundary_lsn,
-                                self.fmt == old(self).fmt,
+                                cache_matches_raw_disk(cache@, journal_raw_disk),
+                                journal_raw_disk_inv(self.fmt, journal_raw_disk),
+                                self.fmt.valid(),
                                 self.snapshot == old(self).snapshot,
-                                curr is Some,
-                                journal_disk.entries.contains_key(curr.unwrap()@),
+                                index.seq_start() != bdy ==> curr is Some,
+                                curr is Some ==> journal_disk.entries.contains_key(curr.unwrap()@),
+                                curr is Some ==> (forall |a| #[trigger] reads.contains_key(a) ==> ranking[a] >= ranking[curr.unwrap()@]),
                                 forall |addr| #[trigger] reads.contains_key(addr) ==> cache@.valid_read(addr, reads[addr]),
-                                reads <= journal_raw_disk,
-                                forall |addr| #[trigger] reads.contains_key(addr) ==> self.fmt.parsable(reads[addr]),
                                 forall |addr| #[trigger] to_journal_reads(reads).contains_key(addr) ==> {
                                     let next = to_journal_reads(reads)[addr].cropped_prior(bdy as nat);
                                     next is None || to_journal_reads(reads).contains_key(next.unwrap()) || next == iaddr_view(curr)
@@ -402,6 +435,9 @@ impl JournalImpl {
                                 iaddr_view(curr) == build_lsn_addr_index_from_reads_next_ptr(to_journal_reads(reads), bdy as nat, self@.snapshot.freshest_rec),
                                 acyclic_reads(bdy as nat, to_journal_reads(reads)),
                                 !index_initialized ==> curr == self.snapshot.freshest_rec,
+                                index_initialized ==> (index.seq_start() == bdy
+                                    || index.seq_start() == journal_disk.entries[curr.unwrap()@].message_seq.seq_end),
+                                bdy <= index.seq_start(),
                                 index_initialized ==> {
                                     &&& index.seq_end() == seq_end
                                     &&& reads.contains_key(root@)
@@ -412,11 +448,16 @@ impl JournalImpl {
                                 let ghost prev = iaddr_view(curr);
                                 let addr = curr.unwrap();
 
+                                let ghost cache_pre = cache@;
                                 match cache.fetch(&addr) {
                                     FetchErrorCode::Success{slot_handle} => {
                                         let all_slice = Slice::all(&slot_handle.rec);
                                         assert( all_slice@.i(slot_handle.rec@) == slot_handle.rec@ );
-                                        assume( slot_handle.rec@ == journal_raw_disk[addr@] );
+                                        assert(cache_pre.valid_read(addr@, slot_handle.rec@));
+                                        assert(cache_matches_raw_disk(cache_pre, journal_raw_disk));
+                                        assert(journal_raw_disk.contains_key(addr@));
+                                        assert(self.fmt.parsable(journal_raw_disk[addr@]));
+                                        assert(slot_handle.rec@ == journal_raw_disk[addr@]);
                                         assert( self.fmt.parsable(all_slice@.i(slot_handle.rec@)) );
 
                                         let i_journal_record = self.fmt.exec_parse(&all_slice, &slot_handle.rec);
@@ -424,34 +465,60 @@ impl JournalImpl {
 
                                         let ghost reads_pre = reads;
                                         proof {
-                                            // assert(acyclic_reads(bdy as nat, to_journal_reads(reads)));
+                                            assert(reads_pre <= journal_raw_disk);
                                             reads = reads.insert(addr@, slot_handle.rec@);
-                                                                                   
-                                            // assert(
-                                            //     iaddr_view(curr)
-                                            //         == build_lsn_addr_index_from_reads_next_ptr(
-                                            //             to_journal_reads(reads_pre),
-                                            //             bdy as nat,
-                                            //             self@.snapshot.freshest_rec,
-                                            //         )
-                                            // );
-                                            assume(acyclic_reads(
-                                                bdy as nat,
-                                                to_journal_reads(reads_pre)
-                                                    .insert(addr@, to_journal_reads(reads)[addr@]),
-                                            ));
-                                            assume(
-                                                to_journal_reads(reads)[addr@].cropped_prior(bdy as nat) is None
-                                                || !to_journal_reads(reads_pre)
-                                                    .contains_key(to_journal_reads(reads)[addr@].cropped_prior(bdy as nat).unwrap())
-                                            );
-                                            build_lsn_addr_index_from_reads_next_ptr_after_insert(
-                                                to_journal_reads(reads_pre),
-                                                bdy as nat,
-                                                self@.snapshot.freshest_rec,
-                                                iaddr_view(curr),
-                                                to_journal_reads(reads)[addr@],
-                                            );
+                                            let ghost reads_post = to_journal_reads(reads_pre).insert(addr@, to_journal_reads(reads)[addr@]);
+                                            let ghost dv_post = LinkedJournal_v::DiskView{
+                                                boundary_lsn: bdy as nat,
+                                                entries: reads_post,
+                                            };
+                                            assert(to_journal_reads(reads)[addr@] == journal_disk.entries[addr@]);
+
+                                            assert(dv_post.valid_ranking(ranking)) by {
+                                                assert(dv_post.entries.dom() <= ranking.dom());
+                                                assert forall |k: Address| #[trigger] dv_post.entries.contains_key(k)
+                                                    && dv_post.entries[k].cropped_prior(bdy as nat) is Some
+                                                    implies ranking[dv_post.entries[k].cropped_prior(bdy as nat).unwrap()]
+                                                        < ranking[k] by {
+                                                    if k == addr@ {
+                                                        assert(journal_disk.entries.contains_key(addr@));
+                                                        assert(dv_post.entries[k] == journal_disk.entries[k]);
+                                                    } else {
+                                                        assert(reads_pre.contains_key(k));
+                                                        map_le_lookup_eq(reads_pre, journal_raw_disk, k);
+                                                        assert(journal_disk.entries.contains_key(k));
+                                                        assert(dv_post.entries[k] == journal_disk.entries[k]);
+                                                    }
+                                                    let next = dv_post.entries[k].cropped_prior(bdy as nat);
+                                                    if next is Some {
+                                                        assert(ranking[next.unwrap()] < ranking[k]);
+                                                    }
+                                                };
+                                            };
+                                            assert(acyclic_reads(bdy as nat, reads_post));
+
+                                            {
+                                                let next = to_journal_reads(reads)[addr@].cropped_prior(bdy as nat);
+                                                assert(
+                                                    next is None
+                                                        || !to_journal_reads(reads_pre).contains_key(next.unwrap())
+                                                ) by {
+                                                    if next is Some {
+                                                        let n = next.unwrap();
+                                                        assert(journal_disk.entries.contains_key(addr@));
+                                                        let jrec = journal_disk.entries[addr@];
+                                                        assert(jrec.cropped_prior(bdy as nat) == next);
+                                                        assert(ranking[n] < ranking[addr@]);
+                                                        assert(curr is Some);
+                                                        assert(addr@ == curr.unwrap()@);
+                                                        if to_journal_reads(reads_pre).contains_key(n) {
+                                                            assert(reads_pre.contains_key(n));
+                                                            assert(ranking[n] >= ranking[addr@]);
+                                                        }
+                                                    }
+                                                };
+                                            }
+                                            build_lsn_addr_index_from_reads_next_ptr_after_insert(to_journal_reads(reads_pre), bdy as nat, self@.snapshot.freshest_rec, iaddr_view(curr), to_journal_reads(reads)[addr@]);
                                         }
 
                                         end = i_journal_record.seq_end();
@@ -459,7 +526,6 @@ impl JournalImpl {
 
                                         let ghost was_initialized = index_initialized;
                                         if !index_initialized {
-                                            // assume(bdy < end);
                                             index = ILsnAddrIndex::new(end); 
                                             index_initialized = true;
                                             assert(index@ == Map::<LSN, Address>::empty());
@@ -469,13 +535,39 @@ impl JournalImpl {
                                         let ghost old_index = index@;
                                         let ghost index_pre = index;
                                         let old_bound = index.exec_seq_start();
-                                        assert(index_pre.wf());
-                                        assert(old_bound == index_pre.seq_start());
-                                        assume(start < old_bound);
-                                        // adjacency of journal records
-                                        assume(end == old_bound);
+                                        proof {
+                                            // Proof block: relate the parsed record to the journal model and bounds.
+                                            let ghost curr_addr = addr@;
+                                            to_journal_reads_entry_from_exec_parse(self.fmt, reads, curr_addr, i_journal_record);
+                                            assert(to_journal_reads(reads)[curr_addr] == i_journal_record.parsedv().view());
+                                            assert(to_journal_reads(reads)[curr_addr] == journal_disk.entries[curr_addr]);
+                                            let ghost curr_rec = journal_disk.entries[curr_addr];
+                                            assert(end as nat == curr_rec.message_seq.seq_end);
+
+                                            if was_initialized {
+                                                assert(index_pre.seq_start() == journal_disk.entries[curr.unwrap()@].message_seq.seq_end);
+                                                assert(old_bound == curr_rec.message_seq.seq_end);
+                                                assert(end == old_bound);
+                                            } else {
+                                                assert(old_bound == end);
+                                                assert(curr == self.snapshot.freshest_rec);
+                                                assert(curr_addr == root@);
+                                                assert(curr_rec.message_seq.seq_end == seq_end);
+                                                assert(bdy < old_bound);
+                                            }
+
+                                            if start == bdy {
+                                                assert(start < old_bound);
+                                            } else {
+                                                assert(start == i_journal_record.header.start_lsn);
+                                                assert(!curr_rec.message_seq.is_empty());
+                                                assert(start == curr_rec.message_seq.seq_start);
+                                                assert(start < old_bound);
+                                            }
+                                        }
                                         index.index_prepend_record(old_bound, start, addr);
                                         proof {
+                                            // Proof block: extend the index model and re-establish build-index equality.
                                             if index_initialized {
                                                 let ptr2_data = to_journal_reads(reads)[addr@];
                                                 let start_lsn = vstd::math::max(bdy as int, ptr2_data.message_seq.seq_start as int) as nat;
@@ -483,13 +575,7 @@ impl JournalImpl {
                                                 let update = singleton_index(start_lsn, end_lsn, addr@);
                                                 assert(start_lsn == start as nat);
                                                 assert(end_lsn == end as nat);
-                                                assert(index@ == lsn_addr_index_append_record(
-                                                    old_index,
-                                                    start_lsn,
-                                                    end_lsn,
-                                                    addr@,
-                                                ));
-                                                assume(lsn_disjoint(old_index.dom(), start_lsn, end_lsn));
+                                                assert(index@ == lsn_addr_index_append_record(old_index, start_lsn, end_lsn, addr@));
                                                 let ghost reads_post =
                                                     to_journal_reads(reads_pre).insert(addr@, ptr2_data);
                                                 assert(to_journal_reads(reads) == reads_post) by {
@@ -500,145 +586,59 @@ impl JournalImpl {
                                                             assert(reads_post.contains_key(k));
                                                             assert(reads_post[k] == ptr2_data);
                                                         } else {
-                                                            assert(reads_pre.contains_key(k));
-                                                            assert(to_journal_reads(reads_pre).contains_key(k));
                                                             assert(reads_post.contains_key(k));
-                                                            assert(reads_post[k] == to_journal_reads(reads_pre)[k]);
-                                                            assert(to_journal_reads(reads)[k] == to_journal_reads(reads_pre)[k]);
-                                                        }
-                                                    };
-                                                    assert forall |k| #[trigger] reads_post.contains_key(k)
-                                                    implies to_journal_reads(reads).contains_key(k)
-                                                        && reads_post[k] == to_journal_reads(reads)[k] by {
-                                                        if k == addr@ {
-                                                            assert(to_journal_reads(reads).contains_key(k));
-                                                            assert(reads_post[k] == ptr2_data);
-                                                        } else {
-                                                            assert(reads_pre.contains_key(k));
-                                                            assert(to_journal_reads(reads_pre).contains_key(k));
-                                                            assert(to_journal_reads(reads).contains_key(k));
                                                             assert(reads_post[k] == to_journal_reads(reads_pre)[k]);
                                                             assert(to_journal_reads(reads)[k] == to_journal_reads(reads_pre)[k]);
                                                         }
                                                     };
                                                 };
                                                 // show the build index extends by this record
-                                                assume(lsn_disjoint(
-                                                    build_lsn_addr_index_from_reads(
-                                                        to_journal_reads(reads_pre),
-                                                        bdy as nat,
-                                                        self@.snapshot.freshest_rec,
-                                                    ).dom(),
-                                                    start_lsn,
-                                                    end_lsn,
-                                                ));
-                                                build_lsn_addr_index_from_reads_extend_next_ptr(
-                                                    to_journal_reads(reads_pre),
-                                                    bdy as nat,
-                                                    self@.snapshot.freshest_rec,
-                                                    prev,
-                                                    ptr2_data,
-                                                );
-                                                assert(
-                                                    build_lsn_addr_index_from_reads(
-                                                        to_journal_reads(reads_pre),
-                                                        bdy as nat,
-                                                        self@.snapshot.freshest_rec,
-                                                    )
+                                                let ghost build_pre = build_lsn_addr_index_from_reads(to_journal_reads(reads_pre), bdy as nat, self@.snapshot.freshest_rec);
+                                                if !was_initialized {
+                                                    build_lsn_addr_index_from_reads_next_ptr_not_in_reads(to_journal_reads(reads_pre), bdy as nat, self@.snapshot.freshest_rec, iaddr_view(curr));
+                                                }
+                                                assert(lsn_disjoint(build_pre.dom(), start_lsn, end_lsn)) by {
+                                                    if was_initialized {
+                                                        assert(old_index =~= build_pre);
+                                                        index_pre.view_domain();
+                                                        assert(old_index.dom() =~= Set::new(|lsn: LSN|
+                                                            index_pre.seq_start() <= lsn < index_pre.seq_end()));
+                                                        assert(end_lsn == old_bound);
+                                                        assert(old_bound == index_pre.seq_start());
+                                                        assert forall |lsn| start_lsn <= lsn < end_lsn
+                                                        implies !build_pre.dom().contains(lsn) by {
+                                                            if build_pre.dom().contains(lsn) {
+                                                                assert(old_index.dom().contains(lsn));
+                                                                assert(index_pre.seq_start() <= lsn < index_pre.seq_end());
+                                                                assert(lsn < index_pre.seq_start());
+                                                            }
+                                                        };
+                                                    }
+                                                };
+                                                build_lsn_addr_index_from_reads_extend_next_ptr(to_journal_reads(reads_pre), bdy as nat, self@.snapshot.freshest_rec, prev, ptr2_data);
+                                                assert(build_lsn_addr_index_from_reads(to_journal_reads(reads_pre), bdy as nat, self@.snapshot.freshest_rec)
                                                     .union_prefer_right(singleton_index(start_lsn, end_lsn, addr@))
-                                                    =~= build_lsn_addr_index_from_reads(
-                                                        reads_post,
-                                                        bdy as nat,
-                                                        self@.snapshot.freshest_rec,
-                                                    )
-                                                );
-                                                assert(build_lsn_addr_index_from_reads(
-                                                    reads_post,
-                                                    bdy as nat,
-                                                    self@.snapshot.freshest_rec,
-                                                ) =~= build_lsn_addr_index_from_reads(
-                                                    to_journal_reads(reads),
-                                                    bdy as nat,
-                                                    self@.snapshot.freshest_rec,
-                                                ));
+                                                    =~= build_lsn_addr_index_from_reads(reads_post, bdy as nat, self@.snapshot.freshest_rec));
 
-                                                if was_initialized {
-                                                    assert(old_index =~= build_lsn_addr_index_from_reads(
-                                                        to_journal_reads(reads_pre),
-                                                        bdy as nat,
-                                                        self@.snapshot.freshest_rec,
-                                                    ));
-                                                } else {
-                                                    assert(curr == self.snapshot.freshest_rec);
-                                                    assert(self.snapshot.freshest_rec is Some);
-                                                    assert(self.snapshot.freshest_rec.unwrap() == root);
-                                                    assert(addr@ == root@);
-                                                    assert(iaddr_view(curr) == self@.snapshot.freshest_rec);
-                                                    build_lsn_addr_index_from_reads_next_ptr_not_in_reads(
-                                                        to_journal_reads(reads_pre),
-                                                        bdy as nat,
-                                                        self@.snapshot.freshest_rec,
-                                                        iaddr_view(curr),
-                                                    );
-                                                    assert(!to_journal_reads(reads_pre).contains_key(iaddr_view(curr).unwrap()));
-                                                    assert(build_lsn_addr_index_from_reads(
-                                                        to_journal_reads(reads_pre),
-                                                        bdy as nat,
-                                                        self@.snapshot.freshest_rec,
-                                                    ) == Map::<LSN, Address>::empty());
-                                                    assert(old_index == Map::<LSN, Address>::empty());
-                                                }
-                                                assert(index@ == old_index.union_prefer_right(update));
-                                                assert(old_index.union_prefer_right(update)
-                                                    =~= build_lsn_addr_index_from_reads(
-                                                        reads_post,
-                                                        bdy as nat,
-                                                        self@.snapshot.freshest_rec,
-                                                    ));
-                                                assert(index@ =~= build_lsn_addr_index_from_reads(
-                                                    to_journal_reads(reads),
-                                                    bdy as nat,
-                                                    self@.snapshot.freshest_rec,
-                                                ));
-
-                                                if was_initialized {
-                                                    assert(index_pre.seq_end() == seq_end);
-                                                } else {
-                                                    assert(ptr2_data.message_seq.seq_end == seq_end);
-                                                    assert(index_pre.seq_end() == end);
-                                                    assert(end as nat == seq_end);
-                                                }
-                                                assert(index.seq_end() == index_pre.seq_end());
-                                                assert(index.seq_end() == seq_end);
+                                                assert(index@ =~= build_lsn_addr_index_from_reads(to_journal_reads(reads), bdy as nat, self@.snapshot.freshest_rec));
                                             }
                                         }
                                         let prior = i_journal_record.cropped_prior(bdy);
                                         curr = prior;
 
                                         proof {
+                                            // Proof block: update curr/next_ptr and maintain the frontier invariant.
                                             // Relate curr to the cropped_prior of the inserted record.
                                             let ghost i_result = i_journal_record.parsedv()@.cropped_prior(bdy as nat);
                                             if i_result is None {
                                                 assert(prior is None);
-                                                assert(iaddr_view(prior) is None);
                                             } else {
-                                                if prior is None {
-                                                    assert(i_result is None); // contradicts branch
-                                                }
                                                 assert(prior is Some);
                                                 assert(i_result == Some(prior.unwrap()@));
-                                                assert(iaddr_view(prior) == i_result);
                                             }
-                                            assert(iaddr_view(prior) == i_result);
                                             assert(iaddr_view(prior) == to_journal_reads(reads)[addr@].cropped_prior(bdy as nat));
                                             // Re-establish next_ptr invariant after inserting the new read.
-                                            build_lsn_addr_index_from_reads_next_ptr_after_insert(
-                                                to_journal_reads(reads_pre),
-                                                bdy as nat,
-                                                self@.snapshot.freshest_rec,
-                                                prev,
-                                                to_journal_reads(reads)[addr@],
-                                            );
+                                            build_lsn_addr_index_from_reads_next_ptr_after_insert(to_journal_reads(reads_pre), bdy as nat, self@.snapshot.freshest_rec, prev, to_journal_reads(reads)[addr@]);
                                             let ghost reads_post =
                                                 to_journal_reads(reads_pre).insert(addr@, to_journal_reads(reads)[addr@]);
                                             assert(to_journal_reads(reads) == reads_post) by {
@@ -656,39 +656,10 @@ impl JournalImpl {
                                                         assert(to_journal_reads(reads)[k] == to_journal_reads(reads_pre)[k]);
                                                     }
                                                 };
-                                                assert forall |k| #[trigger] reads_post.contains_key(k)
-                                                implies to_journal_reads(reads).contains_key(k)
-                                                    && reads_post[k] == to_journal_reads(reads)[k] by {
-                                                    if k == addr@ {
-                                                        assert(to_journal_reads(reads).contains_key(k));
-                                                        assert(reads_post[k] == to_journal_reads(reads)[addr@]);
-                                                    } else {
-                                                        assert(reads_pre.contains_key(k));
-                                                        assert(to_journal_reads(reads_pre).contains_key(k));
-                                                        assert(to_journal_reads(reads).contains_key(k));
-                                                        assert(reads_post[k] == to_journal_reads(reads_pre)[k]);
-                                                        assert(to_journal_reads(reads)[k] == to_journal_reads(reads_pre)[k]);
-                                                    }
-                                                };
                                             };
-                                            assert(
-                                                iaddr_view(prior)
-                                                    == build_lsn_addr_index_from_reads_next_ptr(
-                                                        reads_post,
-                                                        bdy as nat,
-                                                        self@.snapshot.freshest_rec,
-                                                    )
-                                            );
-                                            assert(
-                                                iaddr_view(prior)
-                                                    == build_lsn_addr_index_from_reads_next_ptr(
-                                                        to_journal_reads(reads),
-                                                        bdy as nat,
-                                                        self@.snapshot.freshest_rec,
-                                                    )
-                                            );
+                                            assert(iaddr_view(prior) == build_lsn_addr_index_from_reads_next_ptr(reads_post, bdy as nat, self@.snapshot.freshest_rec));
+                                            assert(iaddr_view(prior) == build_lsn_addr_index_from_reads_next_ptr(to_journal_reads(reads), bdy as nat, self@.snapshot.freshest_rec));
                                             // Maintain the "frontier" invariant for reads.
-                                            assert(prev == Some(addr@));
                                             assert forall |a| #[trigger] to_journal_reads(reads).contains_key(a)
                                             implies {
                                                 let next = to_journal_reads(reads)[a].cropped_prior(bdy as nat);
@@ -726,10 +697,25 @@ impl JournalImpl {
                                                     }
                                                 }
                                             };
+
+                                            // Maintain the link between seq_start and current pointer.
+                                            if curr is Some {
+                                                let ghost prior_addr = curr.unwrap()@;
+                                                assert(journal_disk.entries.contains_key(prior_addr));
+                                                assert(journal_disk.entries.contains_key(addr@));
+                                                assert(to_journal_reads(reads)[addr@] == journal_disk.entries[addr@]);
+                                                assert(to_journal_reads(reads)[addr@].cropped_prior(bdy as nat) == Some(prior_addr));
+                                                let ghost curr_rec = journal_disk.entries[addr@];
+                                                let ghost prior_rec = journal_disk.entries[prior_addr];
+                                                assert(journal_disk.blocks_can_concat());
+                                                assert(prior_rec.message_seq.can_concat(curr_rec.message_seq));
+                                                assert(curr_rec.message_seq.seq_start == prior_rec.message_seq.seq_end);
+                                                assert(bdy < curr_rec.message_seq.seq_start);
+                                                assert(start == curr_rec.message_seq.seq_start);
+                                                assert(index.seq_start() == prior_rec.message_seq.seq_end);
+                                            }
                                         }
 
-                                        assume(curr is Some);
-                                        assume(journal_disk.entries.contains_key(curr.unwrap()@));
                                         if index_initialized {
                                             assert(index.seq_end() == seq_end);
                                             assert(index@ =~= build_lsn_addr_index_from_reads(
@@ -751,25 +737,6 @@ impl JournalImpl {
                             }
                             assert(index@ =~= build_lsn_addr_index_from_reads(to_journal_reads(reads), bdy as nat, self@.snapshot.freshest_rec));
                         } else {
-                            // self.status = Some(IJournalStatus{
-                            //     unmarshalled_tail,
-                            //     lsn_addr_index: LsnAddrIndexImpl::new(),
-                            //     unmarshalled_tail_start: self.snapshot.boundary_lsn,
-                            //     clean_watermark_lsn: self.snapshot.boundary_lsn,
-                            // });
-
-                            // proof {
-                            //     let (_, journal_lbl) = load_index_labels(reads);
-                            //     let ptr = old(self)@.snapshot.freshest_rec;
-                            //     let bdy = old(self)@.snapshot.boundary_lsn;
-                            //     let journal_reads = to_journal_reads(reads);
-                            //     let lsn_addr_index = CachedJournal_v::build_lsn_addr_index_from_reads(journal_reads, bdy, ptr, bdy);
-                            //     assert(self@.status.unwrap().lsn_addr_index == lsn_addr_index);
-                            //     assert(self@.status.unwrap().unmarshalled_tail == MsgHistory::empty_history_at(bdy));
-                            //     assert( CachedJournal::State::load_index(old(self)@, self@, journal_lbl));
-                            //     assert( CachedJournal::State::next_by(old(self)@, self@, journal_lbl, CachedJournal::Step::load_index{}) );
-                            //     assert( CachedJournal::State::next(old(self)@, self@, journal_lbl) );    
-                            // }
                             index = ILsnAddrIndex::new(bdy);
                         }
 
@@ -825,6 +792,7 @@ impl JournalImpl {
                     },
                     Some(addr) => {
                         // Can we read the next page from the cache?
+                        let ghost cache_pre = cache@;
                         match cache.fetch(&addr) {
                             FetchErrorCode::LoadInitiate{slot_handle} => {
                                 // release previous handle
@@ -836,9 +804,12 @@ impl JournalImpl {
                             FetchErrorCode::Success{slot_handle} => {
                                 let all_slice = Slice::all(&slot_handle.rec);
                                 assert( all_slice@.i(slot_handle.rec@) == slot_handle.rec@ );
-                                assert( self.fmt.parsable(all_slice@.i(slot_handle.rec@)) ) by {
-                                    assume( false ); // system invariant
-                                }
+                                assert(cache_pre.valid_read(addr@, slot_handle.rec@));
+                                assert(cache_matches_raw_disk(cache_pre, journal_raw_disk));
+                                assert(journal_raw_disk.contains_key(addr@));
+                                assert(self.fmt.parsable(journal_raw_disk[addr@]));
+                                assert(slot_handle.rec@ == journal_raw_disk[addr@]);
+                                assert( self.fmt.parsable(all_slice@.i(slot_handle.rec@)) );
                                 let i_journal_record = self.fmt.exec_parse(&all_slice, &slot_handle.rec);
                                 cache.handle_release(&addr, slot_handle);
                                 builder.next_head.freshest_rec = match i_journal_record.header.prior_rec 
@@ -1024,16 +995,6 @@ impl JournalImpl {
             Cache::Label::EvictableCheck{addrs: self.iaddrs_for_lsns(out.seq_start() as LSN, out.seq_end as LSN)},
             Cache::Step::evictable())
     }
-
-//     // TODO maybe fold this promise right into a smarter freeze_journal, and then add a method that
-//     // advances the clean watermark and provides a callback to let the caller know it could maybe
-//     // sync more stuff now.
-//     pub exec fn check_lsns_are_clean(&self, cache: &FracCacheImpl, out: FrozenJournal) -> (clean: bool)
-//     ensures clean ==> self.lsns_are_clean(cache@, out)
-//     {
-//         proof { assume(false); }
-//         true
-//     }
 
     /// Check whether the journal is clean up to target_lsn.
     /// Returns true iff target_lsn <= clean_watermark (all pages up to there are Filled+Clean).
