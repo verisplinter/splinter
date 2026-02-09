@@ -8,6 +8,14 @@ use crate::allocation_layer::LikesJournal_v::{LsnAddrIndex, lsn_addr_index_appen
 
 verus!{
 
+// external_body workaround for: complex arguments to &mut parameters
+#[verifier::external_body]
+exec fn vec_push_front<T>(v: &mut Vec<T>, value: T)
+    ensures v@ == old(v)@.insert(0, value)
+{
+    v.insert(0, value)
+}
+
 pub struct ILsnAddrIndex {
     bounds: Vec<ILsn>,
     addrs: Vec<IAddress>,
@@ -81,107 +89,44 @@ impl ILsnAddrIndex {
         }
     }
 
-    proof fn i_domain(&self, idx: int) 
+    proof fn i_domain(&self, idx: int)
         requires self.wf(), 0 <= idx < self.bounds.len()
         ensures
             self.i(idx).dom() =~= Set::new(|lsn: LSN| self.bounds[0] <= lsn < self.bounds[idx])
         decreases idx
     {
-//         if idx > 0 {
-//             let prev = self.bounds[idx-1] as nat;
-//             let curr = self.bounds[idx] as nat;
-// 
-//             let (curr_lb, curr_ub) = (prev, curr);
-//             assert(self.sorted_entry(idx-1)); // trigger
-//             assert(curr_lb < curr_ub);
-// 
-//             let update = singleton_index(curr_lb, curr_ub, self.addrs[idx-1]@);
-//             let (lb, ub) = (self.bounds[0], self.bounds[idx]);
-//             self.i_domain(idx-1);
-// 
-//             assert forall |lsn| #[trigger] self.i(idx).contains_key(lsn) <==> lb <= lsn < ub
-//             by {
-//                 let out = self.i(idx);
-//                 let prev_index = self.i(idx-1);
-//                 reveal(ILsnAddrIndex::i);
-//                 reveal(lsn_addr_index_append_record);
-//                 assert(out == prev_index.union_prefer_right(update));
-// 
-//                 let (lb_prev, ub_prev) = if self.ascending { (self.bounds[0], self.bounds[idx-1]) }
-//                     else { (self.bounds[idx-1], self.bounds[0]) };
-//                 assert(prev_index.dom() =~= Set::new(|lsn: LSN| lb_prev <= lsn < ub_prev));
-//                 assert(update.contains_key(lsn) <==> (curr_lb <= lsn < curr_ub));
-// 
-//                 // -> direction
-//                 if out.contains_key(lsn) {
-//                     if prev_index.contains_key(lsn) {
-//                         assert(lb_prev <= lsn < ub_prev);
-//                         if self.ascending {
-//                             assert(lb_prev == lb);
-//                             assert(ub_prev == prev);
-//                             self.ascending_bounds_monotone(idx-1);
-//                             assert(lb <= lsn < prev);
-//                         } else {
-//                             assert(lb_prev == prev);
-//                             assert(ub_prev == ub);
-//                             self.descending_bounds_monotone(idx-1);
-//                             assert(prev <= lsn < ub);
-//                         }
-//                     } else {
-//                         assert(update.contains_key(lsn));
-//                         assert(curr_lb <= lsn < curr_ub);
-//                         if self.ascending {
-//                             assert(curr_lb == prev);
-//                             assert(curr_ub == curr);
-//                             self.ascending_bounds_monotone(idx-1);
-//                             assert(prev <= lsn < curr);
-//                         } else {
-//                             assert(curr_lb == curr);
-//                             assert(curr_ub == prev);
-//                             assert(curr <= lsn < prev);
-//                             self.descending_bounds_monotone(idx-1);
-//                         }
-//                     }
-//                     assert(lb <= lsn < ub);
-//                 }
-// 
-//                 // <- direction
-//                 if lb <= lsn < ub {
-//                     if self.ascending {
-//                         self.ascending_bounds_monotone(idx-1);
-//                         if lsn < prev {
-//                             assert(prev_index.contains_key(lsn));
-//                         } else {
-//                             assert(prev <= lsn);
-//                             assert(lsn < curr);
-//                             assert(update.contains_key(lsn));
-//                         }
-//                     } else {
-//                         self.descending_bounds_monotone(idx-1);
-//                         if lsn < prev {
-//                             assert(curr <= lsn);
-//                             assert(update.contains_key(lsn));
-//                         } else {
-//                             assert(prev_index.contains_key(lsn));
-//                         }
-//                     }
-//                     assert(out.contains_key(lsn));
-//                 }
-//             }
-//         }
-        assume( false );
-    }
-
-    proof fn prefix_same_i(self, other: Self, idx: int) 
-        requires self.wf(),
-            0 <= idx < self.bounds.len(),
-            self.bounds@.is_prefix_of(other.bounds@),
-            self.addrs@.is_prefix_of(other.addrs@),
-        ensures self.i(idx) == other.i(idx)
-        decreases idx
-    {
         if idx > 0 {
-            self.prefix_same_i(other, idx-1);
+            let prev = self.bounds[idx-1] as nat;
+            let curr = self.bounds[idx] as nat;
+            let lb = self.bounds[0] as nat;
+
+            assert(self.sorted_entry(idx-1)); // trigger
+            self.i_domain(idx-1);
+
+            let update = singleton_index(prev, curr, self.addrs[idx-1]@);
+
+            assert forall |lsn: LSN| #[trigger] self.i(idx).contains_key(lsn) <==> lb <= lsn < curr
+            by {
+                let out = self.i(idx);
+                let prev_index = self.i(idx-1);
+                reveal(lsn_addr_index_append_record);
+                assert(out == prev_index.union_prefer_right(update));
+
+                // -> direction
+                if out.contains_key(lsn) {
+                    self.ascending_bounds_monotone(idx-1);
+                }
+
+                // <- direction
+                if lb <= lsn < curr {
+                    self.ascending_bounds_monotone(idx-1);
+                    if lsn < prev {
+                        assert(prev_index.contains_key(lsn));
+                    } else {
+                        assert(update.contains_key(lsn));
+                    }
+                }
+            }
         }
     }
 
@@ -198,9 +143,98 @@ impl ILsnAddrIndex {
         }
     }
 
-    // Record the fact that every lsn from old_bound .. new_bound maps to addr
+    exec fn insert_bound_at_front(&mut self, val: ILsn)
+    ensures
+        self.bounds.len() == old(self).bounds.len() + 1,
+        self.bounds[0] == val,
+        forall |k: int| 0 <= k < old(self).bounds.len() ==> self.bounds[k + 1] == old(self).bounds[k],
+        self.addrs == old(self).addrs,
+    {
+        vec_push_front(&mut self.bounds, val);
+    }
+
+    exec fn insert_addr_at_front(&mut self, val: IAddress)
+    ensures
+        self.addrs.len() == old(self).addrs.len() + 1,
+        self.addrs[0] == val,
+        forall |k: int| 0 <= k < old(self).addrs.len() ==> self.addrs[k + 1] == old(self).addrs[k],
+        self.bounds == old(self).bounds,
+    {
+        vec_push_front(&mut self.addrs, val);
+    }
+
+    // After inserting a new entry at the front, the spec interpretation at index k
+    // equals the old interpretation unioned with the new front range.
+    proof fn prepend_i_shift(new_self: Self, old_self: Self, k: int)
+        requires
+            new_self.wf(),
+            old_self.wf(),
+            1 <= k < new_self.bounds.len(),
+            new_self.bounds.len() == old_self.bounds.len() + 1,
+            new_self.addrs.len() == old_self.addrs.len() + 1,
+            forall |j: int| 0 <= j < old_self.bounds.len() ==> new_self.bounds[j + 1] == old_self.bounds[j],
+            forall |j: int| 0 <= j < old_self.addrs.len() ==> new_self.addrs[j + 1] == old_self.addrs[j],
+        ensures
+            new_self.i(k) =~= lsn_addr_index_append_record(
+                old_self.i(k - 1),
+                new_self.bounds[0] as nat,
+                new_self.bounds[1] as nat,
+                new_self.addrs[0]@,
+            )
+        decreases k
+    {
+        reveal(lsn_addr_index_append_record);
+        assert(new_self.sorted_entry(0)); // trigger: bounds[0] < bounds[1]
+        if k == 1 {
+            // Base: new_self.i(1) = lar(new_self.i(0), ...) = lar({}, ...)
+            //       old_self.i(0) = {}
+            // So both sides are lar({}, new_lb, old_lb, addr).
+            assert(old_self.i(0) =~= map!{});
+            assert(new_self.i(0) =~= map!{});
+        } else {
+            Self::prepend_i_shift(new_self, old_self, k - 1);
+
+            let front = singleton_index(new_self.bounds[0] as nat, new_self.bounds[1] as nat, new_self.addrs[0]@);
+            let step = singleton_index(old_self.bounds[k-2] as nat, old_self.bounds[k-1] as nat, old_self.addrs[k-2]@);
+
+            old_self.ascending_bounds_monotone(k - 2);
+
+            let A = old_self.i(k - 2);
+
+            // Align bounds/addrs between new_self and old_self
+            assert(new_self.bounds[k-1] == old_self.bounds[k-2]);
+            assert(new_self.bounds[k] == old_self.bounds[k-1]);
+            assert(new_self.addrs[k-1] == old_self.addrs[k-2]);
+
+            // Chain: new_self.i(k) =~= (A ∪_r front) ∪_r step
+            assert(new_self.i(k - 1) =~= A.union_prefer_right(front));  // IH
+            assert(new_self.i(k) =~= new_self.i(k-1).union_prefer_right(step));
+            let lhs = A.union_prefer_right(front).union_prefer_right(step);
+            assert(new_self.i(k) =~= lhs);
+
+            // Chain: target =~= (A ∪_r step) ∪_r front
+            assert(old_self.i(k - 1) =~= A.union_prefer_right(step));
+            let rhs = A.union_prefer_right(step).union_prefer_right(front);
+
+            // Commutativity: front ∩ step = ∅ (front < old_lb <= step)
+            assert forall |lsn: LSN| #![auto]
+                lhs.contains_key(lsn) == rhs.contains_key(lsn) &&
+                (lhs.contains_key(lsn) ==> lhs[lsn] == rhs[lsn])
+            by {}
+
+            assert(new_self.i(k) =~= rhs);
+            assert(new_self.i(k) =~= lsn_addr_index_append_record(
+                old_self.i(k - 1),
+                new_self.bounds[0] as nat,
+                new_self.bounds[1] as nat,
+                new_self.addrs[0]@,
+            ));
+        }
+    }
+
+    // Record the fact that every lsn in [new_lower_bound, old_lower_bound) maps to addr
     pub exec fn index_prepend_record(&mut self, old_lower_bound: ILsn, new_lower_bound: ILsn, addr: IAddress)
-        requires 
+        requires
             old(self).wf(),
             old(self).seq_start() == old_lower_bound,
             new_lower_bound < old_lower_bound,
@@ -210,23 +244,22 @@ impl ILsnAddrIndex {
             self.seq_end() == old(self).seq_end(),
             self@ == lsn_addr_index_append_record(old(self)@, new_lower_bound as nat, old_lower_bound as nat, addr@),
     {
-        assume( false );
-        self.bounds.push(new_lower_bound);
-        self.addrs.push(addr);
+        let ghost old_snap = *self;
+        self.insert_bound_at_front(new_lower_bound);
+        self.insert_addr_at_front(addr);
 
         proof {
-            assert(self.bounds@ == old(self).bounds@.push(new_lower_bound));
-            assert(self.addrs@ == old(self).addrs@.push(addr));
-            assert(self.seq_end() == new_lower_bound);
-            if !old(self).is_empty() {
-                assert forall |i| 0 <= i < self.bounds.len() - 1
-                implies self.sorted_entry(i) by {
-                    if i < old(self).bounds.len() - 1 {
-                        assert(old(self).sorted_entry(i)); // trigger
-                    }
+            // wf: sorted
+            assert forall |i: int| 0 <= i < self.bounds.len() - 1 implies self.sorted_entry(i) by {
+                if i == 0 {
+                    // self.bounds[0] = new_lower_bound < old_lower_bound = old_snap.bounds[0] = self.bounds[1]
+                } else {
+                    assert(old_snap.sorted_entry(i - 1)); // trigger
                 }
             }
-            old(self).prefix_same_i(*self, old(self).bounds.len()-1);
+
+            // view equality via the shift lemma
+            Self::prepend_i_shift(*self, old_snap, (self.bounds.len() - 1) as int);
         }
     }
 
