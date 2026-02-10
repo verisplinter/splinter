@@ -377,6 +377,7 @@ impl JournalImpl {
         &&& match out {
             RecoverIndexResult::CacheLoad{slot_handle, addr} => {
                 &&& self@ == old(self)@
+                &&& !old(cache).entry_fetched(&addr)
                 &&& cache.entry_fetched(&addr)
                 &&& cache.valid_load_handle(&addr, slot_handle)
                 &&& Cache::State::next(old(cache)@, cache@, cache_load_label(&addr))
@@ -593,6 +594,9 @@ impl JournalImpl {
                                 // release previous handle
                                 // Cache is going to do a fetch and call us later. Bail out.
                                 // Re-construct the struct
+                                proof {
+                                    assert(!old(cache).entry_fetched(&addr));
+                                }
                                 out = RecoverIndexResult::CacheLoad{slot_handle, addr};
                                 Some(builder)
                             },

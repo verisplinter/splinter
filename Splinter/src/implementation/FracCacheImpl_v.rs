@@ -266,6 +266,14 @@ impl FracCacheImpl {
         self.lookup_map@.contains_key(addr@)
     }
 
+    pub proof fn entry_fetched_from_view(cache: &FracCacheImpl, addr: &IAddress)
+    ensures
+        cache.entry_fetched(addr) == cache@.lookup_map.contains_key(addr@)
+    {
+        reveal(FracCacheImpl::entry_fetched);
+        reveal(FracCacheImpl::view_state);
+    }
+
     pub closed spec fn lookup_addr_slot(self, addr: &IAddress) -> Slot
         recommends self.entry_fetched(addr)
     {
@@ -577,6 +585,7 @@ impl FracCacheImpl {
                 FetchErrorCode::CacheFull => *old(self) == *self,
                 FetchErrorCode::LoadInitiate{slot_handle} => {
                     &&& self.entry_fetched(addr)
+                    &&& !old(self).entry_fetched(addr)
                     &&& self.valid_load_handle(addr, slot_handle)
                     &&& self.entry_token_unchanged(*old(self))
                     &&& self.entry_fetched_same_except(*old(self), addr)
@@ -764,6 +773,7 @@ impl FracCacheImpl {
                 proof {
                     Self::valid_load_handles_preserved_except_from_same(*old(self), *self, *addr, slot_handle.idx);
                     Self::valid_load_handles_preserved_from_except_if_missing(*old(self), *self, *addr);
+                    assert(!old(self).entry_fetched(addr));
                 }
                 return FetchErrorCode::LoadInitiate{slot_handle};
             }
