@@ -334,7 +334,6 @@ impl Implementation {
             // to handle the disk response
             let sync_version = state.in_flight.unwrap().journal_version;
             let new_persistent_map_version = self.in_flight.unwrap().new_boundary_lsn as nat;
-            let new_persistent_map = self.in_flight.unwrap().new_store;
             &&& self.journal.seq_start() <= new_persistent_map_version
             &&& new_persistent_map_version <= sync_version
             // The in-flight 'satisfied requests' can indeed be satisfied by the in-flight version
@@ -530,8 +529,8 @@ impl Implementation {
 
             self.journal.insert(key.clone(), value);
             self.store.insert(key.clone(), value);
-            let _new_store_lsn = self.journal.exec_seq_end();
-            self.store_lsn = self.store_lsn + 1;
+            let new_store_lsn = self.journal.exec_seq_end();
+            self.store_lsn = new_store_lsn;
 
             let reply = Reply{output: Output::PutOutput, id: req.id};
             let ghost post_state = ConcreteProgramModel{
@@ -1556,7 +1555,6 @@ impl Implementation {
         // Noop a reply is for? Obviously?
 
         let ghost pre_state = self.model@.value();
-        let ghost new_persistent_version = pre_state.state.in_flight->0.journal_version;
 
         // Use existence of a response + system model invariant to learn that we must have
         // known in_flight true when we got here.
@@ -1697,7 +1695,6 @@ impl Implementation {
     {
         let ghost pre_outstanding = pre_outstanding@;
         let OutstandingReqInfo::CacheLoadReq{read_addr, mut load_handle} = req_info else { unreached() };
-        let ghost handle_before = load_handle;
         let data = match disk_response {
             IDiskResponse::ReadResp{data} => data,
             IDiskResponse::WriteResp{} => {
@@ -1867,7 +1864,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
         api.log("await superblock response");
         { // braces to scope variables used in this step
             let ghost pre_state = self.model@.value();
-            let disk_resp = IDiskRequest::ReadReq{from: superblock_addr() };
             let DiskResponseRecord{id: disk_req_id, disk_response: i_disk_response, token: disk_response_token}
                 = api.blocking_receive_disk_response();
 
@@ -2029,17 +2025,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                 let ghost old_outstanding = self.outstanding_requests@;
                 proof {
                     assert(self.outstanding_requests@ == pre_outstanding);
-                    let ghost pre_wf_expansion =
-                        forall |id| #[trigger] pre_outstanding.contains_key(id) ==> {
-                            match pre_outstanding[id] {
-                                OutstandingReqInfo::CacheLoadReq{read_addr, load_handle} => {
-                                    &&& cache_before_index.entry_fetched(&read_addr)
-                                    &&& cache_before_index.valid_load_handle(&read_addr, load_handle)
-                                },
-                                _ => { true }
-                            }
-                        };
-                    assert(pre_wf_expansion);
                 }
 
                 let req_id_perm = Tracked( api.send_disk_request_predict_id() );

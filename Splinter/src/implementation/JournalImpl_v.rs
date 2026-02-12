@@ -76,12 +76,6 @@ ensures
 {
     let dv = LinkedJournal_v::DiskView{boundary_lsn: disk.boundary_lsn, entries: sub};
     assert(dv.entries.dom().subset_of(ranking.dom())) by {
-        assert forall |k| #[trigger] dv.entries.contains_key(k)
-            implies ranking.dom().contains(k) by {
-            assert(disk.entries.contains_key(k));
-            assert(disk.entries.dom().contains(k));
-            assert(disk.entries.dom().subset_of(ranking.dom()));
-        };
     }
     assert forall |addr| #[trigger] dv.entries.contains_key(addr)
         && dv.entries[addr].cropped_prior(dv.boundary_lsn) is Some
@@ -478,7 +472,6 @@ impl JournalImpl {
                                 let ghost prev = iaddr_view(curr);
                                 let addr = curr.unwrap();
 
-                                let ghost cache_pre = cache@;
                                 match cache.fetch(&addr) {
                                     FetchErrorCode::Success{slot_handle} => {
                                         let all_slice = Slice::all(&slot_handle.rec);
@@ -505,7 +498,6 @@ impl JournalImpl {
                                         }
 
                                         // if they are the same then we don't need to do anything                                             
-                                        let ghost old_index = index@;
                                         let ghost index_pre = index;
                                         let old_bound = index.exec_seq_start();
                                         proof { to_journal_reads_entry_from_exec_parse(self.fmt, reads, addr@, i_journal_record); }
@@ -516,7 +508,6 @@ impl JournalImpl {
                                                 let ptr2_data = to_journal_reads(reads)[addr@];
                                                 let start_lsn = vstd::math::max(bdy as int, ptr2_data.message_seq.seq_start as int) as nat;
                                                 let end_lsn = ptr2_data.message_seq.seq_end;
-                                                let update = singleton_index(start_lsn, end_lsn, addr@);
                                                 let ghost reads_post = to_journal_reads(reads_pre).insert(addr@, ptr2_data);
                                                 assert(to_journal_reads(reads) == reads_post);
                                                 // show the build index extends by this record
@@ -590,7 +581,6 @@ impl JournalImpl {
                     },
                     Some(addr) => {
                         // Can we read the next page from the cache?
-                        let ghost cache_pre = cache@;
                         match cache.fetch(&addr) {
                             FetchErrorCode::LoadInitiate{slot_handle} => {
                                 // release previous handle
