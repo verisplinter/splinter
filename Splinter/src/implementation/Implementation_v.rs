@@ -311,7 +311,6 @@ impl Implementation {
     closed spec fn inv_running(self) -> bool {
         let state = self.state();
 
-        &&& self.store.wf()
         &&& self.journal.wf()
         // &&& self.model@.instance_id() == self.instance@.id() // TODO delete covered by inv
 
@@ -319,11 +318,6 @@ impl Implementation {
 
         // physical state consistent with model
         &&& state.recovery_state is RecoveryComplete
-
-        // model matches our interpretation of Implementation state struct
-        &&& state.store == self.view_store()
-        &&& state.journal == self.journal@
-        &&& state.cache == self.cache@
 
         &&& self.journal.seq_end() == self.store_lsn
         &&& self.state().wf()
@@ -341,19 +335,8 @@ impl Implementation {
             let sync_version = state.in_flight.unwrap().journal_version;
             let new_persistent_map_version = self.in_flight.unwrap().new_boundary_lsn as nat;
             let new_persistent_map = self.in_flight.unwrap().new_store;
-//TODO            let new_persistent_journal = self.journal@@.discard_recent(sync_version).discard_old(new_persistent_map_version);
-//TODO            let new_ephemeral_journal = self.journal@@.discard_old(new_persistent_map_version);
-
-//TODO            &&& state.history.is_active(sync_version as int)
             &&& self.journal.seq_start() <= new_persistent_map_version
             &&& new_persistent_map_version <= sync_version
-
-            // this seems necessary for recovery???
-//TODO            &&& state.history.get(sync_version as int).appv.kmmap 
-//TODO                == map_plus_history(view_as_kmmap(new_persistent_map), new_persistent_journal)
-//TODO            &&& view_as_kmmap(self.store) 
-//TODO                == map_plus_history(view_as_kmmap(new_persistent_map), new_ephemeral_journal)
-
             // The in-flight 'satisfied requests' can indeed be satisfied by the in-flight version
             &&& self.sync_reqs_in_version(self.sync_requests.superblocking_reqs@, sync_version)
         })
@@ -376,17 +359,20 @@ impl Implementation {
         &&& Self::sync_req_lists_mutually_unique(l1, l3)
     }
 
+    // Shared relation after fetching the superblock: implementation state matches model view.
+    spec fn inv_post_superblock_common(self) -> bool
+    {
+        &&& self.store.wf()
+        &&& self.state().store == self.view_store()
+        &&& self.state().journal == self.journal@
+    }
+
     spec fn inv_reading_journal(self) -> bool
     {
         &&& self.state().recovery_state is SuperblockAvailable
         &&& self.state().in_flight is None
         &&& self.sync_requests.valid_empty_sync_buffer(self.instance@.id())
-        &&& self.store.wf()
-        &&& self.state().store == self.view_store()
-        &&& self.state().store.ephemeral is Known
-        &&& self.store_lsn as nat == self.state().ephemeral_map().seq_end
         &&& self.store_lsn as nat == self.journal.seq_start()
-        &&& self.state().journal == self.journal@
         &&& self.journal.wf()
         &&& !self.journal.index_ready()
         &&& forall |id| #[trigger] self.outstanding_requests@.contains_key(id)
@@ -398,12 +384,7 @@ impl Implementation {
         &&& self.state().recovery_state is JournalIndexComplete
         &&& self.state().in_flight is None
         &&& self.sync_requests.valid_empty_sync_buffer(self.instance@.id())
-        &&& self.state().store == self.view_store()
-        &&& self.store.wf()
-        &&& self.i_ephemeral_store() is Known
-        &&& self.store_lsn as nat == self.state().ephemeral_map().seq_end
         &&& self.store_lsn as nat <= self.journal.seq_end()
-        &&& self.state().journal == self.journal@
         &&& self.journal.wf()
         &&& self.journal.index_ready()
         &&& forall |id| #[trigger] self.outstanding_requests@.contains_key(id)
@@ -418,6 +399,7 @@ impl Implementation {
 
         // from the physical phase field to stuff we know
         &&& self.recovery_phase is FetchingSuperblock ==> self.inv_recover()
+        &&& !(self.recovery_phase is FetchingSuperblock) ==> self.inv_post_superblock_common()
         &&& self.recovery_phase is ReadingJournalIndex ==> self.inv_reading_journal()
         &&& self.recovery_phase is ApplyingJournalToRecoverEphemeralMap ==> self.inv_applying_journal()
         &&& self.recovery_phase is ReadyForUserOperation ==> self.inv_running()
@@ -510,11 +492,6 @@ impl Implementation {
                     let map_req = req.mapspec_req();
                     let map_reply = reply.mapspec_reply();
                     let ghost map_lbl = MapSpec::Label::Noop{input: map_req.input, output: map_reply.output};
-//                     reveal(MapSpec::State::next);
-//                     reveal(MapSpec::State::next_by);
-                    // assert( MapSpec::State::next_by(post_state.state.history.last().appv, post_state.state.history.last().appv,
-                    //         map_lbl, MapSpec::Step::noop())); // witness to step
-                    // assert( post_state.state.history.get_prefix(pre_state.state.history.len()) == pre_state.state.history );  // extn
                     let program_event = ProgramEvent::NoOp{};
                     assert( AtomicState::execute_transition(pre_state.state, post_state.state, map_req, map_reply, program_event) );
                     assert( ConcreteProgramModel::next(pre_state, post_state,
@@ -553,23 +530,8 @@ impl Implementation {
 
             self.journal.insert(key.clone(), value);
             self.store.insert(key.clone(), value);
-            let new_store_lsn = self.journal.exec_seq_end();
-            proof {
-                reveal(Implementation::inv_api);
-                reveal(Implementation::inv);
-                assert(old(self).inv_running());
-                old(self).journal.view_seq_end_ensures();
-                assert(old(self).state().journal == old(self).journal@);
-                assert(old(self).state().store == old(self).view_store());
-                assert(old(self).state().journal.seq_end() == old(self).state().ephemeral_map().seq_end);
-                assert(old(self).state().ephemeral_map().seq_end == old(self).store_lsn as nat);
-                assert(old(self).journal.seq_end() == old(self).store_lsn as nat);
-                assert(self.journal.seq_end() == old(self).journal.seq_end() + 1);
-                assert(new_store_lsn as nat == self.journal.seq_end());
-                assert(self.store_lsn as nat + 1 == new_store_lsn as nat);
-            }
+            let _new_store_lsn = self.journal.exec_seq_end();
             self.store_lsn = self.store_lsn + 1;
-            assert(self.store_lsn == new_store_lsn);
 
             let reply = Reply{output: Output::PutOutput, id: req.id};
             let ghost post_state = ConcreteProgramModel{
@@ -615,7 +577,6 @@ impl Implementation {
                         CachedJournal::Label::Put{messages: puts},
                         CachedJournal::Step::put()) );
 
-                assert( AtomicState::execute_put(pre_state.state, post_state.state, map_req, map_reply, puts) );
                 assert( AtomicState::execute_transition(
                         pre_state.state, post_state.state, map_req, map_reply, ProgramEvent::Put{puts}) );
                 assert( ConcreteProgramModel::next(pre_state, post_state,
@@ -2079,27 +2040,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                             }
                         };
                     assert(pre_wf_expansion);
-                        assert forall |id2| #[trigger] old_outstanding.contains_key(id2) implies {
-                            match old_outstanding[id2] {
-                                OutstandingReqInfo::CacheLoadReq{read_addr, load_handle} => {
-                                    &&& self.cache.entry_fetched(&read_addr)
-                                    &&& self.cache.valid_load_handle(&read_addr, load_handle)
-                                },
-                                _ => { true }
-                            }
-                        } by {
-                            match old_outstanding[id2] {
-                                OutstandingReqInfo::CacheLoadReq{read_addr, load_handle} => {
-                                    assert(pre_wf_expansion);
-                                    assert(cache_before_index.entry_fetched(&read_addr));
-                                    assert(cache_before_index.valid_load_handle(&read_addr, load_handle));
-                                    assert(self.cache.valid_load_handles_preserved(cache_before_index));
-                                    assert(self.cache.entry_fetched(&read_addr));
-                                    assert(self.cache.valid_load_handle(&read_addr, load_handle));
-                                },
-                                _ => { }
-                            }
-                        }
                 }
 
                 let req_id_perm = Tracked( api.send_disk_request_predict_id() );
@@ -2130,20 +2070,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                     }
                     assert(disk_event->req_map.values() == set!{disk_req@}) by {
                         Self::singleton_map_value(req_id_perm@, disk_req@);
-                        assert forall |req2| #[trigger] disk_event->req_map.values().contains(req2) implies set!{disk_req@}.contains(req2) by {
-                            reveal(Map::values);
-                            assert(disk_event->req_map.contains_value(req2));
-                            assert(disk_event->req_map.contains_value(req2) <==> req2 == disk_req@);
-                            assert(req2 == disk_req@);
-                        }
-                        assert forall |req2| #[trigger] set!{disk_req@}.contains(req2) implies disk_event->req_map.values().contains(req2) by {
-                            assert(req2 == disk_req@);
-                            assert(disk_event->req_map.contains_value(req2)) by {
-                                assert(disk_event->req_map.contains_value(req2) <==> req2 == disk_req@);
-                            }
-                            reveal(Map::values);
-                            assert(disk_event->req_map.values().contains(req2));
-                        }
                     }
 
                     assert(Cache::State::next(old(self).cache@, self.cache@, cache_lbl));
@@ -2203,53 +2129,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                     assert(self.cache.entry_fetched(&addr));
                     assert(self.cache.valid_load_handle(&addr, slot_handle));
                     assert(self.outstanding_requests@ == old_outstanding.insert(id, new_info));
-                    let ghost old_wf_expansion =
-                        forall |id3| #[trigger] old_outstanding.contains_key(id3) ==> {
-                            match old_outstanding[id3] {
-                                OutstandingReqInfo::CacheLoadReq{read_addr, load_handle} => {
-                                    &&& self.cache.entry_fetched(&read_addr)
-                                    &&& self.cache.valid_load_handle(&read_addr, load_handle)
-                                },
-                                _ => { true }
-                            }
-                        };
-                    assert(self.outstanding_requests_wf()) by {
-                        assert forall |id2| #[trigger] self.outstanding_requests@.contains_key(id2) implies {
-                            match self.outstanding_requests@[id2] {
-                                OutstandingReqInfo::CacheLoadReq{read_addr, load_handle} => {
-                                    &&& self.cache.entry_fetched(&read_addr)
-                                    &&& self.cache.valid_load_handle(&read_addr, load_handle)
-                                },
-                                _ => { true }
-                            }
-                        } by {
-                            if id2 == id {
-                                assert(self.outstanding_requests@[id2] == new_info);
-                                assert(self.cache.entry_fetched(&addr));
-                                assert(self.cache.valid_load_handle(&addr, slot_handle));
-                            } else {
-                                assert(self.outstanding_requests@[id2] == old_outstanding[id2]) by {
-                                    vstd::map::axiom_map_insert_different(old_outstanding, id2, id, new_info);
-                                }
-                                assert(old_outstanding.contains_key(id2)) by {
-                                    vstd::map::axiom_map_insert_domain(old_outstanding, id, new_info);
-                                    assert(self.outstanding_requests@.dom() == old_outstanding.dom().insert(id));
-                                    assert(self.outstanding_requests@.dom().contains(id2));
-                                    broadcast use vstd::set::group_set_axioms;
-                                    assert(old_outstanding.dom().insert(id).contains(id2) == old_outstanding.dom().contains(id2));
-                                    assert(old_outstanding.dom().contains(id2));
-                                }
-                                assert(old_wf_expansion);
-                                assert(match old_outstanding[id2] {
-                                    OutstandingReqInfo::CacheLoadReq{read_addr, load_handle} => {
-                                        &&& self.cache.entry_fetched(&read_addr)
-                                        &&& self.cache.valid_load_handle(&read_addr, load_handle)
-                                    },
-                                    _ => { true }
-                                });
-                            }
-                        }
-                    }
                     assert(self.outstanding_requests_match_cache_reqs()) by {
                         let ghost new_outstanding = self.outstanding_requests@;
                         let ghost new_cache_reqs = post_state.state.outstanding_cache_reqs;
@@ -2284,137 +2163,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                                 }
                             }
 
-                            assert forall |k1, k2|
-                                new_cache_reqs.contains_key(k1)
-                                && new_cache_reqs.contains_key(k2)
-                                && new_cache_reqs[k1] == new_cache_reqs[k2]
-                                implies k1 == k2
-                            by {
-                                vstd::map::axiom_map_insert_domain(old_cache_reqs, id, addr@);
-                                assert(new_cache_reqs.dom() == old_cache_reqs.dom().insert(id));
-                                broadcast use vstd::set::group_set_axioms;
-                                if k1 == id {
-                                    if k2 == id {
-                                    } else {
-                                        assert(new_cache_reqs[k1] == addr@) by {
-                                            vstd::map::axiom_map_insert_same(old_cache_reqs, id, addr@);
-                                        }
-                                        assert(new_cache_reqs[k2] == old_cache_reqs[k2]) by {
-                                            vstd::map::axiom_map_insert_different(old_cache_reqs, k2, id, addr@);
-                                        }
-                                        assert(false) by {
-                                            assert(new_cache_reqs.dom().contains(k2));
-                                            assert(old_cache_reqs.dom().insert(id).contains(k2));
-                                            assert(old_cache_reqs.dom().contains(k2));
-                                            assert(old_cache_reqs.contains_key(k2));
-                                            assert(old_cache_reqs[k2] == addr@);
-                                            assert(old_cache_reqs.contains_value(addr@)) by {
-                                                assert(old_cache_reqs.contains_key(k2));
-                                                assert(old_cache_reqs[k2] == addr@);
-                                            }
-                                        }
-                                    }
-                                } else if k2 == id {
-                                    assert(new_cache_reqs[k2] == addr@) by {
-                                        vstd::map::axiom_map_insert_same(old_cache_reqs, id, addr@);
-                                    }
-                                    assert(new_cache_reqs[k1] == old_cache_reqs[k1]) by {
-                                        vstd::map::axiom_map_insert_different(old_cache_reqs, k1, id, addr@);
-                                    }
-                                    assert(false) by {
-                                        assert(new_cache_reqs.dom().contains(k1));
-                                        assert(old_cache_reqs.dom().insert(id).contains(k1));
-                                        assert(old_cache_reqs.dom().contains(k1));
-                                        assert(old_cache_reqs.contains_key(k1));
-                                        assert(old_cache_reqs[k1] == addr@);
-                                        assert(old_cache_reqs.contains_value(addr@)) by {
-                                            assert(old_cache_reqs.contains_key(k1));
-                                            assert(old_cache_reqs[k1] == addr@);
-                                        }
-                                    }
-                                } else {
-                                    assert(new_cache_reqs[k1] == old_cache_reqs[k1]) by {
-                                        vstd::map::axiom_map_insert_different(old_cache_reqs, k1, id, addr@);
-                                    }
-                                    assert(new_cache_reqs[k2] == old_cache_reqs[k2]) by {
-                                        vstd::map::axiom_map_insert_different(old_cache_reqs, k2, id, addr@);
-                                    }
-                                    assert(old_cache_reqs[k1] == old_cache_reqs[k2]);
-                                    assert(k1 == k2) by {
-                                        assert(new_cache_reqs.dom().contains(k1));
-                                        assert(new_cache_reqs.dom().contains(k2));
-                                        assert(old_cache_reqs.dom().insert(id).contains(k1));
-                                        assert(old_cache_reqs.dom().insert(id).contains(k2));
-                                        assert(old_cache_reqs.dom().contains(k1));
-                                        assert(old_cache_reqs.dom().contains(k2));
-                                        assert(old_cache_reqs.contains_key(k1));
-                                        assert(old_cache_reqs.contains_key(k2));
-                                        assert(old_cache_reqs.is_injective());
-                                    }
-                                }
-                            }
-                        }
-
-                        assert forall |id2| #[trigger] new_outstanding.contains_key(id2) implies {
-                            match new_outstanding[id2] {
-                                OutstandingReqInfo::CacheLoadReq{read_addr, load_handle} => {
-                                    &&& new_cache_reqs.contains_key(id2)
-                                    &&& new_cache_reqs[id2] == read_addr@
-                                },
-                                OutstandingReqInfo::CacheWriteReq{write_addr, handle} => {
-                                    &&& new_cache_reqs.contains_key(id2)
-                                    &&& new_cache_reqs[id2] == write_addr@
-                                },
-                                OutstandingReqInfo::SuperBlockReq{} => {
-                                    !new_cache_reqs.contains_key(id2)
-                                }
-                            }
-                        } by {
-                            if id2 == id {
-                                assert(new_outstanding[id2] == new_info);
-                                assert(new_cache_reqs.contains_key(id2));
-                                assert(new_cache_reqs[id2] == addr@);
-                            } else {
-                                assert(new_outstanding[id2] == old_outstanding[id2]) by {
-                                    vstd::map::axiom_map_insert_different(old_outstanding, id2, id, new_info);
-                                }
-                                match old_outstanding[id2] {
-                                    OutstandingReqInfo::CacheLoadReq{read_addr, load_handle} => {
-                                        assert(pre_state.state.outstanding_cache_reqs.contains_key(id2));
-                                        assert(pre_state.state.outstanding_cache_reqs[id2] == read_addr@);
-                                        assert(new_cache_reqs.contains_key(id2)) by {
-                                            vstd::map::axiom_map_insert_domain(pre_state.state.outstanding_cache_reqs, id, addr@);
-                                            assert(new_cache_reqs.dom() == pre_state.state.outstanding_cache_reqs.dom().insert(id));
-                                            assert(new_cache_reqs.dom().contains(id2));
-                                        }
-                                        assert(new_cache_reqs[id2] == read_addr@) by {
-                                            vstd::map::axiom_map_insert_different(pre_state.state.outstanding_cache_reqs, id2, id, addr@);
-                                        }
-                                    },
-                                    OutstandingReqInfo::CacheWriteReq{write_addr, handle} => {
-                                        assert(pre_state.state.outstanding_cache_reqs.contains_key(id2));
-                                        assert(pre_state.state.outstanding_cache_reqs[id2] == write_addr@);
-                                        assert(new_cache_reqs.contains_key(id2)) by {
-                                            vstd::map::axiom_map_insert_domain(pre_state.state.outstanding_cache_reqs, id, addr@);
-                                            assert(new_cache_reqs.dom() == pre_state.state.outstanding_cache_reqs.dom().insert(id));
-                                            assert(new_cache_reqs.dom().contains(id2));
-                                        }
-                                        assert(new_cache_reqs[id2] == write_addr@) by {
-                                            vstd::map::axiom_map_insert_different(pre_state.state.outstanding_cache_reqs, id2, id, addr@);
-                                        }
-                                    },
-                                    OutstandingReqInfo::SuperBlockReq{} => {
-                                        assert(!pre_state.state.outstanding_cache_reqs.contains_key(id2));
-                                        assert(!new_cache_reqs.contains_key(id2)) by {
-                                            vstd::map::axiom_map_insert_domain(pre_state.state.outstanding_cache_reqs, id, addr@);
-                                            assert(new_cache_reqs.dom() == pre_state.state.outstanding_cache_reqs.dom().insert(id));
-                                            assert(!pre_state.state.outstanding_cache_reqs.dom().contains(id2));
-                                            broadcast use vstd::set::group_set_axioms;
-                                            assert(pre_state.state.outstanding_cache_reqs.dom().insert(id).contains(id2) == pre_state.state.outstanding_cache_reqs.dom().contains(id2));
-                                        }
-                                    }
-                                }
-                            }
                         }
 
                     }
