@@ -212,7 +212,7 @@ pub struct Implementation {
     sync_counter: u64,
 
     store: VecMap<Key, Value>,
-    store_lsn: u64,
+    store_lsn: u64, // tracks current store's version
 
     // starts at persistent_store.version, ends matching store
     journal: JournalImpl,
@@ -325,10 +325,7 @@ impl Implementation {
         &&& state.journal == self.journal@
         &&& state.cache == self.cache@
 
-        // map and journal are at the same LSN
-        &&& state.journal.seq_end() == state.ephemeral_map().seq_end
-        // Probably also need contents to match...
-
+        &&& self.journal.seq_end() == self.store_lsn
         &&& self.state().wf()
 
         &&& state.in_flight is Some <==> self.sync_requests.in_flight()
@@ -384,6 +381,11 @@ impl Implementation {
         &&& self.state().recovery_state is SuperblockAvailable
         &&& self.state().in_flight is None
         &&& self.sync_requests.valid_empty_sync_buffer(self.instance@.id())
+        &&& self.store.wf()
+        &&& self.state().store == self.view_store()
+        &&& self.state().store.ephemeral is Known
+        &&& self.store_lsn as nat == self.state().ephemeral_map().seq_end
+        &&& self.store_lsn as nat == self.journal.seq_start()
         &&& self.state().journal == self.journal@
         &&& self.journal.wf()
         &&& !self.journal.index_ready()
@@ -396,8 +398,8 @@ impl Implementation {
         &&& self.state().recovery_state is JournalIndexComplete
         &&& self.state().in_flight is None
         &&& self.sync_requests.valid_empty_sync_buffer(self.instance@.id())
-        &&& self.store.wf()
         &&& self.state().store == self.view_store()
+        &&& self.store.wf()
         &&& self.i_ephemeral_store() is Known
         &&& self.store_lsn as nat == self.state().ephemeral_map().seq_end
         &&& self.store_lsn as nat <= self.journal.seq_end()
@@ -441,7 +443,7 @@ impl Implementation {
         // When is it Unknown? I guess based on the program counter being in recovery.
         AbstractCrashAwareMap_v::Ephemeral::Known{
             v: AbstractMap::State{
-                stamped_map: StampedMap{value: view_as_kmmap(self.store), seq_end: self.journal.seq_end()}
+                stamped_map: StampedMap{value: view_as_kmmap(self.store), seq_end: self.store_lsn as nat}
             }
         }
     }
@@ -551,6 +553,23 @@ impl Implementation {
 
             self.journal.insert(key.clone(), value);
             self.store.insert(key.clone(), value);
+            let new_store_lsn = self.journal.exec_seq_end();
+            proof {
+                reveal(Implementation::inv_api);
+                reveal(Implementation::inv);
+                assert(old(self).inv_running());
+                old(self).journal.view_seq_end_ensures();
+                assert(old(self).state().journal == old(self).journal@);
+                assert(old(self).state().store == old(self).view_store());
+                assert(old(self).state().journal.seq_end() == old(self).state().ephemeral_map().seq_end);
+                assert(old(self).state().ephemeral_map().seq_end == old(self).store_lsn as nat);
+                assert(old(self).journal.seq_end() == old(self).store_lsn as nat);
+                assert(self.journal.seq_end() == old(self).journal.seq_end() + 1);
+                assert(new_store_lsn as nat == self.journal.seq_end());
+                assert(self.store_lsn as nat + 1 == new_store_lsn as nat);
+            }
+            self.store_lsn = self.store_lsn + 1;
+            assert(self.store_lsn == new_store_lsn);
 
             let reply = Reply{output: Output::PutOutput, id: req.id};
             let ghost post_state = ConcreteProgramModel{
@@ -1948,6 +1967,13 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
             let ghost disk_request_tuples = Multiset::empty();
 
             proof {
+                assert(superblock@@ == psb);
+                assert(psb.journal == superblock.journal_snapshot@);
+                assert(self.journal@.snapshot == superblock.journal_snapshot@);
+                assert(psb.store.seq_end == psb.journal.boundary_lsn);
+                self.journal.view_seq_start_ensures();
+                assert(psb.store.seq_end == self.journal.seq_start());
+
                 // Something about constructing a ProgramDiskInfo object is necessary to trigger a
                 // pattern match in the disk_transitions preconditions below.
                 let info = ProgramDiskInfo{
@@ -1970,6 +1996,9 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
             );
             self.model = Tracked(model);
             assert(self.i().store.ephemeral is Known);
+            proof {
+                assert(self.state().store.persistent.seq_end == self.journal.seq_start());
+            }
         }
 
         api.log("recovery phase now ReadingJournalIndex");
@@ -2013,7 +2042,16 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
         let ghost pre_state = self.model@.value();
         let ghost pre_outstanding = self.outstanding_requests@;
         let ghost cache_before_index = self.cache;
+        let ghost start_store_lsn = self.store_lsn as nat;
+        let ghost start_journal_seq_start = self.journal.seq_start();
         proof {
+            assert(self.inv());
+            assert(self.recovery_phase is ReadingJournalIndex);
+            assert(self.inv_reading_journal()) by {
+                reveal(Implementation::inv);
+                assert(self.inv());
+            }
+            assert(start_store_lsn == start_journal_seq_start);
             self.system_inv_implies_atomic_state_wf();
             assert(pre_state.state.wf());
         }
@@ -2381,6 +2419,11 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
 
                     }
                 }
+                proof {
+                    assert(self.store_lsn as nat == start_store_lsn);
+                    assert(self.journal.seq_start() == start_journal_seq_start);
+                    assert(self.store_lsn as nat == self.journal.seq_start());
+                }
                 assert( self.inv_api(api) );
 
                 return false; // cache waiting on data, not ready to make more progress
@@ -2427,10 +2470,23 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
 
                 // index complete means that we can now 
                 assert( self.i().recovery_state is JournalIndexComplete );
-                assume(false);
+                proof {
+                    assert(self.store_lsn as nat == start_store_lsn);
+                    assert(self.journal.seq_start() == start_journal_seq_start);
+                    assert(self.store_lsn as nat == self.journal.seq_start());
+                    assert(self.journal.seq_start() <= self.journal.seq_end());
+                    assert(self.store_lsn as nat <= self.journal.seq_end());
+                }
+                proof {
+                    self.system_inv_implies_atomic_state_wf();
+                }
+                assert(self.inv());
+                assert(self.inv_api(api));
             }
             RecoverIndexResult::IndexProgress{} => { }
         }
+        assert(self.inv());
+        assert(self.inv_api(api));
         return true; // either index is complete or journal has made progress building the index
     }
 

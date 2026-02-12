@@ -62,8 +62,7 @@ pub open spec(checked) fn singleton_floating_seq(at_index: nat, kmmap: TotalKMMa
 impl Superblock {
     pub open spec fn wf(self) -> bool
     {
-        true
-        // &&& self.store.seq_end == self.journal.seq_start
+        &&& self.store.seq_end == self.journal.boundary_lsn
         // &&& self.journal.wf()
     }
 }

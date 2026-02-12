@@ -372,6 +372,7 @@ impl JournalImpl {
     ensures ({
         &&& self.wf()
         &&& self@.wf()
+        &&& self.seq_start() == old(self).seq_start()
         &&& cache.wf()
         &&& cache.valid_load_handles_preserved(*old(cache))
         &&& match out {
@@ -386,6 +387,7 @@ impl JournalImpl {
                 let (cache_lbl, journal_lbl) = load_index_labels(reads@);
                 &&& old(cache)@ == cache@
                 &&& self.index_ready()
+                &&& self.seq_start() <= self.seq_end()
                 &&& Cache::State::next(old(cache)@, cache@, cache_lbl)
                 &&& CachedJournal::State::next(old(self)@, self@, journal_lbl)
             },
@@ -690,6 +692,13 @@ impl JournalImpl {
         assert(self@.status is Some);
         reveal(CachedJournal::State::seq_end);
         reveal(JournalImpl::seq_end);
+    }
+
+    pub proof fn view_seq_start_ensures(&self)
+        ensures
+            self@.snapshot.boundary_lsn == self.seq_start(),
+    {
+        reveal(JournalImpl::seq_start);
     }
 
     pub proof fn seq_start_le_marshalled_end(&self)
