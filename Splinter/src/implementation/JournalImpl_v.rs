@@ -680,6 +680,18 @@ impl JournalImpl {
     {
     }
 
+    pub proof fn view_seq_end_ensures(&self)
+        requires
+            self.index_ready(),
+        ensures
+            self@.seq_end() == self.seq_end(),
+    {
+        broadcast use JournalImpl::view_ensures;
+        assert(self@.status is Some);
+        reveal(CachedJournal::State::seq_end);
+        reveal(JournalImpl::seq_end);
+    }
+
     pub proof fn seq_start_le_marshalled_end(&self)
         requires self.wf(), self.index_ready()
         ensures self.seq_start() as nat <= self@.status.unwrap().unmarshalled_tail.seq_start

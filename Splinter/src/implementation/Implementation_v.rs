@@ -98,6 +98,16 @@ struct SyncRequestBuffer {
 }
 
 impl SyncRequestBuffer {
+    pub closed spec fn valid_empty_sync_buffer(self, instance_id: InstanceId) -> bool
+    {
+        &&& !self.in_flight()
+        &&& self.buffered_reqs@.len() == 0
+        &&& self.journal_cleaning_reqs@.len() == 0
+        &&& self.superblocking_reqs@.len() == 0
+        &&& self.journal_cleaning_target_lsn == 0
+        &&& self.wf(instance_id)
+    }
+
     closed spec fn wf(self, instance_id: InstanceId) -> bool
     {
         &&& forall |r| #![auto] self.buffered_reqs@.contains(r) ==> {
@@ -113,8 +123,7 @@ impl SyncRequestBuffer {
 
     fn new_empty() -> (out: Self)
     ensures
-        !out.in_flight(),
-        out.buffered_reqs@.len() == 0,
+        forall |instance_id: InstanceId| out.valid_empty_sync_buffer(instance_id),
     {
         SyncRequestBuffer{
             buffered_reqs: vec![],
@@ -248,8 +257,7 @@ impl Implementation {
         &&& self.recovery_phase is FetchingSuperblock
         &&& self.model@.instance_id() == self.instance@.id()
         &&& self.in_flight is None
-        &&& !self.sync_requests.in_flight()
-        &&& self.sync_requests.buffered_reqs@.len() == 0
+        &&& self.sync_requests.valid_empty_sync_buffer(self.instance@.id())
         &&& self.outstanding_requests@ == Map::<ID, OutstandingReqInfo>::empty()
         &&& self.state().outstanding_cache_reqs == Map::<ID, Address>::empty()
         &&& self.store.wf()
@@ -374,6 +382,8 @@ impl Implementation {
     spec fn inv_reading_journal(self) -> bool
     {
         &&& self.state().recovery_state is SuperblockAvailable
+        &&& self.state().in_flight is None
+        &&& self.sync_requests.valid_empty_sync_buffer(self.instance@.id())
         &&& self.state().journal == self.journal@
         &&& self.journal.wf()
         &&& !self.journal.index_ready()
@@ -384,6 +394,13 @@ impl Implementation {
     spec fn inv_applying_journal(self) -> bool
     {
         &&& self.state().recovery_state is JournalIndexComplete
+        &&& self.state().in_flight is None
+        &&& self.sync_requests.valid_empty_sync_buffer(self.instance@.id())
+        &&& self.store.wf()
+        &&& self.state().store == self.view_store()
+        &&& self.i_ephemeral_store() is Known
+        &&& self.store_lsn as nat == self.state().ephemeral_map().seq_end
+        &&& self.store_lsn as nat <= self.journal.seq_end()
         &&& self.state().journal == self.journal@
         &&& self.journal.wf()
         &&& self.journal.index_ready()
@@ -1899,6 +1916,7 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
             let mut i = 0;
             // TODO: why do we need to clone here? Try removing.
             self.store = self.persistent_store.clone();
+            assert(self.store.wf());
             // Disk invariant: store must have agreed with journal start
             // (before we begin advancing it during recovery).
             self.store_lsn = self.journal.exec_seq_start();
@@ -1936,6 +1954,7 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                     reqs: disk_request_tuples,
                     resps: disk_response_tuples,
                 };
+                assert(post_state.state.store.ephemeral is Known);
                 assert(AtomicState::disk_transition(
                     pre_state.state, post_state.state, disk_event, info.reqs, info.resps)); // step witness
             }
@@ -1950,6 +1969,7 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                 disk_response_token.get(),
             );
             self.model = Tracked(model);
+            assert(self.i().store.ephemeral is Known);
         }
 
         api.log("recovery phase now ReadingJournalIndex");
@@ -2420,17 +2440,51 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
         old(self).recovery_phase is ApplyingJournalToRecoverEphemeralMap,
     ensures
         self.inv_api(api),
-        self.recovery_phase is ReadyForUserOperation,
+        self.recovery_phase is ApplyingJournalToRecoverEphemeralMap
+            || self.recovery_phase is ReadyForUserOperation,
     {
-        if self.store_lsn < self.journal.exec_seq_end() {
+        let exec_seq_end = self.journal.exec_seq_end();
+        if self.store_lsn < exec_seq_end {
+            // how do we apply journal pages?
+            // we parse and return a journal record out?
+            // this would be the easiest option, and 
+
             Self::todo_placeholder();   // Go restore more blocks from journal
             // this branch may return progress false if we are waiting for
             // disk IO to fetch the next page.
         }
+
+        // assert(self.store_lsn == self.journal.seq_end());
+        // assert(self.store_lsn == self.state().ephemeral_map().seq_end);
+        // assert(self.journal.seq_end() == self.state().ephemeral_map().seq_end);
+
+        let ghost pre_state = self.state();
+        proof {
+            assert(self.inv_api(api));
+            assert(self.recovery_phase is ApplyingJournalToRecoverEphemeralMap);
+            assert(self.inv_applying_journal()) by {
+                reveal(Implementation::inv);
+                assert(self.inv());
+            }
+            assert(self.store_lsn >= exec_seq_end);
+            assert(exec_seq_end == self.journal.seq_end());
+            assert(self.store_lsn as nat >= self.journal.seq_end());
+            assert(self.store_lsn as nat == self.journal.seq_end()) by {
+                assert(self.store_lsn as nat <= self.journal.seq_end());
+            }
+            self.journal.view_seq_end_ensures();
+            assert(pre_state.ephemeral_map().seq_end == pre_state.journal.seq_end()) by {
+                assert(self.store_lsn as nat == pre_state.ephemeral_map().seq_end);
+                assert(pre_state.journal == self.journal@);
+                assert(pre_state.journal.status is Some);
+                assert(pre_state.journal.seq_end() == self.journal.seq_end());
+                assert(pre_state.ephemeral_map().seq_end == self.journal.seq_end());
+            }
+        }
+
         {
             self.recovery_phase = RecoveryPhase::ReadyForUserOperation;
 
-            let ghost pre_state = self.i();
             let tracked mut model = KVStoreTokenized::model::arbitrary();
             proof { tracked_swap(self.model.borrow_mut(), &mut model); }
 
@@ -2440,7 +2494,7 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                 state: AtomicState {
                     recovery_state: RecoveryState::RecoveryComplete,
                     journal: pre_state.journal,
-                    persistent_journal_seq_end: pre_state.journal.seq_end(),
+                    persistent_journal_seq_end: pre_state.ephemeral_map().seq_end,
                     ..pre_state
                 }
             };
@@ -2455,7 +2509,7 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                         post_state.state,
                         InternalEvent::RecoveryComplete{}
                     )) by {
-                        let end_lsn = pre_state.journal.seq_end();
+                        let end_lsn = pre_state.ephemeral_map().seq_end;
                         let journal_lbl = CachedJournal::Label::QueryEndLsn{end_lsn: end_lsn};
                         assert(pre_state.recovery_state is JournalIndexComplete);
                         reveal(CachedJournal::State::next_by);
@@ -2483,9 +2537,12 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                 &mut model,
             );
             self.model = Tracked(model);
+            proof {
+                self.system_inv_implies_atomic_state_wf();
+            }
 
             assert( self.i().recovery_state is RecoveryComplete  );
-            assume( self.inv_api(api) );
+            assert( self.inv_api(api) );
         }
         true
     }

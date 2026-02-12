@@ -339,8 +339,8 @@ impl AtomicState {
 
     pub open spec fn recovery_complete(pre: Self, post: Self) -> bool
     {
-        let end_lsn = pre.journal.seq_end();
-        let journal_lbl = CachedJournal::Label::QueryEndLsn{end_lsn: end_lsn};
+        let end_lsn = pre.ephemeral_map().seq_end;
+        let journal_lbl = CachedJournal::Label::QueryEndLsn{end_lsn};
         
         &&& pre.recovery_state is JournalIndexComplete
         &&& CachedJournal::State::next(pre.journal, post.journal, journal_lbl)
