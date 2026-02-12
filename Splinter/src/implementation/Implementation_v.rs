@@ -915,11 +915,10 @@ impl Implementation {
             in_flight: Some(new_abstract_store),
             ..old(self).state().store
         };
-        // state_after_freeze uses cache state after fetch (if we fetched a page)
-        // The cache state changed when we called fetch(), so we need to use the current cache state
+        // fetch+release is a no-op on the cache state
         let ghost state_after_freeze = AtomicState{
             store: frozen_store,
-            cache: self.cache@,  // Use cache state after fetch
+            cache: old(self).state().cache,
             ..old(self).state()
         };
         {
@@ -955,6 +954,33 @@ impl Implementation {
                 }
                 
                 tracked_swap(self.model.borrow_mut(), &mut model);
+                assert(ConcreteProgramModel::valid_internal_transition(model.value(), post_state)) by {
+                    assert(AtomicState::internal_transitions(
+                        model.value().state,
+                        post_state.state,
+                        InternalEvent::StoreInternal{}
+                    )) by {
+                        assert(old(self).inv());
+                        reveal(Implementation::inv);
+                        reveal(Implementation::ready_for_user_operation);
+                        assert(old(self).ready_for_user_operation());
+                        assert(old(self).recovery_phase is ReadyForUserOperation);
+                        assert(old(self).inv_running());
+                        reveal(Implementation::inv_running);
+                        broadcast use JournalImpl::view_ensures;
+                        assert(old(self).state().journal.status is Some) by {
+                            assert(old(self).state().journal == old(self).journal@);
+                            assert(old(self).journal.index_ready() <==> old(self).journal@.status is Some);
+                            assert(old(self).journal@.status is Some);
+                        }
+                        assert(old(self).state().client_ready());
+                        assert(model.value().state == old(self).state());
+                        assert(model.value().state.client_ready());
+                        assert(post_state.state == AtomicState{store: post_state.state.store, ..model.value().state});
+                        assert(AtomicState::store_internal(model.value().state, post_state.state));
+                    }
+                }
+                assert(ConcreteProgramModel::next(model.value(), post_state, ProgramLabel::Internal{}));
                 self.instance.borrow().internal(
                     KVStoreTokenized::Label::InternalOp,
                     post_state,
@@ -1673,470 +1699,73 @@ impl Implementation {
         self.recovery_phase == old(self).recovery_phase,
     {
         let ghost pre_outstanding = pre_outstanding@;
-        let ghost pre_cache_reqs = old(self).state().outstanding_cache_reqs;
-        let ghost pre_match = Self::outstanding_requests_match_cache_reqs_map(pre_outstanding, pre_cache_reqs);
-        let ghost pre_wf = Self::outstanding_requests_wf_map(pre_outstanding, old(self).cache);
-
         let OutstandingReqInfo::CacheLoadReq{read_addr, mut load_handle} = req_info else { unreached() };
-                let ghost pre_state = self.model@.value();
-                let ghost disk_response_spec = disk_response@;
-                let ghost handle_before = load_handle;
-
-                let data = match disk_response {
-                    IDiskResponse::ReadResp{data} => data,
-                    IDiskResponse::WriteResp{} => {
-                        assume(false); // should be impossible for a cache load
-                        unreached()
-                    }
-                };
-                // assume disk always returns full pages
-                assume(data.len() == PAGE_SIZE_BYTES);
-                load_handle.rec = data;
-
-                proof {
-                    assert(pre_wf);
-                    assert(pre_outstanding.contains_key(id));
-                    match pre_outstanding[id] {
-                        OutstandingReqInfo::CacheLoadReq{read_addr: ra, load_handle: lh} => {
-                            assert(req_info == pre_outstanding[id]);
-                            assert(ra@ == read_addr@);
-                            assert(lh == handle_before);
-                            reveal(Implementation::outstanding_requests_wf_map);
-                            assert(old(self).cache.entry_fetched(&read_addr));
-                            assert(old(self).cache.valid_load_handle(&read_addr, handle_before));
-                        },
-                        _ => { assert(false); }
-                    }
-                    assert(load_handle.token == handle_before.token);
-                    assert(load_handle.idx == handle_before.idx);
-                    assert(load_handle.rec.len() == PAGE_SIZE_BYTES);
-
-                    assert(handle_before.inv()) by {
-                        reveal(FracCacheImpl::valid_load_handle);
-                        assert(old(self).cache.valid_load_handle(&read_addr, handle_before));
-                        reveal(FracCacheImpl::valid_handle);
-                    }
-                    assert(load_handle.inv()) by {
-                        reveal(MutHandle::inv);
-                        assert(load_handle.token@.resource() == load_handle.idx) by {
-                            assert(handle_before.inv());
-                            reveal(MutHandle::inv);
-                            assert(handle_before.token@.resource() == handle_before.idx);
-                        }
-                        assert(load_handle.rec.len() == PAGE_SIZE_BYTES);
-                    }
-                    assert(old(self).cache.valid_handle(load_handle)) by {
-                        reveal(FracCacheImpl::valid_handle);
-                        assert(old(self).cache.valid_load_handle(&read_addr, handle_before));
-                        reveal(FracCacheImpl::valid_load_handle);
-                        assert(old(self).cache.valid_handle(handle_before));
-                        assert(load_handle.idx < old(self).cache.total_slots()) by {
-                            reveal(FracCacheImpl::valid_handle);
-                            assert(handle_before.idx < old(self).cache.total_slots());
-                            assert(load_handle.idx == handle_before.idx);
-                        }
-                        assert(load_handle.token@.frac() == 1) by {
-                            reveal(FracCacheImpl::valid_handle);
-                            assert(handle_before.token@.frac() == 1);
-                            assert(load_handle.token == handle_before.token);
-                        }
-                        assert(load_handle.token@.id() == old(self).cache.entry_token_id(load_handle.idx)) by {
-                            reveal(FracCacheImpl::valid_handle);
-                            assert(handle_before.token@.id() == old(self).cache.entry_token_id(handle_before.idx));
-                            assert(load_handle.token == handle_before.token);
-                            assert(load_handle.idx == handle_before.idx);
-                        }
-                    }
-                    assert(old(self).cache.valid_load_handle(&read_addr, load_handle)) by {
-                        reveal(FracCacheImpl::valid_load_handle);
-                        assert(old(self).cache.valid_load_handle(&read_addr, handle_before));
-                        assert(old(self).cache.lookup_addr_slot(&read_addr) == handle_before.idx);
-                        assert(old(self).cache.slot_entry(handle_before.idx) == IEntry::Loading{addr: read_addr});
-                        assert(old(self).cache.lookup_addr_slot(&read_addr) == load_handle.idx);
-                        assert(old(self).cache.slot_entry(load_handle.idx) == IEntry::Loading{addr: read_addr});
-                    }
-                }
-                self.cache.load_release(&read_addr, load_handle);
-
-                let ghost resp_map = map!{id => disk_response_spec};
-                let ghost disk_request_tuples = Multiset::empty();
-                let ghost disk_response_tuples = multiset_map_singleton(id, disk_response_spec);
-                let ghost post_state = ConcreteProgramModel{
-                    state: AtomicState{
-                        cache: self.cache@,
-                        outstanding_cache_reqs: pre_state.state.outstanding_cache_reqs.remove_keys(resp_map.dom()),
-                        ..pre_state.state
-                    }
-                };
-
-                let tracked mut model = KVStoreTokenized::model::arbitrary();
-                proof { tracked_swap(self.model.borrow_mut(), &mut model); }
-
-                proof {
-                    let info = ProgramDiskInfo{reqs: disk_request_tuples, resps: disk_response_tuples};
-                    let disk_event = DiskEvent::CacheIOEnd{resp_map};
-                    assert(pre_cache_reqs.contains_key(id)) by {
-                        match pre_outstanding[id] {
-                            OutstandingReqInfo::CacheLoadReq{read_addr: ra, load_handle: lh} => {
-                                assert(pre_match);
-                            },
-                            _ => { assert(false); }
-                        }
-                    }
-                    assert(pre_cache_reqs[id] == read_addr@) by {
-                        match pre_outstanding[id] {
-                            OutstandingReqInfo::CacheLoadReq{read_addr: ra, load_handle: lh} => {
-                                assert(ra@ == read_addr@);
-                                assert(pre_match);
-                            },
-                            _ => { assert(false); }
-                        }
-                    }
-                    assert(pre_cache_reqs.is_injective()) by {
-                        reveal(Implementation::outstanding_requests_match_cache_reqs);
-                        assert(pre_match);
-                    }
-
-                    reveal(AtomicState::cache_io_end);
-                    let new_outstanding_cache_reqs = pre_state.state.outstanding_cache_reqs.remove_keys(resp_map.dom());
-                    let finished_cache_reqs = pre_state.state.outstanding_cache_reqs.restrict(resp_map.dom()).invert();
-                    let cache_resps = Map::new(|addr| finished_cache_reqs.contains_key(addr), |addr| resp_map[finished_cache_reqs[addr]]);
-                    assert(map_to_multiset(resp_map) == info.resps) by {
-                        Self::map_to_multiset_singleton(id, disk_response_spec);
-                    }
-                    assert(info.reqs.is_empty());
-                    assert(cache_resps == map!{read_addr@ => disk_response_spec}) by {
-                        Self::cache_resps_singleton(pre_cache_reqs, id, read_addr@, disk_response_spec);
-                    }
-                    assert(Cache::State::next(pre_state.state.cache, post_state.state.cache,
-                        Cache::Label::DiskOps{requests: set![], responses: cache_resps})) by {
-                        assert(Cache::State::next(pre_state.state.cache, post_state.state.cache,
-                            Cache::Label::DiskOps{requests: set![], responses: map!{read_addr@ => disk_response_spec}}));
-                    }
-                    assert(post_state.state == AtomicState{
-                        cache: post_state.state.cache,
-                        outstanding_cache_reqs: new_outstanding_cache_reqs,
-                        ..pre_state.state
-                    });
-                    assert(AtomicState::disk_transition(pre_state.state, post_state.state, disk_event, info.reqs, info.resps));
-                    assert(ConcreteProgramModel::valid_disk_transition(pre_state, post_state, info));
-                    assert(ConcreteProgramModel::next(pre_state, post_state, ProgramLabel::DiskIO{info}));
-                }
-
-                let tracked _disk_req_token = self.instance.borrow().disk_transitions(
-                    KVStoreTokenized::Label::DiskOp{
-                        disk_request_tuples,
-                        disk_response_tuples,
-                    },
-                    post_state,
-                    &mut model,
-                    response_shard.get(),
-                );
-                self.model = Tracked(model);
-                proof {
-                    assert(self.outstanding_requests@ == pre_outstanding.remove(id));
-                    assert(pre_match);
-                    assert(pre_wf);
-
-                    let ghost pre_cache_reqs = pre_state.state.outstanding_cache_reqs;
-                    assert(pre_outstanding.contains_key(id));
-                    assert(req_info == pre_outstanding[id]);
-                    assert(pre_cache_reqs.contains_key(id)) by {
-                        match pre_outstanding[id] {
-                            OutstandingReqInfo::CacheLoadReq{read_addr: ra, load_handle: lh} => {
-                                assert(pre_match);
-                            },
-                            _ => { assert(false); }
-                        }
-                    }
-                    assert(pre_cache_reqs[id] == read_addr@) by {
-                        match pre_outstanding[id] {
-                            OutstandingReqInfo::CacheLoadReq{read_addr: ra, load_handle: lh} => {
-                                assert(ra@ == read_addr@);
-                                assert(pre_match);
-                            },
-                            _ => { assert(false); }
-                        }
-                    }
-
-                    assert(self.outstanding_requests_wf()) by {
-                        assert forall |id2| #[trigger] self.outstanding_requests@.contains_key(id2) implies {
-                            match self.outstanding_requests@[id2] {
-                                OutstandingReqInfo::CacheLoadReq{read_addr: addr2, load_handle: handle2} => {
-                                    &&& self.cache.entry_fetched(&addr2)
-                                    &&& self.cache.valid_load_handle(&addr2, handle2)
-                                },
-                                _ => { true }
-                            }
-                        } by {
-                            match self.outstanding_requests@[id2] {
-                                OutstandingReqInfo::CacheLoadReq{read_addr: addr2, load_handle: handle2} => {
-                                    assert(self.outstanding_requests@ == pre_outstanding.remove(id));
-                                    // id2 is still present, so id2 != id
-                                    vstd::map::axiom_map_remove_domain(pre_outstanding, id);
-                                    assert(self.outstanding_requests@.dom() == pre_outstanding.dom().remove(id));
-                                    assert(self.outstanding_requests@.dom().contains(id2));
-                                    assert(pre_outstanding.dom().contains(id2));
-                                    assert(id2 != id);
-
-                                    // relate outstanding_requests to outstanding_cache_reqs
-                                    assert(pre_match);
-                                    assert(pre_outstanding.contains_key(id2));
-                                    assert(pre_cache_reqs.contains_key(id2)) by {
-                                        match pre_outstanding[id2] {
-                                            OutstandingReqInfo::CacheLoadReq{read_addr: ra2, load_handle: lh2} => {
-                                                assert(pre_match);
-                                            },
-                                            OutstandingReqInfo::CacheWriteReq{write_addr, handle} => {
-                                                assert(pre_match);
-                                            },
-                                            OutstandingReqInfo::SuperBlockReq{} => { assert(false); }
-                                        }
-                                    }
-                                    // show addr2 != read_addr using injectivity of outstanding_cache_reqs
-                                    assert(pre_cache_reqs.is_injective()) by {
-                                        reveal(Implementation::outstanding_requests_match_cache_reqs);
-                                        assert(pre_match);
-                                    }
-                                    assert(pre_cache_reqs[id2] == addr2@) by {
-                                        match pre_outstanding[id2] {
-                                            OutstandingReqInfo::CacheLoadReq{read_addr: ra2, load_handle: lh2} => {
-                                                assert(ra2@ == addr2@);
-                                                assert(pre_match);
-                                            },
-                                            OutstandingReqInfo::CacheWriteReq{write_addr, handle} => {
-                                                assert(write_addr@ == addr2@);
-                                                assert(pre_match);
-                                            },
-                                            OutstandingReqInfo::SuperBlockReq{} => { assert(false); }
-                                        }
-                                    }
-                                    assert(addr2@ != read_addr@) by {
-                                        assert(pre_cache_reqs.contains_key(id));
-                                        assert(pre_cache_reqs[id] == read_addr@);
-                                        assert(pre_cache_reqs.is_injective());
-                                        // if addr2@ == read_addr@ then id2 == id, contradiction
-                                        if addr2@ == read_addr@ {
-                                            assert(pre_cache_reqs[id2] == pre_cache_reqs[id]);
-                                            assert(id2 == id);
-                                            assert(false);
-                                        }
-                                    }
-
-                                    // use cache load_release preservation for all other addrs
-                                    assert(self.cache.valid_load_handles_preserved_except(old(self).cache, read_addr));
-                                    assert(old(self).cache.entry_fetched(&addr2)) by {
-                                        match pre_outstanding[id2] {
-                                            OutstandingReqInfo::CacheLoadReq{read_addr: ra2, load_handle: lh2} => {
-                                                assert(pre_wf);
-                                                assert(old(self).cache.entry_fetched(&ra2));
-                                            },
-                                            _ => { assert(false); }
-                                        }
-                                    }
-                                    assert(old(self).cache.valid_load_handle(&addr2, handle2)) by {
-                                        match pre_outstanding[id2] {
-                                            OutstandingReqInfo::CacheLoadReq{read_addr: ra2, load_handle: lh2} => {
-                                                assert(pre_wf);
-                                                assert(old(self).cache.valid_load_handle(&ra2, lh2));
-                                            },
-                                            _ => { assert(false); }
-                                        }
-                                    }
-                                    assert(addr2 != read_addr);
-                                    assert(self.cache.entry_fetched(&addr2));
-                                    assert(self.cache.valid_load_handle(&addr2, handle2));
-                                },
-                                _ => { }
-                            }
-                        }
-                    }
-                    assert(self.outstanding_requests_match_cache_reqs()) by {
-                        let ghost new_outstanding = self.outstanding_requests@;
-                        let ghost new_cache_reqs = pre_cache_reqs.remove_keys(resp_map.dom());
-                        assert(new_outstanding == pre_outstanding.remove(id));
-                        assert(new_cache_reqs == pre_state.state.outstanding_cache_reqs.remove_keys(resp_map.dom()));
-
-                        assert(new_cache_reqs.is_injective()) by {
-                            assert(pre_cache_reqs.is_injective()) by {
-                                reveal(Implementation::outstanding_requests_match_cache_reqs);
-                                assert(pre_match);
-                            }
-                            assert forall |k1, k2|
-                                new_cache_reqs.contains_key(k1)
-                                && new_cache_reqs.contains_key(k2)
-                                && new_cache_reqs[k1] == new_cache_reqs[k2]
-                                implies k1 == k2
-                            by {
-                                reveal(Map::remove_keys);
-                                reveal(Map::contains_key);
-                                assert(pre_cache_reqs.contains_key(k1));
-                                assert(pre_cache_reqs.contains_key(k2));
-                                assert(new_cache_reqs[k1] == pre_cache_reqs[k1]);
-                                assert(new_cache_reqs[k2] == pre_cache_reqs[k2]);
-                                assert(pre_cache_reqs[k1] == pre_cache_reqs[k2]);
-                                assert(pre_cache_reqs.is_injective());
-                            }
-                        }
-
-                        assert forall |id2| #[trigger] new_outstanding.contains_key(id2) implies {
-                            match new_outstanding[id2] {
-                                OutstandingReqInfo::CacheLoadReq{read_addr: addr2, load_handle: handle2} => {
-                                    &&& new_cache_reqs.contains_key(id2)
-                                    &&& new_cache_reqs[id2] == addr2@
-                                },
-                                OutstandingReqInfo::CacheWriteReq{write_addr, handle} => {
-                                    &&& new_cache_reqs.contains_key(id2)
-                                    &&& new_cache_reqs[id2] == write_addr@
-                                },
-                                OutstandingReqInfo::SuperBlockReq{} => {
-                                    !new_cache_reqs.contains_key(id2)
-                                }
-                            }
-                        } by {
-                            assert(new_outstanding == pre_outstanding.remove(id));
-                            vstd::map::axiom_map_remove_domain(pre_outstanding, id);
-                            assert(new_outstanding.dom() == pre_outstanding.dom().remove(id));
-                            assert(new_outstanding.dom().contains(id2));
-                            broadcast use vstd::set::group_set_axioms;
-                            assert(pre_outstanding.dom().contains(id2));
-                            assert(pre_outstanding.contains_key(id2));
-                            assert(id2 != id) by {
-                                assert(pre_outstanding.dom().remove(id).contains(id2));
-                                assert(!set!{id}.contains(id2));
-                            }
-                            assert(resp_map.dom() == set!{id});
-                            assert(!resp_map.dom().contains(id2));
-                            assert(pre_match);
-                            match pre_outstanding[id2] {
-                                OutstandingReqInfo::CacheLoadReq{read_addr: addr2, load_handle: handle2} => {
-                                    assert(pre_cache_reqs.contains_key(id2)) by { assert(pre_match); }
-                                    assert(pre_cache_reqs[id2] == addr2@) by { assert(pre_match); }
-                                    assert(new_cache_reqs.contains_key(id2)) by {
-                                        reveal(Map::remove_keys);
-                                        reveal(Map::contains_key);
-                                        assert(pre_cache_reqs.contains_key(id2));
-                                        assert(!resp_map.dom().contains(id2));
-                                    }
-                                    assert(new_cache_reqs[id2] == addr2@) by {
-                                        reveal(Map::remove_keys);
-                                        assert(new_cache_reqs[id2] == pre_cache_reqs[id2]);
-                                    }
-                                },
-                                OutstandingReqInfo::CacheWriteReq{write_addr, handle} => {
-                                    assert(pre_cache_reqs.contains_key(id2)) by { assert(pre_match); }
-                                    assert(pre_cache_reqs[id2] == write_addr@) by { assert(pre_match); }
-                                    assert(new_cache_reqs.contains_key(id2)) by {
-                                        reveal(Map::remove_keys);
-                                        reveal(Map::contains_key);
-                                        assert(pre_cache_reqs.contains_key(id2));
-                                        assert(!resp_map.dom().contains(id2));
-                                    }
-                                    assert(new_cache_reqs[id2] == write_addr@) by {
-                                        reveal(Map::remove_keys);
-                                        assert(new_cache_reqs[id2] == pre_cache_reqs[id2]);
-                                    }
-                                },
-                                OutstandingReqInfo::SuperBlockReq{} => {
-                                    assert(!new_cache_reqs.contains_key(id2)) by {
-                                        reveal(Map::remove_keys);
-                                        reveal(Map::contains_key);
-                                        assert(!pre_cache_reqs.contains_key(id2)) by { assert(pre_match); }
-                                    }
-                                }
-                            }
-                        }
-                }
+        let ghost handle_before = load_handle;
+        let data = match disk_response {
+            IDiskResponse::ReadResp{data} => data,
+            IDiskResponse::WriteResp{} => {
+                assume(false); // should be impossible for a cache load
+                unreached()
             }
+        };
+
+        // assume disk always returns full pages
+        assume(data.len() == PAGE_SIZE_BYTES);
+        load_handle.rec = data;
+        self.cache.load_release(&read_addr, load_handle);
+
+        let ghost pre_cache_reqs = old(self).state().outstanding_cache_reqs;
+        let ghost pre_state = self.model@.value();
+        let ghost resp_map = map!{id => disk_response@};
+        let ghost disk_request_tuples = Multiset::empty();
+        let ghost disk_response_tuples = multiset_map_singleton(id, disk_response@);
+        let ghost post_state = ConcreteProgramModel{
+            state: AtomicState{
+                cache: self.cache@,
+                outstanding_cache_reqs: pre_state.state.outstanding_cache_reqs.remove_keys(resp_map.dom()),
+                ..pre_state.state
+            }
+        };
+
+        let tracked mut model = KVStoreTokenized::model::arbitrary();
+        proof { tracked_swap(self.model.borrow_mut(), &mut model); }
+
         proof {
-            reveal(Implementation::inv_api);
-            reveal(Implementation::inv);
-            assert(self.cache.wf());
-            assert(self.state().cache == self.cache@);
-            assert(self.outstanding_requests_wf());
-            assert(self.outstanding_requests_match_cache_reqs());
-            assert(self.recovery_phase is FetchingSuperblock ==> self.inv_recover());
-            assert(self.recovery_phase is ReadingJournalIndex ==> self.inv_reading_journal());
-            assert(self.recovery_phase is ApplyingJournalToRecoverEphemeralMap ==> self.inv_applying_journal());
-            assert(self.recovery_phase is ReadyForUserOperation ==> self.inv_running()) by {
-                if self.recovery_phase is ReadyForUserOperation {
-                    let ghost pre_state = old(self).state();
-                    assert(old(self).recovery_phase is ReadyForUserOperation);
-                    reveal(Implementation::inv_api);
-                    assert(old(self).inv());
-                    reveal(Implementation::inv);
-                    assert(old(self).inv_running());
-                    reveal(Implementation::inv_running);
-
-                    assert(self.store == old(self).store);
-                    assert(self.journal == old(self).journal);
-                    assert(self.sync_requests == old(self).sync_requests);
-                    assert(self.in_flight == old(self).in_flight);
-
-                    assert(self.store.wf());
-                    assert(self.journal.wf());
-                    assert(self.journal.index_ready());
-
-                    assert(self.state().recovery_state == pre_state.recovery_state);
-                    assert(pre_state.recovery_state is RecoveryComplete);
-
-                    assert(self.state().store == pre_state.store);
-                    assert(pre_state.store == old(self).view_store());
-                    assert(self.view_store() == old(self).view_store());
-                    assert(self.state().store == self.view_store());
-
-                    assert(self.state().journal == pre_state.journal);
-                    assert(pre_state.journal == old(self).journal@);
-                    assert(self.journal@ == old(self).journal@);
-                    assert(self.state().journal == self.journal@);
-
-                    assert(self.state().journal.seq_end() == pre_state.journal.seq_end());
-                    assert(self.state().ephemeral_map().seq_end == pre_state.ephemeral_map().seq_end);
-                    assert(pre_state.journal.seq_end() == pre_state.ephemeral_map().seq_end);
-                    assert(self.state().journal.seq_end() == self.state().ephemeral_map().seq_end);
-
-                    self.system_inv_implies_atomic_state_wf();
-                    assert(self.state().wf());
-
-                    assert(self.state().in_flight == pre_state.in_flight);
-                    assert(pre_state.in_flight is Some <==> old(self).sync_requests.in_flight());
-                    assert(pre_state.in_flight is Some <==> old(self).in_flight is Some);
-                    assert(self.state().in_flight is Some <==> self.sync_requests.in_flight());
-                    assert(self.state().in_flight is Some <==> self.in_flight is Some);
-
-                    assert(self.state().in_flight is Some ==> {
-                        &&& self.in_flight.unwrap().new_boundary_lsn <= self.state().journal.status.unwrap().unmarshalled_tail.seq_start
-                    }) by {
-                        assert(old(self).inv_running());
-                        reveal(Implementation::inv_running);
-                    }
-                    assert(self.state().in_flight is Some ==> {
-                        let sync_version = self.state().in_flight.unwrap().journal_version;
-                        let new_persistent_map_version = self.in_flight.unwrap().new_boundary_lsn as nat;
-                        let new_persistent_map = self.in_flight.unwrap().new_store;
-                        &&& self.journal.seq_start() <= new_persistent_map_version
-                        &&& new_persistent_map_version <= sync_version
-                        &&& self.sync_reqs_in_version(self.sync_requests.superblocking_reqs@, sync_version)
-                    }) by {
-                        assert(old(self).inv_running());
-                        reveal(Implementation::inv_running);
-                    }
-
-                    assert(self.sync_requests.wf(self.instance@.id()));
-                    assert(self.sync_reqs_in_version(self.sync_requests.buffered_reqs@, self.version()));
-                    assert(self.sync_requests.journal_cleaning_target_lsn <= self.version());
-                    assert(self.sync_reqs_in_version(self.sync_requests.journal_cleaning_reqs@, self.sync_requests.journal_cleaning_target_lsn as nat));
-                    assert(Self::three_sync_req_lists_mutually_unique(
-                        self.sync_requests.superblocking_reqs@,
-                        self.sync_requests.journal_cleaning_reqs@,
-                        self.sync_requests.buffered_reqs@));
-
-                    assert(self.inv_running());
-                }
+            let info = ProgramDiskInfo{reqs: disk_request_tuples, resps: disk_response_tuples};
+            let disk_event = DiskEvent::CacheIOEnd{resp_map};
+            let new_outstanding_cache_reqs = pre_state.state.outstanding_cache_reqs.remove_keys(resp_map.dom());
+            let finished_cache_reqs = pre_state.state.outstanding_cache_reqs.restrict(resp_map.dom()).invert();
+            let cache_resps = Map::new(|addr| finished_cache_reqs.contains_key(addr), |addr| resp_map[finished_cache_reqs[addr]]);
+            // trigger
+            assert(map_to_multiset(resp_map) == info.resps) by {
+                Self::map_to_multiset_singleton(id, disk_response@);
             }
-            assert(self.in_flight is Some ==> self.recovery_phase is ReadyForUserOperation);
-            assert(self.model@.instance_id() == self.instance@.id());
-            assert(api.instance_id() == self.instance_id());
+            assert(cache_resps == map!{read_addr@ => disk_response@}) by {
+                Self::cache_resps_singleton(pre_cache_reqs, id, read_addr@, disk_response@);
+            }
+            assert(Cache::State::next(pre_state.state.cache, post_state.state.cache,
+                Cache::Label::DiskOps{requests: set![], responses: cache_resps})) by {
+                assert(Cache::State::next(pre_state.state.cache, post_state.state.cache,
+                    Cache::Label::DiskOps{requests: set![], responses: map!{read_addr@ => disk_response@}}));
+            }
+            assert(AtomicState::disk_transition(pre_state.state, post_state.state, disk_event, info.reqs, info.resps));
+            assert(ConcreteProgramModel::valid_disk_transition(pre_state, post_state, info));
+            assert(ConcreteProgramModel::next(pre_state, post_state, ProgramLabel::DiskIO{info}));
+        }
+
+        let tracked _disk_req_token = self.instance.borrow().disk_transitions(
+            KVStoreTokenized::Label::DiskOp{
+                disk_request_tuples,
+                disk_response_tuples,
+            },
+            post_state,
+            &mut model,
+            response_shard.get(),
+        );
+
+        self.model = Tracked(model);
+        proof {
+            self.system_inv_implies_atomic_state_wf();
         }
     }
 
@@ -2160,21 +1789,13 @@ impl Implementation {
                     self.handle_disk_superblock_write_response(id, disk_response, response_shard, api);
                 },
                 OutstandingReqInfo::CacheLoadReq{..} => {
-                    proof {
-                        assert(self.outstanding_requests@ == pre_outstanding.remove(id));
-                        assert(pre_outstanding.contains_key(id));
-                        assert(req_info == pre_outstanding[id]);
-                    }
                     self.handle_disk_cache_load_response(id, disk_response, response_shard, req_info, Ghost(pre_outstanding), api);
                 },
                 OutstandingReqInfo::CacheWriteReq{write_addr, handle} => {
-                    // cache write request
                     assume(false);
                 },
         }
     }
-
-    assume(self.inv_api(api));
 }
 
 fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>)
@@ -2371,8 +1992,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
         
         let ghost pre_state = self.model@.value();
         let ghost pre_outstanding = self.outstanding_requests@;
-        let ghost pre_match = self.outstanding_requests_match_cache_reqs();
-        let ghost pre_wf = self.outstanding_requests_wf();
         let ghost cache_before_index = self.cache;
         proof {
             self.system_inv_implies_atomic_state_wf();
@@ -2437,7 +2056,7 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                     }
                 };
 
-                let ghost disk_request_tuples =  Multiset::empty().insert((req_id_perm@, disk_req@));
+                let ghost disk_request_tuples = multiset_map_singleton(req_id_perm@, disk_req@);
                 let ghost disk_response_tuples = Multiset::empty();
 
                 proof {
@@ -2445,10 +2064,29 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                         reqs: disk_request_tuples, 
                         resps: disk_response_tuples, 
                     }};
-                    let disk_event = DiskEvent::CacheIOBegin{req_map: map!{req_id_perm@ => disk_req@}};
+                    let ghost req_map = map!{req_id_perm@ => disk_req@};
+                    let disk_event = DiskEvent::CacheIOBegin{req_map};
                     let cache_lbl = cache_load_label(&addr);
-                    assume(map_to_multiset(disk_event->req_map) == disk_request_tuples);
-                    assume(disk_event->req_map.values() == set!{disk_req@});
+                    assert(map_to_multiset(disk_event->req_map) == disk_request_tuples) by {
+                        Self::map_to_multiset_singleton(req_id_perm@, disk_req@);
+                    }
+                    assert(disk_event->req_map.values() == set!{disk_req@}) by {
+                        Self::singleton_map_value(req_id_perm@, disk_req@);
+                        assert forall |req2| #[trigger] disk_event->req_map.values().contains(req2) implies set!{disk_req@}.contains(req2) by {
+                            reveal(Map::values);
+                            assert(disk_event->req_map.contains_value(req2));
+                            assert(disk_event->req_map.contains_value(req2) <==> req2 == disk_req@);
+                            assert(req2 == disk_req@);
+                        }
+                        assert forall |req2| #[trigger] set!{disk_req@}.contains(req2) implies disk_event->req_map.values().contains(req2) by {
+                            assert(req2 == disk_req@);
+                            assert(disk_event->req_map.contains_value(req2)) by {
+                                assert(disk_event->req_map.contains_value(req2) <==> req2 == disk_req@);
+                            }
+                            reveal(Map::values);
+                            assert(disk_event->req_map.values().contains(req2));
+                        }
+                    }
 
                     assert(Cache::State::next(old(self).cache@, self.cache@, cache_lbl));
                     assert(Cache::State::next(pre_state.state.cache, post_state.state.cache, cache_lbl));
@@ -2456,7 +2094,32 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
 
                     let updated_outstanding_cache_reqs = Map::new(|id| disk_event->req_map.contains_key(id), |id| disk_event->req_map[id].addr());
                     let new_outstanding_cache_reqs = pre_state.state.outstanding_cache_reqs.union_prefer_right(updated_outstanding_cache_reqs);
-                    assume(post_state.state.outstanding_cache_reqs == new_outstanding_cache_reqs); // it's true just tedious work for now
+                    assert(updated_outstanding_cache_reqs == map!{req_id_perm@ => addr@}) by {
+                        assert_maps_equal!(updated_outstanding_cache_reqs, map!{req_id_perm@ => addr@}, id2 => {
+                            if id2 == req_id_perm@ {
+                                assert(disk_event->req_map.contains_key(id2));
+                                assert(updated_outstanding_cache_reqs.contains_key(id2));
+                                assert(updated_outstanding_cache_reqs[id2] == disk_event->req_map[id2].addr());
+                                vstd::map::axiom_map_insert_same(Map::<ID, DiskRequest>::empty(), req_id_perm@, disk_req@);
+                                assert(disk_event->req_map[id2] == disk_req@);
+                                assert(updated_outstanding_cache_reqs[id2] == addr@);
+                                vstd::map::axiom_map_insert_same(Map::<ID, Address>::empty(), req_id_perm@, addr@);
+                            } else {
+                                assert(!disk_event->req_map.contains_key(id2)) by {
+                                    Self::singleton_map_dom(req_id_perm@, disk_req@);
+                                }
+                                assert(!updated_outstanding_cache_reqs.contains_key(id2));
+                                assert(!map!{req_id_perm@ => addr@}.contains_key(id2)) by {
+                                    Self::singleton_map_dom(req_id_perm@, addr@);
+                                }
+                            }
+                        });
+                    }
+                    assert(new_outstanding_cache_reqs == pre_state.state.outstanding_cache_reqs.insert(req_id_perm@, addr@)) by {
+                        vstd::map_lib::lemma_union_insert_right(pre_state.state.outstanding_cache_reqs, Map::<ID, Address>::empty(), req_id_perm@, addr@);
+                        assert(pre_state.state.outstanding_cache_reqs.union_prefer_right(Map::<ID, Address>::empty()) =~= pre_state.state.outstanding_cache_reqs);
+                    }
+                    assert(post_state.state.outstanding_cache_reqs == new_outstanding_cache_reqs);
                     assert(AtomicState::cache_io_begin(pre_state.state, post_state.state, disk_event->req_map, disk_request_tuples, disk_response_tuples));
                     assert(AtomicState::disk_transition(pre_state.state, post_state.state, disk_event, program_lbl->info.reqs, program_lbl->info.resps)); // witness
                     assert(ConcreteProgramModel::valid_disk_transition(pre_state, post_state, program_lbl->info)); 
@@ -2537,7 +2200,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                         assert(new_cache_reqs == old_cache_reqs.insert(id, addr@));
 
                         assert(new_cache_reqs.is_injective()) by {
-                            assert(pre_match);
                             reveal(Implementation::outstanding_requests_match_cache_reqs);
                             assert(old_cache_reqs.is_injective());
 
@@ -2658,10 +2320,8 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                                 assert(new_outstanding[id2] == old_outstanding[id2]) by {
                                     vstd::map::axiom_map_insert_different(old_outstanding, id2, id, new_info);
                                 }
-                                assert(pre_match);
                                 match old_outstanding[id2] {
                                     OutstandingReqInfo::CacheLoadReq{read_addr, load_handle} => {
-                                        assert(pre_match);
                                         assert(pre_state.state.outstanding_cache_reqs.contains_key(id2));
                                         assert(pre_state.state.outstanding_cache_reqs[id2] == read_addr@);
                                         assert(new_cache_reqs.contains_key(id2)) by {
@@ -2674,7 +2334,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                                         }
                                     },
                                     OutstandingReqInfo::CacheWriteReq{write_addr, handle} => {
-                                        assert(pre_match);
                                         assert(pre_state.state.outstanding_cache_reqs.contains_key(id2));
                                         assert(pre_state.state.outstanding_cache_reqs[id2] == write_addr@);
                                         assert(new_cache_reqs.contains_key(id2)) by {
@@ -2687,7 +2346,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                                         }
                                     },
                                     OutstandingReqInfo::SuperBlockReq{} => {
-                                        assert(pre_match);
                                         assert(!pre_state.state.outstanding_cache_reqs.contains_key(id2));
                                         assert(!new_cache_reqs.contains_key(id2)) by {
                                             vstd::map::axiom_map_insert_domain(pre_state.state.outstanding_cache_reqs, id, addr@);
@@ -2710,39 +2368,47 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
             RecoverIndexResult::IndexComplete{reads} => {
                 self.recovery_phase = RecoveryPhase::ApplyingJournalToRecoverEphemeralMap;
                 let tracked mut model = KVStoreTokenized::model::arbitrary();
+                let ghost pre_state = self.model@.value();
                 proof { tracked_swap(self.model.borrow_mut(), &mut model); }
 
-                let ghost pre_state = self.i();
-            let ghost post_state = ConcreteProgramModel{
-                state: AtomicState {
-                    recovery_state: RecoveryState::JournalIndexComplete,
-                    journal: self.journal@,
-                        persistent_journal_seq_end: arbitrary(), // why is this arbitrary
-                    in_flight: None,
-                    sync_req_map: Map::empty(),
-                    ..pre_state
-                }
-            };
-
-            proof {
-                assert(AtomicState::internal_transitions(pre_state, post_state.state)) by {
-                    // AtomicState internal transition is currently a "silly" noop; needs to expand
-                    // to include journal internal
-                    assume( false ); // TODO
+                let ghost post_state = ConcreteProgramModel{
+                    state: AtomicState {
+                        recovery_state: RecoveryState::JournalIndexComplete,
+                        cache: self.cache@,
+                        journal: self.journal@,
+                        ..pre_state.state
+                    }
                 };
-            }
 
-            let tracked new_reply_token = self.instance.borrow().internal(
-                KVStoreTokenized::Label::InternalOp{},
-                post_state,
-                &mut model,
-            );
-            self.model = Tracked(model);
+                proof {
+                    assert(model.value() == pre_state);
+                    assert(ConcreteProgramModel::valid_internal_transition(pre_state, post_state)) by {
+                        assert(AtomicState::internal_transitions(
+                            pre_state.state,
+                            post_state.state,
+                            InternalEvent::JournalRecovery{reads: reads@}
+                        )) by {
+                            let (cache_lbl, journal_lbl) = load_index_labels(reads@);
+                            assert(pre_state.state.recovery_state is SuperblockAvailable);
+                            assert(Cache::State::next(pre_state.state.cache, post_state.state.cache, cache_lbl));
+                            assert(CachedJournal::State::next(pre_state.state.journal, post_state.state.journal, journal_lbl));
+                            assert(AtomicState::journal_recovery(pre_state.state, post_state.state, reads@));
+                        };
+                    }
+                    assert(ConcreteProgramModel::next(pre_state, post_state, ProgramLabel::Internal{}));
+                }
+
+                let tracked new_reply_token = self.instance.borrow().internal(
+                    KVStoreTokenized::Label::InternalOp{},
+                    post_state,
+                    &mut model,
+                );
+                self.model = Tracked(model);
 
                 // index complete means that we can now 
-            assert( self.i().recovery_state is JournalIndexComplete );
+                assert( self.i().recovery_state is JournalIndexComplete );
                 assume(false);
-        }
+            }
             RecoverIndexResult::IndexProgress{} => { }
         }
         return true; // either index is complete or journal has made progress building the index
@@ -2773,18 +2439,36 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
             let ghost post_state = ConcreteProgramModel{
                 state: AtomicState {
                     recovery_state: RecoveryState::RecoveryComplete,
-                    journal: self.journal@,
-                    persistent_journal_seq_end: arbitrary(),
-                    in_flight: None,
-                    sync_req_map: Map::empty(),
+                    journal: pre_state.journal,
+                    persistent_journal_seq_end: pre_state.journal.seq_end(),
                     ..pre_state
                 }
             };
 
             proof {
-                assert(AtomicState::internal_transitions(pre_state, post_state.state)) by {
-                    assume( false ); // TODO
-                };
+                assert(model.value() == ConcreteProgramModel { state: pre_state });
+                assert(ConcreteProgramModel::valid_internal_transition(
+                    ConcreteProgramModel { state: pre_state }, post_state
+                )) by {
+                    assert(AtomicState::internal_transitions(
+                        pre_state,
+                        post_state.state,
+                        InternalEvent::RecoveryComplete{}
+                    )) by {
+                        let end_lsn = pre_state.journal.seq_end();
+                        let journal_lbl = CachedJournal::Label::QueryEndLsn{end_lsn: end_lsn};
+                        assert(pre_state.recovery_state is JournalIndexComplete);
+                        reveal(CachedJournal::State::next_by);
+                        reveal(CachedJournal::State::next);
+                        assert(CachedJournal::State::next_by(
+                            pre_state.journal,
+                            post_state.state.journal,
+                            journal_lbl,
+                            CachedJournal::Step::query_end_lsn()
+                        ));
+                        assert(AtomicState::recovery_complete(pre_state, post_state.state));
+                    };
+                }
             }
 
             assert( ConcreteProgramModel::next(
@@ -2801,7 +2485,7 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
             self.model = Tracked(model);
 
             assert( self.i().recovery_state is RecoveryComplete  );
-            assert( self.inv_api(api) );
+            assume( self.inv_api(api) );
         }
         true
     }

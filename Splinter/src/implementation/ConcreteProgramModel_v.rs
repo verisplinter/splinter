@@ -21,6 +21,11 @@ impl ConcreteProgramModel {
         exists |disk_event| AtomicState::disk_transition(
             pre.state, post.state, disk_event, info.reqs, info.resps)
     }
+
+    pub open spec fn valid_internal_transition(pre: Self, post: Self) -> bool
+    {
+        exists |internal_event| AtomicState::internal_transitions(pre.state, post.state, internal_event)
+    }
 }
 
 impl ProgramModelTrait for ConcreteProgramModel {
@@ -62,7 +67,7 @@ impl ProgramModelTrait for ConcreteProgramModel {
                 //     pre.state, post.state, disk_event, info.reqs, info.resps)
             },
             ProgramLabel::Internal{} => { 
-                AtomicState::internal_transitions(pre.state, post.state)
+                ConcreteProgramModel::valid_internal_transition(pre, post)
             }, // no internal op on atomic state yet
         }
     }

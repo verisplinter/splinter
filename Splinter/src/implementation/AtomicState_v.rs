@@ -78,6 +78,13 @@ pub enum DiskEvent{
     CacheIOEnd{resp_map: Map<ID, DiskResponse>},
 }
 
+pub enum InternalEvent{
+    StoreInternal{},
+    JournalRecovery{reads: Map<Address, RawPage>},
+    MapRecovery{records: MsgHistory, reads: Map<Address, RawPage>},
+    RecoveryComplete{},
+}
+
 // labels
 pub enum ProgramEvent{
     NoOp{},
@@ -225,6 +232,7 @@ impl AtomicState {
 
     pub open spec fn store_internal(pre: Self, post: Self) -> bool
     {
+        &&& pre.client_ready()
         &&& AbstractCrashAwareMap::State::next(pre.store, post.store, AbstractCrashAwareMap::Label::InternalLabel{})
         &&& post == Self{
             store: post.store,
@@ -331,7 +339,7 @@ impl AtomicState {
 
     pub open spec fn recovery_complete(pre: Self, post: Self) -> bool
     {
-        let end_lsn = pre.ephemeral_map().seq_end;
+        let end_lsn = pre.journal.seq_end();
         let journal_lbl = CachedJournal::Label::QueryEndLsn{end_lsn: end_lsn};
         
         &&& pre.recovery_state is JournalIndexComplete
@@ -488,10 +496,14 @@ impl AtomicState {
         }
     }
 
-    pub open spec fn internal_transitions(pre: Self, post: Self) -> bool
+    pub open spec fn internal_transitions(pre: Self, post: Self, internal_event: InternalEvent) -> bool
     {
-        &&& pre.client_ready()
-        &&& Self::store_internal(pre, post)
+        match internal_event {
+            InternalEvent::StoreInternal{} => Self::store_internal(pre, post),
+            InternalEvent::JournalRecovery{reads} => Self::journal_recovery(pre, post, reads),
+            InternalEvent::MapRecovery{records, reads} => Self::map_recovery(pre, post, records, reads),
+            InternalEvent::RecoveryComplete{} => Self::recovery_complete(pre, post),
+        }
     }
 
     pub open spec(checked) fn in_flight_sb(self) -> Superblock
