@@ -524,7 +524,7 @@ impl AtomicState {
             let ifl_journal_version = self.in_flight.unwrap().journal_version;
             let index = self.journal.status.unwrap().lsn_addr_index;
             &&& ifl_journal_version > 0 
-            &&& index.contains_key(ifl_journal_version)
+            &&& index.contains_key((ifl_journal_version - 1) as nat)
         }),
     {
         let inf = self.in_flight.unwrap();
@@ -548,7 +548,7 @@ impl AtomicState {
         ({
             let index = self.journal.status.unwrap().lsn_addr_index;
             &&& self.persistent_journal_seq_end > 0 
-            &&& index.contains_key(self.persistent_journal_seq_end)
+            &&& index.contains_key((self.persistent_journal_seq_end - 1) as nat)
         }),
     {
         let index = self.journal.status.unwrap().lsn_addr_index;
