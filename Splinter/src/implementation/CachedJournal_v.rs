@@ -1,8 +1,6 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
 //
-#![allow(unused_imports)]
-use vstd::prelude::*;
 use vstd::prelude::*;
 use vstd::math::*;
 
@@ -49,7 +47,6 @@ pub proof fn min_lsn_ensures(lsns: Set<LSN>)
 {
     let e = lsns.choose();
     if !lsns.remove(e).is_empty() {
-        let result = min_lsn(lsns);
         min_lsn_ensures(lsns.remove(e));
     }
 }
@@ -101,48 +98,6 @@ pub open spec fn all_addrs_have_finite_lsn_sets(
         ==> addr_to_lsns(lsn_addr_index, addr, bdy).finite()
 }
 
-// NOTE: This is needed as we want to ensure that pages are all present in cache
-// this says that reads must contain address 
-// pub open spec(checked) fn index_pages_in_reads(reads: Map<Address, JournalRecord>, bdy: LSN, root: Pointer) -> bool
-//     decreases rank_of(reads, root) when node_connected(reads, root)
-// {
-//     match root {
-//         Some(addr) => {
-//             reads.contains_key(addr) && ({
-//                 let curr_msgs = reads[root.unwrap()].message_seq;
-//                 let start_lsn = max(bdy as int,  curr_msgs.seq_start as int) as nat;
-//                 let next_ptr = reads[root.unwrap()].cropped_prior(bdy);
-//                 start_lsn < curr_msgs.seq_end ==> index_pages_in_reads(reads, bdy, next_ptr)
-//             })
-//         },
-//         None => { true } // no read data is required
-//     }
-// }
-
-// pub open spec fn rank_of(reads: Map<Address, JournalRecord>, root: Pointer) -> nat
-// {
-//     if root is Some && reads.contains_key(root.unwrap()) {
-//         reads[root.unwrap()].message_seq.seq_end
-//     } else {
-//         0
-//     }
-// }
-
-// pub open spec fn node_connected(reads: Map<Address, JournalRecord>, bdy: LSN, root: Pointer) -> bool
-// {
-//     root is Some && reads.contains_key(root.unwrap()) ==> {
-//         let next_ptr = reads[root.unwrap()].cropped_prior(bdy);
-//         &&& next_ptr is Some && reads.contains_key(next_ptr.unwrap()) ==> 
-//             reads[root.unwrap()].message_seq.seq_start == reads[next_ptr.unwrap()].message_seq.seq_end
-//     }
-// }
-
-// TODO: how do we start promising this at the proof layer?
-// we need to say that there exists a rank 
-// add rank of here
-
-// smaller acyclic 
-
 pub open spec fn acyclic_reads(bdy: LSN, reads: Map<Address, JournalRecord>) -> bool
 {
     DiskView{boundary_lsn: bdy, entries: reads}.acyclic()
@@ -163,8 +118,6 @@ pub open spec(checked) fn build_lsn_addr_index_from_reads_next_ptr(reads: Map<Ad
     decreases rank_of_reads(boundary_lsn, reads, root) when acyclic_reads(boundary_lsn, reads)
 {
     if root is Some && reads.contains_key(root.unwrap()) {
-        let curr_msgs = reads[root.unwrap()].message_seq;
-        let start_lsn = max(boundary_lsn as int, curr_msgs.seq_start as int) as nat;
         let next_ptr = reads[root.unwrap()].cropped_prior(boundary_lsn);
         build_lsn_addr_index_from_reads_next_ptr(reads, boundary_lsn, next_ptr)
     } else {
@@ -285,73 +238,6 @@ decreases rank_of_reads(boundary_lsn, reads, ptr1)
         boundary_lsn,
         ptr2_data.cropped_prior(boundary_lsn),
     ));
-}
-
-pub proof fn build_lsn_addr_index_from_reads_extend_one(
-    reads: Map<Address, JournalRecord>,
-    boundary_lsn: LSN,
-    ptr1: Pointer,
-    ptr2: Pointer,
-    ptr2_data: JournalRecord,
-)
-requires
-    ptr1 is Some,
-    ptr2 is Some,
-    acyclic_reads(boundary_lsn, reads),
-    reads.contains_key(ptr1.unwrap()),
-    reads[ptr1.unwrap()].wf(),
-    ptr2_data.wf(),
-    ptr2 == build_lsn_addr_index_from_reads_next_ptr(reads, boundary_lsn, ptr1),
-    reads[ptr1.unwrap()].cropped_prior(boundary_lsn) == ptr2,
-    ptr2_data.cropped_prior(boundary_lsn) is None
-        || !reads.contains_key(ptr2_data.cropped_prior(boundary_lsn).unwrap()),
-    // adjacency of message ranges (no overlap)
-    ptr2_data.message_seq.seq_end == reads[ptr1.unwrap()].message_seq.seq_start,
-    acyclic_reads(boundary_lsn, reads.insert(ptr2.unwrap(), ptr2_data)),
-ensures ({
-    let start_lsn = max(boundary_lsn as int, ptr2_data.message_seq.seq_start as int) as nat;
-    let end_lsn = ptr2_data.message_seq.seq_end;
-    build_lsn_addr_index_from_reads(reads, boundary_lsn, ptr1)
-        .union_prefer_right(singleton_index(start_lsn, end_lsn, ptr2.unwrap()))
-        == build_lsn_addr_index_from_reads(reads.insert(ptr2.unwrap(), ptr2_data), boundary_lsn, ptr1)
-})
-{
-    let start_lsn = max(boundary_lsn as int, ptr2_data.message_seq.seq_start as int) as nat;
-    let end_lsn = ptr2_data.message_seq.seq_end;
-
-    let curr_msgs = reads[ptr1.unwrap()].message_seq;
-    let start1 = max(boundary_lsn as int, curr_msgs.seq_start as int) as nat;
-    let update1 = singleton_index(start1, curr_msgs.seq_end, ptr1.unwrap());
-    let update2 = singleton_index(start_lsn, end_lsn, ptr2.unwrap());
-
-    // Unfold build on the old reads.
-    reveal(build_lsn_addr_index_from_reads);
-    build_lsn_addr_index_from_reads_next_ptr_not_in_reads(reads, boundary_lsn, ptr1, ptr2);
-    assert(!reads.contains_key(ptr2.unwrap()));
-    assert(build_lsn_addr_index_from_reads(reads, boundary_lsn, ptr1)
-        == build_lsn_addr_index_from_reads(reads, boundary_lsn, ptr2).union_prefer_right(update1));
-    assert(build_lsn_addr_index_from_reads(reads, boundary_lsn, ptr2) == Map::<LSN, Address>::empty());
-
-    // Unfold build on the new reads.
-    let reads2 = reads.insert(ptr2.unwrap(), ptr2_data);
-    assert(build_lsn_addr_index_from_reads(reads2, boundary_lsn, ptr2)
-        == build_lsn_addr_index_from_reads(reads2, boundary_lsn, ptr2_data.cropped_prior(boundary_lsn))
-            .union_prefer_right(update2));
-    assert(build_lsn_addr_index_from_reads(reads2, boundary_lsn, ptr2_data.cropped_prior(boundary_lsn))
-        == Map::<LSN, Address>::empty());
-    assert(build_lsn_addr_index_from_reads(reads2, boundary_lsn, ptr1)
-        == build_lsn_addr_index_from_reads(reads2, boundary_lsn, ptr2).union_prefer_right(update1));
-
-    // Disjointness from adjacency: older range ends at newer start.
-    assert(ptr2_data.message_seq.seq_end == reads[ptr1.unwrap()].message_seq.seq_start);
-    assert(update1.dom().disjoint(update2.dom()));
-
-    // With disjoint domains, union_prefer_right is commutative.
-    assert(update1.union_prefer_right(update2) == update2.union_prefer_right(update1));
-
-    assert(build_lsn_addr_index_from_reads(reads, boundary_lsn, ptr1)
-        .union_prefer_right(update2)
-        == build_lsn_addr_index_from_reads(reads2, boundary_lsn, ptr1));
 }
 
 pub proof fn build_lsn_addr_index_from_reads_extend_next_ptr(
@@ -635,7 +521,6 @@ state_machine!{ CachedJournal {
         FreezeForCommit{frozen: JournalSnapshot, frozen_seq_end: LSN, frozen_domain: Set<Address>, reads: Map<Address, JournalRecord>},
         QueryEndLsn{end_lsn: LSN},
         Put{messages: MsgHistory},
-        // TODOO(remove): require_end 
         DiscardOld{start_lsn: LSN, require_end: LSN, discard_addrs: Set<Address>},
         JournalMarshal{writes: Map<Address, JournalRecord>},
         Internal{},
