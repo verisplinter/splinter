@@ -14,7 +14,7 @@ use crate::disk::GenericDisk_v::{Address, IAddress, Pointer, Ranking};
 use crate::implementation::JournalTypes_v::AJournal;
 use crate::implementation::JournalTypes_v::ILsn;
 use crate::allocation_layer::LikesJournal_v::{LsnAddrIndex, lsn_addr_index_append_record, singleton_index, lsn_disjoint};
-use crate::implementation::Cache_v::Cache;
+use crate::implementation::Cache_v::{Cache, Entry};
 use crate::implementation::FracCacheImpl_v::*;
 use crate::implementation::ILsnAddrIndex_v::*;
 use crate::marshalling::Slice_v::Slice;
@@ -209,6 +209,12 @@ pub enum RecoverIndexResult{
     IndexProgress{},
 }
 
+pub enum RecoverMapResult{
+    FetchSuccess{reads: Ghost<Map<Address, RawPage>>, addr: Ghost<Address>, record: IJournalRecord},
+    OutofRange{},
+    NotInCache{},
+}
+
 pub struct JournalImpl {
     snapshot: IJournalSnapshot,
     index_builder: Option<IndexBuilder>,
@@ -220,6 +226,17 @@ pub open spec fn load_index_labels(reads: Map<Address, RawPage>) -> (Cache::Labe
 {
     let cache_lbl = Cache::Label::Access{reads, writes: Map::empty()};
     let journal_lbl = CachedJournal::Label::LoadIndex{reads: to_journal_reads(reads)};
+    (cache_lbl, journal_lbl)
+}
+
+pub open spec fn map_recovery_labels(bdy: LSN, reads: Map<Address, RawPage>, addr: Address) -> (Cache::Label, CachedJournal::Label)
+    recommends reads.contains_key(addr)
+{
+    let cache_lbl = Cache::Label::Access{reads, writes: Map::empty()};
+    let journal_lbl = CachedJournal::Label::ReadForRecovery{
+        messages: to_journal_reads(reads)[addr].message_seq.maybe_discard_old(bdy),
+        reads: to_journal_reads(reads),
+    };
     (cache_lbl, journal_lbl)
 }
 
@@ -271,8 +288,15 @@ impl JournalImpl {
             None => { self.index_builder is Some },
             Some(status) => {
                 &&& status.wf()
+                &&& self.snapshot.boundary_lsn == status.lsn_addr_index.seq_start()
                 &&& self.snapshot.boundary_lsn <= status.clean_watermark_lsn
                 &&& status.clean_watermark_lsn <= status.lsn_addr_index.seq_end()
+                &&& self.snapshot.boundary_lsn < status.lsn_addr_index.seq_end()
+                    ==> self.snapshot.freshest_rec is Some
+                &&& self.snapshot.boundary_lsn < status.lsn_addr_index.seq_end()
+                    ==> status.lsn_addr_index@[
+                        (status.lsn_addr_index.seq_end() - 1) as nat
+                    ] == self.snapshot.freshest_rec.unwrap()@
                 &&& (self.snapshot.freshest_rec is None ==> status.clean_watermark_lsn == self.snapshot.boundary_lsn)
                 &&& (self.snapshot.freshest_rec is Some ==> self.snapshot.boundary_lsn < status.clean_watermark_lsn)
             }
@@ -332,6 +356,13 @@ impl JournalImpl {
     {
         self.status is Some
     }
+
+    pub closed spec fn no_unmarshalled_entries(&self) -> bool
+    {
+        &&& self.index_ready()
+        &&& self.status.unwrap().lsn_addr_index.seq_end() as nat == self.seq_end()
+    }
+
     pub exec fn new(snapshot: IJournalSnapshot) -> (out: Self)
     ensures
         out.wf(),
@@ -347,6 +378,221 @@ impl JournalImpl {
             }),
             status: None,
             fmt: IJournalRecordFormat::new(),
+        }
+    }
+
+    pub exec fn recover_map_step(&self, cache: &mut FracCacheImpl, start_lsn: ILsn)
+        -> (out: RecoverMapResult)
+    requires
+        self.wf(),
+        self.index_ready(),
+        self.no_unmarshalled_entries(),
+        old(cache).wf(),
+    ensures ({
+        &&& self@ == self@
+        &&& self.wf()
+        &&& self.index_ready()
+        &&& cache.wf()
+        &&& match out {
+            RecoverMapResult::FetchSuccess{reads, addr, record} => {
+                &&& self.seq_start() <= start_lsn as nat
+                &&& (start_lsn as nat) < self.seq_end()
+                &&& reads@.contains_key(addr@)
+                &&& to_journal_reads(reads@)[addr@] == record.parsedv().view()
+                &&& {
+                    let lbls = map_recovery_labels(self.seq_start(), reads@, addr@);
+                    &&& Cache::State::next(old(cache)@, cache@, lbls.0)
+                    &&& CachedJournal::State::next(self@, self@, lbls.1)
+                }
+            },
+            RecoverMapResult::OutofRange{} => {
+                &&& old(cache)@ =~= cache@
+                &&& !(self.seq_start() <= start_lsn as nat && (start_lsn as nat) < self.seq_end())
+            },
+            RecoverMapResult::NotInCache{} => {
+                &&& self.seq_start() <= start_lsn as nat
+                &&& (start_lsn as nat) < self.seq_end()
+            },
+        }
+    })
+    {
+        let seq_end = self.exec_seq_end();
+        if start_lsn < self.snapshot.boundary_lsn || seq_end <= start_lsn {
+            return RecoverMapResult::OutofRange{};
+        }
+
+        proof {
+            reveal(JournalImpl::no_unmarshalled_entries);
+            assert(self.snapshot.boundary_lsn == self.status.unwrap().lsn_addr_index.seq_start());
+            assert(self.snapshot.boundary_lsn <= start_lsn);
+            assert(start_lsn < seq_end);
+            assert(seq_end as nat == self.seq_end());
+            assert(self.status.unwrap().lsn_addr_index.seq_end() as nat == self.seq_end());
+            assert((start_lsn as nat) < (self.status.unwrap().lsn_addr_index.seq_end() as nat));
+            assert(start_lsn < self.status.unwrap().lsn_addr_index.seq_end());
+            assert(self.status.unwrap().lsn_addr_index.seq_start() <= start_lsn < self.status.unwrap().lsn_addr_index.seq_end());
+        }
+
+        let index = &self.status.as_ref().unwrap().lsn_addr_index;
+        let addr = index.lookup_lsn(start_lsn);
+
+        let ghost cache_pre = cache@;
+        let ghost journal_raw_disk : Map<Address, RawPage> = arbitrary();
+        proof {
+            assume(journal_raw_disk_inv(self.fmt, journal_raw_disk));
+            assume(cache_matches_raw_disk(old(cache)@, journal_raw_disk));
+        }
+        match cache.fetch(&addr) {
+            FetchErrorCode::Success{slot_handle} => {
+                let all_slice = Slice::all(&slot_handle.rec);
+                assert( all_slice@.i(slot_handle.rec@) == slot_handle.rec@ );
+                proof {
+                    assert(old(cache)@.valid_read(addr@, slot_handle.rec@));
+                    assert(journal_raw_disk.contains_key(addr@));
+                    assert(journal_raw_disk[addr@] == slot_handle.rec@);
+                    assert(self.fmt.parsable(journal_raw_disk[addr@]));
+                    assert(self.fmt.parsable(slot_handle.rec@));
+                    assert(self.fmt.parsable(all_slice@.i(slot_handle.rec@)));
+                }
+                let i_journal_record = self.fmt.exec_parse(&all_slice, &slot_handle.rec);
+
+                let ghost fetched_slot = slot_handle.idx;
+                let ghost fetched_data = slot_handle.rec@;
+                let ghost reads = map!{addr@ => slot_handle.rec@};
+                let ghost lbls = map_recovery_labels(self.seq_start(), reads, addr@);
+
+                proof {
+                    to_journal_reads_entry_from_exec_parse(self.fmt, reads, addr@, i_journal_record);
+                    assert(to_journal_reads(reads)[addr@] == i_journal_record.parsedv().view());
+                    assert(lbls.1 is ReadForRecovery);
+                }
+
+                let ghost cache_after_fetch = cache@;
+                cache.handle_release(&addr, slot_handle);
+                proof {
+                    assert(cache_pre.entries == cache_after_fetch.entries.insert(
+                        fetched_slot, Entry::Filled{addr: addr@, data: fetched_data}));
+                    assert(cache@.entries == cache_after_fetch.entries.insert(
+                        fetched_slot, Entry::Filled{addr: addr@, data: fetched_data}));
+                    assert(cache@.entries == cache_pre.entries);
+
+                    assert(cache_pre.lookup_map == cache_after_fetch.lookup_map);
+                    assert(cache@.lookup_map == cache_after_fetch.lookup_map);
+                    assert(cache@.lookup_map == cache_pre.lookup_map);
+
+                    assert(cache_pre.status_map == cache_after_fetch.status_map);
+                    assert(cache@.status_map == cache_after_fetch.status_map);
+                    assert(cache@.status_map == cache_pre.status_map);
+
+                    assert(cache@ == cache_pre);
+                    assert(cache@ =~= cache_pre);
+
+                    let ghost cache_lbl = Cache::Label::Access{reads, writes: Map::empty()};
+                    reveal(map_recovery_labels);
+                    assert(lbls.0 == cache_lbl);
+
+                    assert(cache_pre.valid_read(addr@, fetched_data));
+                    assert forall |a| #[trigger] cache_lbl->reads.contains_key(a)
+                        implies cache_pre.valid_read(a, cache_lbl->reads[a]) by {
+                        assert(a == addr@);
+                    };
+                    assert forall |a| #[trigger] cache_lbl->writes.contains_key(a)
+                        implies cache_pre.valid_write(a) by {
+                    };
+
+                    let updated_entries = cache_pre.write_updated_entries(cache_lbl->writes);
+                    let updated_status_map = cache_pre.write_updated_status(cache_lbl->writes);
+                    assert(cache_pre.entries.union_prefer_right(updated_entries) =~= cache_pre.entries);
+                    assert(cache_pre.status_map.union_prefer_right(updated_status_map) =~= cache_pre.status_map);
+
+                    reveal(Cache::State::next_by);
+                    assert(Cache::State::next_by(cache_pre, cache@, cache_lbl, Cache::Step::access{}));
+                    reveal(Cache::State::next);
+                    assert(Cache::State::next(old(cache)@, cache@, lbls.0));
+
+                    let ghost index_seq_end = self.status.unwrap().lsn_addr_index.seq_end() as nat;
+                    assert((self.snapshot.boundary_lsn as nat) <= (start_lsn as nat));
+                    assert((start_lsn as nat) < index_seq_end);
+                    assert((self.snapshot.boundary_lsn as nat) < index_seq_end);
+                    assert(self.snapshot.freshest_rec is Some);
+                    assert(self.status.unwrap().lsn_addr_index@[(index_seq_end - 1) as nat]
+                        == self.snapshot.freshest_rec.unwrap()@);
+                    index.derive_recovery_index_properties();
+                    assert(lsn_index_domain_exact(
+                        self.status.unwrap().lsn_addr_index@,
+                        self.snapshot.boundary_lsn as nat,
+                        index_seq_end,
+                    ));
+                    assert(self.status.unwrap().lsn_addr_index@.contains_key(start_lsn as nat)) by {
+                        assert(lsn_index_domain_exact(
+                            self.status.unwrap().lsn_addr_index@,
+                            self.snapshot.boundary_lsn as nat,
+                            index_seq_end,
+                        ));
+                        assert((self.snapshot.boundary_lsn as nat) <= (start_lsn as nat));
+                        assert((start_lsn as nat) < index_seq_end);
+                    };
+                    assert(all_addrs_have_complete_lsn_ranges(
+                        self.status.unwrap().lsn_addr_index@,
+                        self.snapshot.boundary_lsn as nat,
+                    ));
+                    assert(all_addrs_have_finite_lsn_sets(
+                        self.status.unwrap().lsn_addr_index@,
+                        self.snapshot.boundary_lsn as nat,
+                    ));
+
+                    let ghost depth = self@.depth_for_index_lsn(index_seq_end, start_lsn as nat);
+                    assert(self@.pointer_after_crop_index(self@.snapshot.freshest_rec, depth)
+                        == Some(self.status.unwrap().lsn_addr_index@[start_lsn as nat]));
+                    assert(addr@ == self.status.unwrap().lsn_addr_index@[start_lsn as nat]);
+                    assert(self@.pointer_after_crop_index(self@.snapshot.freshest_rec, depth) == Some(addr@));
+
+                    reveal(map_recovery_labels);
+                    let ghost journal_reads = to_journal_reads(reads);
+                    let ghost journal_lbl = CachedJournal::Label::ReadForRecovery{
+                        messages: journal_reads[addr@].message_seq.maybe_discard_old(self.seq_start()),
+                        reads: journal_reads,
+                    };
+                    assert(lbls.1 == journal_lbl);
+                    self.view_seq_start_ensures();
+                    assert(self.seq_start() == self@.snapshot.boundary_lsn);
+
+                    match journal_lbl {
+                        CachedJournal::Label::ReadForRecovery{messages, reads} => {
+                            assert(reads.contains_key(addr@));
+                            assert(messages
+                                == reads[addr@].message_seq.maybe_discard_old(self@.snapshot.boundary_lsn));
+                        }
+                        _ => { assert(false); }
+                    }
+
+                    reveal(CachedJournal::State::next_by);
+                    assert(CachedJournal::State::next_by(
+                        self@,
+                        self@,
+                        journal_lbl,
+                        CachedJournal::Step::read_for_recovery(depth),
+                    ));
+                    reveal(CachedJournal::State::next);
+                    assert(CachedJournal::State::next(self@, self@, lbls.1));
+                }
+
+                RecoverMapResult::FetchSuccess{
+                    reads: Ghost(reads),
+                    addr: Ghost(addr@),
+                    record: i_journal_record,
+                }
+            }
+            FetchErrorCode::Awaiting => {
+                RecoverMapResult::NotInCache{}
+            }
+            FetchErrorCode::LoadInitiate{slot_handle} => {
+                let _ = slot_handle;
+                RecoverMapResult::NotInCache{}
+            }
+            FetchErrorCode::CacheFull => {
+                RecoverMapResult::NotInCache{}
+            }
         }
     }
 
@@ -381,6 +627,7 @@ impl JournalImpl {
                 let (cache_lbl, journal_lbl) = load_index_labels(reads@);
                 &&& old(cache)@ == cache@
                 &&& self.index_ready()
+                &&& self.no_unmarshalled_entries()
                 &&& self.seq_start() <= self.seq_end()
                 &&& Cache::State::next(old(cache)@, cache@, cache_lbl)
                 &&& CachedJournal::State::next(old(self)@, self@, journal_lbl)
@@ -393,6 +640,10 @@ impl JournalImpl {
     })
     {
         let mut out = RecoverIndexResult::IndexProgress{};
+        let ghost cache0 = *cache;
+        proof {
+            assert(cache.valid_load_handles_preserved(cache0));
+        }
         let mut index_builder = self.index_builder.take();
         index_builder = match index_builder {
             // NOTE: builder becomes None when we are out of the building phase
@@ -443,6 +694,7 @@ impl JournalImpl {
                             invariant 
                                 index.wf(),
                                 cache.wf(),
+                                cache.valid_load_handles_preserved(cache0),
                                 cache@ == old(cache)@,
                                 cache_matches_raw_disk(cache@, journal_raw_disk),
                                 journal_raw_disk_inv(self.fmt, journal_raw_disk),
@@ -471,14 +723,29 @@ impl JournalImpl {
                             {
                                 let ghost prev = iaddr_view(curr);
                                 let addr = curr.unwrap();
+                                let ghost cache_pre_fetch = *cache;
 
                                 match cache.fetch(&addr) {
                                     FetchErrorCode::Success{slot_handle} => {
+                                        let ghost cache_post_fetch = *cache;
                                         let all_slice = Slice::all(&slot_handle.rec);
                                         // trigger
                                         assert( all_slice@.i(slot_handle.rec@) == slot_handle.rec@ );
                                         let i_journal_record = self.fmt.exec_parse(&all_slice, &slot_handle.rec);
                                         cache.handle_release(&addr, slot_handle);
+                                        let ghost cache_post_release = *cache;
+                                        proof {
+                                            FracCacheImpl::valid_load_handles_preserved_transitive(
+                                                cache0,
+                                                cache_pre_fetch,
+                                                cache_post_fetch,
+                                            );
+                                            FracCacheImpl::valid_load_handles_preserved_transitive(
+                                                cache0,
+                                                cache_post_fetch,
+                                                cache_post_release,
+                                            );
+                                        }
 
                                         let ghost reads_pre = reads;
                                         proof {
@@ -501,6 +768,40 @@ impl JournalImpl {
                                         let ghost index_pre = index;
                                         let old_bound = index.exec_seq_start();
                                         proof { to_journal_reads_entry_from_exec_parse(self.fmt, reads, addr@, i_journal_record); }
+                                        proof {
+                                            if was_initialized {
+                                                build_lsn_addr_index_from_reads_next_ptr_not_in_reads(
+                                                    to_journal_reads(reads_pre),
+                                                    bdy as nat,
+                                                    self@.snapshot.freshest_rec,
+                                                    prev,
+                                                );
+                                                assert(prev is Some);
+                                                assert(prev == Some(addr@));
+                                                assert(!to_journal_reads(reads_pre).contains_key(addr@));
+                                                assert(!reads_pre.contains_key(addr@));
+                                                assert(index@ == build_lsn_addr_index_from_reads(
+                                                    to_journal_reads(reads_pre),
+                                                    bdy as nat,
+                                                    self@.snapshot.freshest_rec
+                                                ));
+                                                assert(!index@.values().contains(addr@)) by {
+                                                    if index@.values().contains(addr@) {
+                                                        build_lsn_addr_index_from_reads_values_in_reads(
+                                                            to_journal_reads(reads_pre),
+                                                            bdy as nat,
+                                                            self@.snapshot.freshest_rec,
+                                                            addr@,
+                                                        );
+                                                        assert(reads_pre.contains_key(addr@));
+                                                        assert(false);
+                                                    }
+                                                };
+                                            } else {
+                                                assert(index@.is_empty());
+                                                assert(!index@.values().contains(addr@));
+                                            }
+                                        }
                                         index.index_prepend_record(old_bound, start, addr);
                                         proof {
                                             // Proof block: extend the index model and re-establish build-index equality.
@@ -554,13 +855,24 @@ impl JournalImpl {
                             let bdy = old(self)@.snapshot.boundary_lsn;
                             let journal_reads = to_journal_reads(reads);
                             let lsn_addr_index = build_lsn_addr_index_from_reads(journal_reads, bdy, ptr);
+                            let seq_end = if ptr is Some { journal_reads[ptr.unwrap()].message_seq.seq_end } else { bdy };
  
-                            // trigger
-                            index.view_domain();
+                            index.derive_recovery_index_properties();
+                            assert(lsn_index_domain_exact(index@, index.seq_start() as nat, index.seq_end() as nat));
                             // trigger
                             assert( lsn_addr_index =~= index@ );
+                            assert(lsn_index_domain_exact(
+                                self@.status.unwrap().lsn_addr_index,
+                                self@.snapshot.boundary_lsn,
+                                self@.status.unwrap().unmarshalled_tail.seq_start,
+                            ));
                             // trigger
                             assert(self@.status.unwrap().unmarshalled_tail == MsgHistory::empty_history_at(index.seq_end() as nat));
+                            assert(all_addrs_have_complete_lsn_ranges(
+                                self@.status.unwrap().lsn_addr_index,
+                                self@.snapshot.boundary_lsn,
+                            ));
+                            assert(lsn_addr_index.dom() == Set::new(|lsn: LSN| bdy <= lsn < seq_end));
                             // trigger
                             assert( CachedJournal::State::next_by(old(self)@, self@, journal_lbl, CachedJournal::Step::load_index{}) );
                         }
@@ -580,24 +892,45 @@ impl JournalImpl {
                         None
                     },
                     Some(addr) => {
+                        let ghost cache_pre_fetch = *cache;
                         // Can we read the next page from the cache?
                         match cache.fetch(&addr) {
                             FetchErrorCode::LoadInitiate{slot_handle} => {
+                                let ghost cache_post_fetch = *cache;
                                 // release previous handle
                                 // Cache is going to do a fetch and call us later. Bail out.
                                 // Re-construct the struct
                                 proof {
+                                    FracCacheImpl::valid_load_handles_preserved_transitive(
+                                        cache0,
+                                        cache_pre_fetch,
+                                        cache_post_fetch,
+                                    );
                                     assert(!old(cache).entry_fetched(&addr));
                                 }
                                 out = RecoverIndexResult::CacheLoad{slot_handle, addr};
                                 Some(builder)
                             },
                             FetchErrorCode::Success{slot_handle} => {
+                                let ghost cache_post_fetch = *cache;
                                 let all_slice = Slice::all(&slot_handle.rec);
                                 // trigger
                                 assert( all_slice@.i(slot_handle.rec@) == slot_handle.rec@ );
                                 let i_journal_record = self.fmt.exec_parse(&all_slice, &slot_handle.rec);
                                 cache.handle_release(&addr, slot_handle);
+                                let ghost cache_post_release = *cache;
+                                proof {
+                                    FracCacheImpl::valid_load_handles_preserved_transitive(
+                                        cache0,
+                                        cache_pre_fetch,
+                                        cache_post_fetch,
+                                    );
+                                    FracCacheImpl::valid_load_handles_preserved_transitive(
+                                        cache0,
+                                        cache_post_fetch,
+                                        cache_post_release,
+                                    );
+                                }
                                 builder.next_head.freshest_rec = match i_journal_record.header.prior_rec 
                                     {
                                         None => None,
@@ -610,6 +943,14 @@ impl JournalImpl {
                                 Some(builder)
                             },
                             _ => {
+                                let ghost cache_post_fetch = *cache;
+                                proof {
+                                    FracCacheImpl::valid_load_handles_preserved_transitive(
+                                        cache0,
+                                        cache_pre_fetch,
+                                        cache_post_fetch,
+                                    );
+                                }
                                 Some(builder)
                             },
                         }
@@ -618,7 +959,10 @@ impl JournalImpl {
             }
         };
         core::mem::swap(&mut self.index_builder, &mut index_builder);
-        proof { assume(cache.valid_load_handles_preserved(*old(cache))); }
+        proof {
+            assert(cache.valid_load_handles_preserved(cache0));
+            assert(cache0 == *old(cache));
+        }
         out
     }
 

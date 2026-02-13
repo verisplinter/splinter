@@ -386,6 +386,7 @@ impl Implementation {
         &&& self.store_lsn as nat <= self.journal.seq_end()
         &&& self.journal.wf()
         &&& self.journal.index_ready()
+        &&& self.journal.no_unmarshalled_entries()
         &&& forall |id| #[trigger] self.outstanding_requests@.contains_key(id)
             ==> self.outstanding_requests@[id] is CacheLoadReq
     }
@@ -2234,6 +2235,11 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
     {
         let exec_seq_end = self.journal.exec_seq_end();
         if self.store_lsn < exec_seq_end {
+            // 
+
+            // get the journal record
+            // how to apply it 
+
             // how do we apply journal pages?
             // we parse and return a journal record out?
             // this would be the easiest option, and 

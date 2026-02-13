@@ -54,6 +54,53 @@ pub proof fn min_lsn_ensures(lsns: Set<LSN>)
     }
 }
 
+pub open spec fn complete_lsn_range_for_addr(
+    lsn_addr_index: LsnAddrIndex,
+    bdy: LSN,
+    addr: Address,
+    start_lsn: LSN,
+    end_lsn: LSN,
+) -> bool
+{
+    &&& bdy <= start_lsn < end_lsn
+    &&& forall |lsn: LSN|
+        #![trigger lsn_addr_index.contains_key(lsn)]
+        #![trigger lsn_addr_index[lsn]]
+        bdy <= lsn ==> {
+        &&& (lsn_addr_index.contains_key(lsn) && lsn_addr_index[lsn] == addr)
+            <==> (start_lsn <= lsn < end_lsn)
+    }
+}
+
+pub open spec fn lsn_index_domain_exact(
+    lsn_addr_index: LsnAddrIndex,
+    bdy: LSN,
+    seq_end: LSN,
+) -> bool
+{
+    forall |lsn: LSN| #[trigger] lsn_addr_index.contains_key(lsn)
+        <==> (bdy <= lsn < seq_end)
+}
+
+pub open spec fn all_addrs_have_complete_lsn_ranges(
+    lsn_addr_index: LsnAddrIndex,
+    bdy: LSN,
+) -> bool
+{
+    forall |addr: Address| #[trigger] lsn_addr_index.values().contains(addr)
+        ==> exists |start_lsn: LSN, end_lsn: LSN|
+            complete_lsn_range_for_addr(lsn_addr_index, bdy, addr, start_lsn, end_lsn)
+}
+
+pub open spec fn all_addrs_have_finite_lsn_sets(
+    lsn_addr_index: LsnAddrIndex,
+    bdy: LSN,
+) -> bool
+{
+    forall |addr: Address| #[trigger] lsn_addr_index.values().contains(addr)
+        ==> addr_to_lsns(lsn_addr_index, addr, bdy).finite()
+}
+
 // NOTE: This is needed as we want to ensure that pages are all present in cache
 // this says that reads must contain address 
 // pub open spec(checked) fn index_pages_in_reads(reads: Map<Address, JournalRecord>, bdy: LSN, root: Pointer) -> bool
@@ -493,6 +540,46 @@ ensures
             .union_prefer_right(update));
 }
 
+pub proof fn build_lsn_addr_index_from_reads_values_in_reads(
+    reads: Map<Address, JournalRecord>,
+    boundary_lsn: LSN,
+    root: Pointer,
+    addr: Address,
+)
+requires
+    acyclic_reads(boundary_lsn, reads),
+    build_lsn_addr_index_from_reads(reads, boundary_lsn, root).values().contains(addr),
+ensures
+    reads.contains_key(addr),
+decreases rank_of_reads(boundary_lsn, reads, root)
+{
+    reveal(build_lsn_addr_index_from_reads);
+    if root is Some && reads.contains_key(root.unwrap()) {
+        let curr_msgs = reads[root.unwrap()].message_seq;
+        let start_lsn = max(boundary_lsn as int, curr_msgs.seq_start as int) as nat;
+        let update = singleton_index(start_lsn, curr_msgs.seq_end, root.unwrap());
+        let next_ptr = reads[root.unwrap()].cropped_prior(boundary_lsn);
+        let idx = build_lsn_addr_index_from_reads(reads, boundary_lsn, root);
+        let sub_index = build_lsn_addr_index_from_reads(reads, boundary_lsn, next_ptr);
+        assert(idx == sub_index.union_prefer_right(update));
+        let lsn = choose |lsn: LSN| idx.contains_key(lsn) && idx[lsn] == addr;
+        if update.contains_key(lsn) {
+            assert(update[lsn] == root.unwrap());
+            assert(addr == root.unwrap());
+            assert(reads.contains_key(addr));
+        } else {
+            assert(sub_index.contains_key(lsn));
+            assert(sub_index[lsn] == idx[lsn]);
+            assert(sub_index[lsn] == addr);
+            assert(sub_index.values().contains(addr));
+            build_lsn_addr_index_from_reads_values_in_reads(reads, boundary_lsn, next_ptr, addr);
+        }
+    } else {
+        assert(build_lsn_addr_index_from_reads(reads, boundary_lsn, root) == Map::<LSN, Address>::empty());
+        assert(false);
+    }
+}
+
 pub struct JournalSnapshot {
     pub boundary_lsn: LSN, 
     pub freshest_rec: Pointer, // lsn 
@@ -562,6 +649,10 @@ state_machine!{ CachedJournal {
     transition!{ read_for_recovery(lbl: Label, depth: nat) {
         require pre.status is Some;
         require let Label::ReadForRecovery{messages, reads} = lbl;
+
+        // the depth issue feels like something we should maintain 
+        // read for recovery should require ranges and not depth
+
         require pre.can_crop_index(pre.snapshot.freshest_rec, depth);
 
         let ptr = pre.pointer_after_crop_index(pre.snapshot.freshest_rec, depth);
@@ -728,6 +819,306 @@ impl CachedJournal::State {
         else {
             self.pointer_after_crop_index(self.next_index(root), (depth-1) as nat)
         }
+    }
+    proof fn next_index_from_complete_range(
+        self,
+        seq_end: LSN,
+        curr_addr: Address,
+        curr_start: LSN,
+        curr_end: LSN,
+    )
+    requires
+        self.status is Some,
+        lsn_index_domain_exact(self.status.unwrap().lsn_addr_index, self.snapshot.boundary_lsn, seq_end),
+        complete_lsn_range_for_addr(
+            self.status.unwrap().lsn_addr_index,
+            self.snapshot.boundary_lsn,
+            curr_addr,
+            curr_start,
+            curr_end,
+        ),
+        addr_to_lsns(self.status.unwrap().lsn_addr_index, curr_addr, self.snapshot.boundary_lsn).finite(),
+    ensures
+        curr_start > self.snapshot.boundary_lsn
+            ==> self.next_index(Some(curr_addr))
+                == Some(self.status.unwrap().lsn_addr_index[(curr_start - 1) as nat]),
+        curr_start == self.snapshot.boundary_lsn ==> self.next_index(Some(curr_addr)) == None::<Address>,
+    {
+        let index = self.status.unwrap().lsn_addr_index;
+        let bdy = self.snapshot.boundary_lsn;
+        let lsns = addr_to_lsns(index, curr_addr, bdy);
+
+        assert(lsns.contains(curr_start)) by {
+            assert(bdy <= curr_start);
+            assert(index.contains_key(curr_start));
+            assert(index[curr_start] == curr_addr);
+        }
+        assert(!lsns.is_empty());
+
+        min_lsn_ensures(lsns);
+        assert(min_lsn(lsns) <= curr_start);
+        assert(curr_start <= min_lsn(lsns)) by {
+            let m = min_lsn(lsns);
+            assert(lsns.contains(m));
+            assert(index.contains_key(m));
+            assert(index[m] == curr_addr);
+            assert(curr_start <= m < curr_end);
+        }
+        assert(min_lsn(lsns) == curr_start);
+
+        if curr_start > bdy {
+            let prior_lsn = (curr_start - 1) as nat;
+            assert(bdy <= prior_lsn);
+            assert(index.contains_key(prior_lsn));
+            assert(self.next_index(Some(curr_addr)) == Some(index[prior_lsn]));
+        } else {
+            assert(curr_start == bdy);
+            assert(self.next_index(Some(curr_addr)) == None::<Address>);
+        }
+    }
+
+    proof fn depth_to_addr_from_cursor(
+        self,
+        seq_end: LSN,
+        target_addr: Address,
+        target_start: LSN,
+        target_end: LSN,
+        target_lsn: LSN,
+        curr_addr: Address,
+        curr_start: LSN,
+        curr_end: LSN,
+    ) -> (depth: nat)
+    requires
+        self.status is Some,
+        lsn_index_domain_exact(self.status.unwrap().lsn_addr_index, self.snapshot.boundary_lsn, seq_end),
+        all_addrs_have_complete_lsn_ranges(self.status.unwrap().lsn_addr_index, self.snapshot.boundary_lsn),
+        all_addrs_have_finite_lsn_sets(self.status.unwrap().lsn_addr_index, self.snapshot.boundary_lsn),
+        complete_lsn_range_for_addr(
+            self.status.unwrap().lsn_addr_index,
+            self.snapshot.boundary_lsn,
+            target_addr,
+            target_start,
+            target_end,
+        ),
+        target_start <= target_lsn < target_end,
+        complete_lsn_range_for_addr(
+            self.status.unwrap().lsn_addr_index,
+            self.snapshot.boundary_lsn,
+            curr_addr,
+            curr_start,
+            curr_end,
+        ),
+        target_lsn < curr_end,
+    ensures
+        self.can_crop_index(Some(curr_addr), depth),
+        self.pointer_after_crop_index(Some(curr_addr), depth) == Some(target_addr),
+    decreases if target_lsn < curr_start { (curr_start - target_lsn) as nat } else { 0nat }
+    {
+        let index = self.status.unwrap().lsn_addr_index;
+        let bdy = self.snapshot.boundary_lsn;
+
+        if target_lsn >= curr_start {
+            assert(index.contains_key(target_lsn));
+            assert(index[target_lsn] == curr_addr) by {
+                assert(curr_start <= target_lsn < curr_end);
+            }
+            assert(index[target_lsn] == target_addr) by {
+                assert(target_start <= target_lsn < target_end);
+            }
+            assert(curr_addr == target_addr);
+            0
+        } else {
+            assert(target_lsn < curr_start);
+            assert(target_lsn >= bdy);
+            assert(curr_start > bdy);
+            assert(index.values().contains(curr_addr)) by {
+                assert(index.contains_key(curr_start));
+                assert(index[curr_start] == curr_addr) by {
+                    assert(curr_start <= curr_start < curr_end);
+                }
+            }
+            assert(addr_to_lsns(index, curr_addr, bdy).finite()) by {
+                assert(index.values().contains(curr_addr));
+            }
+
+            self.next_index_from_complete_range(seq_end, curr_addr, curr_start, curr_end);
+
+            let prior_lsn = (curr_start - 1) as nat;
+            let next_addr = index[prior_lsn];
+            assert(self.next_index(Some(curr_addr)) == Some(next_addr));
+            assert(index.values().contains(next_addr));
+            assert(exists |start_lsn: LSN, end_lsn: LSN|
+                complete_lsn_range_for_addr(index, bdy, next_addr, start_lsn, end_lsn)) by {
+                assert(all_addrs_have_complete_lsn_ranges(index, bdy));
+                assert(index.values().contains(next_addr));
+            }
+
+            let (next_start, next_end) = choose |start_lsn: LSN, end_lsn: LSN|
+                complete_lsn_range_for_addr(index, bdy, next_addr, start_lsn, end_lsn);
+            assert(complete_lsn_range_for_addr(index, bdy, next_addr, next_start, next_end));
+
+            assert(index.contains_key(prior_lsn));
+            assert(index[prior_lsn] == next_addr);
+            assert(next_start <= prior_lsn < next_end);
+            assert(target_lsn <= prior_lsn);
+            assert(target_lsn < next_end);
+
+            let sub_depth = self.depth_to_addr_from_cursor(
+                seq_end,
+                target_addr,
+                target_start,
+                target_end,
+                target_lsn,
+                next_addr,
+                next_start,
+                next_end,
+            );
+
+            assert(self.can_crop_index(Some(curr_addr), (sub_depth + 1) as nat));
+            assert(self.pointer_after_crop_index(Some(curr_addr), (sub_depth + 1) as nat)
+                == self.pointer_after_crop_index(self.next_index(Some(curr_addr)), sub_depth));
+            assert(self.pointer_after_crop_index(self.next_index(Some(curr_addr)), sub_depth)
+                == self.pointer_after_crop_index(Some(next_addr), sub_depth));
+            assert(self.pointer_after_crop_index(Some(next_addr), sub_depth) == Some(target_addr));
+            (sub_depth + 1) as nat
+        }
+    }
+
+    pub proof fn depth_for_complete_lsn_range(
+        self,
+        seq_end: LSN,
+        addr: Address,
+        start_lsn: LSN,
+        end_lsn: LSN,
+    ) -> (depth: nat)
+    requires
+        self.status is Some,
+        self.snapshot.boundary_lsn < seq_end,
+        lsn_index_domain_exact(self.status.unwrap().lsn_addr_index, self.snapshot.boundary_lsn, seq_end),
+        all_addrs_have_complete_lsn_ranges(self.status.unwrap().lsn_addr_index, self.snapshot.boundary_lsn),
+        all_addrs_have_finite_lsn_sets(self.status.unwrap().lsn_addr_index, self.snapshot.boundary_lsn),
+        self.snapshot.freshest_rec is Some,
+        self.status.unwrap().lsn_addr_index[(seq_end - 1) as nat] == self.snapshot.freshest_rec.unwrap(),
+        complete_lsn_range_for_addr(
+            self.status.unwrap().lsn_addr_index,
+            self.snapshot.boundary_lsn,
+            addr,
+            start_lsn,
+            end_lsn,
+        ),
+        end_lsn <= seq_end,
+    ensures
+        self.can_crop_index(self.snapshot.freshest_rec, depth),
+        self.pointer_after_crop_index(self.snapshot.freshest_rec, depth) == Some(addr),
+    {
+        let index = self.status.unwrap().lsn_addr_index;
+        let bdy = self.snapshot.boundary_lsn;
+        let freshest = self.snapshot.freshest_rec.unwrap();
+        assert(index.contains_key((seq_end - 1) as nat));
+        assert(index[(seq_end - 1) as nat] == freshest);
+        assert(index.values().contains(freshest));
+        assert(exists |start_lsn: LSN, end_lsn: LSN|
+            complete_lsn_range_for_addr(index, bdy, freshest, start_lsn, end_lsn)) by {
+            assert(all_addrs_have_complete_lsn_ranges(index, bdy));
+            assert(index.values().contains(freshest));
+        }
+        let target_lsn = (end_lsn - 1) as nat;
+
+        let (freshest_start, freshest_end) = choose |start: LSN, end: LSN|
+            complete_lsn_range_for_addr(index, bdy, freshest, start, end);
+        assert(complete_lsn_range_for_addr(index, bdy, freshest, freshest_start, freshest_end));
+        assert(freshest_start <= (seq_end - 1) as nat);
+        assert(((seq_end - 1) as nat) < freshest_end);
+        assert(target_lsn <= (seq_end - 1) as nat) by {
+            assert(start_lsn < end_lsn <= seq_end);
+        }
+        assert(target_lsn < freshest_end);
+
+        let depth = self.depth_to_addr_from_cursor(
+            seq_end,
+            addr,
+            start_lsn,
+            end_lsn,
+            target_lsn,
+            freshest,
+            freshest_start,
+            freshest_end,
+        );
+        assert(self.snapshot.freshest_rec == Some(freshest));
+        assert(self.can_crop_index(self.snapshot.freshest_rec, depth));
+        assert(self.pointer_after_crop_index(self.snapshot.freshest_rec, depth)
+            == self.pointer_after_crop_index(Some(freshest), depth));
+        assert(self.pointer_after_crop_index(Some(freshest), depth) == Some(addr));
+        depth
+    }
+
+    pub proof fn depth_for_index_lsn(
+        self,
+        seq_end: LSN,
+        target_lsn: LSN,
+    ) -> (depth: nat)
+    requires
+        self.status is Some,
+        self.snapshot.boundary_lsn < seq_end,
+        lsn_index_domain_exact(self.status.unwrap().lsn_addr_index, self.snapshot.boundary_lsn, seq_end),
+        all_addrs_have_complete_lsn_ranges(self.status.unwrap().lsn_addr_index, self.snapshot.boundary_lsn),
+        all_addrs_have_finite_lsn_sets(self.status.unwrap().lsn_addr_index, self.snapshot.boundary_lsn),
+        self.snapshot.freshest_rec is Some,
+        self.status.unwrap().lsn_addr_index[(seq_end - 1) as nat] == self.snapshot.freshest_rec.unwrap(),
+        self.status.unwrap().lsn_addr_index.contains_key(target_lsn),
+    ensures
+        self.can_crop_index(self.snapshot.freshest_rec, depth),
+        self.pointer_after_crop_index(self.snapshot.freshest_rec, depth)
+            == Some(self.status.unwrap().lsn_addr_index[target_lsn]),
+    {
+        let index = self.status.unwrap().lsn_addr_index;
+        let bdy = self.snapshot.boundary_lsn;
+        let addr = index[target_lsn];
+
+        assert(bdy <= target_lsn < seq_end) by {
+            assert(lsn_index_domain_exact(index, bdy, seq_end));
+            assert(index.contains_key(target_lsn));
+        };
+        assert(index.values().contains(addr));
+
+        assert(exists |start_lsn: LSN, end_lsn: LSN|
+            complete_lsn_range_for_addr(index, bdy, addr, start_lsn, end_lsn)) by {
+            assert(all_addrs_have_complete_lsn_ranges(index, bdy));
+            assert(index.values().contains(addr));
+        }
+        let (start_lsn, end_lsn) = choose |start_lsn: LSN, end_lsn: LSN|
+            complete_lsn_range_for_addr(index, bdy, addr, start_lsn, end_lsn);
+        assert(complete_lsn_range_for_addr(index, bdy, addr, start_lsn, end_lsn));
+
+        assert(start_lsn <= target_lsn < end_lsn) by {
+            assert(bdy <= target_lsn);
+            assert(index.contains_key(target_lsn));
+            assert(index[target_lsn] == addr);
+        };
+
+        assert(end_lsn <= seq_end) by {
+            if end_lsn > seq_end {
+                assert(start_lsn <= seq_end) by {
+                    assert(start_lsn <= target_lsn);
+                    assert(target_lsn < seq_end);
+                };
+                assert(start_lsn <= seq_end < end_lsn);
+                assert(index.contains_key(seq_end) && index[seq_end] == addr) by {
+                    assert(bdy <= seq_end);
+                    assert(start_lsn <= seq_end < end_lsn);
+                };
+                assert(!index.contains_key(seq_end)) by {
+                    assert(lsn_index_domain_exact(index, bdy, seq_end));
+                    assert(!(bdy <= seq_end < seq_end));
+                };
+                assert(false);
+            }
+        };
+
+        let depth = self.depth_for_complete_lsn_range(seq_end, addr, start_lsn, end_lsn);
+        assert(self.pointer_after_crop_index(self.snapshot.freshest_rec, depth) == Some(addr));
+        assert(addr == self.status.unwrap().lsn_addr_index[target_lsn]);
+        depth
     }
 }
 } // end of verus
