@@ -1372,6 +1372,7 @@ state_machine!{ LikesBetree {
     }
 
     #[verifier::spinoff_prover]
+    #[verifier::rlimit(100)]
     pub proof fn post_split_likes_ensures<T: Buffer>(betree: LinkedBetreeVars::State<T>, new_betree: LinkedBetreeVars::State<T>, 
         path: Path<T>, request: SplitRequest, new_addrs: SplitAddrs, path_addrs: PathAddrs)
         requires 
