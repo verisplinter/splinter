@@ -81,7 +81,7 @@ pub enum DiskEvent{
 pub enum InternalEvent{
     StoreInternal{},
     JournalRecovery{reads: Map<Address, RawPage>},
-    MapRecovery{records: MsgHistory, reads: Map<Address, RawPage>},
+    MapRecovery{records: MsgHistory, reads: Map<Address, RawPage>, addr: Address},
     RecoveryComplete{},
 }
 
@@ -318,15 +318,23 @@ impl AtomicState {
     }
 
     // update map to the journal
-    pub open spec fn map_recovery(pre: Self, post: Self, records: MsgHistory, reads: Map<Address, RawPage>) -> bool
+    pub open spec fn map_recovery(pre: Self, post: Self, records: MsgHistory, reads: Map<Address, RawPage>, addr: Address) -> bool
     {
         let map_lbl = AbstractCrashAwareMap::Label::PutRecordsLabel{records};
-        let journal_lbl = CachedJournal::Label::ReadForRecovery{messages: records, reads: to_journal_reads(reads)};
         let cache_lbl = Cache::Label::Access{reads: reads, writes: Map::empty()};
 
         &&& pre.recovery_state is JournalIndexComplete
+        &&& pre.store.ephemeral is Known
         &&& Cache::State::next(pre.cache, post.cache, cache_lbl)
-        &&& CachedJournal::State::next(pre.journal, post.journal, journal_lbl)
+        &&& reads.contains_key(addr)
+        &&& {
+            let journal_reads = to_journal_reads(reads);
+            let journal_records = journal_reads[addr].message_seq.maybe_discard_old(pre.journal.snapshot.boundary_lsn);
+            let map_records = journal_reads[addr].message_seq.maybe_discard_old(pre.store.ephemeral->v.stamped_map.seq_end);
+            let journal_lbl = CachedJournal::Label::ReadForRecovery{messages: journal_records, reads: journal_reads};
+            &&& records == map_records
+            &&& CachedJournal::State::next(pre.journal, post.journal, journal_lbl)
+        }
         &&& AbstractCrashAwareMap::State::next(pre.store, post.store, map_lbl)
 
         &&& post == Self{
@@ -501,7 +509,7 @@ impl AtomicState {
         match internal_event {
             InternalEvent::StoreInternal{} => Self::store_internal(pre, post),
             InternalEvent::JournalRecovery{reads} => Self::journal_recovery(pre, post, reads),
-            InternalEvent::MapRecovery{records, reads} => Self::map_recovery(pre, post, records, reads),
+            InternalEvent::MapRecovery{records, reads, addr} => Self::map_recovery(pre, post, records, reads, addr),
             InternalEvent::RecoveryComplete{} => Self::recovery_complete(pre, post),
         }
     }

@@ -89,6 +89,7 @@ impl View for FracCacheImpl {
 pub enum FetchErrorCode {
     Success{slot_handle: MutHandle},
     CacheFull, // all slots are filled, no available entries to evict without writeback
+    NotPresent, // address not present and caller requested no load initiation
     // WritebackEviction, // slots are filled, have to writeback to evict, require additional calls
     LoadInitiate{slot_handle: MutHandle},   // cache is asking caller to initiate the disk IO on cache's behalf
     Awaiting,   // IO request has been sent, haven't heard back yet.
@@ -561,11 +562,12 @@ impl FracCacheImpl {
     }
 
     // views might not work if it has to do with handle access
-    pub exec fn fetch(&mut self, addr: &IAddress) -> (err: FetchErrorCode)
+    pub exec fn fetch(&mut self, addr: &IAddress, load: bool) -> (err: FetchErrorCode)
         requires old(self).wf()
         ensures 
             self.wf(),
             self.valid_load_handles_preserved(*old(self)),
+            !load ==> !(err is LoadInitiate),
             match err {
                 FetchErrorCode::Awaiting => old(self)@ =~= self@,
                 FetchErrorCode::Success{slot_handle} => {
@@ -583,6 +585,7 @@ impl FracCacheImpl {
                     &&& old(self)@.status_map == self@.status_map
                 },
                 FetchErrorCode::CacheFull => *old(self) == *self,
+                FetchErrorCode::NotPresent => *old(self) == *self,
                 FetchErrorCode::LoadInitiate{slot_handle} => {
                     &&& self.entry_fetched(addr)
                     &&& !old(self).entry_fetched(addr)
@@ -634,6 +637,13 @@ impl FracCacheImpl {
                 }
             }
             return FetchErrorCode::Success{slot_handle};
+        }
+
+        if !load {
+            proof {
+                Self::valid_load_handles_preserved_if_maps_same(*old(self), *self);
+            }
+            return FetchErrorCode::NotPresent;
         }
 
         let mut slot = 0;

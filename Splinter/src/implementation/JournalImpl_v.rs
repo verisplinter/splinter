@@ -211,7 +211,6 @@ pub enum RecoverIndexResult{
 
 pub enum RecoverMapResult{
     FetchSuccess{reads: Ghost<Map<Address, RawPage>>, addr: Ghost<Address>, record: IJournalRecord},
-    OutofRange{},
     NotInCache{},
 }
 
@@ -387,40 +386,35 @@ impl JournalImpl {
         self.wf(),
         self.index_ready(),
         self.no_unmarshalled_entries(),
+        self.seq_start() <= (start_lsn as nat),
+        (start_lsn as nat) < self.seq_end(),
         old(cache).wf(),
     ensures ({
         &&& self@ == self@
         &&& self.wf()
         &&& self.index_ready()
         &&& cache.wf()
+        &&& cache.valid_load_handles_preserved(*old(cache))
         &&& match out {
             RecoverMapResult::FetchSuccess{reads, addr, record} => {
                 &&& self.seq_start() <= start_lsn as nat
                 &&& (start_lsn as nat) < self.seq_end()
                 &&& reads@.contains_key(addr@)
                 &&& to_journal_reads(reads@)[addr@] == record.parsedv().view()
+                &&& record.parsedv().view().message_seq.seq_start <= start_lsn as nat
+                &&& (start_lsn as nat) < record.parsedv().view().message_seq.seq_end
+                &&& record.parsedv().view().message_seq.seq_end <= self.seq_end()
                 &&& {
                     let lbls = map_recovery_labels(self.seq_start(), reads@, addr@);
                     &&& Cache::State::next(old(cache)@, cache@, lbls.0)
                     &&& CachedJournal::State::next(self@, self@, lbls.1)
                 }
             },
-            RecoverMapResult::OutofRange{} => {
-                &&& old(cache)@ =~= cache@
-                &&& !(self.seq_start() <= start_lsn as nat && (start_lsn as nat) < self.seq_end())
-            },
-            RecoverMapResult::NotInCache{} => {
-                &&& self.seq_start() <= start_lsn as nat
-                &&& (start_lsn as nat) < self.seq_end()
-            },
+            RecoverMapResult::NotInCache{} => old(cache)@ == cache@,
         }
     })
     {
         let seq_end = self.exec_seq_end();
-        if start_lsn < self.snapshot.boundary_lsn || seq_end <= start_lsn {
-            return RecoverMapResult::OutofRange{};
-        }
-
         proof {
             reveal(JournalImpl::no_unmarshalled_entries);
             assert(self.snapshot.boundary_lsn == self.status.unwrap().lsn_addr_index.seq_start());
@@ -435,14 +429,27 @@ impl JournalImpl {
 
         let index = &self.status.as_ref().unwrap().lsn_addr_index;
         let addr = index.lookup_lsn(start_lsn);
+        proof {
+            assert(self.status.unwrap().lsn_addr_index@.contains_key(start_lsn as nat));
+            assert(addr@ == self.status.unwrap().lsn_addr_index@[start_lsn as nat]);
+        }
 
         let ghost cache_pre = cache@;
         let ghost journal_raw_disk : Map<Address, RawPage> = arbitrary();
         proof {
             assume(journal_raw_disk_inv(self.fmt, journal_raw_disk));
             assume(cache_matches_raw_disk(old(cache)@, journal_raw_disk));
+            // NOTE: this is part of system invariant, when we declare that journal is done
+            // we will establish a relation that index@ is consistent with implementation model index
+            // this is a property over 
+            assume(forall |a: Address| #[trigger] self.status.unwrap().lsn_addr_index@.values().contains(a)
+                ==> journal_raw_disk.contains_key(a)
+                    && raw_page_to_record(journal_raw_disk[a]).message_seq.seq_end <= self.seq_end());
+            // NOTE: these are also index to journal disk properties
+            assume(raw_page_to_record(journal_raw_disk[addr@]).message_seq.seq_start <= start_lsn as nat);
+            assume((start_lsn as nat) < raw_page_to_record(journal_raw_disk[addr@]).message_seq.seq_end);
         }
-        match cache.fetch(&addr) {
+        match cache.fetch(&addr, false) {
             FetchErrorCode::Success{slot_handle} => {
                 let all_slice = Slice::all(&slot_handle.rec);
                 assert( all_slice@.i(slot_handle.rec@) == slot_handle.rec@ );
@@ -464,6 +471,24 @@ impl JournalImpl {
                 proof {
                     to_journal_reads_entry_from_exec_parse(self.fmt, reads, addr@, i_journal_record);
                     assert(to_journal_reads(reads)[addr@] == i_journal_record.parsedv().view());
+                    assert(self.status.unwrap().lsn_addr_index@.contains_key(start_lsn as nat));
+                    assert(addr@ == self.status.unwrap().lsn_addr_index@[start_lsn as nat]);
+                    assert(self.status.unwrap().lsn_addr_index@.values().contains(addr@));
+                    assert(raw_page_to_record(journal_raw_disk[addr@]).message_seq.seq_start <= start_lsn as nat);
+                    assert((start_lsn as nat) < raw_page_to_record(journal_raw_disk[addr@]).message_seq.seq_end);
+                    assert(raw_page_to_record(slot_handle.rec@).message_seq.seq_start <= start_lsn as nat);
+                    assert((start_lsn as nat) < raw_page_to_record(slot_handle.rec@).message_seq.seq_end);
+                    assert(raw_page_to_record(journal_raw_disk[addr@]).message_seq.seq_end <= self.seq_end());
+                    assert(raw_page_to_record(slot_handle.rec@).message_seq.seq_end <= self.seq_end());
+                    assert(reads[addr@] == slot_handle.rec@);
+                    assert(to_journal_reads(reads)[addr@] == raw_page_to_record(slot_handle.rec@));
+                    assert(i_journal_record.parsedv().view().message_seq.seq_start
+                        == raw_page_to_record(slot_handle.rec@).message_seq.seq_start);
+                    assert(i_journal_record.parsedv().view().message_seq.seq_end
+                        == raw_page_to_record(slot_handle.rec@).message_seq.seq_end);
+                    assert(i_journal_record.parsedv().view().message_seq.seq_start <= start_lsn as nat);
+                    assert((start_lsn as nat) < i_journal_record.parsedv().view().message_seq.seq_end);
+                    assert(i_journal_record.parsedv().view().message_seq.seq_end <= self.seq_end());
                     assert(lbls.1 is ReadForRecovery);
                 }
 
@@ -582,15 +607,8 @@ impl JournalImpl {
                     addr: Ghost(addr@),
                     record: i_journal_record,
                 }
-            }
-            FetchErrorCode::Awaiting => {
-                RecoverMapResult::NotInCache{}
-            }
-            FetchErrorCode::LoadInitiate{slot_handle} => {
-                let _ = slot_handle;
-                RecoverMapResult::NotInCache{}
-            }
-            FetchErrorCode::CacheFull => {
+            },
+            _ => {
                 RecoverMapResult::NotInCache{}
             }
         }
@@ -725,7 +743,7 @@ impl JournalImpl {
                                 let addr = curr.unwrap();
                                 let ghost cache_pre_fetch = *cache;
 
-                                match cache.fetch(&addr) {
+                                match cache.fetch(&addr, true) {
                                     FetchErrorCode::Success{slot_handle} => {
                                         let ghost cache_post_fetch = *cache;
                                         let all_slice = Slice::all(&slot_handle.rec);
@@ -894,7 +912,7 @@ impl JournalImpl {
                     Some(addr) => {
                         let ghost cache_pre_fetch = *cache;
                         // Can we read the next page from the cache?
-                        match cache.fetch(&addr) {
+                        match cache.fetch(&addr, true) {
                             FetchErrorCode::LoadInitiate{slot_handle} => {
                                 let ghost cache_post_fetch = *cache;
                                 // release previous handle

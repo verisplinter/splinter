@@ -253,6 +253,70 @@ impl ILsnAddrIndex {
         idx
     }
 
+    proof fn segment_complete_range(&self, idx: int)
+        requires
+            self.wf(),
+            0 <= idx < self.addrs.len(),
+        ensures
+            complete_lsn_range_for_addr(
+                self@,
+                self.seq_start() as nat,
+                self.addrs[idx]@,
+                self.bounds[idx] as nat,
+                self.bounds[idx + 1] as nat,
+            ),
+    {
+        let start_lsn = self.bounds[idx] as nat;
+        let end_lsn = self.bounds[idx + 1] as nat;
+        self.view_domain();
+        self.bounds_monotone(0, idx);
+        assert(self.seq_start() as nat <= start_lsn);
+        assert(start_lsn < end_lsn) by {
+            assert(self.sorted_entry(idx));
+        }
+        assert(complete_lsn_range_for_addr(
+            self@,
+            self.seq_start() as nat,
+            self.addrs[idx]@,
+            start_lsn,
+            end_lsn,
+        )) by {
+            assert forall |lsn: LSN|
+                #![trigger self@.contains_key(lsn)]
+                #![trigger self@[lsn]]
+                self.seq_start() as nat <= lsn ==> {
+                    &&& (self@.contains_key(lsn) && self@[lsn] == self.addrs[idx]@)
+                        <==> (start_lsn <= lsn < end_lsn)
+                } by {
+                if start_lsn <= lsn < end_lsn {
+                    self.lsn_maps_to_addr(idx, lsn);
+                    assert(self@[lsn] == self.addrs[idx]@);
+                } else if self@.contains_key(lsn) && self@[lsn] == self.addrs[idx]@ {
+                    assert(self.seq_start() <= lsn < self.seq_end());
+                    let idx2 = self.find_segment(lsn);
+                    self.lsn_maps_to_addr(idx2, lsn);
+                    self.lsn_maps_to_addr(idx, start_lsn);
+                    assert(self@[lsn] == self.addrs[idx2]@);
+                    assert(self@[start_lsn] == self.addrs[idx]@);
+                    assert(self@[start_lsn] == self.addrs[idx]@);
+                    assert(self@[lsn] == self@[start_lsn]);
+                    assert(self.addrs[idx2]@ == self.addrs[idx]@);
+                    if idx2 < idx {
+                        assert(self.addrs[idx2]@ != self.addrs[idx]@);
+                        assert(false);
+                    }
+                    if idx < idx2 {
+                        assert(self.addrs[idx]@ != self.addrs[idx2]@);
+                        assert(false);
+                    }
+                    assert(idx2 == idx);
+                    assert(self.bounds[idx2] <= lsn < self.bounds[idx2 + 1]);
+                    assert(start_lsn <= lsn < end_lsn);
+                }
+            };
+        };
+    }
+
     pub proof fn derive_complete_ranges(&self)
         requires
             self.wf(),

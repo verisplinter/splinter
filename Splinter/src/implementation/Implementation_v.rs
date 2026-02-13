@@ -383,6 +383,7 @@ impl Implementation {
         &&& self.state().recovery_state is JournalIndexComplete
         &&& self.state().in_flight is None
         &&& self.sync_requests.valid_empty_sync_buffer(self.instance@.id())
+        &&& self.journal.seq_start() <= self.store_lsn as nat
         &&& self.store_lsn as nat <= self.journal.seq_end()
         &&& self.journal.wf()
         &&& self.journal.index_ready()
@@ -856,7 +857,7 @@ impl Implementation {
                 
                 let slot_handle = match frozen_journal.snapshot.freshest_rec {
                     Some(freshest_addr) => {
-                        let fetch_result = self.cache.fetch(&freshest_addr);
+                        let fetch_result = self.cache.fetch(&freshest_addr, true);
                         match fetch_result {
                             FetchErrorCode::Success{slot_handle} => {
                                 proof {
@@ -2235,24 +2236,449 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
     {
         let exec_seq_end = self.journal.exec_seq_end();
         if self.store_lsn < exec_seq_end {
-            // 
+            let ghost pre_state = self.model@.value();
+            let ghost instance_id = self.instance@.id();
+            let ghost pre_view_store = self.view_store();
+            let ghost pre_cache_impl = self.cache;
+            let ghost pre_cache = self.cache@;
+            let ghost pre_outstanding = self.outstanding_requests@;
+            let ghost pre_store_lsn = self.store_lsn as nat;
+            proof {
+                assert(self.inv_api(api));
+                assert(self.recovery_phase is ApplyingJournalToRecoverEphemeralMap);
+                assert(self.inv_applying_journal()) by {
+                    reveal(Implementation::inv);
+                    assert(self.inv());
+                }
+                assert(self.journal.seq_start() <= self.store_lsn as nat);
+                assert((self.store_lsn as nat) < self.journal.seq_end()) by {
+                    assert(self.store_lsn < exec_seq_end);
+                    assert(exec_seq_end == self.journal.seq_end());
+                }
+            }
+            let fetch = self.journal.recover_map_step(&mut self.cache, self.store_lsn);
+            proof {
+                assert(self.cache.valid_load_handles_preserved(pre_cache_impl));
+            }
 
-            // get the journal record
-            // how to apply it 
+            // we need to track some
+            match fetch {
+                RecoverMapResult::NotInCache{} => {
+                    assert(self.inv_api(api));
+                    return false;
+                }
+                RecoverMapResult::FetchSuccess{reads, addr, record} => {
+                    let record_msg_len = record.messages.len() as u64;
+                    proof {
+                        assert(exec_seq_end == self.journal.seq_end());
+                        assert(record.parsedv().view().message_seq.seq_end <= self.journal.seq_end());
+                        assert(record.parsedv().view().message_seq.seq_start == record.header.start_lsn as nat);
+                        assert(record.parsedv().view().message_seq.seq_end
+                            == record.header.start_lsn as nat + record.messages.len());
+                        assert(record_msg_len as nat == record.messages.len() as nat);
+                        assert(record.header.start_lsn as nat + record_msg_len as nat <= u64::MAX as nat) by {
+                            assert(record.header.start_lsn as nat + record.messages.len()
+                                == record.parsedv().view().message_seq.seq_end);
+                            assert(record.parsedv().view().message_seq.seq_end <= self.journal.seq_end());
+                            assert(self.journal.seq_end() == exec_seq_end as nat);
+                            assert(exec_seq_end as nat <= u64::MAX as nat);
+                        }
+                        assert(record_msg_len <= u64::MAX - record.header.start_lsn);
+                    }
+                    let record_seq_end = record.header.start_lsn + record_msg_len;
+                    let journal_seq_start = self.journal.exec_seq_start();
+                    proof {
+                        assert(record.parsedv().view().message_seq.seq_start <= self.store_lsn as nat);
+                        assert((self.store_lsn as nat) < record.parsedv().view().message_seq.seq_end);
+                        assert(record.parsedv().view().message_seq.seq_start == record.header.start_lsn as nat);
+                        assert(record.parsedv().view().message_seq.seq_end == record_seq_end as nat);
+                        assert(record.header.start_lsn <= self.store_lsn);
+                        assert(self.store_lsn < record_seq_end);
+                        assert(self.store_lsn <= record_seq_end);
+                        assert(journal_seq_start as nat == self.journal.seq_start());
+                        assert(self.journal.seq_start() <= self.store_lsn as nat);
+                        assert((journal_seq_start as nat) <= (record_seq_end as nat));
+                        assert(journal_seq_start <= record_seq_end);
+                        assert(record.parsedv().view().message_seq.seq_end <= self.journal.seq_end());
+                        assert(record.parsedv().view().message_seq.seq_end == record_seq_end as nat);
+                        assert(record_seq_end <= exec_seq_end) by {
+                            if exec_seq_end < record_seq_end {
+                                assert((exec_seq_end as nat) < (record_seq_end as nat));
+                                assert(record_seq_end as nat == record.parsedv().view().message_seq.seq_end);
+                                assert(record.parsedv().view().message_seq.seq_end <= self.journal.seq_end());
+                                assert(exec_seq_end == self.journal.seq_end());
+                                assert(exec_seq_end as nat == self.journal.seq_end());
+                                assert(record_seq_end as nat <= exec_seq_end as nat);
+                                assert(false);
+                            }
+                        }
+                    }
 
-            // how do we apply journal pages?
-            // we parse and return a journal record out?
-            // this would be the easiest option, and 
+                    proof {
+                        assert(pre_state.state.recovery_state is JournalIndexComplete);
+                        assert(pre_state.state.store.ephemeral is Known);
+                        assert(pre_state.state.store == pre_view_store);
+                        assert(pre_store_lsn == pre_state.state.store.ephemeral->v.stamped_map.seq_end);
+                        self.journal.view_seq_start_ensures();
+                        assert(self.journal.seq_start() == journal_seq_start as nat);
+                        assert(pre_state.state.journal.snapshot.boundary_lsn == journal_seq_start as nat);
+                    }
+                    let ghost cache_after_fetch = self.cache@;
+                    let ghost journal_after_fetch = self.journal@;
+                    let ghost fetch_lbls = map_recovery_labels(self.journal.seq_start(), reads@, addr@);
+                    proof {
+                        assert(pre_state.state.journal == journal_after_fetch);
+                        assert(Cache::State::next(pre_cache, cache_after_fetch, fetch_lbls.0));
+                        assert(CachedJournal::State::next(journal_after_fetch, journal_after_fetch, fetch_lbls.1));
+                    }
 
-            Self::todo_placeholder();   // Go restore more blocks from journal
-            // this branch may return progress false if we are waiting for
-            // disk IO to fetch the next page.
+                    let mut next_lsn = self.store_lsn;
+                    let mut next_index: usize = (self.store_lsn - record.header.start_lsn) as usize;
+
+                    let ghost record_msgs = record.parsedv().view().message_seq;
+                    let ghost records = record_msgs.maybe_discard_old(pre_store_lsn);
+                    proof {
+                        assert(record_msgs.wf());
+                        assert(record_msgs.seq_start == record.header.start_lsn as nat);
+                        assert(record_msgs.seq_end == record_seq_end as nat);
+                        assert(pre_state.state.journal.snapshot.boundary_lsn <= record_msgs.seq_end);
+                        assert(record.header.start_lsn as nat <= pre_store_lsn);
+                        assert(pre_store_lsn <= record_seq_end as nat);
+                        assert(records == record_msgs.discard_old(pre_store_lsn));
+                        assert(records.seq_start == pre_store_lsn);
+                        assert(records.seq_end == record_seq_end as nat);
+                        assert(records.wf());
+                        assert(records.can_follow(pre_state.state.ephemeral_map().seq_end));
+                        assert(pre_state.state.ephemeral_map().value.wf());
+                        assert(record.header.start_lsn <= self.store_lsn);
+                        assert(next_lsn == self.store_lsn);
+                        assert((self.store_lsn - record.header.start_lsn) as nat
+                            == self.store_lsn as nat - record.header.start_lsn as nat);
+                        assert(next_index as nat
+                            == self.store_lsn as nat - record.header.start_lsn as nat);
+                        assert(next_lsn as nat
+                            == record.header.start_lsn as nat + next_index as nat);
+                        assert(next_index as nat <= record.messages.len()) by {
+                            assert(self.store_lsn <= record_seq_end);
+                            assert(record_seq_end == record.header.start_lsn + record.messages.len() as u64);
+                            assert(self.store_lsn as nat - record.header.start_lsn as nat
+                                <= record.messages.len() as nat);
+                        }
+
+                        let prefix0 = records.discard_recent(pre_store_lsn);
+                        assert(prefix0.is_empty());
+                        assert(prefix0.wf());
+                        assert(prefix0.can_follow(pre_state.state.ephemeral_map().seq_end));
+                        reveal_with_fuel(MsgHistory::apply_to_stamped_map, 1);
+                        assert(MsgHistory::map_plus_history(pre_state.state.ephemeral_map(), prefix0)
+                            == pre_state.state.ephemeral_map());
+                        assert(view_as_kmmap(self.store) == pre_state.state.ephemeral_map().value);
+                    }
+
+                    while next_lsn < record_seq_end
+                    invariant
+                        self.model@.value() == pre_state,
+                        self.model@.instance_id() == instance_id,
+                        self.instance@.id() == instance_id,
+                        self.outstanding_requests@ == pre_outstanding,
+                        self.recovery_phase is ApplyingJournalToRecoverEphemeralMap,
+                        self.sync_requests.valid_empty_sync_buffer(self.instance@.id()),
+                        self.cache.wf(),
+                        self.cache.valid_load_handles_preserved(pre_cache_impl),
+                        self.journal.wf(),
+                        self.journal.no_unmarshalled_entries(),
+                        self.journal.seq_start() <= self.store_lsn as nat,
+                        exec_seq_end == self.journal.seq_end(),
+                        self.store_lsn as nat <= self.journal.seq_end(),
+                        self.cache@ == cache_after_fetch,
+                        self.journal@ == journal_after_fetch,
+                        Cache::State::next(pre_cache, cache_after_fetch, fetch_lbls.0),
+                        CachedJournal::State::next(journal_after_fetch, journal_after_fetch, fetch_lbls.1),
+                        pre_state.state.store.persistent == self.i_persistent_store(),
+                        pre_state.state.store.in_flight == self.i_inflight_store(),
+                        self.store.wf(),
+                        self.store_lsn == next_lsn,
+                        next_index as nat <= record.messages.len(),
+                        next_lsn as nat == record.header.start_lsn as nat + next_index as nat,
+                        pre_store_lsn <= self.store_lsn as nat <= records.seq_end,
+                        record_seq_end <= exec_seq_end,
+                        records == record_msgs.discard_old(pre_store_lsn),
+                        records.seq_start == pre_store_lsn,
+                        records.seq_end == record_seq_end as nat,
+                        records.wf(),
+                        records.can_follow(pre_state.state.ephemeral_map().seq_end),
+                        pre_state.state.ephemeral_map().value.wf(),
+                        view_as_kmmap(self.store)
+                            == MsgHistory::map_plus_history(
+                                pre_state.state.ephemeral_map(),
+                                records.discard_recent(self.store_lsn as nat),
+                            ).value,
+                    decreases record_seq_end - next_lsn
+                    {
+                        proof {
+                            assert(next_lsn < record_seq_end);
+                            assert((next_lsn as nat) < (record_seq_end as nat));
+                            assert(next_lsn as nat
+                                == record.header.start_lsn as nat + next_index as nat);
+                            assert(record_seq_end as nat
+                                == record.header.start_lsn as nat + record.messages.len() as nat);
+                            if record.messages.len() <= next_index {
+                                assert(record.messages.len() as nat <= next_index as nat);
+                                assert(record.header.start_lsn as nat + record.messages.len() as nat
+                                    <= record.header.start_lsn as nat + next_index as nat);
+                                assert(record_seq_end as nat <= next_lsn as nat);
+                                assert(false);
+                            }
+                        }
+                        let km = record.messages[next_index];
+                        let ghost old_store = self.store;
+                        let ghost old_store_lsn = self.store_lsn as nat;
+                        let ghost old_next_lsn = next_lsn as nat;
+
+                        match km.message {
+                            Message::Define{value} => {
+                                let key = km.key;
+                                self.store.insert(key, value);
+
+                                proof {
+                                    assert(old_store_lsn == old_next_lsn);
+                                    assert(records.seq_start <= old_store_lsn < records.seq_end);
+                                    assert(records.contains(old_store_lsn));
+                                    assert(records.msgs[old_store_lsn] == record_msgs.msgs[old_store_lsn]);
+                                    assert(record_msgs.msgs[old_store_lsn]
+                                        == record.messages[(old_store_lsn - record.header.start_lsn as nat) as int]);
+                                    assert((old_store_lsn - record.header.start_lsn as nat) as int == next_index as int);
+                                    assert(record.messages[next_index as int] == km);
+                                    assert(records.msgs[old_store_lsn]
+                                        == KeyedMessage{key, message: Message::Define{value}});
+
+                                    let prefix = records.discard_recent(old_store_lsn);
+                                    let next_prefix = records.discard_recent((old_store_lsn + 1) as nat);
+                                    assert(next_prefix.seq_end == (old_store_lsn + 1) as nat);
+                                    assert(!next_prefix.is_empty());
+                                    assert(next_prefix.contains(old_store_lsn));
+                                    assert(next_prefix.msgs.contains_key(old_store_lsn));
+                                    assert(next_prefix.msgs[old_store_lsn]
+                                        == KeyedMessage{key, message: Message::Define{value}});
+                                    assert(next_prefix.discard_recent(old_store_lsn) == prefix) by {
+                                        MsgHistory::ext_equal_is_equality();
+                                        assert(next_prefix.discard_recent(old_store_lsn).ext_equal(prefix));
+                                    }
+
+                                    assert(view_as_kmmap(self.store)
+                                        == view_as_kmmap(old_store).insert(key, Message::Define{value}));
+                                    assert(next_prefix.wf());
+                                    assert(next_prefix.can_follow(pre_state.state.ephemeral_map().seq_end));
+                                    reveal_with_fuel(MsgHistory::apply_to_stamped_map, 2);
+                                    assert(MsgHistory::map_plus_history(pre_state.state.ephemeral_map(), next_prefix).value
+                                        == MsgHistory::map_plus_history(pre_state.state.ephemeral_map(), prefix).value
+                                            .insert(key, Message::Define{value}));
+                                    assert(view_as_kmmap(self.store)
+                                        == MsgHistory::map_plus_history(pre_state.state.ephemeral_map(), next_prefix).value);
+                                }
+                            }
+                            Message::Update{delta} => {
+                                let _ = delta;
+                                Self::todo_placeholder();
+                            }
+                        }
+
+                        self.store_lsn = self.store_lsn + 1;
+                        next_lsn = next_lsn + 1;
+                        next_index = next_index + 1;
+                    }
+
+                    proof {
+                        assert(self.model@.value() == pre_state);
+                    }
+
+                    let ghost post_state = ConcreteProgramModel{
+                        state: AtomicState{
+                            cache: self.cache@,
+                            journal: self.journal@,
+                            store: self.view_store(),
+                            ..pre_state.state
+                        }
+                    };
+
+                    proof {
+                        let map_lbl = AbstractCrashAwareMap::Label::PutRecordsLabel{records};
+                        assert(view_as_kmmap(self.store)
+                            == MsgHistory::map_plus_history(pre_state.state.ephemeral_map(), records).value) by {
+                            assert(self.store_lsn as nat == records.seq_end);
+                            assert(records.discard_recent(self.store_lsn as nat) == records) by {
+                                assert(records.ext_equal(records.discard_recent(self.store_lsn as nat)));
+                            }
+                        }
+                        assert(post_state.state.store.ephemeral is Known);
+                        MsgHistory::map_plus_history_seq_end_lemma(pre_state.state.ephemeral_map(), records);
+                        assert(post_state.state.store.ephemeral->v.stamped_map
+                            == MsgHistory::map_plus_history(pre_state.state.ephemeral_map(), records));
+
+                        reveal(AbstractMap::State::next_by);
+                        reveal(AbstractMap::State::next);
+                        assert(AbstractMap::State::next_by(
+                            pre_state.state.store.ephemeral->v,
+                            post_state.state.store.ephemeral->v,
+                            AbstractMap::Label::PutLabel{puts: records},
+                            AbstractMap::Step::put{}
+                        ));
+
+                        reveal(AbstractCrashAwareMap::State::next_by);
+                        reveal(AbstractCrashAwareMap::State::next);
+                        assert(post_state.state.store == AbstractCrashAwareMap::State{
+                            persistent: pre_state.state.store.persistent,
+                            ephemeral: AbstractCrashAwareMap_v::Ephemeral::Known{
+                                v: post_state.state.store.ephemeral->v
+                            },
+                            in_flight: pre_state.state.store.in_flight,
+                        });
+                        assert(AbstractCrashAwareMap::State::next_by(
+                            pre_state.state.store,
+                            post_state.state.store,
+                            map_lbl,
+                            AbstractCrashAwareMap::Step::put_records(post_state.state.store.ephemeral->v)
+                        ));
+                        assert(AbstractCrashAwareMap::State::next(
+                            pre_state.state.store,
+                            post_state.state.store,
+                            map_lbl
+                        ));
+
+                        assert(ConcreteProgramModel::valid_internal_transition(pre_state, post_state)) by {
+                                assert(AtomicState::internal_transitions(
+                                pre_state.state,
+                                post_state.state,
+                                InternalEvent::MapRecovery{records, reads: reads@, addr: addr@}
+                            )) by {
+                                let cache_lbl = Cache::Label::Access{reads: reads@, writes: Map::empty()};
+                                let ghost journal_reads = to_journal_reads(reads@);
+                                let ghost map_records = journal_reads[addr@].message_seq
+                                    .maybe_discard_old(pre_state.state.store.ephemeral->v.stamped_map.seq_end);
+
+                                assert(pre_state.state.recovery_state is JournalIndexComplete);
+                                assert(pre_state.state.store.ephemeral is Known);
+                                assert(Cache::State::next(pre_state.state.cache, post_state.state.cache, cache_lbl)) by {
+                                    assert(Cache::State::next(pre_cache, cache_after_fetch, fetch_lbls.0));
+                                    assert(pre_state.state.cache == pre_cache);
+                                    assert(post_state.state.cache == cache_after_fetch);
+                                    reveal(map_recovery_labels);
+                                    assert(fetch_lbls.0 == cache_lbl);
+                                }
+                                assert(reads@.contains_key(addr@));
+                                assert(records == map_records) by {
+                                    assert(pre_state.state.store.ephemeral->v.stamped_map.seq_end == pre_store_lsn);
+                                    assert(to_journal_reads(reads@)[addr@] == record.parsedv().view());
+                                    assert(journal_reads[addr@] == record.parsedv().view());
+                                    assert(journal_reads[addr@].message_seq == record_msgs);
+                                    assert(map_records == record_msgs.maybe_discard_old(pre_store_lsn));
+                                    assert(records == record_msgs.maybe_discard_old(pre_store_lsn));
+                                }
+                                assert(CachedJournal::State::next(
+                                    pre_state.state.journal,
+                                    post_state.state.journal,
+                                    fetch_lbls.1
+                                )) by {
+                                    assert(pre_state.state.journal == journal_after_fetch);
+                                    assert(post_state.state.journal == journal_after_fetch);
+                                    assert(CachedJournal::State::next(journal_after_fetch, journal_after_fetch, fetch_lbls.1));
+                                }
+                                self.journal.view_seq_start_ensures();
+                                assert(self.journal.seq_start() == pre_state.state.journal.snapshot.boundary_lsn);
+                                assert(pre_state.state.journal.snapshot.boundary_lsn
+                                    <= journal_reads[addr@].message_seq.seq_end) by {
+                                    assert(journal_reads[addr@] == record.parsedv().view());
+                                    assert(record.parsedv().view().message_seq.seq_end == record_seq_end as nat);
+                                    assert(pre_state.state.journal.snapshot.boundary_lsn
+                                        <= record.parsedv().view().message_seq.seq_end);
+                                }
+                                reveal(map_recovery_labels);
+                                assert(fetch_lbls.1 == CachedJournal::Label::ReadForRecovery{
+                                    messages: journal_reads[addr@].message_seq
+                                        .maybe_discard_old(pre_state.state.journal.snapshot.boundary_lsn),
+                                    reads: journal_reads,
+                                });
+
+                                assert(AtomicState::map_recovery(pre_state.state, post_state.state, records, reads@, addr@));
+                            };
+                        }
+                        assert(ConcreteProgramModel::next(pre_state, post_state, ProgramLabel::Internal{}));
+                    }
+                    let tracked instance = self.instance.borrow();
+                    proof {
+                        assert(instance == self.instance@);
+                        assert(instance_id == self.instance@.id());
+                        assert(instance.id() == self.instance@.id());
+                        assert(instance.id() == instance_id);
+                        assert(self.cache.wf());
+                        assert(self.cache.valid_load_handles_preserved(pre_cache_impl));
+                        assert(self.model@.value() == pre_state);
+                        assert(self.model@.instance_id() == instance_id);
+                        assert(self.model@.instance_id() == instance.id());
+                        assert(ConcreteProgramModel::valid_internal_transition(self.model@.value(), post_state));
+                        assert(ConcreteProgramModel::next(self.model@.value(), post_state, ProgramLabel::Internal{}));
+                    }
+                    let tracked new_reply_token = instance.internal(
+                        KVStoreTokenized::Label::InternalOp{},
+                        post_state,
+                        self.model.borrow_mut(),
+                    );
+
+                    proof {
+                        self.system_inv_implies_atomic_state_wf();
+                        assert(self.cache.wf());
+                        assert(self.outstanding_requests@ == pre_outstanding);
+                        assert(self.recovery_phase is ApplyingJournalToRecoverEphemeralMap);
+                        assert(self.sync_requests.valid_empty_sync_buffer(self.instance@.id()));
+                        assert(self.journal.wf());
+                        assert(self.journal.no_unmarshalled_entries());
+                        assert(self.journal.seq_start() <= self.store_lsn as nat);
+                        assert(self.store_lsn as nat <= self.journal.seq_end());
+                        assert(Self::outstanding_requests_wf_map(self.outstanding_requests@, self.cache)) by {
+                            assert forall |id| #[trigger] self.outstanding_requests@.contains_key(id)
+                                implies {
+                                    match self.outstanding_requests@[id] {
+                                        OutstandingReqInfo::CacheLoadReq{read_addr, load_handle} => {
+                                            &&& self.cache.entry_fetched(&read_addr)
+                                            &&& self.cache.valid_load_handle(&read_addr, load_handle)
+                                        },
+                                        _ => { true }
+                                    }
+                                }
+                            by {
+                                assert(pre_outstanding.contains_key(id));
+                                assert(self.outstanding_requests@[id] == pre_outstanding[id]);
+                                match pre_outstanding[id] {
+                                    OutstandingReqInfo::CacheLoadReq{read_addr, load_handle} => {
+                                        assert(pre_cache_impl.entry_fetched(&read_addr)
+                                            && pre_cache_impl.valid_load_handle(&read_addr, load_handle));
+                                        assert(self.cache.valid_load_handles_preserved(pre_cache_impl));
+                                        assert(self.cache.entry_fetched(&read_addr)
+                                            && self.cache.valid_load_handle(&read_addr, load_handle));
+                                    }
+                                    _ => { }
+                                }
+                            }
+                        }
+                    }
+                    assert(self.inv_api(api));
+
+                    if self.store_lsn < exec_seq_end {
+                        return true;
+                    }
+                }
+            }
         }
 
         // assert(self.store_lsn == self.journal.seq_end());
         // assert(self.store_lsn == self.state().ephemeral_map().seq_end);
         // assert(self.journal.seq_end() == self.state().ephemeral_map().seq_end);
 
+        let exec_seq_end = self.journal.exec_seq_end();
+        if self.store_lsn < exec_seq_end {
+            assert(self.inv_api(api));
+            return true;
+        }
         let ghost pre_state = self.state();
         proof {
             assert(self.inv_api(api));
