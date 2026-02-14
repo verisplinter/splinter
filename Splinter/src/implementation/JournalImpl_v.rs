@@ -424,9 +424,12 @@ impl JournalImpl {
         let ghost cache_pre = cache@;
         let ghost journal_raw_disk : Map<Address, RawPage> = arbitrary();
         proof {
+            // TODO: system invariant
             // Assumed global invariants linking cache/index to journal disk contents.
             assume(journal_raw_disk_inv(self.fmt, journal_raw_disk));
             assume(cache_matches_raw_disk(old(cache)@, journal_raw_disk));
+            // TODO: system invariants, index in the kvstore model matches with the physical index
+            // system inv would relate the model index to the system disk, and that's how we get these facts
             assume(forall |a: Address| #[trigger] self.status.unwrap().lsn_addr_index@.values().contains(a)
                 ==> journal_raw_disk.contains_key(a)
                     && raw_page_to_record(journal_raw_disk[a]).message_seq.seq_end <= self.seq_end());
@@ -647,7 +650,8 @@ impl JournalImpl {
             None => { assert(false); None },
             // NOTE: builder is a hint for continued fetch
             Some(mut builder) => { 
-                let ghost journal_raw_disk : Map<Address, RawPage> = arbitrary(); 
+                // TODO: system invariants
+                let ghost journal_raw_disk : Map<Address, RawPage> = arbitrary();
                 assume(journal_raw_disk_inv(self.fmt, journal_raw_disk));
                 assume(cache_matches_raw_disk(cache@, journal_raw_disk));
 
@@ -664,12 +668,12 @@ impl JournalImpl {
                         let mut index;
                         assert(LinkedJournal_v::DiskView{boundary_lsn: bdy as nat, entries: to_journal_reads(reads)}.valid_ranking(map!{})); // witness
 
-
                         if let Some(root) = curr {
                             let mut index_initialized = false;
                             index = ILsnAddrIndex::new(u64::MAX);
 
                             // Assumed global disk model for index reconstruction.
+                            // TODO: system invariants, use a lemma to construct this disk view
                             let ghost journal_disk = LinkedJournal_v::DiskView{boundary_lsn: bdy as nat, entries: to_journal_reads(journal_raw_disk)};
                             assume(journal_disk_inv(journal_disk, iaddr_view(curr)));
 
