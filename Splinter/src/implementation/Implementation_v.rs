@@ -247,6 +247,29 @@ impl Implementation {
         &&& self.store.wf()
         &&& self.state().recovery_state is Begin
         &&& self.cache.wf()
+        &&& self.outstanding_requests@.dom() == Set::<ID>::empty()
+    }
+
+    pub closed spec fn outstanding_req_is_superblock(self, id: ID) -> bool {
+        &&& self.outstanding_requests@.dom().contains(id)
+        &&& self.outstanding_requests@[id] is SuperBlockReq
+    }
+
+    // The exec-level outstanding_requests map corresponds to the model-level
+    // outstanding_cache_reqs (for cache ops) and in_flight (for superblock writes).
+    pub closed spec fn outstanding_reqs_match_model(self) -> bool {
+        let state = self.state();
+        let in_flight_sb_id = if state.in_flight is Some { set!{state.in_flight.unwrap().req_id} } else { set!{} };
+
+        // Domain: exec outstanding_requests covers exactly cache reqs + in-flight sb
+        &&& self.outstanding_requests@.dom() == state.outstanding_cache_reqs.dom() + in_flight_sb_id
+
+        // Cache entries match: CacheLoadReq/CacheWriteReq IDs are exactly outstanding_cache_reqs
+        &&& forall |id| #[trigger] self.outstanding_requests@.dom().contains(id) ==> {
+            &&& (self.outstanding_requests@[id] is SuperBlockReq) <==> in_flight_sb_id.contains(id)
+            &&& (self.outstanding_requests@[id] is CacheLoadReq || self.outstanding_requests@[id] is CacheWriteReq)
+                <==> state.outstanding_cache_reqs.dom().contains(id)
+        }
     }
 
     closed spec fn outstanding_requests_wf_map(outstanding: Map<ID, OutstandingReqInfo>, cache: FracCacheImpl) -> bool
@@ -305,6 +328,11 @@ impl Implementation {
 
         &&& self.journal.seq_end() == self.store_lsn
         &&& self.state().wf()
+
+        // TODO: strengthen to self.outstanding_reqs_match_model() once all exec code
+        // properly maintains outstanding_requests (insert on send, remove on response).
+        // For now, the weaker conjunct in inv() (SuperBlockReq ==> in_flight is Some)
+        // suffices for the B2/B4 pull-downs.
 
         &&& state.in_flight is Some <==> self.sync_requests.in_flight()
         &&& state.in_flight is Some <==> self.in_flight is Some
@@ -392,6 +420,12 @@ impl Implementation {
         // working backward from stuff we know to infer physical phase (used when applying system
         // invs to infer current state)
         &&& self.in_flight is Some ==> self.recovery_phase is ReadyForUserOperation
+        // A SuperBlockReq in outstanding_requests implies in_flight is Some
+        // and the ID is NOT a cache request (it's the superblock write ID).
+        &&& forall |id| #![auto] self.outstanding_requests@.dom().contains(id)
+            && self.outstanding_requests@[id] is SuperBlockReq
+            ==> self.in_flight is Some
+                && !self.state().outstanding_cache_reqs.dom().contains(id)
         &&& self.model@.instance_id() == self.instance@.id()
     }
 
@@ -1068,11 +1102,17 @@ impl Implementation {
         );
         self.model = Tracked(model);
 
-        api.send_disk_request(disk_request, req_id_perm, Tracked(new_reply_token));
-        
+        let disk_req_id_exec = api.send_disk_request(disk_request, req_id_perm, Tracked(new_reply_token));
+        self.outstanding_requests.insert(disk_req_id_exec, OutstandingReqInfo::SuperBlockReq{});
+
         proof {
             assert( self.state() == post_state.state );
             self.journal.seq_start_le_marshalled_end();
+
+            // The new disk_req_id is fresh and not in outstanding_cache_reqs.
+            // execute_sync_begin doesn't add to outstanding_cache_reqs, so it's unchanged.
+            // TODO: need ID freshness from the system model to close this.
+            assume(!self.state().outstanding_cache_reqs.dom().contains(disk_req_id));
         }
 
     }
@@ -1216,19 +1256,35 @@ impl Implementation {
         }
     }
 
+    // Use the system invariant to learn that in_flight is Some and the response ID matches.
+    // Precondition: the ID is not a cache request (from inv: SuperBlockReq ==> !cache_reqs).
     proof fn system_inv_response_implies_in_flight(self, disk_req_id: ID, i_disk_response: IDiskResponse, disk_response_token: Tracked<DiskRespShard>)
     requires
         self.i().recovery_state is RecoveryComplete,
+        i_disk_response is WriteResp,
+        !self.i().outstanding_cache_reqs.dom().contains(disk_req_id),
         disk_response_token@.multiset() == multiset_map_singleton(disk_req_id, i_disk_response@),
     ensures
-        i_disk_response is WriteResp,   // when RecoveryComplete, we never read again
         self.i().in_flight is Some,
         self.i().in_flight->0.req_id == disk_req_id,
     {
-        open_system_invariant_disk_response::<ConcreteProgramModel, RefinementProof>(self.model, disk_response_token);
-        multiset_map_singleton_ensures(disk_req_id, i_disk_response@);
-        assert(disk_response_token@.multiset().contains((disk_req_id, i_disk_response@)));
-        assume( false ); // something broke in connection to ConcreteSystem<AtomicState>?
+        let model = open_system_invariant_disk_response_singleton::<ConcreteProgramModel, RefinementProof>(
+            self.model, disk_response_token, disk_req_id, i_disk_response@);
+        let state = model.program.state;
+
+        assert(model.outstanding_reqs_consistent());
+        assert(model.disk.responses.dom().contains(disk_req_id));
+
+        // From outstanding_reqs_consistent domain equation:
+        // disk.requests.dom() + disk.responses.dom() == outstanding_cache_reqs.dom() + in_flight_sb_id
+        let in_flight_sb_id = if state.in_flight is Some { set!{state.in_flight.unwrap().req_id} } else { set!{} };
+        assert(model.disk.requests.dom() + model.disk.responses.dom() == state.outstanding_cache_reqs.dom() + in_flight_sb_id);
+
+        // disk_req_id is in the union, and NOT in outstanding_cache_reqs, so it must be in in_flight_sb_id
+        assert((state.outstanding_cache_reqs.dom() + in_flight_sb_id).contains(disk_req_id));
+        assert(!state.outstanding_cache_reqs.dom().contains(disk_req_id));
+        // Therefore in_flight is Some and in_flight.req_id == disk_req_id
+        assert(in_flight_sb_id.contains(disk_req_id));
     }
 
     proof fn system_inv_implies_atomic_state_wf(self)
@@ -1492,6 +1548,9 @@ impl Implementation {
         old(self).inv_api(old(api)),
         old(self).good_disk_response(id, disk_response, response_shard@),
         response_shard@.multiset() == multiset_map_singleton(id, disk_response@),
+        disk_response is WriteResp,
+        old(self).outstanding_req_is_superblock(id),
+        old(self).ready_for_user_operation(),
     ensures
         self.inv_api(api),
         self.ready_for_user_operation(),
@@ -1503,14 +1562,18 @@ impl Implementation {
         // which Noop a reply corresponds to.
         let ghost pre_state = self.model@.value();
 
-        // Use existence of a response + system model invariant to learn that we must have
-        // known in_flight true when we got here.
-        assert( self.in_flight is Some
-            && self.model@.value().state.journal.status is Some
-            ) by {
-            open_system_invariant_disk_response_singleton::<ConcreteProgramModel, RefinementProof>(self.model, response_shard, id, disk_response@);
-            assume( false );    // TODO(JL+jonh): Another spot where we lost open-invariant properties
+        // From inv(): SuperBlockReq ==> in_flight is Some && !cache_reqs.contains(id)
+        // From system invariant: !cache_reqs.contains(id) ==> in_flight.req_id == id
+        proof {
+            // inv() forall: outstanding_req_is_superblock(id) ==> in_flight is Some
+            //   && !outstanding_cache_reqs.dom().contains(id)
+            assert(self.outstanding_req_is_superblock(id));
+            assert(self.in_flight is Some);
+            assert(!self.i().outstanding_cache_reqs.dom().contains(id));
+            self.system_inv_response_implies_in_flight(id, disk_response, response_shard);
         }
+        assert( self.in_flight is Some );
+        assert( self.model@.value().state.journal.status is Some );
         assert( self.recovery_phase is ReadyForUserOperation );
 
         let mut in_flight = None;
@@ -1548,11 +1611,8 @@ impl Implementation {
                 ..pre_state.state
             }};
 
-            proof {
-                // Learn this before we yoink model out of self
-                assert( self.i().recovery_state is RecoveryComplete );
-                self.system_inv_response_implies_in_flight(id, disk_response, response_shard);
-            }
+            // in_flight is Some and req_id == id were established above via
+            // system_inv_response_implies_in_flight
 
             let tracked mut model = KVStoreTokenized::model::arbitrary();
             proof { tracked_swap(self.model.borrow_mut(), &mut model); }
@@ -1711,7 +1771,7 @@ impl Implementation {
                     self.handle_disk_cache_load_response(id, disk_response, response_shard, req_info, Ghost(pre_outstanding), api);
                 },
                 OutstandingReqInfo::CacheWriteReq{write_addr, handle} => {
-                    // handle cache write response 
+                    // handle cache write response
                     assume(false);
                 },
         }
