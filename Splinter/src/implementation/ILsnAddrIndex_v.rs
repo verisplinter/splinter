@@ -15,21 +15,6 @@ use crate::implementation::CachedJournal_v::{
  
 verus!{
 
-// external_body workaround for: complex arguments to &mut parameters
-#[verifier::external_body]
-exec fn vec_push_front<T>(v: &mut Vec<T>, value: T)
-    ensures v@ == old(v)@.insert(0, value)
-{
-    v.insert(0, value)
-}
-
-#[verifier::external_body]
-exec fn impossible_addr() -> (out: IAddress)
-    ensures false
-{
-    panic!();
-}
-
 pub struct ILsnAddrIndex {
     bounds: Vec<ILsn>,
     addrs: Vec<IAddress>,
@@ -527,11 +512,13 @@ impl ILsnAddrIndex {
             invariant
                 self.wf(),
                 i <= self.addrs.len(),
+                forall |j: int|
+                    #![trigger self.bounds[j]]
+                    #![trigger self.bounds[j + 1]]
+                    0 <= j < i as int ==> !(self.bounds[j] <= lsn < self.bounds[j + 1]),
             decreases self.addrs.len() - i
         {
-            let lo = self.bounds[i];
-            let hi = self.bounds[i + 1];
-            if lo <= lsn && lsn < hi {
+            if self.bounds[i] <= lsn && lsn < self.bounds[i + 1] {
                 proof {
                     assert(self.bounds.len() == self.addrs.len() + 1);
                     assert(i + 1 < self.bounds.len());
@@ -540,31 +527,22 @@ impl ILsnAddrIndex {
                 }
                 return self.addrs[i];
             }
+            proof {
+                assert(!(self.bounds[i as int] <= lsn < self.bounds[i as int + 1]));
+            }
             i = i + 1;
         }
 
-        // Unreachable for well-formed indexes when lsn is within [seq_start, seq_end).
-        impossible_addr()
-    }
-
-    exec fn insert_bound_at_front(&mut self, val: ILsn)
-    ensures
-        self.bounds.len() == old(self).bounds.len() + 1,
-        self.bounds[0] == val,
-        forall |k: int| 0 <= k < old(self).bounds.len() ==> self.bounds[k + 1] == old(self).bounds[k],
-        self.addrs == old(self).addrs,
-    {
-        vec_push_front(&mut self.bounds, val);
-    }
-
-    exec fn insert_addr_at_front(&mut self, val: IAddress)
-    ensures
-        self.addrs.len() == old(self).addrs.len() + 1,
-        self.addrs[0] == val,
-        forall |k: int| 0 <= k < old(self).addrs.len() ==> self.addrs[k + 1] == old(self).addrs[k],
-        self.bounds == old(self).bounds,
-    {
-        vec_push_front(&mut self.addrs, val);
+        proof {
+            let idx = self.find_segment(lsn as nat);
+            assert(0 <= idx < self.addrs.len());
+            assert(i == self.addrs.len());
+            assert(0 <= idx < i as int);
+            assert(!(self.bounds[idx] <= lsn < self.bounds[idx + 1]));
+            assert(self.bounds[idx] <= lsn < self.bounds[idx + 1]);
+            assert(false);
+        }
+        unreached()
     }
 
     // After inserting a new entry at the front, the spec interpretation at index k
@@ -650,8 +628,9 @@ impl ILsnAddrIndex {
             self@ == lsn_addr_index_append_record(old(self)@, new_lower_bound as nat, old_lower_bound as nat, addr@),
     {
         let ghost old_snap = *self;
-        self.insert_bound_at_front(new_lower_bound);
-        self.insert_addr_at_front(addr);
+
+        self.bounds.insert(0, new_lower_bound);
+        self.addrs.insert(0, addr);
 
         proof {
             // wf: sorted
