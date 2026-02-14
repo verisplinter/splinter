@@ -52,17 +52,6 @@ pub open spec fn iaddr_view(ptr: Option<IAddress>) -> Option<Address>
     }
 }
 
-proof fn map_le_lookup_eq<V>(m1: Map<Address, V>, m2: Map<Address, V>, k: Address)
-requires
-    m1 <= m2,
-    m1.contains_key(k),
-ensures
-    m1[k] == m2[k],
-{
-    // trigger
-    assert(m2.contains_key(k));
-}
-
 proof fn disk_view_valid_ranking_subset(
     disk: LinkedJournal_v::DiskView,
     sub: Map<Address, JournalRecord>,
@@ -81,7 +70,8 @@ ensures
         && dv.entries[addr].cropped_prior(dv.boundary_lsn) is Some
         implies ranking[dv.entries[addr].cropped_prior(dv.boundary_lsn).unwrap()] < ranking[addr] by {
         assert(disk.entries.contains_key(addr));
-        map_le_lookup_eq(sub, disk.entries, addr);
+        assert(sub.contains_key(addr));
+        assert(sub[addr] == disk.entries[addr]);
         assert(disk.entries[addr] == dv.entries[addr]);
         assert(ranking[disk.entries[addr].cropped_prior(dv.boundary_lsn).unwrap()] < ranking[addr]);
     };
@@ -342,7 +332,7 @@ impl JournalImpl {
             None => 0,
             Some(status) => {
                 let tail_start = status.lsn_addr_index.exec_seq_end();
-                // this cheat is incurring a runtime check, ugh
+                // Runtime overflow guard for exec arithmetic.
                 if u64::MAX - tail_start < status.unmarshalled_tail.len() as u64 {
                     convert_overflow_into_liveness_failure();
                 }
@@ -367,8 +357,6 @@ impl JournalImpl {
         out.wf(),
         !out.index_ready(),
         out@.snapshot == snapshot@,
-//         TODO how do I express this? transition!s work, but not init!
-//     ensures CachedJournal::initialize(snapshot@)
     {
         Self{
             snapshot,
@@ -430,22 +418,18 @@ impl JournalImpl {
         let index = &self.status.as_ref().unwrap().lsn_addr_index;
         let addr = index.lookup_lsn(start_lsn);
         proof {
-            assert(self.status.unwrap().lsn_addr_index@.contains_key(start_lsn as nat));
             assert(addr@ == self.status.unwrap().lsn_addr_index@[start_lsn as nat]);
         }
 
         let ghost cache_pre = cache@;
         let ghost journal_raw_disk : Map<Address, RawPage> = arbitrary();
         proof {
+            // Assumed global invariants linking cache/index to journal disk contents.
             assume(journal_raw_disk_inv(self.fmt, journal_raw_disk));
             assume(cache_matches_raw_disk(old(cache)@, journal_raw_disk));
-            // NOTE: this is part of system invariant, when we declare that journal is done
-            // we will establish a relation that index@ is consistent with implementation model index
-            // this is a property over 
             assume(forall |a: Address| #[trigger] self.status.unwrap().lsn_addr_index@.values().contains(a)
                 ==> journal_raw_disk.contains_key(a)
                     && raw_page_to_record(journal_raw_disk[a]).message_seq.seq_end <= self.seq_end());
-            // NOTE: these are also index to journal disk properties
             assume(raw_page_to_record(journal_raw_disk[addr@]).message_seq.seq_start <= start_lsn as nat);
             assume((start_lsn as nat) < raw_page_to_record(journal_raw_disk[addr@]).message_seq.seq_end);
         }
@@ -614,15 +598,10 @@ impl JournalImpl {
         }
     }
 
-    // This should do some cache reads and either bump another cache read (to walk the skip list)
-    // or report that it's done (and the index is ready).
-    // This could be a while loop that restarts from the beginning after every block for cache IO,
-    // but that's quadratric compute, and will eventually suck. I'm going to write it keeping
-    // intermediate state. That state will need an invariant wrt the cache, which Implementation
-    // will have to hang onto for us, unfortunately.
-    // TODO: should also pass in a journal model and associate it with journal snapshot
+    // Incrementally reconstruct the index from the journal chain.
+    // Keeps explicit intermediate state to avoid restarting from head on each cache interaction.
     pub exec fn recover_index_step(&mut self, cache: &mut FracCacheImpl) 
-        -> (out: RecoverIndexResult) //(out: (bool, Option<(MutHandle, IAddress, Ghost<Cache::Label>)>, bool))
+        -> (out: RecoverIndexResult)
     requires
         old(self).wf(),
         !old(self).index_ready(),
@@ -668,11 +647,9 @@ impl JournalImpl {
             None => { assert(false); None },
             // NOTE: builder is a hint for continued fetch
             Some(mut builder) => { 
-                // -------------- Assumption from system invariants -----------------
                 let ghost journal_raw_disk : Map<Address, RawPage> = arbitrary(); 
                 assume(journal_raw_disk_inv(self.fmt, journal_raw_disk));
                 assume(cache_matches_raw_disk(cache@, journal_raw_disk));
-                // -------------- End of system invariants assumptions -----------------
 
                 match builder.next_head.freshest_rec {
                     None => {
@@ -685,29 +662,20 @@ impl JournalImpl {
                         let ghost mut reads = map!{};
                         let mut curr = self.snapshot.freshest_rec;
                         let mut index;
-                        // trigger
                         assert(LinkedJournal_v::DiskView{boundary_lsn: bdy as nat, entries: to_journal_reads(reads)}.valid_ranking(map!{})); // witness
 
 
                         if let Some(root) = curr {
-                            let mut end = u64::MAX;
                             let mut index_initialized = false;
-                            index = ILsnAddrIndex::new(end);
+                            index = ILsnAddrIndex::new(u64::MAX);
 
-                            // -------------- Assumption from system invariants -----------------
-                            // NOTE: Cached Journal contains no internal disk, has to cross layers
-                            // faking from system invariant (should be opened on the caller side and passed in)
-                            // modularity issue, this might also be relevant to our passing commands back and forth problem
-                            // how would wee use this when facing concurrency?
+                            // Assumed global disk model for index reconstruction.
                             let ghost journal_disk = LinkedJournal_v::DiskView{boundary_lsn: bdy as nat, entries: to_journal_reads(journal_raw_disk)};
                             assume(journal_disk_inv(journal_disk, iaddr_view(curr)));
-                            // -------------- End of system invariants assumptions -----------------
 
                             let ghost ranking = journal_disk.the_ranking();
                             let ghost seq_end = journal_disk.entries[root@].message_seq.seq_end;
 
-                            // NOTE: journal disk should carry an inv that any clean address the cache has
-                            // have the same content as the journal disk and is a parsable journal page
                             while index.exec_seq_start() != bdy
                             invariant 
                                 index.wf(),
@@ -747,7 +715,6 @@ impl JournalImpl {
                                     FetchErrorCode::Success{slot_handle} => {
                                         let ghost cache_post_fetch = *cache;
                                         let all_slice = Slice::all(&slot_handle.rec);
-                                        // trigger
                                         assert( all_slice@.i(slot_handle.rec@) == slot_handle.rec@ );
                                         let i_journal_record = self.fmt.exec_parse(&all_slice, &slot_handle.rec);
                                         cache.handle_release(&addr, slot_handle);
@@ -773,12 +740,11 @@ impl JournalImpl {
                                             build_lsn_addr_index_from_reads_next_ptr_after_insert(to_journal_reads(reads_pre), bdy as nat, self@.snapshot.freshest_rec, iaddr_view(curr), to_journal_reads(reads)[addr@]);
                                         }
 
-                                        end = i_journal_record.seq_end();
                                         let start = if i_journal_record.header.start_lsn < bdy { bdy } else { i_journal_record.header.start_lsn };
 
                                         let ghost was_initialized = index_initialized;
                                         if !index_initialized {
-                                            index = ILsnAddrIndex::new(end); 
+                                            index = ILsnAddrIndex::new(i_journal_record.seq_end()); 
                                             index_initialized = true;
                                         }
 
@@ -822,19 +788,16 @@ impl JournalImpl {
                                         }
                                         index.index_prepend_record(old_bound, start, addr);
                                         proof {
-                                            // Proof block: extend the index model and re-establish build-index equality.
                                             if index_initialized {
                                                 let ptr2_data = to_journal_reads(reads)[addr@];
                                                 let start_lsn = vstd::math::max(bdy as int, ptr2_data.message_seq.seq_start as int) as nat;
                                                 let end_lsn = ptr2_data.message_seq.seq_end;
                                                 let ghost reads_post = to_journal_reads(reads_pre).insert(addr@, ptr2_data);
                                                 assert(to_journal_reads(reads) == reads_post);
-                                                // show the build index extends by this record
                                                 let ghost build_pre = build_lsn_addr_index_from_reads(to_journal_reads(reads_pre), bdy as nat, self@.snapshot.freshest_rec);
                                                 if !was_initialized {
                                                     build_lsn_addr_index_from_reads_next_ptr_not_in_reads(to_journal_reads(reads_pre), bdy as nat, self@.snapshot.freshest_rec, iaddr_view(curr));
                                                 }
-                                                // trigger
                                                 assert(lsn_disjoint(build_pre.dom(), start_lsn, end_lsn)) by {
                                                     index_pre.view_domain();
                                                 };
@@ -846,14 +809,12 @@ impl JournalImpl {
                                         curr = prior;
                                     },
                                     _ => {
-                                        // we can also just set builder back to freshest rec, 
-                                        // but panic here bc our current testing shouldn't reach that case
                                         please_panic(); 
                                     } 
                                 }
                             }
                             if !index_initialized {
-                                please_panic(); // something's wrong o.o
+                                please_panic();
                             }
                         } else {
                             index = ILsnAddrIndex::new(bdy);
@@ -877,21 +838,18 @@ impl JournalImpl {
  
                             index.derive_recovery_index_properties();
                             assert(lsn_index_domain_exact(index@, index.seq_start() as nat, index.seq_end() as nat));
-                            // trigger
                             assert( lsn_addr_index =~= index@ );
                             assert(lsn_index_domain_exact(
                                 self@.status.unwrap().lsn_addr_index,
                                 self@.snapshot.boundary_lsn,
                                 self@.status.unwrap().unmarshalled_tail.seq_start,
                             ));
-                            // trigger
                             assert(self@.status.unwrap().unmarshalled_tail == MsgHistory::empty_history_at(index.seq_end() as nat));
                             assert(all_addrs_have_complete_lsn_ranges(
                                 self@.status.unwrap().lsn_addr_index,
                                 self@.snapshot.boundary_lsn,
                             ));
                             assert(lsn_addr_index.dom() == Set::new(|lsn: LSN| bdy <= lsn < seq_end));
-                            // trigger
                             assert( CachedJournal::State::next_by(old(self)@, self@, journal_lbl, CachedJournal::Step::load_index{}) );
                         }
                         proof {
@@ -899,11 +857,8 @@ impl JournalImpl {
                             let updated_entries = old(cache)@.write_updated_entries(cache_lbl->writes);
                             let updated_status_map = old(cache)@.write_updated_status(cache_lbl->writes);
 
-                            // trigger
                             assert(old(cache)@.entries.union_prefer_right(updated_entries) =~= old(cache)@.entries);
-                            // trigger
                             assert(old(cache)@.status_map.union_prefer_right(updated_status_map) =~= old(cache)@.status_map);
-                            // trigger
                             assert( Cache::State::next_by(old(cache)@, cache@, cache_lbl, Cache::Step::access{}) );
                         }
                         out = RecoverIndexResult::IndexComplete{reads: Ghost(reads)};
@@ -932,7 +887,6 @@ impl JournalImpl {
                             FetchErrorCode::Success{slot_handle} => {
                                 let ghost cache_post_fetch = *cache;
                                 let all_slice = Slice::all(&slot_handle.rec);
-                                // trigger
                                 assert( all_slice@.i(slot_handle.rec@) == slot_handle.rec@ );
                                 let i_journal_record = self.fmt.exec_parse(&all_slice, &slot_handle.rec);
                                 cache.handle_release(&addr, slot_handle);
@@ -999,9 +953,7 @@ impl JournalImpl {
         self.index_ready(),
     {
         // swappery to deal with lack of &mut
-        // Since we don't have &mut results in verus yet, we need to swap the
-        // option out of self, deconstruct it, do the work we want on the inner struct,
-        // then reassemble the option and swap it back in. 🫤
+        // Verus currently lacks &mut returns, so update status by swapping Option out and back in.
         let mut dummy: Option<IJournalStatus> = None;
         core::mem::swap(&mut self.status, &mut dummy);
         dummy = match dummy {
@@ -1018,7 +970,6 @@ impl JournalImpl {
             let old_tail = old(self)@.status.unwrap().unmarshalled_tail;
             let new_tail = self@.status.unwrap().unmarshalled_tail;
 
-            // trigger
             assert( new_tail == old_tail.concat(messages) );
             assert(
                 CachedJournal::State::put(old(self)@, self@,
@@ -1108,25 +1059,13 @@ impl JournalImpl {
         out
     }
 
-    pub open spec fn lsn_range(start_incl: LSN, end_excl: LSN) -> Set<LSN>
-    {
-        Set::new(|lsn: LSN| start_incl <= lsn && lsn < end_excl)
-    }
-
     // Open because this definition gets used proving the refinement CachedJournal::Step::freeze_for_commit(depth) in Implementation
     pub open spec fn iaddrs_for_lsns(self, start_incl: LSN, end_excl: LSN) -> Set<Address>
     recommends self.index_ready()
     {
-        self@.status.unwrap().lsn_addr_index.restrict(Self::lsn_range(start_incl, end_excl)).values()
-    }
-
-    /// All marshalled journal pages are Filled+Clean in cache.
-    pub open spec fn marshalled_pages_are_clean(&self, cache: Cache::State) -> bool
-    recommends self.index_ready()
-    {
-        Cache::State::next_by(cache, cache,
-            Cache::Label::EvictableCheck{addrs: self.iaddrs_for_lsns(self.seq_start() as LSN, self@.marshalled_seq_end())},
-            Cache::Step::evictable())
+        self@.status.unwrap().lsn_addr_index.restrict(
+            Set::new(|lsn: LSN| start_incl <= lsn && lsn < end_excl)
+        ).values()
     }
 
     /// The clean high water mark: the seq_end of the highest page in the journal chain
