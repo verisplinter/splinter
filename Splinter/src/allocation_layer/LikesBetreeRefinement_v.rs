@@ -7,14 +7,9 @@ use vstd::prelude::*;
 use vstd::map::*;
 use vstd::seq_lib::*;
 use vstd::set_lib::*;
-use crate::spec::KeyType_t::*;
-use crate::spec::Messages_t::*;
-use crate::abstract_system::StampedMap_v::*;
-use crate::disk::GenericDisk_v::*;
 use crate::betree::Buffer_v::SimpleBuffer;
-use crate::betree::SplitRequest_v::*;
 use crate::betree::LinkedBetree_v::LinkedBetreeVars;
-use crate::allocation_layer::LikesBetree_v::*;
+use crate::allocation_layer::LikesBetree_v::{Likeable, LikesBetree};
 
 verus! {
 

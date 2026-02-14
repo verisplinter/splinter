@@ -4,8 +4,8 @@
 use vstd::prelude::*;
 use vstd::set_lib::*;
 
-use crate::spec::KeyType_t::*;
-use crate::spec::Messages_t::*;
+use crate::spec::KeyType_t::Key;
+use crate::spec::Messages_t::{Message, Value};
 
 verus! {
 

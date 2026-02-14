@@ -3,7 +3,7 @@
 use vstd::{prelude::*};
 use crate::marshalling::Slice_v::Slice;
 use crate::marshalling::Marshalling_v::{Marshal, Parsedview};
-use crate::marshalling::UniformPairFormat_v::*;
+use crate::marshalling::UniformPairFormat_v::uniform_size_matches_spec_size;
 use crate::marshalling::UniformSized_v::UniformSized;
 use crate::marshalling::UniformSizedMarshal_v::UniformSizedMarshal;
 use crate::marshalling::WF_v::WF;

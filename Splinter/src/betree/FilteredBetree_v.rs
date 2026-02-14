@@ -7,18 +7,18 @@ use verus_state_machines_macros::state_machine;
 
 use vstd::prelude::*;
 
-use crate::spec::KeyType_t::*;
-use crate::spec::Messages_t::*;
-use crate::betree::Buffer_v::*;
-use crate::betree::BufferSeq_v::*;
-use crate::betree::BufferOffsets_v::*;
-use crate::betree::OffsetMap_v::*;
-use crate::betree::Memtable_v::*;
-use crate::betree::Domain_v::*;
-use crate::betree::PivotTable_v::*;
-use crate::betree::SplitRequest_v::*;
-use crate::abstract_system::StampedMap_v::*;
-use crate::abstract_system::MsgHistory_v::*;
+use crate::spec::KeyType_t::{Key, to_element};
+use crate::spec::Messages_t::{Message, Value, default_value};
+use crate::betree::Buffer_v::{Buffer, SimpleBuffer};
+use crate::betree::BufferSeq_v::BufferSeq;
+use crate::betree::BufferOffsets_v::BufferOffsets;
+use crate::betree::OffsetMap_v::OffsetMap;
+use crate::betree::Memtable_v::Memtable;
+use crate::betree::Domain_v::{Domain, total_domain};
+use crate::betree::PivotTable_v::{PivotTable, domain_to_pivots};
+use crate::betree::SplitRequest_v::SplitRequest;
+use crate::abstract_system::StampedMap_v::{LSN, Stamped, empty};
+use crate::abstract_system::MsgHistory_v::MsgHistory;
 
 verus! {
 // Changes from a single buffer to a stack of buffers, tracks actvie buffers for ranges of keys.

@@ -5,7 +5,7 @@
 use vstd::prelude::*;
 use vstd::prelude::*;
 use vstd::{map::*,multiset::*};
-use crate::disk::GenericDisk_v::*;
+use crate::disk::GenericDisk_v::{AU, Address, to_aus, to_aus_additive, to_aus_singleton};
 
 verus!{
     pub type Likes = Multiset<Address>;

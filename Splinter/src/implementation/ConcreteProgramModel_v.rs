@@ -2,11 +2,11 @@
 use vstd::prelude::*;
 use vstd::prelude::*;
 
-use crate::spec::AsyncDisk_t::*;
-use crate::spec::MapSpec_t::*;
-use crate::trusted::ProgramModelTrait_t::*;
-use crate::implementation::DiskLayout_v::*;
-use crate::implementation::AtomicState_v::*;
+use crate::spec::AsyncDisk_t::{DiskRequest, DiskResponse};
+use crate::spec::MapSpec_t::ID;
+use crate::trusted::ProgramModelTrait_t::{DiskModel, ProgramDiskInfo, ProgramLabel, ProgramModelTrait, ProgramUserOp};
+use crate::implementation::DiskLayout_v::DiskLayout;
+use crate::implementation::AtomicState_v::AtomicState;
 
 verus!{
 

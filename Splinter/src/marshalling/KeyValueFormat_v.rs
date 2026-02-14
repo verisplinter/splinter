@@ -1,11 +1,11 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
 use vstd::{prelude::*};
-use crate::spec::KeyType_t::*;
-use crate::spec::Messages_t::*;
+use crate::spec::KeyType_t::Key;
+use crate::spec::Messages_t::Value;
 use crate::marshalling::Marshalling_v::Parsedview;
 use crate::marshalling::IntegerMarshalling_v::IntFormat;
-use crate::marshalling::Wrappable_v::*;
+use crate::marshalling::Wrappable_v::{Wrappable, WrappableFormat};
 use crate::marshalling::WF_v::WF;
 
 verus! {

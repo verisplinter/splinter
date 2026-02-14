@@ -1,17 +1,17 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
 use vstd::{prelude::*};
-use crate::spec::KeyType_t::*;
-use crate::spec::Messages_t::*;
+use crate::spec::KeyType_t::Key;
+use crate::spec::Messages_t::Value;
 use crate::marshalling::Marshalling_v::Marshal;
 use crate::marshalling::Marshalling_v::Parsedview;
 use crate::marshalling::Slice_v::Slice;
 use crate::marshalling::WF_v::WF;
 // use crate::marshalling::SeqMarshalling_v::*;
-use crate::marshalling::KeyValueFormat_v::*;
+use crate::marshalling::KeyValueFormat_v::KeyValueFormat;
 // use crate::marshalling::UniformSized_v::*;
 use crate::marshalling::ResizableUniformSizedSeq_v::ResizableUniformSizedElementSeqFormat;
-use crate::implementation::VecMap_v::*;
+use crate::implementation::VecMap_v::VecMap;
 
 verus! {
 

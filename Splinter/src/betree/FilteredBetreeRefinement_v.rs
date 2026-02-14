@@ -3,17 +3,17 @@
 use vstd::prelude::*;
 //use vstd::prelude_macros::*;
 use vstd::prelude::*;
-use crate::spec::KeyType_t::*;
-use crate::spec::Messages_t::*;
-use crate::abstract_system::StampedMap_v::*;
-use crate::betree::Domain_v::*;
-use crate::betree::PivotTable_v::*;
-use crate::betree::Buffer_v::*;
-use crate::betree::BufferSeq_v::*;
+use crate::spec::KeyType_t::{Element, Key, to_element};
+use crate::spec::Messages_t::{Message, nop_delta};
+use crate::abstract_system::StampedMap_v::{Stamped, empty};
+use crate::betree::Domain_v::{Domain, total_domain};
+use crate::betree::PivotTable_v::PivotTable;
+use crate::betree::Buffer_v::{Buffer, SimpleBuffer};
+use crate::betree::BufferSeq_v::BufferSeq;
 use crate::betree::PivotBetree_v;
 use crate::betree::PivotBetree_v::PivotBetree;
-use crate::betree::FilteredBetree_v::*;
-use crate::betree::SplitRequest_v::*;
+use crate::betree::FilteredBetree_v::{BetreeNode, FilteredBetree, Path, QueryReceipt, QueryReceiptLine, StampedBetree};
+use crate::betree::SplitRequest_v::SplitRequest;
 
 verus! {
 

@@ -5,7 +5,7 @@
 //! This exists solely to match the Message type in structs
 
 use vstd::{prelude::*};
-use crate::spec::Messages_t::{Message, Value, Delta};
+use crate::spec::Messages_t::{Message, Value};
 use crate::marshalling::Slice_v::Slice;
 use crate::marshalling::Marshalling_v::{Marshal, Parsedview};
 use crate::marshalling::IntegerMarshalling_v::IntFormat;

@@ -12,8 +12,8 @@ use vstd::prelude::*;
 use vstd::map::*;
 use vstd::math;
 use crate::abstract_system::StampedMap_v::LSN;
-use crate::abstract_system::MsgHistory_v::*;
-use crate::disk::GenericDisk_v::*;
+use crate::abstract_system::MsgHistory_v::MsgHistory;
+use crate::disk::GenericDisk_v::{Address, Pointer, Ranking};
 
 verus!{
 

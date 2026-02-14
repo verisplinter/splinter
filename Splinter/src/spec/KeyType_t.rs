@@ -6,7 +6,7 @@ use vstd::prelude::*;
 //use vstd::prelude_macros::*;
 use vstd::prelude::*;
 use vstd::set_lib::*;
-use crate::spec::injective_t::*;
+use crate::spec::injective_t::Injective;
 
 verus! {
 

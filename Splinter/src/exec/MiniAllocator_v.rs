@@ -6,7 +6,7 @@ use vstd::prelude::*;
 //use vstd::prelude_macros::*;
 use vstd::prelude::*;
 
-use crate::disk::GenericDisk_v::*;
+use crate::disk::GenericDisk_v::{IAU, IAddress, IPage, addr_range, au_count, page_count};
 use crate::allocation_layer::MiniAllocator_v;
 
 verus! {

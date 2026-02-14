@@ -4,9 +4,9 @@
 use vstd::prelude::*;
 use vstd::{map::*,set::*};
 
-use crate::spec::KeyType_t::*;
-use crate::spec::Messages_t::*;
-use crate::abstract_system::StampedMap_v::*;
+use crate::spec::KeyType_t::Key;
+use crate::spec::Messages_t::{Message, Value};
+use crate::abstract_system::StampedMap_v::{LSN, Stamped, StampedMap};
 
 verus! {
 

@@ -6,12 +6,12 @@ use vstd::prelude::*;
 use verus_state_machines_macros::state_machine;
 
 use vstd::prelude::*;
-use crate::spec::KeyType_t::*;
-use crate::spec::Messages_t::*;
-use crate::betree::Buffer_v::*;
-use crate::betree::Memtable_v::*;
-use crate::abstract_system::StampedMap_v::*;
-use crate::abstract_system::MsgHistory_v::*;
+use crate::spec::KeyType_t::Key;
+use crate::spec::Messages_t::{Message, Value};
+use crate::betree::Buffer_v::{Buffer, SimpleBuffer, all_keys, total_keys};
+use crate::betree::Memtable_v::Memtable;
+use crate::abstract_system::StampedMap_v::{LSN, Stamped, empty};
+use crate::abstract_system::MsgHistory_v::MsgHistory;
 
 verus! {
 // This is a functional model of a Betree, but it doesn't require that child

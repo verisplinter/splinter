@@ -1,7 +1,6 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
 use vstd::{prelude::*};
-use crate::marshalling::Slice_v::Slice;
 use crate::marshalling::Marshalling_v::{Marshal, Parsedview};
 use crate::marshalling::UniformPairFormat_v::*;
 use crate::marshalling::UniformSized_v::UniformSized;

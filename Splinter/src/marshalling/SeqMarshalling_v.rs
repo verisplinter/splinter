@@ -6,9 +6,9 @@ use vstd::prelude::*;
 use vstd::prelude::*;
 // use vstd::bytes::*;
 // use vstd::slice::*;
-use crate::marshalling::Slice_v::*;
-use crate::marshalling::WF_v::*;
-use crate::marshalling::Marshalling_v::*;
+use crate::marshalling::Slice_v::{Slice, SpecSlice};
+use crate::marshalling::WF_v::WF;
+use crate::marshalling::Marshalling_v::{Marshal, Parsedview};
 
 verus! {
 

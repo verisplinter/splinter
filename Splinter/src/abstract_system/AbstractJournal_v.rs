@@ -6,8 +6,8 @@ use vstd::prelude::*;
 //use vstd::prelude_macros::*;
 use verus_state_machines_macros::state_machine;
 
-use crate::abstract_system::StampedMap_v::*;
-use crate::abstract_system::MsgHistory_v::*;
+use crate::abstract_system::StampedMap_v::LSN;
+use crate::abstract_system::MsgHistory_v::MsgHistory;
 
 verus! {
 

@@ -11,9 +11,9 @@ use vstd::prelude::*;
 use vstd::map::*;
 use vstd::seq_lib::*;
 use crate::abstract_system::StampedMap_v::LSN;
-use crate::abstract_system::MsgHistory_v::*;
-use crate::abstract_system::AbstractJournal_v::*;
-use crate::journal::PagedJournal_v::*;
+use crate::abstract_system::MsgHistory_v::MsgHistory;
+use crate::abstract_system::AbstractJournal_v::AbstractJournal;
+use crate::journal::PagedJournal_v::{JournalRecord, PagedJournal, TruncatedJournal};
 
 verus! {
 

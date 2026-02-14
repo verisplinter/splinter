@@ -11,11 +11,11 @@ use vstd::{math::*};
 use verus_state_machines_macros::state_machine;
 
 use crate::abstract_system::StampedMap_v::LSN;
-use crate::abstract_system::MsgHistory_v::*;
+use crate::abstract_system::MsgHistory_v::MsgHistory;
 use crate::journal::LinkedJournal_v::LinkedJournal;
 use crate::journal::LinkedJournal_v::TruncatedJournal;
 use crate::journal::LinkedJournal_v::DiskView;
-use crate::disk::GenericDisk_v::*;
+use crate::disk::GenericDisk_v::{Address, Pointer};
 
 verus!{
 

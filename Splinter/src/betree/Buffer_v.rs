@@ -3,9 +3,9 @@
 //use vstd::prelude_macros::*;
 use vstd::prelude::*;
 use vstd::{map::*,set::*};
-use crate::spec::KeyType_t::*;
-use crate::spec::Messages_t::*;
-use crate::betree::BufferDisk_v::*;
+use crate::spec::KeyType_t::Key;
+use crate::spec::Messages_t::{Message, nop_delta};
+use crate::betree::BufferDisk_v::BufferDisk;
 use crate::disk::GenericDisk_v::{Address};
 
 verus! {

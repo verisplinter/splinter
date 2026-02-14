@@ -9,9 +9,9 @@ use verus_state_machines_macros::state_machine;
 use vstd::{map::*};
 
 // use crate::spec::Option_t::*;
-use crate::abstract_system::StampedMap_v::*;
-use crate::abstract_system::MsgHistory_v::*;
-use crate::abstract_system::AbstractJournal_v::*;
+use crate::abstract_system::StampedMap_v::{LSN, empty};
+use crate::abstract_system::MsgHistory_v::MsgHistory;
+use crate::abstract_system::AbstractJournal_v::AbstractJournal;
 
 verus! {
 

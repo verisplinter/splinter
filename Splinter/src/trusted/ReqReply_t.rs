@@ -3,8 +3,8 @@
 use vstd::{prelude::*};
 // use vstd::prelude::*;
 
-use crate::spec::KeyType_t::*;
-use crate::spec::Messages_t::*;
+use crate::spec::KeyType_t::Key;
+use crate::spec::Messages_t::Value;
 
 use crate::spec::MapSpec_t;
 use crate::spec::MapSpec_t::{ID};

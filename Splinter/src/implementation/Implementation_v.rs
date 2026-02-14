@@ -8,33 +8,33 @@ use vstd::assert_maps_equal;
 use vstd::tokens::InstanceId;
 use vstd::std_specs::hash::*;
 
-use crate::trusted::ClientAPI_t::*;
-use crate::trusted::ReqReply_t::*;
-use crate::trusted::KVStoreTrait_t::*;
-use crate::trusted::KVStoreTokenized_t::*;
-use crate::trusted::ProgramModelTrait_t::*;
+use crate::trusted::ClientAPI_t::{ClientAPI, DiskResponseRecord};
+use crate::trusted::ReqReply_t::{Input, Output, Reply, Request};
+use crate::trusted::KVStoreTrait_t::{KVStoreTrait, open_system_invariant_disk_response, open_system_invariant_disk_response_singleton, open_system_invariant_user_request};
+use crate::trusted::KVStoreTokenized_t::KVStoreTokenized;
+use crate::trusted::ProgramModelTrait_t::{ProgramDiskInfo, ProgramLabel, ProgramModelTrait, ProgramUserOp};
 use crate::abstract_system::StampedMap_v::LSN;
 
 use crate::spec::MapSpec_t::{ID, MapSpec};
-use crate::spec::TotalKMMap_t::*;
-use crate::spec::KeyType_t::*;
-use crate::spec::Messages_t::*;
+use crate::spec::TotalKMMap_t::TotalKMMap;
+use crate::spec::KeyType_t::Key;
+use crate::spec::Messages_t::{Message, Value};
 use crate::abstract_system::StampedMap_v::{StampedMap};
 use crate::abstract_system::MsgHistory_v::MsgHistory;
 use crate::abstract_system::MsgHistory_v::KeyedMessage;
 use crate::abstract_system::AbstractMap_v::AbstractMap;
 use crate::abstract_system::AbstractCrashAwareMap_v::AbstractCrashAwareMap;
 
-use crate::implementation::ModelRefinement_v::*;
-use crate::implementation::ConcreteProgramModel_v::*;
-use crate::implementation::AtomicState_v::*;
-use crate::implementation::MultisetMapRelation_v::*;
-use crate::implementation::VecMap_v::*;
+use crate::implementation::ModelRefinement_v::RefinementProof;
+use crate::implementation::ConcreteProgramModel_v::ConcreteProgramModel;
+use crate::implementation::AtomicState_v::{AtomicState, DiskEvent, InflightInfo, InternalEvent, ProgramEvent, RecoveryState, map_to_multiset, to_journal_reads};
+use crate::implementation::MultisetMapRelation_v::{multiset_map_singleton, multiset_map_singleton_ensures, multiset_to_map, unique_keys};
+use crate::implementation::VecMap_v::VecMap;
 use crate::implementation::JournalTypes_v::{ILsn};
 use crate::allocation_layer::LikesJournal_v::lsn_addr_index_discard_up_to;
-use crate::implementation::JournalImpl_v::*;
+use crate::implementation::JournalImpl_v::{IJournalSnapshot, JournalImpl, RecoverIndexResult, RecoverMapResult, load_index_labels, map_recovery_labels};
 use crate::implementation::SuperblockTypes_v;
-use crate::implementation::SuperblockTypes_v::*;
+use crate::implementation::SuperblockTypes_v::{ASuperblock, ISuperblock, map_to_kmmap};
 use crate::implementation::CachedJournal_v::CachedJournal;
 use crate::implementation::CachedJournal_v;
 use crate::marshalling::Marshalling_v::Parsedview;
@@ -42,17 +42,17 @@ use crate::marshalling::WF_v::WF;
 use crate::implementation::OverflowFiction_v::*;
 use crate::abstract_system::AbstractCrashAwareMap_v;
 use crate::implementation::Cache_v::Cache;
-use crate::implementation::FracCacheImpl_v::*;
+use crate::implementation::FracCacheImpl_v::{FetchErrorCode, FracCacheImpl, MutHandle, PAGE_SIZE_BYTES, cache_load_label};
 
 #[allow(unused_imports)]
 use vstd::multiset::*;
 #[allow(unused_imports)]
 use vstd::tokens::*;
 #[allow(unused_imports)]
-use crate::spec::AsyncDisk_t::*;
-use crate::spec::ImplDisk_t::*;
+use crate::spec::AsyncDisk_t::{Address, AsyncDisk, Disk, DiskRequest, DiskResponse, RawPage};
+use crate::spec::ImplDisk_t::{IAddress, IDiskRequest, IDiskResponse};
 #[allow(unused_imports)]
-use crate::implementation::DiskLayout_v::*;
+use crate::implementation::DiskLayout_v::{DiskLayout, superblock_addr};
 use vstd::hash_map::HashMapWithView;
 
 verus!{
@@ -1702,7 +1702,7 @@ impl Implementation {
         self.recovery_phase.advances(old(self).recovery_phase),
     {
         let ghost pre_outstanding = self.outstanding_requests@;
-        let req_info = self.outstanding_requests.remove_take(&id);
+        let req_info = self.outstanding_requests.remove(&id);
         match req_info {
             None => { Self::todo_placeholder(); }
             Some(req_info) => match req_info {

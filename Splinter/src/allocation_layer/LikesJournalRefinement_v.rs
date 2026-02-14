@@ -5,11 +5,10 @@ use vstd::prelude::*;
 //use vstd::prelude_macros::*;
 
 use vstd::prelude::*;
-use crate::abstract_system::StampedMap_v::LSN;
 use crate::disk::GenericDisk_v::Pointer;
 use crate::journal::LinkedJournal_v;
 use crate::journal::LinkedJournal_v::{LinkedJournal, TruncatedJournal};
-use crate::allocation_layer::LikesJournal_v::*;
+use crate::allocation_layer::LikesJournal_v::{LikesJournal, can_crop_index, minmin, next_index, pointer_after_crop_index};
 
 verus!{
 

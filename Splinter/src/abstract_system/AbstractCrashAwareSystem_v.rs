@@ -11,13 +11,13 @@ use vstd::prelude::*;
 use verus_state_machines_macros::state_machine;
 use vstd::prelude::*;
 
-use crate::spec::Messages_t::*;
+use crate::spec::Messages_t::Message;
 use crate::spec::MapSpec_t;
-use crate::spec::MapSpec_t::{SyncReqId, *};
+use crate::spec::MapSpec_t::{AsyncMap, CrashTolerantAsyncMap, EphemeralState, ID, Input, Output, Reply, Request, SyncReqId};
 
 use crate::abstract_system::AbstractCrashAwareJournal_v::*;
 use crate::abstract_system::AbstractCrashAwareMap_v::*;
-use crate::abstract_system::StampedMap_v::*;
+use crate::abstract_system::StampedMap_v::{LSN, empty};
 use crate::abstract_system::MsgHistory_v::{MsgHistory, KeyedMessage};
 
 // TODO (jonh): Rename all of the labels in all files to exclude "Op" or "Label" since it's redundant

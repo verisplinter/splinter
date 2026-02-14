@@ -14,8 +14,8 @@ use vstd::prelude::*;
 //use vstd::prelude_macros::*;
 
 use vstd::prelude::*;
-use crate::spec::KeyType_t::*;
-use crate::spec::Messages_t::*;
+use crate::spec::KeyType_t::Key;
+use crate::spec::Messages_t::{Message, nop_delta};
 // use crate::betree::Buffer_v::*;
 // use crate::betree::Domain_v::*;
 

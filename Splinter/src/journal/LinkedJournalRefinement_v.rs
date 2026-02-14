@@ -5,17 +5,15 @@
 use vstd::prelude::*;
 
 //use vstd::prelude_macros::*;
-use verus_state_machines_macros::state_machine;
 
 use vstd::prelude::*;
 use vstd::calc_macro::*;
 use crate::abstract_system::StampedMap_v::LSN;
-use crate::abstract_system::MsgHistory_v::*;
-use crate::disk::GenericDisk_v::*;
+use crate::disk::GenericDisk_v::Pointer;
 use crate::journal::PagedJournal_v;
 use crate::journal::PagedJournal_v::PagedJournal;
 use crate::journal::LinkedJournal_v;
-use crate::journal::LinkedJournal_v::*;
+use crate::journal::LinkedJournal_v::{DiskView, JournalRecord, LinkedJournal, TruncatedJournal};
 
 verus!{
 

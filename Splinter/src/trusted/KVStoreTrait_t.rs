@@ -5,13 +5,13 @@ use vstd::prelude::ValueToken;
 use vstd::prelude::ElementToken;
 
 use vstd::tokens::InstanceId;
-use crate::trusted::ProgramModelTrait_t::*;
-use crate::trusted::RefinementObligation_t::*;
-use crate::trusted::ClientAPI_t::*;
-use crate::trusted::KVStoreTokenized_t::*;
-use crate::trusted::SystemModel_t::*;
-use crate::spec::MapSpec_t::*;
-use crate::spec::AsyncDisk_t::*;
+use crate::trusted::ProgramModelTrait_t::ProgramModelTrait;
+use crate::trusted::RefinementObligation_t::RefinementObligation;
+use crate::trusted::ClientAPI_t::ClientAPI;
+use crate::trusted::KVStoreTokenized_t::KVStoreTokenized;
+use crate::trusted::SystemModel_t::SystemModel;
+use crate::spec::MapSpec_t::ID;
+use crate::spec::AsyncDisk_t::DiskResponse;
 use crate::implementation::MultisetMapRelation_v::multiset_map_singleton;
 
 verus!{

@@ -8,11 +8,11 @@ use vstd::prelude::*;
 use vstd::prelude::*;
 use vstd::map::*;
 
-use crate::betree::Buffer_v::*;
-use crate::spec::Messages_t::*;
-use crate::spec::KeyType_t::*;
-use crate::abstract_system::StampedMap_v::*;
-use crate::abstract_system::MsgHistory_v::*;
+use crate::betree::Buffer_v::{Buffer, SimpleBuffer};
+use crate::spec::Messages_t::Message;
+use crate::spec::KeyType_t::Key;
+use crate::abstract_system::StampedMap_v::{LSN, empty};
+use crate::abstract_system::MsgHistory_v::{KeyedMessage, MsgHistory};
 
 verus! {
 

@@ -4,7 +4,7 @@
 use vstd::prelude::*;
 //use vstd::prelude_macros::*;
 
-use crate::spec::KeyType_t::*;
+use crate::spec::KeyType_t::Key;
 
 verus! {
 pub enum SplitRequest {

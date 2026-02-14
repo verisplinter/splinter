@@ -7,20 +7,20 @@ use vstd::prelude::*;
 use verus_state_machines_macros::state_machine;
 
 use vstd::{prelude::*, set::*, set_lib::*};
-use crate::spec::KeyType_t::*;
-use crate::spec::Messages_t::*;
-use crate::disk::GenericDisk_v::*;
-use crate::betree::Buffer_v::*;
-use crate::betree::LinkedSeq_v::*;
-use crate::betree::BufferDisk_v::*;
-use crate::betree::BufferOffsets_v::*;
-use crate::betree::OffsetMap_v::*;
-use crate::betree::Memtable_v::*;
-use crate::betree::Domain_v::*;
-use crate::betree::PivotTable_v::*;
-use crate::betree::SplitRequest_v::*;
-use crate::abstract_system::StampedMap_v::*;
-use crate::abstract_system::MsgHistory_v::*;
+use crate::spec::KeyType_t::{Element, Key, to_element};
+use crate::spec::Messages_t::{Message, Value, default_value};
+use crate::disk::GenericDisk_v::{Address, Pointer, Ranking};
+use crate::betree::Buffer_v::{Buffer, SimpleBuffer};
+use crate::betree::LinkedSeq_v::LinkedSeq;
+use crate::betree::BufferDisk_v::BufferDisk;
+use crate::betree::BufferOffsets_v::BufferOffsets;
+use crate::betree::OffsetMap_v::OffsetMap;
+use crate::betree::Memtable_v::Memtable;
+use crate::betree::Domain_v::{Domain, total_domain};
+use crate::betree::PivotTable_v::{PivotTable, domain_to_pivots};
+use crate::betree::SplitRequest_v::SplitRequest;
+use crate::abstract_system::StampedMap_v::{LSN, Stamped, empty};
+use crate::abstract_system::MsgHistory_v::MsgHistory;
 
 verus! { 
 // Introduces a diskview and pointers, carries forward filtered buffer stacks inside the 

@@ -4,9 +4,10 @@
 //use vstd::prelude_macros::*;
 use vstd::prelude::*;
 
-use crate::betree::LinkedBranch_v::*;
+use crate::betree::LinkedBranch_v::{Address, Key, LinkedBranch, Message, Node, Path, SplitArg};
 use crate::betree::PivotBranch_v;
 use crate::betree::PivotBranchRefinement_v;
+use crate::betree::Utils_v::{lemma_set_subset_of_union_seq_of_sets, lemma_union_seq_of_sets_contains, lemma_union_seq_of_sets_finite, union_seq_of_sets};
 use crate::disk::GenericDisk_v::Ranking;
 
 verus! {

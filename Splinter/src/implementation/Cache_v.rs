@@ -9,8 +9,7 @@ use verus_state_machines_macros::state_machine;
 use vstd::prelude::*;
 use vstd::{map::*, map_lib::*, seq::*, set::*};
 
-use crate::spec::AsyncDisk_t::*;
-use crate::spec::MapSpec_t::{ID};
+use crate::spec::AsyncDisk_t::{Address, DiskRequest, DiskResponse, RawPage};
 
 verus!{
 

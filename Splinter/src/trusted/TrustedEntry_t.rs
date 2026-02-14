@@ -4,7 +4,7 @@
 use vstd::prelude::*; // needed for Ghost, but that gets erased.
 
 use crate::trusted::KVStoreTrait_t::*;
-use crate::trusted::ClientAPI_t::*;
+use crate::trusted::ClientAPI_t::ClientAPI;
 
 // Provides an entry point that enforces application of the KVStoreTrait,
 // which is how we ensure the implementation calling the API corresponds

@@ -7,10 +7,10 @@ use vstd::prelude::*;
 
 use verus_state_machines_macros::state_machine;
 
-use crate::spec::KeyType_t::*;
-use crate::spec::Messages_t::*;
-use crate::abstract_system::StampedMap_v::*;
-use crate::abstract_system::MsgHistory_v::*;
+use crate::spec::KeyType_t::Key;
+use crate::spec::Messages_t::Value;
+use crate::abstract_system::StampedMap_v::{LSN, StampedMap};
+use crate::abstract_system::MsgHistory_v::MsgHistory;
 
 verus! {
 

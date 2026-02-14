@@ -7,7 +7,7 @@ use crate::spec::KeyType_t::*;
 use crate::spec::Messages_t::*;
 use crate::disk::GenericDisk_v::{IAddress};
 use crate::spec::AsyncDisk_t::{RawPage, DiskRequest, DiskResponse, Address};
-use crate::implementation::Cache_v::*;
+use crate::implementation::Cache_v::{Cache, Entry, Slot, Status, addr_maps_to_req};
 use vstd::std_specs::hash::obeys_key_model;
 use vstd::prelude::*;
 use vstd::pcm::Loc;

@@ -5,8 +5,8 @@ use vstd::prelude::*;
 //use vstd::prelude_macros::*;
 
 use vstd::{map::*,set::*};
-use crate::spec::KeyType_t::*;
-use crate::betree::Buffer_v::*;
+use crate::spec::KeyType_t::Key;
+use crate::betree::Buffer_v::{Buffer, total_keys};
 
 verus! {
 

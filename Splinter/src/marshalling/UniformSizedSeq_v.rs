@@ -6,12 +6,12 @@ use vstd::prelude::*;
 use vstd::prelude::*;
 // use vstd::bytes::*;
 // use vstd::slice::*;
-use crate::marshalling::Slice_v::*;
+use crate::marshalling::Slice_v::{Slice, SpecSlice};
 use crate::marshalling::WF_v::WF;
-use crate::marshalling::Marshalling_v::*;
-use crate::marshalling::SeqMarshalling_v::*;
-use crate::marshalling::UniformSized_v::*;
-use crate::marshalling::math_v::*;
+use crate::marshalling::Marshalling_v::{Marshal, Parsedview};
+use crate::marshalling::SeqMarshalling_v::SeqMarshal;
+use crate::marshalling::UniformSized_v::UniformSized;
+use crate::marshalling::math_v::{distribute_left, div_mul_order, div_plus_one, lemma_seq_slice_slice, mul_preserves_le, nat_mul_nat_is_nat, pos_mul_preserves_order, usize_mult};
 
 verus! {
 

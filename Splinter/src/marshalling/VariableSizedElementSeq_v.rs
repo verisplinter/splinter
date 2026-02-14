@@ -7,14 +7,14 @@ use vstd::prelude::*;
 use vstd::seq_lib::*;
 // use vstd::bytes::*;
 // use vstd::slice::*;
-use crate::marshalling::Slice_v::*;
-use crate::marshalling::Marshalling_v::*;
-use crate::marshalling::IntegerMarshalling_v::*;
-use crate::marshalling::SeqMarshalling_v::*;
+use crate::marshalling::Slice_v::{Slice, SpecSlice};
+use crate::marshalling::Marshalling_v::{Marshal, Parsedview};
+use crate::marshalling::IntegerMarshalling_v::{IntFormat, IntFormattable};
+use crate::marshalling::SeqMarshalling_v::SeqMarshal;
 // use crate::marshalling::UniformSizedSeq_v::*;
-use crate::marshalling::UniformSized_v::*;
-use crate::marshalling::ResizableUniformSizedSeq_v::*;
-use crate::marshalling::math_v::*;
+use crate::marshalling::UniformSized_v::UniformSized;
+use crate::marshalling::ResizableUniformSizedSeq_v::ResizableUniformSizedElementSeqFormat;
+use crate::marshalling::math_v::{is_prefix, mul_preserves_le};
 
 verus! {
 

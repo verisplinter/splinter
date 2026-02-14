@@ -5,7 +5,7 @@
 
 use crate::abstract_system::MsgHistory_v::KeyedMessage;
 use crate::spec::KeyType_t::Key;
-use crate::spec::Messages_t::{Message, Value};
+use crate::spec::Messages_t::Message;
 use crate::marshalling::KeyFormat_v::KeyFormat;
 use crate::marshalling::MessageFormat_v::MessageFormat;
 use crate::marshalling::Slice_v::Slice;

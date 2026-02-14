@@ -8,9 +8,9 @@ use vstd::math::*;
 use verus_state_machines_macros::state_machine;
 
 use crate::abstract_system::StampedMap_v::LSN;
-use crate::abstract_system::MsgHistory_v::*;
-use crate::disk::GenericDisk_v::*;
-use crate::journal::LinkedJournal_v::*;
+use crate::abstract_system::MsgHistory_v::MsgHistory;
+use crate::disk::GenericDisk_v::{Address, Pointer};
+use crate::journal::LinkedJournal_v::{DiskView, JournalRecord};
 use crate::allocation_layer::LikesJournal_v::*;
 
 // this is a version of the journal where

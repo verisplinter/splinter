@@ -5,7 +5,7 @@
 use vstd::prelude::*;
 //use vstd::prelude_macros::*;
 use vstd::prelude::*;
-use crate::disk::GenericDisk_v::*;
+use crate::disk::GenericDisk_v::{AU, Address, page_count};
 
 verus! {
 

@@ -5,11 +5,9 @@
 use vstd::prelude::*;
 
 //use vstd::prelude_macros::*;
-use verus_state_machines_macros::state_machine;
 use vstd::{map::*, seq::*, bytes::*, string::View};
 
-use crate::spec::MapSpec_t::{ID};
-use crate::spec::AsyncDisk_t::{*};
+use crate::spec::AsyncDisk_t::{Address, au_count, DiskRequest, DiskResponse, GenericDiskRequest, GenericDiskResponse, page_count};
 
 verus!{
 /// IAddress defined for executable code

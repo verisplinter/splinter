@@ -13,12 +13,12 @@ use verus_state_machines_macros::state_machine;
 use vstd::{map::*};
 
 // use crate::spec::Option_t::*;
-use crate::spec::KeyType_t::*;
-use crate::spec::Messages_t::*;
+use crate::spec::KeyType_t::Key;
+use crate::spec::Messages_t::Value;
 
-use crate::abstract_system::StampedMap_v::*;
-use crate::abstract_system::MsgHistory_v::*;
-use crate::abstract_system::AbstractMap_v::*;
+use crate::abstract_system::StampedMap_v::{LSN, StampedMap, empty};
+use crate::abstract_system::MsgHistory_v::MsgHistory;
+use crate::abstract_system::AbstractMap_v::AbstractMap;
 
 verus! {
 

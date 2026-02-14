@@ -6,11 +6,11 @@ use vstd::prelude::*;
 use vstd::prelude::*;
 use vstd::bytes::*;
 use vstd::slice::*;
-use crate::marshalling::Slice_v::*;
+use crate::marshalling::Slice_v::Slice;
 use crate::marshalling::WF_v::WF;
-use crate::marshalling::Marshalling_v::*;
-use crate::marshalling::StaticallySized_v::*;
-use crate::marshalling::UniformSized_v::*;
+use crate::marshalling::Marshalling_v::{Marshal, Parsedview};
+use crate::marshalling::StaticallySized_v::StaticallySized;
+use crate::marshalling::UniformSized_v::UniformSized;
 
 verus! {
 

@@ -5,12 +5,12 @@ use vstd::prelude::*;
 //use vstd::prelude_macros::*;
 
 use vstd::{map::*,seq::*,set::*};
-use crate::spec::KeyType_t::*;
-use crate::spec::Messages_t::*;
-use crate::betree::Buffer_v::*;
+use crate::spec::KeyType_t::Key;
+use crate::spec::Messages_t::{Message, nop_delta};
+use crate::betree::Buffer_v::{Buffer, SimpleBuffer};
 use crate::betree::BufferSeq_v;
-use crate::betree::LinkedSeq_v::*;
-use crate::betree::OffsetMap_v::*;
+use crate::betree::LinkedSeq_v::LinkedSeq;
+use crate::betree::OffsetMap_v::OffsetMap;
 use crate::disk::GenericDisk_v::{Address};
 
 verus! {

@@ -8,17 +8,17 @@ use crate::spec::MapSpec_t::{ID};
 use crate::spec::KeyType_t::Key;
 use crate::spec::Messages_t::Value;
 // use crate::spec::AsyncDisk_t;
-use crate::spec::ImplDisk_t::*;
+use crate::spec::ImplDisk_t::{IAddress, IDiskRequest, IDiskResponse};
 
 use crate::implementation::MultisetMapRelation_v::*;    // TODO move to _t, I guess
 
 use crate::trusted::ReqReply_t::*;
-use crate::trusted::KVStoreTokenized_t::*;
-use crate::trusted::ProgramModelTrait_t::*;
+use crate::trusted::KVStoreTokenized_t::KVStoreTokenized;
+use crate::trusted::ProgramModelTrait_t::ProgramModelTrait;
 
 use std::fs::*;
-use std::path::*;
 use std::os::unix::fs::FileExt;
+use std::path::*;
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::sync::mpsc::*;

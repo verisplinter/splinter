@@ -5,11 +5,11 @@ use vstd::prelude::*;
 //use vstd::prelude_macros::*;
 
 use vstd::prelude::*;
-use crate::spec::KeyType_t::*;
-use crate::spec::Messages_t::*;
-use crate::betree::Buffer_v::*;
-use crate::betree::Utils_v::*;
-use crate::betree::PivotBranch_v::*;
+use crate::spec::KeyType_t::Key;
+use crate::spec::Messages_t::Message;
+use crate::betree::Buffer_v::{Buffer, SimpleBuffer, all_keys};
+use crate::betree::Utils_v::{lemma_set_subset_of_union_seq_of_sets, lemma_union_seq_of_sets_contains, lemma_union_seq_of_sets_finite, union_seq_of_sets};
+use crate::betree::PivotBranch_v::{Node, Path, SplitArg};
 
 verus! {
 

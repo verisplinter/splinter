@@ -7,16 +7,16 @@ use vstd::prelude::*;
 use vstd::prelude::*;
 use vstd::map::*;
 
-use crate::spec::KeyType_t::*;
-use crate::spec::Messages_t::*;
-use crate::disk::GenericDisk_v::*;
-use crate::betree::Utils_v::*;
-use crate::betree::Buffer_v::*;
-use crate::betree::BufferDisk_v::*;
-use crate::betree::LinkedBranch_v::*;
+use crate::spec::KeyType_t::Key;
+use crate::spec::Messages_t::Message;
+use crate::disk::GenericDisk_v::{AU, Address, Pointer, addrs_closed};
+use crate::betree::Utils_v::{lemma_set_subset_of_union_seq_of_sets, lemma_union_seq_of_sets_contains, union_seq_of_sets};
+use crate::betree::Buffer_v::{Buffer, SimpleBuffer};
+use crate::betree::BufferDisk_v::BufferDisk;
+use crate::betree::LinkedBranch_v::{DiskView, LinkedBranch, Node, Path, SplitArg};
 use crate::betree::LinkedBranch_v::Refinement_v;
-use crate::allocation_layer::MiniAllocator_v::*;
-use crate::allocation_layer::Likes_v::*;
+use crate::allocation_layer::MiniAllocator_v::MiniAllocator;
+use crate::allocation_layer::Likes_v::restrict_domain_au;
 
 verus!{
 

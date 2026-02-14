@@ -3,7 +3,7 @@
 //use vstd::prelude_macros::*;
 use vstd::prelude::*;
 use vstd::set::*;
-use crate::spec::KeyType_t::*;
+use crate::spec::KeyType_t::{Element, Key, to_element};
 
 verus! {
 

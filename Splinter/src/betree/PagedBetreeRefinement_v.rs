@@ -6,15 +6,15 @@ use vstd::prelude::*;
 
 use vstd::prelude::*;
 use vstd::map::*;
-use crate::spec::KeyType_t::*;
-use crate::spec::Messages_t::*;
-use crate::spec::TotalKMMap_t::*;
-use crate::abstract_system::StampedMap_v::*;
-use crate::abstract_system::MsgHistory_v::*;
-use crate::abstract_system::AbstractMap_v::*;
-use crate::betree::PagedBetree_v::*;
-use crate::betree::Buffer_v::*;
-use crate::betree::Memtable_v::*;
+use crate::spec::KeyType_t::Key;
+use crate::spec::Messages_t::{Message, default_value};
+use crate::spec::TotalKMMap_t::TotalKMMap;
+use crate::abstract_system::StampedMap_v::{Stamped, StampedMap};
+use crate::abstract_system::MsgHistory_v::{KeyedMessage, MsgHistory};
+use crate::abstract_system::AbstractMap_v::AbstractMap;
+use crate::betree::PagedBetree_v::{BetreeNode, PagedBetree, Path, QueryReceipt, QueryReceiptLine, StampedBetree};
+use crate::betree::Buffer_v::{Buffer, SimpleBuffer, all_keys, total_keys};
+use crate::betree::Memtable_v::Memtable;
 
 verus! {
 impl BetreeNode {

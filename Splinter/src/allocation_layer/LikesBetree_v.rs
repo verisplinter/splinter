@@ -7,23 +7,15 @@ use vstd::prelude::*;
 use verus_state_machines_macros::state_machine;
 
 use vstd::{prelude::*, seq_lib::*, set::*, set_lib::*, map_lib::*, multiset::*};
-use crate::spec::KeyType_t::*;
-use crate::spec::Messages_t::*;
-use crate::disk::GenericDisk_v::*;
-use crate::betree::Buffer_v::*;
-use crate::betree::LinkedSeq_v::*;
-use crate::betree::BufferDisk_v;
-use crate::betree::BufferDisk_v::*;
-use crate::betree::BufferOffsets_v::*;
-use crate::betree::OffsetMap_v::*;
-use crate::betree::Memtable_v::*;
-use crate::betree::Domain_v::*;
-use crate::betree::PivotTable_v::*;
-use crate::betree::SplitRequest_v::*;
-use crate::betree::LinkedBetree_v::*;
-use crate::abstract_system::StampedMap_v::*;
-use crate::abstract_system::MsgHistory_v::*;
-use crate::allocation_layer::Likes_v::*;
+use crate::disk::GenericDisk_v::{Address, Ranking};
+use crate::betree::Buffer_v::{Buffer, SimpleBuffer};
+use crate::betree::LinkedSeq_v::LinkedSeq;
+use crate::betree::BufferDisk_v::BufferDisk;
+use crate::betree::Domain_v::total_domain;
+use crate::betree::SplitRequest_v::SplitRequest;
+use crate::betree::LinkedBetree_v::{Addrs, LinkedBetree, LinkedBetreeVars, Path, PathAddrs, SplitAddrs, TwoAddrs};
+use crate::abstract_system::StampedMap_v::empty;
+use crate::allocation_layer::Likes_v::{Likes, no_likes};
 
 verus! {
 

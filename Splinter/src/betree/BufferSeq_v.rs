@@ -4,10 +4,10 @@ use vstd::prelude::*;
 //use vstd::prelude_macros::*;
 
 use vstd::{seq::*,set::*};
-use crate::spec::KeyType_t::*;
-use crate::spec::Messages_t::*;
-use crate::betree::Buffer_v::*;
-use crate::betree::OffsetMap_v::*;
+use crate::spec::KeyType_t::Key;
+use crate::spec::Messages_t::{Message, nop_delta};
+use crate::betree::Buffer_v::{Buffer, SimpleBuffer};
+use crate::betree::OffsetMap_v::OffsetMap;
 
 verus! {
 

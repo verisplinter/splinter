@@ -5,8 +5,8 @@ use vstd::prelude::*;
 //use vstd::prelude_macros::*;
 
 use vstd::{*,map::*,seq::*,set::*};
-use crate::spec::KeyType_t::*;
-use crate::betree::Domain_v::*;
+use crate::spec::KeyType_t::{Element, Key, to_element};
+use crate::betree::Domain_v::Domain;
 
 verus! {
 

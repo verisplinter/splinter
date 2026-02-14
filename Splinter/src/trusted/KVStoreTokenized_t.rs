@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: BSD-2-Clause
 use vstd::{prelude::*, multiset::*};
 use verus_state_machines_macros::tokenized_state_machine;
-use crate::spec::AsyncDisk_t::*;
+use crate::spec::AsyncDisk_t::{DiskRequest, DiskResponse};
 use crate::spec::MapSpec_t::{ID, SyncReqId};
-use crate::trusted::ProgramModelTrait_t::*;
+use crate::trusted::ProgramModelTrait_t::{ProgramDiskInfo, ProgramLabel, ProgramModelTrait, ProgramUserOp};
 use crate::trusted::ReqReply_t::{Input, Output, Request, Reply};
 // use crate::implementation::MultisetMapRelation_v::*;
 

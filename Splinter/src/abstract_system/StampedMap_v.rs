@@ -3,7 +3,7 @@
 //use vstd::prelude_macros::*;
 use vstd::prelude::*;
 
-use crate::spec::TotalKMMap_t::*;
+use crate::spec::TotalKMMap_t::TotalKMMap;
 use crate::abstract_system::MsgHistory_v::MsgHistory;
 
 verus! {

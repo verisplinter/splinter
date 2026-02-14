@@ -6,7 +6,7 @@ use vstd::prelude::*;
 use vstd::prelude::*;
 //use vstd::bytes::*;
 //use vstd::slice::*;
-use crate::marshalling::Slice_v::*;
+use crate::marshalling::Slice_v::Slice;
 use crate::marshalling::WF_v::WF;
 
 verus! {

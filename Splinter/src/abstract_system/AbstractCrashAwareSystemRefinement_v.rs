@@ -10,22 +10,19 @@ use vstd::prelude::*;
 use vstd::seq_lib::*;
 use vstd::set_lib::*;
 
-use crate::spec::FloatingSeq_t::*;
-use crate::spec::MapSpec_t;
-use crate::spec::MapSpec_t::*;
-use crate::spec::Messages_t::*;
+use crate::spec::FloatingSeq_t::FloatingSeq;
+use crate::spec::MapSpec_t::{AsyncMap, CrashTolerantAsyncMap, MapSpec, PersistentState, Version};
+use crate::spec::Messages_t::Message;
 // use crate::spec::Option_t;
-use crate::spec::TotalKMMap_t;
 
-use crate::abstract_system::AbstractCrashAwareJournal_v;
 use crate::abstract_system::AbstractCrashAwareJournal_v::*;
 use crate::abstract_system::AbstractCrashAwareMap_v;
 use crate::abstract_system::AbstractCrashAwareMap_v::*;
-use crate::abstract_system::AbstractCrashAwareSystem_v::*;
+use crate::abstract_system::AbstractCrashAwareSystem_v::{CoordinationSystem, Known};
 use crate::abstract_system::AbstractJournal_v::AbstractJournal;
-use crate::abstract_system::AbstractMap_v::*;
+use crate::abstract_system::AbstractMap_v::AbstractMap;
 use crate::abstract_system::MsgHistory_v::{KeyedMessage, MsgHistory};
-use crate::abstract_system::StampedMap_v::*;
+use crate::abstract_system::StampedMap_v::{LSN, StampedMap, empty};
 
 verus! {
     impl AbstractCrashAwareJournal::State

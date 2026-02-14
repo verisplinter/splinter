@@ -1,20 +1,17 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
 use vstd::{prelude::*};
-use crate::spec::MapSpec_t::*;
-use crate::spec::FloatingSeq_t::*;
-use crate::spec::KeyType_t::*;
-use crate::spec::Messages_t::*;
-use crate::implementation::VecMap_v::*;
-use crate::implementation::CachedJournal_v;
+use crate::spec::MapSpec_t::{MapSpec, Version};
+use crate::spec::FloatingSeq_t::FloatingSeq;
+use crate::spec::KeyType_t::Key;
+use crate::spec::Messages_t::{Message, Value};
+use crate::implementation::VecMap_v::VecMap;
 use crate::marshalling::Marshalling_v::Parsedview;
 use crate::marshalling::WF_v::WF;
-use crate::implementation::JournalTypes_v::*;
 use crate::implementation::JournalImpl_v::IJournalSnapshot;
 use crate::implementation::CachedJournal_v::JournalSnapshot;
-use crate::spec::TotalKMMap_t::*;
-use crate::abstract_system::MsgHistory_v::MsgHistory;
-use crate::abstract_system::StampedMap_v::*;
+use crate::spec::TotalKMMap_t::TotalKMMap;
+use crate::abstract_system::StampedMap_v::{LSN, StampedMap, empty};
 
 verus! {
 

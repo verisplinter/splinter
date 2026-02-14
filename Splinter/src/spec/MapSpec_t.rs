@@ -6,10 +6,10 @@ use vstd::prelude::*;
 //use vstd::prelude_macros::*;
 use vstd::{map::*, set::*};
 
-use crate::spec::FloatingSeq_t::*;
-use crate::spec::KeyType_t::*;
-use crate::spec::Messages_t::*;
-use crate::spec::TotalKMMap_t::*;
+use crate::spec::FloatingSeq_t::FloatingSeq;
+use crate::spec::KeyType_t::Key;
+use crate::spec::Messages_t::{Message, Value};
+use crate::spec::TotalKMMap_t::TotalKMMap;
 
 use verus_state_machines_macros::state_machine;
 

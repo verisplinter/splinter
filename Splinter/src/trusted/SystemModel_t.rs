@@ -9,12 +9,10 @@ use verus_state_machines_macros::state_machine;
 use vstd::prelude::*;
 use vstd::{map::*, seq::*, bytes::*, set::*, multiset::*};
 
-use crate::trusted::ProgramModelTrait_t::*;
-use crate::spec::AsyncDisk_t::*;
+use crate::trusted::ProgramModelTrait_t::{DiskLabel, DiskModel, ProgramDiskInfo, ProgramLabel, ProgramModelTrait, ProgramUserOp};
 use crate::spec::MapSpec_t::{ID, SyncReqId, Request, Reply};
-use crate::spec::MapSpec_t::{AsyncMap, CrashTolerantAsyncMap};
 // TODO: move this somewhere else? or we can use disk lbl instead
-use crate::implementation::MultisetMapRelation_v::*; 
+use crate::implementation::MultisetMapRelation_v::multiset_to_map;
 
 verus!{
 

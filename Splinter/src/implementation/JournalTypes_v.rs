@@ -2,14 +2,11 @@
 // SPDX-License-Identifier: BSD-2-Clause
 use vstd::{prelude::*};
 use crate::abstract_system::MsgHistory_v::{MsgHistory, KeyedMessage};
-use crate::abstract_system::StampedMap_v::*;
-use crate::marshalling::IntegerMarshalling_v::IntFormat;
+use crate::abstract_system::StampedMap_v::LSN;
 use crate::marshalling::Marshalling_v::Parsedview;
-use crate::marshalling::ResizableUniformSizedSeq_v::ResizableUniformSizedElementSeqFormat;
-use crate::marshalling::KeyedMessageFormat_v::KeyedMessageFormat;
-use crate::spec::KeyType_t::*;
-use crate::spec::Messages_t::*;
-use crate::implementation::OverflowFiction_v::*;
+use crate::spec::KeyType_t::Key;
+use crate::spec::Messages_t::{Message, Value};
+use crate::implementation::OverflowFiction_v::convert_overflow_into_liveness_failure;
 
 verus! {
 
