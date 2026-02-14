@@ -214,6 +214,8 @@ impl SystemModel::State<ConcreteProgramModel>  {
         &&& self.persistent_sb_disk_inv()
         &&& self.no_writes_till_recovery_complete()
         &&& self.outstanding_reqs_consistent()
+        &&& self.sb_req_id_disjoint_cache_reqs()
+        &&& self.sb_response_is_write_resp()
         &&& self.sync_requests_inv()
 
         // id history tracking
@@ -345,6 +347,31 @@ impl SystemModel::State<ConcreteProgramModel>  {
                 // }
             }
         }
+    }
+
+    // Disk responses at the superblock write ID are always WriteResp.
+    // A superblock operation is always a WriteReq, and the disk model's
+    // process_write converts WriteReq to WriteResp.
+    pub open spec(checked) fn sb_response_is_write_resp(self) -> bool
+    {
+        let state = self.program.state;
+        state.in_flight is Some ==>
+            forall |id| #[trigger] self.disk.responses.contains_key(id)
+                && state.in_flight.unwrap().req_id == id
+                ==> self.disk.responses[id] is WriteResp
+    }
+
+    // Superblock write ID is disjoint from cache request IDs.
+    // Follows from disk model freshness: when the superblock write is issued,
+    // the ID is fresh relative to existing disk requests/responses, which
+    // (by outstanding_reqs_consistent) coincide with outstanding_cache_reqs.
+    // Subsequent cache IDs are also fresh, so they can't collide with the
+    // superblock ID either.
+    pub open spec(checked) fn sb_req_id_disjoint_cache_reqs(self) -> bool
+    {
+        self.program.state.in_flight is Some ==>
+            !self.program.state.outstanding_cache_reqs.dom().contains(
+                self.program.state.in_flight.unwrap().req_id)
     }
 
     pub open spec(checked) fn requests_have_unique_ids(self) -> bool

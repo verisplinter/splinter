@@ -1106,13 +1106,10 @@ impl Implementation {
         self.outstanding_requests.insert(disk_req_id_exec, OutstandingReqInfo::SuperBlockReq{});
 
         proof {
-            assert( self.state() == post_state.state );
             self.journal.seq_start_le_marshalled_end();
 
-            // The new disk_req_id is fresh and not in outstanding_cache_reqs.
-            // execute_sync_begin doesn't add to outstanding_cache_reqs, so it's unchanged.
-            // TODO: need ID freshness from the system model to close this.
-            assume(!self.state().outstanding_cache_reqs.dom().contains(disk_req_id));
+            // The superblock write ID is not in outstanding_cache_reqs.
+            self.system_inv_sb_id_not_in_cache_reqs();
         }
 
     }
@@ -1261,7 +1258,6 @@ impl Implementation {
     proof fn system_inv_response_implies_in_flight(self, disk_req_id: ID, i_disk_response: IDiskResponse, disk_response_token: Tracked<DiskRespShard>)
     requires
         self.i().recovery_state is RecoveryComplete,
-        i_disk_response is WriteResp,
         !self.i().outstanding_cache_reqs.dom().contains(disk_req_id),
         disk_response_token@.multiset() == multiset_map_singleton(disk_req_id, i_disk_response@),
     ensures
@@ -1296,19 +1292,51 @@ impl Implementation {
         open_system_invariant_disk_response::<ConcreteProgramModel, RefinementProof>(self.model, empty_disk_responses);
     }
 
+    // A disk response at the superblock write ID is always WriteResp.
+    // Derived from sb_response_is_write_resp in the system invariant.
+    proof fn system_inv_sb_response_is_write_resp(self, disk_req_id: ID, i_disk_response: IDiskResponse, disk_response_token: Tracked<DiskRespShard>)
+    requires
+        self.state().in_flight is Some,
+        self.state().in_flight.unwrap().req_id == disk_req_id,
+        disk_response_token@.multiset() == multiset_map_singleton(disk_req_id, i_disk_response@),
+    ensures
+        i_disk_response is WriteResp,
+    {
+        let model = open_system_invariant_disk_response_singleton::<ConcreteProgramModel, RefinementProof>(
+            self.model, disk_response_token, disk_req_id, i_disk_response@);
+    }
+
+    // When in_flight is Some, the superblock write ID is not in outstanding_cache_reqs.
+    // This follows from sb_req_id_disjoint_cache_reqs in the system invariant.
+    proof fn system_inv_sb_id_not_in_cache_reqs(self)
+    requires
+        self.state().in_flight is Some,
+    ensures
+        !self.state().outstanding_cache_reqs.dom().contains(
+            self.state().in_flight.unwrap().req_id)
+    {
+        let tracked empty_disk_responses: Tracked<KVStoreTokenized::disk_responses_multiset<ConcreteProgramModel>>
+            = Tracked(KVStoreTokenized::disk_responses_multiset::empty(self.instance_id()));
+        let model = open_system_invariant_disk_response::<ConcreteProgramModel, RefinementProof>(self.model, empty_disk_responses);
+    }
+
     proof fn system_inv_sync_request_fresh_id(self, req: Request, req_shard: Tracked<RequestShard>)
     requires
         self.i().recovery_state is RecoveryComplete,
-        // TODO req ~~ req_shard?
+        self.i().journal.status is Some,    // from inv_running/index_ready
+        req_shard@.element().id == req.id,  // token matches request
     ensures
         !self.state().sync_req_map.dom().contains(req.id)
     {
-        let system_model = open_system_invariant_user_request::<ConcreteProgramModel, RefinementProof>(self.model, req_shard);
-        if self.state().sync_req_map.dom().contains(req.id) {
-            // by fresh_id
-            // we can only learn this during an accept_request transition
-        }
-        assume( false );   // fresh id stuff
+        let model = open_system_invariant_user_request::<ConcreteProgramModel, RefinementProof>(self.model, req_shard);
+        // model.inv() gives sync_requests_inv:
+        //   client_ready() ==> sync_req_map.dom().disjoint(sync_requests.dom())
+        // open_system_invariant_user_request ensures:
+        //   model.sync_requests.dom().contains(req.id)
+        // model.program == self.model@.value(), so model.program.state == self.state()
+        // RecoveryComplete + journal.status is Some ==> client_ready()
+        // Therefore sync_req_map.dom() and sync_requests.dom() are disjoint.
+        // Since req.id is in sync_requests.dom(), it's NOT in sync_req_map.dom().
     }
 
     proof fn singleton_map_dom<K,V>(k: K, v: V)
