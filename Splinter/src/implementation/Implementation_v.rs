@@ -590,10 +590,8 @@ impl Implementation {
     ensures
         false,
     {
-        open_system_invariant_disk_response::<ConcreteProgramModel, RefinementProof>(self.model, disk_response_token);
-        multiset_map_singleton_ensures(disk_req_id, i_disk_response@);
-        assert(disk_response_token@.multiset().contains((disk_req_id, i_disk_response@))); //trigger
-        assume(false); // Not sure what broke here; where are we importing this contradicting invariant from?
+        let model = open_system_invariant_disk_response_singleton::<ConcreteProgramModel, RefinementProof>(
+            self.model, disk_response_token, disk_req_id, i_disk_response@);
     }
 
     pub exec fn handle_query(&mut self, req: Request, req_shard: Tracked<RequestShard>, api: &mut ClientAPI<ConcreteProgramModel>)
