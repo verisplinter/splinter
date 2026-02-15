@@ -1034,6 +1034,47 @@ impl JournalImpl {
     {
     }
 
+    /// All keys in the model-level lsn_addr_index are >= boundary_lsn.
+    /// This follows from ILsnAddrIndex::view_domain() + wf() connecting boundary_lsn to seq_start.
+    pub proof fn lsn_addr_index_keys_bounded_below(&self)
+        requires self.wf(), self.index_ready()
+        ensures forall |lsn: LSN| self@.status.unwrap().lsn_addr_index.contains_key(lsn)
+            ==> lsn >= self@.snapshot.boundary_lsn,
+    {
+        reveal(JournalImpl::wf);
+        reveal(JournalImpl::index_ready);
+        // wf: self.snapshot.boundary_lsn == status.lsn_addr_index.seq_start()
+        // view_domain: keys in [seq_start, seq_end), so all keys >= seq_start == boundary_lsn
+        match &self.status {
+            Some(status) => {
+                status.lsn_addr_index.view_domain();
+            }
+            None => {}
+        }
+    }
+
+    /// When the journal is empty (exec seq_start == model seq_end), freshest_rec is None.
+    /// Proof: wf gives freshest_rec is Some ==> boundary < clean_watermark <= index.seq_end().
+    /// Empty journal means boundary == index.seq_end(), contradiction.
+    pub proof fn freshest_rec_none_when_empty(&self)
+        requires self.wf(), self.index_ready(),
+            self.seq_start() as nat == self@.seq_end()
+        ensures self@.snapshot.freshest_rec is None
+    {
+        reveal(JournalImpl::wf);
+        reveal(JournalImpl::index_ready);
+        reveal(JournalImpl::seq_end);
+        self.view_seq_end_ensures();
+        // Now self@.seq_end() == self.seq_end()
+        // From precondition: self.seq_start() == self.seq_end()
+        // seq_end() = lsn_addr_index.seq_end() + tail_len
+        // seq_start() = boundary_lsn
+        // wf: boundary_lsn == lsn_addr_index.seq_start() <= lsn_addr_index.seq_end()
+        // So boundary_lsn >= lsn_addr_index.seq_end() (from boundary = seq_end = index.seq_end + tail >= index.seq_end)
+        // wf: freshest_rec is Some ==> boundary_lsn < clean_watermark <= index.seq_end()
+        // contradiction: boundary >= index.seq_end() but boundary < index.seq_end()
+    }
+
     pub fn is_empty(&self) -> bool
     requires self.index_ready()
     {

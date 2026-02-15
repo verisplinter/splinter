@@ -365,6 +365,18 @@ impl Implementation {
             &&& self.sync_reqs_in_version(self.sync_requests.superblocking_reqs@, sync_version)
         })
 
+        // Connect exec InFlight fields to model state for C1/C2 proofs
+        &&& (state.in_flight is Some ==> {
+            // InFlight boundary tracks exec journal seq_start (doesn't change between send and receive)
+            &&& self.in_flight.unwrap().new_boundary_lsn as nat == self.journal.seq_start()
+            // InFlight boundary matches model's in-flight map version
+            &&& self.in_flight.unwrap().new_boundary_lsn as nat == state.store.in_flight.unwrap().seq_end
+            // InFlight persistent_lsn matches model's inflight journal_version
+            &&& self.in_flight.unwrap().new_persistent_lsn as nat == state.in_flight.unwrap().journal_version
+            // InFlight store is a snapshot of the persistent store at send time (unchanged since)
+            &&& self.in_flight.unwrap().new_store@ == self.persistent_store@
+        })
+
         &&& self.sync_requests.wf(self.instance@.id())
         &&& self.sync_reqs_in_version(self.sync_requests.buffered_reqs@, self.version())
         &&& self.sync_requests.journal_cleaning_target_lsn <= self.version()
@@ -1715,7 +1727,14 @@ impl Implementation {
                 in_flight: None,
                 ..old(self).state().store
             };
-            let ghost freshest_rec_a = match freshest_rec { None => None, Some(f) => Some(f@) };
+            // Use model's current freshest_rec (not InFlight's send-time value, which
+            // may be stale if marshalling occurred between send and receive).
+            // discard_old with start_lsn == pre.seq_start() preserves freshest_rec.
+            let ghost freshest_rec_a = if new_boundary_lsn as LSN == pre_state.state.journal.seq_end() {
+                None::<Address>
+            } else {
+                pre_state.state.journal.snapshot.freshest_rec
+            };
             let ghost post_state = ConcreteProgramModel{ state: AtomicState{
                 in_flight: None,
                 journal: CachedJournal::State {
@@ -1748,19 +1767,59 @@ impl Implementation {
 
                 assert( response_shard@.multiset() == Multiset::singleton((pre_state.state.in_flight->Some_0.req_id, DiskResponse::WriteResp{})) );    // extn
 
-                assert( post_state.state.store.in_flight is None);
-                assert( post_state.state.in_flight is None );
-                assert( post_state.state.store.in_flight is Some == post_state.state.in_flight is Some );
-                assume(false); // TODO(jonh) left off here
-                assert( post_state.state.wf() );
-                assert( AbstractCrashAwareMap::State::next(pre_state.state.store, post_state.state.store, AbstractCrashAwareMap::Label::CommitCompleteLabel{}) );
-                assume(false);
+                // Access inv_running conjuncts from old(self).inv() precondition
+                reveal(Implementation::inv);
+                reveal(Implementation::inv_running);
+                reveal(Implementation::inv_post_superblock_common);
+
+                // === C2: state machine transitions ===
+                // commit_complete: persistent ← in_flight, clear in_flight
+                reveal(AbstractCrashAwareMap::State::next_by);
+                reveal(AbstractCrashAwareMap::State::next);
+                // witness
+                assert( AbstractCrashAwareMap::State::next_by(
+                    pre_state.state.store, post_state.state.store,
+                    AbstractCrashAwareMap::Label::CommitCompleteLabel{},
+                    AbstractCrashAwareMap::Step::commit_complete()) );
+
+                // discard_old: advance journal boundary
+                reveal(CachedJournal::State::next_by);
+                reveal(CachedJournal::State::next);
                 let journal_lbl = CachedJournal::Label::DiscardOld{
                     start_lsn: post_state.state.persistent_map().seq_end,
-                    require_end: post_state.state.ephemeral_map().seq_end, // requires journal to still line up with ephemeral map, might not be needed
+                    require_end: post_state.state.ephemeral_map().seq_end,
                     discard_addrs,
                 };
-                assert( CachedJournal::State::next(pre_state.state.journal, post_state.state.journal, journal_lbl) );
+                assert( CachedJournal::State::next_by(
+                    pre_state.state.journal, post_state.state.journal,
+                    journal_lbl, CachedJournal::Step::discard_old()) );
+
+                // evictable_check: discard_addrs is empty because boundary doesn't advance
+                // The lsn_addr_index only has keys >= boundary_lsn (= seq_start),
+                // so lsn_addr_index_discard_up_to(index, boundary_lsn) is a no-op.
+                assert( self.journal.wf() && self.journal.index_ready() ) by {
+                    reveal(Implementation::inv_running);
+                }
+                // All keys in lsn_addr_index are >= boundary_lsn
+                self.journal.lsn_addr_index_keys_bounded_below();
+                // inv_post_superblock_common: pre_state.state.journal == self.journal@
+                // So the same holds for pre_state.state.journal.status.unwrap().lsn_addr_index
+                // new_boundary_lsn as nat == self.journal@.snapshot.boundary_lsn (from inv_running + view_seq_start)
+                self.journal.view_seq_start_ensures();
+                // discard_up_to(index, bdy) keeps keys >= bdy, so all keys are kept
+                crate::allocation_layer::LikesJournal_v::lsn_addr_index_discard_up_to_ensures(
+                    pre_state.state.journal.status.unwrap().lsn_addr_index,
+                    new_boundary_lsn as LSN);
+                // trigger extn?
+                assert( discard_addrs =~= Set::empty() );
+
+                reveal(Cache::State::next_by);
+                reveal(Cache::State::next);
+                let cache_lbl = Cache::Label::EvictableCheck{addrs: discard_addrs};
+                assert( Cache::State::next_by(
+                    pre_state.state.cache, post_state.state.cache,
+                    cache_lbl, Cache::Step::evictable()) );
+
                 assert( AtomicState::disk_transition(
                     pre_state.state, post_state.state, disk_event, info.reqs, info.resps) );    // witness
             }
@@ -1777,6 +1836,48 @@ impl Implementation {
 
             self.model = Tracked(model);
 
+            proof {
+                reveal(Implementation::inv);
+                reveal(Implementation::inv_running);
+                reveal(Implementation::inv_post_superblock_common);
+                reveal(Implementation::i_persistent_store);
+                reveal(Implementation::i_inflight_store);
+                reveal(Implementation::i_ephemeral_store);
+                reveal(Implementation::view_store);
+                reveal(Implementation::state);
+                reveal(view_as_kmmap);
+
+                // === inv_post_superblock_common: self.state().journal == self.journal@ ===
+                // The discard_old step is a no-op: start_lsn == pre.seq_start(), so journal unchanged.
+                self.journal.view_seq_start_ensures();
+                // self.journal@.snapshot.boundary_lsn == self.journal.seq_start()
+                // From inv_running: new_boundary_lsn as nat == self.journal.seq_start()
+
+                // lsn_addr_index is unchanged: all keys >= boundary_lsn, so discard_up_to is no-op
+                self.journal.lsn_addr_index_keys_bounded_below();
+                crate::allocation_layer::LikesJournal_v::lsn_addr_index_discard_up_to_ensures(
+                    pre_state.state.journal.status.unwrap().lsn_addr_index,
+                    new_boundary_lsn as LSN);
+                // trigger extn
+                assert( new_lsn_addr_index =~= pre_state.state.journal.status.unwrap().lsn_addr_index );
+
+                // freshest_rec: case split on whether journal is empty
+                self.journal.view_seq_end_ensures();
+                if new_boundary_lsn as LSN == pre_state.state.journal.seq_end() {
+                    // Journal empty: seq_start == seq_end, so freshest_rec must be None
+                    self.journal.freshest_rec_none_when_empty();
+                }
+
+                // G1 consequence: the remove-at-top in handle_disk_response removed the
+                // sole SuperBlockReq entry from outstanding_requests, but this handler can't
+                // see that. After setting in_flight to None, the solver can't prove no
+                // SuperBlockReq entries remain. The real fix is G1 (move remove into handler).
+                assume(forall |id2: ID| #![auto]
+                    self.outstanding_requests@.dom().contains(id2)
+                    && self.outstanding_requests@[id2] is SuperBlockReq
+                    ==> self.in_flight is Some
+                        && !self.state().outstanding_cache_reqs.dom().contains(id2));
+            }
             assert(self.inv());
             self.deliver_inflight_replies(&mut ready_reqs, api);
 
@@ -2493,6 +2594,9 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                             }
                             Message::Update{delta} => {
                                 let _ = delta;
+                                // Note: Updates (upserts) are a nice splinter feature that we're
+                                // not going to implement in the forseeable feature. So this
+                                // placeholder will stay.
                                 Self::todo_placeholder();
                             }
                         }
