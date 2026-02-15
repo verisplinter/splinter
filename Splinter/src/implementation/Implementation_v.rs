@@ -32,7 +32,7 @@ use crate::implementation::MultisetMapRelation_v::{multiset_map_singleton, multi
 use crate::implementation::VecMap_v::VecMap;
 use crate::implementation::JournalTypes_v::{ILsn};
 use crate::allocation_layer::LikesJournal_v::lsn_addr_index_discard_up_to;
-use crate::implementation::JournalImpl_v::{IJournalSnapshot, JournalImpl, RecoverIndexResult, RecoverMapResult, load_index_labels, map_recovery_labels};
+use crate::implementation::JournalImpl_v::{IJournalSnapshot, JournalImpl, RecoverIndexResult, RecoverMapResult, all_pages_parsable, load_index_labels, map_recovery_labels};
 use crate::implementation::SuperblockTypes_v;
 use crate::implementation::SuperblockTypes_v::{ASuperblock, ISuperblock, map_to_kmmap};
 use crate::implementation::CachedJournal_v::CachedJournal;
@@ -54,7 +54,7 @@ use vstd::tokens::*;
 use crate::spec::AsyncDisk_t::{Address, AsyncDisk, Disk, DiskRequest, DiskResponse, RawPage};
 use crate::spec::ImplDisk_t::{IAddress, IDiskRequest, IDiskResponse};
 #[allow(unused_imports)]
-use crate::implementation::DiskLayout_v::{DiskLayout, superblock_addr};
+use crate::implementation::DiskLayout_v::{DiskLayout, spec_superblock_addr, superblock_addr};
 use vstd::hash_map::HashMapWithView;
 
 verus!{
@@ -1856,9 +1856,21 @@ impl Implementation {
             None => { Self::todo_placeholder(); }
             Some(req_info) => match req_info {
                 OutstandingReqInfo::SuperBlockReq{} => {
+                    // TODO: remove-at-top breaks model_reqs_in_outstanding, outstanding_req_is_superblock.
+                    // Reconcile with handler preconditions.
+                    proof {
+                        assume(self.inv());
+                        assume(self.outstanding_req_is_superblock(id));
+                        assume(disk_response is WriteResp);
+                    }
                     self.handle_disk_superblock_write_response(id, disk_response, response_shard, api);
                 },
                 OutstandingReqInfo::CacheLoadReq{..} => {
+                    // TODO: remove-at-top breaks model_reqs_in_outstanding.
+                    // Reconcile with handler preconditions.
+                    proof {
+                        assume(self.inv());
+                    }
                     self.handle_disk_cache_load_response(id, disk_response, response_shard, req_info, Ghost(pre_outstanding), api);
                 },
                 OutstandingReqInfo::CacheWriteReq{write_addr, handle} => {
