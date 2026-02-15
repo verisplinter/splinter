@@ -24,6 +24,8 @@ use crate::marshalling::Marshalling_v::Marshal;
 use crate::abstract_system::AbstractCrashAwareMap_v::AbstractCrashAwareMap;
 use crate::abstract_system::AbstractCrashAwareSystemRefinement_v::floating_versions;
 use crate::abstract_system::StampedMap_v::LSN;
+use crate::abstract_system::AbstractCrashAwareJournal_v::Ephemeral;
+use crate::abstract_system::AbstractJournal_v::AbstractJournal;
 
 verus!{
 
@@ -146,22 +148,23 @@ impl SystemModel::State<ConcreteProgramModel>  {
     //     &&& self.journal.lsn_addr_index.values() =~= self.ephemeral_tj().disk_view.entries.dom()
     // }
 
-    // i label to abstract coordination system 
+    // Interpret concrete CachedJournal state as AbstractCrashAwareJournal state.
+    // Only called from i_ephemeral(), so client_ready() holds (status is Some).
     pub open spec fn i_journal(self) -> AbstractCrashAwareJournal::State
     {
-        arbitrary()
-
-    //     // LikesJournal::State{
-    //     //     journal: LinkedJournal::State{
-    //     //         truncated_journal: self.ephemeral_tj(),  
-    //     //         unmarshalled_tail: self.journal.unmarshalled_tail
-    //     //     },
-    //     //     lsn_addr_index: self.journal.lsn_addr_index,
-    //     // }
-
-    //     // how do we interpret 
-    //     // i journal
-    //     // msg history
+        let state = self.program.state;
+        let tail = state.journal.status.unwrap().unmarshalled_tail;
+        AbstractCrashAwareJournal::State {
+            persistent: tail.discard_recent(state.persistent_journal_seq_end),
+            ephemeral: Ephemeral::Known {
+                v: AbstractJournal::State { journal: tail }
+            },
+            in_flight: if state.in_flight is Some {
+                Some(tail.discard_recent(state.in_flight.unwrap().journal_version))
+            } else {
+                None
+            },
+        }
     }
 
     // pub open spec fn i(self) -> CrashTolerantAsyncMap::State
@@ -783,7 +786,6 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                 assume(false); // TODO: DiskEvent API has drifted; maps to Noop
             },
             SystemModel::Step::program_internal(new_program) => {
-                assume(false); // TODO: inv(post) depends on i() being meaningful
                 assert(ipre == ipost);
                 assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::noop()));
                 assert( post.inv() );
