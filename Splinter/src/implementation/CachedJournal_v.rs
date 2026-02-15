@@ -448,7 +448,7 @@ decreases rank_of_reads(boundary_lsn, reads, root)
         let idx = build_lsn_addr_index_from_reads(reads, boundary_lsn, root);
         let sub_index = build_lsn_addr_index_from_reads(reads, boundary_lsn, next_ptr);
         assert(idx == sub_index.union_prefer_right(update));
-        let lsn = choose |lsn: LSN| idx.contains_key(lsn) && idx[lsn] == addr;
+        let lsn = choose |lsn: LSN| #![auto] idx.contains_key(lsn) && idx[lsn] == addr;
         if update.contains_key(lsn) {
             assert(update[lsn] == root.unwrap());
             assert(addr == root.unwrap());

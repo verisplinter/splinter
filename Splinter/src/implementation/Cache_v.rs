@@ -363,7 +363,7 @@ state_machine!{ Cache {
                 s1 != s2
                 && filled_slot_addr_map.contains_key(s1)
                 && filled_slot_addr_map.contains_key(s2)
-                implies filled_slot_addr_map[s1] != filled_slot_addr_map[s2]
+                implies #[trigger] filled_slot_addr_map[s1] != #[trigger] filled_slot_addr_map[s2]
             by {
                 assert(self.entries.contains_key(s1));
                 assert(self.entries.contains_key(s2));
