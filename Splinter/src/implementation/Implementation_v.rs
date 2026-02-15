@@ -1863,12 +1863,42 @@ impl Implementation {
             }
             Some(req_info) => match req_info {
                 OutstandingReqInfo::SuperBlockReq{} => {
-                    // TODO: remove-at-top breaks model_reqs_in_outstanding, outstanding_req_is_superblock.
-                    // Reconcile with handler preconditions.
+                    // A6: Derive disk_response is WriteResp from the system invariant.
+                    // After the remove, self.outstanding_requests no longer has id, but
+                    // self.model (hence self.state()) and self.in_flight are unchanged.
+                    // From old(self).inv() we chain through A3 and A6.
                     proof {
+                        reveal(Implementation::inv);
+                        reveal(Implementation::inv_running);
+                        reveal(Implementation::state);
+                        reveal(Implementation::i);
+
+                        // remove returned Some(SuperBlockReq), so old map had id => SuperBlockReq.
+                        // Triggers the forall in old(self).inv() (line 437):
+                        //   old(self).in_flight is Some
+                        //   !old(self).state().outstanding_cache_reqs.dom().contains(id)
+                        assert(old(self).outstanding_requests@.dom().contains(id));
+                        assert(old(self).outstanding_requests@[id] is SuperBlockReq);
+
+                        // in_flight and model are unchanged by the remove
+                        assert(self.in_flight is Some);
+
+                        // inv chain: in_flight is Some => ReadyForUserOperation => inv_running
+                        // inv_running gives: state.in_flight <==> self.in_flight, recovery_state is RecoveryComplete
+                        // state() depends only on model, which is unchanged
+                        assert(self.state().in_flight is Some);
+                        assert(self.i().recovery_state is RecoveryComplete);
+                        assert(!self.i().outstanding_cache_reqs.dom().contains(id));
+
+                        // A3: state().in_flight.unwrap().req_id == id
+                        self.system_inv_response_implies_in_flight(id, disk_response, response_shard);
+                        // A6: disk_response is WriteResp
+                        self.system_inv_sb_response_is_write_resp(id, disk_response, response_shard);
+                    }
+                    proof {
+                        // G1: remove-at-top still breaks these handler preconditions
                         assume(self.inv());
                         assume(self.outstanding_req_is_superblock(id));
-                        assume(disk_response is WriteResp);
                     }
                     self.handle_disk_superblock_write_response(id, disk_response, response_shard, api);
                 },
