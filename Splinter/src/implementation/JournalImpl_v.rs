@@ -384,6 +384,7 @@ impl JournalImpl {
         (start_lsn as nat) < self.seq_end(),
         old(cache).wf(),
         all_pages_parsable(journal_raw_disk_ghost@),
+        cache_matches_raw_disk(old(cache)@, journal_raw_disk_ghost@),
     ensures ({
         &&& self@ == self@
         &&& self.wf()
@@ -434,7 +435,7 @@ impl JournalImpl {
         proof {
             reveal(JournalImpl::wf);
             assert(journal_raw_disk_inv(self.fmt, journal_raw_disk));
-            assume(cache_matches_raw_disk(old(cache)@, journal_raw_disk));
+            // cache_matches_raw_disk now from requires (system invariant pull-down)
             // TODO: system invariants, index in the kvstore model matches with the physical index
             // system inv would relate the model index to the system disk, and that's how we get these facts
             assume(forall |a: Address| #[trigger] self.status.unwrap().lsn_addr_index@.values().contains(a)
@@ -617,6 +618,7 @@ impl JournalImpl {
         !old(self).index_ready(),
         old(cache).wf(),
         all_pages_parsable(journal_raw_disk_ghost@),
+        cache_matches_raw_disk(old(cache)@, journal_raw_disk_ghost@),
     ensures ({
         &&& self.wf()
         &&& self@.wf()
@@ -666,7 +668,7 @@ impl JournalImpl {
                     // all_pages_parsable uses spec_new().parsable; since fields match, so does self.fmt.parsable
                     assert(journal_raw_disk_inv(self.fmt, journal_raw_disk));
                 }
-                assume(cache_matches_raw_disk(cache@, journal_raw_disk));
+                // cache_matches_raw_disk now from requires (system invariant pull-down)
 
                 match builder.next_head.freshest_rec {
                     None => {

@@ -3,7 +3,7 @@ use vstd::prelude::*;
 use vstd::prelude::*;
 
 use vstd::{math, multiset::Multiset};
-use crate::spec::AsyncDisk_t::{Address, AsyncDisk, DiskRequest, DiskResponse};
+use crate::spec::AsyncDisk_t::{Address, AsyncDisk, DiskRequest, DiskResponse, RawPage};
 use crate::spec::MapSpec_t::{AsyncMap, CrashTolerantAsyncMap, EphemeralState, ID, MapSpec, SyncReqId, Version};
 use crate::trusted::SystemModel_t::SystemModel;
 use crate::trusted::RefinementObligation_t::RefinementObligation;
@@ -237,6 +237,7 @@ impl SystemModel::State<ConcreteProgramModel>  {
         &&& self.sync_requests_inv()
         &&& self.journal_pages_parsable()
         &&& self.journal_seq_end_inv()
+        &&& self.cache_reads_agree_with_disk()
 
         // id history tracking
         &&& self.requests_have_unique_ids()
@@ -248,6 +249,20 @@ impl SystemModel::State<ConcreteProgramModel>  {
         &&& self.sync_req_ids_in_history()
         &&& self.sync_reply_ids_in_history()
         &&& self.program.state.client_ready() ==> self.program_sync_req_ids_in_history()
+    }
+
+    // During recovery, all cache reads agree with disk content.
+    // No writes occur before RecoveryComplete (no_writes_till_recovery_complete),
+    // so all Filled cache entries came from disk reads and still match.
+    // The superblock is read directly (not through cache), so no cache entry
+    // has the superblock address during recovery.
+    pub open spec fn cache_reads_agree_with_disk(self) -> bool
+    {
+        !(self.program.state.recovery_state is RecoveryComplete) ==>
+            forall |addr: Address, data: RawPage| #[trigger] self.program.state.cache.valid_read(addr, data)
+                ==> addr != spec_superblock_addr()
+                    && self.disk.content.contains_key(addr)
+                    && self.disk.content[addr] == data
     }
 
     // pub open spec fn clean_pages_agree_with_disk(self) -> bool
