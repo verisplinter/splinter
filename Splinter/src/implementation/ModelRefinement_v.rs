@@ -647,7 +647,6 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
 
         match step {
             SystemModel::Step::accept_request() => {
-                assume(false); // TODO(fix jonh)
                 let new_id = lbl->req.id;
                 assert(post.inv()) by {
                     assert( post.requests_have_unique_ids() ) by {
@@ -712,7 +711,6 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                 assert( post.inv() );
             },
             SystemModel::Step::deliver_reply() => {
-                assume(false); // TODO(jonh)
                 assert(post.inv()) by {
                     assert(forall |r| #[trigger] post.replies.contains(r) ==> pre.replies.contains(r));
                 }
@@ -740,7 +738,7 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                 // Abstract step: AsyncMap::Step::execute(to_map_label(req, reply), ...)
             },
             SystemModel::Step::program_accept_sync_request(new_program) => {
-                assume(false); // TODO: depends on i() returning meaningful state
+                assume(false); // TODO: needs stable_index() reasoning
                 assert( all_elems_single(post.sync_requests) ) by {
                     assert forall |req| #[trigger] post.sync_requests.contains(req) implies post.sync_requests.count(req) == 1 by {
                         if pre.sync_requests.contains(req) {
@@ -769,7 +767,7 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                 assert( post.inv() );
             }
             SystemModel::Step::program_deliver_sync_reply(new_program) => {
-                assume(false); // TODO: depends on i() returning meaningful state
+                assume(false); // TODO: needs stable_index() reasoning
                 assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::reply_sync()));
                 let sync_req_id = lbl.arrow_ProgramUIOp_op().arrow_DeliverSyncReply_sync_req_id();
                 assert( post.sync_req_reply_ids_disjoint() ) by {
@@ -786,6 +784,7 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                 assume(false); // TODO: DiskEvent API has drifted; maps to Noop
             },
             SystemModel::Step::program_internal(new_program) => {
+                assume(false); // TODO: needs help proving interpretation preserved across internal step
                 assert(ipre == ipost);
                 assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::noop()));
                 assert( post.inv() );
