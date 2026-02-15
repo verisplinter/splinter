@@ -23,7 +23,8 @@ use crate::marshalling::IJournalRecordFormat_v::IJournalRecordFormat;
 use crate::marshalling::Marshalling_v::Marshal;
 use crate::abstract_system::AbstractCrashAwareMap_v::AbstractCrashAwareMap;
 use crate::abstract_system::AbstractCrashAwareSystemRefinement_v::floating_versions;
-use crate::abstract_system::StampedMap_v::LSN;
+use crate::abstract_system::StampedMap_v::{LSN, StampedMap};
+use crate::abstract_system::MsgHistory_v::MsgHistory;
 use crate::abstract_system::AbstractCrashAwareJournal_v::Ephemeral;
 use crate::abstract_system::AbstractJournal_v::AbstractJournal;
 
@@ -33,6 +34,14 @@ verus!{
 pub open spec fn multiset_to_set<V>(m: Multiset<V>) -> Set<V> {
     Set::new(|v| m.contains(v))
 }
+
+// floating_versions(base, msg_history, stable_lsn) returns FloatingSeq::new(stable_lsn, msg_history.seq_end+1, ...)
+// whose len() == msg_history.seq_end + 1. The solver can't compute this through the chain, so we prove it.
+proof fn floating_versions_len(base: StampedMap, msg_history: MsgHistory, stable_lsn: LSN)
+    requires
+        stable_lsn <= msg_history.seq_end + 1,
+    ensures floating_versions(base, msg_history, stable_lsn).len() == msg_history.seq_end + 1
+{}
 
 impl Cache::State {
     pub open spec fn valid_clean_slot(self, slot: Slot) -> bool
@@ -227,6 +236,7 @@ impl SystemModel::State<ConcreteProgramModel>  {
         &&& self.sb_response_is_write_resp()
         &&& self.sync_requests_inv()
         &&& self.journal_pages_parsable()
+        &&& self.journal_seq_end_inv()
 
         // id history tracking
         &&& self.requests_have_unique_ids()
@@ -311,6 +321,18 @@ impl SystemModel::State<ConcreteProgramModel>  {
         &&& self.program.state.client_ready() ==>
             // sync reqs pass *out of* the system sync_requests into the program state
             self.program.state.sync_req_map.dom().disjoint(self.sync_requests.dom())
+    }
+
+    // persistent_journal_seq_end and in_flight.journal_version are within the unmarshalled_tail range,
+    // so i_journal's discard_recent calls are well-formed.
+    pub open spec fn journal_seq_end_inv(self) -> bool
+    {
+        let state = self.program.state;
+        state.client_ready() ==> {
+            let tail = state.journal.status.unwrap().unmarshalled_tail;
+            &&& tail.can_discard_to(state.persistent_journal_seq_end)
+            &&& state.in_flight is Some ==> tail.can_discard_to(state.in_flight.unwrap().journal_version)
+        }
     }
 
     // assumes all I/Os beside superblock are managed by the cache
@@ -738,7 +760,6 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                 // Abstract step: AsyncMap::Step::execute(to_map_label(req, reply), ...)
             },
             SystemModel::Step::program_accept_sync_request(new_program) => {
-                assume(false); // TODO: needs stable_index() reasoning
                 assert( all_elems_single(post.sync_requests) ) by {
                     assert forall |req| #[trigger] post.sync_requests.contains(req) implies post.sync_requests.count(req) == 1 by {
                         if pre.sync_requests.contains(req) {
@@ -755,6 +776,49 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                         }
                     }
                 }
+                // Bridge: concrete sync_req_map records ephemeral_map().seq_end, abstract expects versions.len()-1.
+                let state = pre.program.state;
+                assert(state.client_ready());
+                let tail = state.journal.status.unwrap().unmarshalled_tail;
+                let journal = pre.i_journal();
+                // Mirror i_ephemeral's versions computation to help solver
+                let mapadt = state.store;
+                let inflight_on_disk =
+                    state.in_flight is Some
+                    && journal.in_flight is Some
+                    && pre.disk.responses.contains_key(state.in_flight.unwrap().req_id);
+                let versions = if inflight_on_disk {
+                    let in_flight_map = mapadt.in_flight.unwrap();
+                    let remaining_journal = journal.i().discard_old(in_flight_map.seq_end);
+                    let stable_lsn = journal.in_flight.unwrap().seq_end;
+                    floating_versions(in_flight_map, remaining_journal, stable_lsn)
+                } else {
+                    let stable_lsn = journal.persistent.seq_end;
+                    floating_versions(mapadt.persistent, journal.i(), stable_lsn)
+                };
+                assert(ipre.versions == versions);
+                // floating_versions returns FloatingSeq::new(_, msg.seq_end+1, _), so len = msg.seq_end+1
+                // Help solver see the len computation through FloatingSeq::new
+                if inflight_on_disk {
+                    let in_flight_map2 = mapadt.in_flight.unwrap();
+                    let remaining_journal = journal.i().discard_old(in_flight_map2.seq_end);
+                    let stable_lsn = journal.in_flight.unwrap().seq_end;
+                    assert(remaining_journal.seq_end == tail.seq_end);
+                    // stable_lsn = journal_version from i_journal; tail.can_discard_to(journal_version)
+                    assert(tail.can_discard_to(state.in_flight.unwrap().journal_version));
+                    assert(stable_lsn <= remaining_journal.seq_end + 1);
+                    floating_versions_len(in_flight_map2, remaining_journal, stable_lsn);
+                } else {
+                    let stable_lsn = journal.persistent.seq_end;
+                    assert(journal.i() == tail);
+                    // stable_lsn = persistent_journal_seq_end from i_journal; tail.can_discard_to(persistent_journal_seq_end)
+                    assert(tail.can_discard_to(state.persistent_journal_seq_end));
+                    assert(stable_lsn <= tail.seq_end + 1);
+                    floating_versions_len(mapadt.persistent, tail, stable_lsn);
+                }
+                assert(ipre.versions.len() == tail.seq_end + 1);
+                assert(state.journal.seq_end() == state.ephemeral_map().seq_end); // wf()
+                assert((ipre.versions.len() - 1) as nat == state.ephemeral_map().seq_end as nat);
                 assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::req_sync()));
                 assert( post.sync_req_reply_ids_disjoint() ) by {
                     assert forall |req_id, reply_id| #![auto] post.sync_requests.contains(req_id) && post.sync_replies.contains(reply_id)
@@ -795,7 +859,7 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                     let info = pre.program.state.in_flight.unwrap();
                     assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::sync(info.journal_version as int)));
                 } else {
-                    assume(false); // TODO: inv(post) depends on i() being meaningful
+                    assume(false); // TODO: needs proof for outstanding_reqs_consistent preservation
                     assert(post.inv());
                     assert(ipre == ipost);
                     assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::noop()));
