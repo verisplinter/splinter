@@ -373,8 +373,31 @@ impl SystemModel::State<ConcreteProgramModel>  {
         }
     }
 
+    // id is either the in-flight superblock request or a cache-managed request
+    pub open spec fn id_has_addr(self, id: ID) -> bool
+    {
+        self.program.state.in_flight is Some && self.program.state.in_flight.unwrap().req_id == id
+        || self.program.state.outstanding_cache_reqs.dom().contains(id)
+    }
+
+    // Everything needed for safe I/O id lookups in outstanding_reqs_consistent:
+    // the id is tracked, its address is on disk, and any cache-managed id
+    // maps through lookup_map to a valid cache slot.
+    pub open spec fn io_id_valid(self, id: ID) -> bool
+    {
+        &&& self.id_has_addr(id)
+        &&& self.disk.content.dom().contains(self.addr_for_id(id))
+        &&& self.program.state.outstanding_cache_reqs.contains_key(id) ==> {
+            let addr = self.program.state.outstanding_cache_reqs[id];
+            let slot = self.program.state.cache.lookup_map[addr];
+            &&& self.program.state.cache.entries.dom().contains(slot)
+            &&& self.program.state.cache.status_map.dom().contains(slot)
+            &&& self.disk.content.dom().contains(addr)
+        }
+    }
     // assumes all I/Os beside superblock are managed by the cache
     pub open spec(checked) fn addr_for_id(self, id: ID) -> Address
+        recommends self.id_has_addr(id)
     {
         let state = self.program.state;
         if state.in_flight is Some && state.in_flight.unwrap().req_id == id {
@@ -389,7 +412,14 @@ impl SystemModel::State<ConcreteProgramModel>  {
     // Q: does this mean we should remove the load request check in the state machine?
     // outstanding reqs must be consistent with cache and disk
     pub open spec(checked) fn outstanding_reqs_consistent(self) -> bool
-        recommends self.program.state.wf()
+        recommends
+            self.program.state.wf(),
+            self.program.state.client_ready(),
+            forall |id: ID|
+                #![trigger self.disk.requests.contains_key(id)]
+                #![trigger self.disk.responses.contains_key(id)]
+                (self.disk.requests.contains_key(id) || self.disk.responses.contains_key(id))
+                ==> self.io_id_valid(id),
     {
         let state = self.program.state;
         let in_flight_sb_id = if state.in_flight is Some { set!{state.in_flight.unwrap().req_id} } else { set!{} };
