@@ -11,7 +11,7 @@ use crate::trusted::ProgramModelTrait_t::{DiskLabel, ProgramModelTrait, ProgramU
 use crate::disk::GenericDisk_v::Pointer;
 use crate::abstract_system::AbstractCrashAwareJournal_v::AbstractCrashAwareJournal;
 use crate::journal::LinkedJournal_v::DiskView;
-use crate::implementation::AtomicState_v::{AtomicState, DiskEvent, raw_page_to_record, to_journal_reads, to_map_label};
+use crate::implementation::AtomicState_v::{AtomicState, DiskEvent, InternalEvent, ProgramEvent, raw_page_to_record, to_map_label, to_journal_reads};
 use crate::implementation::JournalImpl_v::journal_disk_inv;
 use crate::implementation::Cache_v::{Cache, Slot};
 use crate::implementation::CachedJournal_v::build_lsn_addr_index_from_reads;
@@ -42,6 +42,10 @@ proof fn floating_versions_len(base: StampedMap, msg_history: MsgHistory, stable
     requires
         stable_lsn <= msg_history.seq_end + 1,
     ensures floating_versions(base, msg_history, stable_lsn).len() == msg_history.seq_end + 1
+{}
+
+proof fn floating_versions_start(base: StampedMap, msg_history: MsgHistory, stable_lsn: LSN)
+    ensures floating_versions(base, msg_history, stable_lsn).first_active_index() == stable_lsn
 {}
 
 impl Cache::State {
@@ -369,7 +373,10 @@ impl SystemModel::State<ConcreteProgramModel>  {
         state.client_ready() ==> {
             let tail = state.journal.status.unwrap().unmarshalled_tail;
             &&& tail.can_discard_to(state.persistent_journal_seq_end)
-            &&& state.in_flight is Some ==> tail.can_discard_to(state.in_flight.unwrap().journal_version)
+            &&& state.in_flight is Some ==> {
+                &&& tail.can_discard_to(state.in_flight.unwrap().journal_version)
+                &&& state.persistent_journal_seq_end <= state.in_flight.unwrap().journal_version
+            }
         }
     }
 
@@ -789,7 +796,7 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
 
                 assert(!ipre.async_ephemeral.requests.contains(lbl->req)) by {
                     if ipre.async_ephemeral.requests.contains(lbl->req) {
-                        assume(pre.requests.contains(lbl->req)); // trigger
+                        assert(pre.requests.contains(lbl->req)); // trigger
                     }
                 }
                 assert(ipre.async_ephemeral.requests.insert(lbl->req) =~= ipost.async_ephemeral.requests);
@@ -823,10 +830,74 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                 assert( post.inv() );
             },
             SystemModel::Step::program_execute(new_program) => {
-                assume(false); // TODO: maps to operate(ExecuteOp)
-                // Hints: let req = lbl->op->req; let reply = lbl->op->reply;
-                // History invariant needs MapSpec::State::inv_next(..., to_map_label(req, reply))
-                // Abstract step: AsyncMap::Step::execute(to_map_label(req, reply), ...)
+                let req = lbl->op->req;
+                let reply = lbl->op->reply;
+
+                // Extract the existential witness for which program event happened
+                let pe = choose |e: ProgramEvent|
+                    AtomicState::execute_transition(pre.program.state, post.program.state, req, reply, e);
+
+                let map_label = to_map_label(req, reply);
+
+                match pe {
+                    ProgramEvent::NoOp{} | ProgramEvent::Query{..} => {
+                        // NoOp/Query: program state effectively unchanged, versions preserved
+                        if pe is Query {
+                            reveal(AbstractCrashAwareMap::State::next);
+                            reveal(AbstractCrashAwareMap::State::next_by);
+                        }
+
+                        // MapSpec step: case-split on request type for the witness
+                        if req.input is NoopInput {
+                            MapSpec::show::noop(ipre.versions.last().appv, ipost.versions.last().appv, map_label);
+                        } else {
+                            // Query/Put input with NoOp/Query event
+                            // Need: versions.last().appv == ephemeral_map, which requires
+                            // the fundamental invariant connecting journal + persistent_map to ephemeral_map
+                            assume(MapSpec::State::next(ipre.versions.last().appv, ipost.versions.last().appv, map_label));
+                        }
+                    },
+                    ProgramEvent::Put{puts} => {
+                        assume(false); // TODO: Put extends journal, appends a new version
+                    },
+                }
+                assert(CrashTolerantAsyncMap::State::optionally_append_version(ipre.versions, ipost.versions));
+
+                // Request was in the system → in the abstract requests
+                // trigger extn
+                assert(ipost.async_ephemeral.requests =~= ipre.async_ephemeral.requests.remove(req));
+                assert(ipost.async_ephemeral.replies =~= ipre.async_ephemeral.replies.insert(reply));
+
+                let iasync_pre = AsyncMap::State { persistent: ipre.versions.last(), ephemeral: ipre.async_ephemeral };
+                let iasync_post = AsyncMap::State { persistent: ipost.versions.last(), ephemeral: ipost.async_ephemeral };
+                // witness
+                assert(AsyncMap::State::next_by(iasync_pre, iasync_post, ilbl->base_op, AsyncMap::Step::execute(map_label, iasync_post.persistent)));
+                // witness
+                assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl,
+                    CrashTolerantAsyncMap::Step::operate(ipost.versions, ipost.async_ephemeral)));
+
+                // post.requests = pre.requests.remove(req), post.replies = pre.replies.insert(reply)
+                // reply.id == req.id (from valid_request_reply_pair)
+                assert(post.inv()) by {
+                    assert( all_elems_single(post.requests) ) by {
+                        assert forall |r| #[trigger] post.requests.contains(r)
+                            implies post.requests.count(r) == 1
+                        by {
+                            // trigger
+                            assert( pre.requests.contains(r) );
+                        }
+                    }
+                    assert( post.request_ids_in_history() ) by {
+                        assert forall |r| #![auto] post.requests.contains(r)
+                            implies post.id_history.contains(r.id)
+                        by {
+                            // trigger
+                            assert( pre.requests.contains(r) );
+                        }
+                    }
+                    // trigger
+                    assert( post.reply_ids_in_history() );
+                }
             },
             SystemModel::Step::program_accept_sync_request(new_program) => {
                 assert( all_elems_single(post.sync_requests) ) by {
@@ -900,7 +971,6 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                 assert( post.inv() );
             }
             SystemModel::Step::program_deliver_sync_reply(new_program) => {
-                assume(false); // TODO: needs stable_index() reasoning
                 assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::reply_sync()));
                 let sync_req_id = lbl.arrow_ProgramUIOp_op().arrow_DeliverSyncReply_sync_req_id();
                 assert( post.sync_req_reply_ids_disjoint() ) by {
@@ -914,10 +984,80 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                 assert( post.inv() );
             },
             SystemModel::Step::program_disk(new_program, new_disk) => {
-                assume(false); // TODO: DiskEvent API has drifted; maps to Noop
+                // Extract the disk event witness
+                let de = choose |de: DiskEvent|
+                    AtomicState::disk_transition(pre.program.state, post.program.state,
+                        de, lbl->info.reqs, lbl->info.resps);
+
+                // All program_disk cases map to noop in abstract (ipre == ipost)
+                // Disk content doesn't change (disk_ops only adds requests/removes responses)
+                reveal(<RefinementProof as RefinementObligation<ConcreteProgramModel>>::i);
+
+                match de {
+                    DiskEvent::InitiateRecovery{..} | DiskEvent::SuperblockRecovery{..} => {
+                        // Recovery: !client_ready for both pre and post, i_persistent used
+                        // disk.content unchanged by disk_ops → ipre == ipost
+                        reveal(SystemModel::State::<_>::i_persistent);
+                        assert(!pre.program.state.client_ready());
+                        assert(!post.program.state.client_ready());
+                        // TODO: inv() blocked on cache invariant + recovery state reasoning
+                        assume(post.inv());
+                    },
+                    DiskEvent::CacheIOBegin{..} | DiskEvent::CacheIOEnd{..} => {
+                        // Cache I/O: journal, store, in_flight unchanged. Disk content unchanged.
+                        // inflight_on_disk unchanged (CacheIOBegin: responses unchanged;
+                        // CacheIOEnd: sb_req_id not in cache responses by sb_req_id_disjoint)
+                        // TODO: needs disk transition reasoning to show sb response preserved
+                        // TODO: inv() blocked on Cache::inv_next + outstanding_reqs_consistent
+                        assume(post.inv());
+                        assume(ipre == ipost);
+                    },
+                    DiskEvent::ExecuteSyncBegin{..} => {
+                        assume(false); // TODO: needs FreezeForCommit reasoning + wf invariant
+                    },
+                    DiskEvent::ExecuteSyncEnd{..} => {
+                        assume(false); // TODO: needs commit_complete reasoning
+                    },
+                }
+                assert(ipre == ipost);
+                assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::noop()));
+                assert( post.inv() );
             },
             SystemModel::Step::program_internal(new_program) => {
-                assume(false); // TODO: needs help proving interpretation preserved across internal step
+                // Extract internal event witness
+                let ie = choose |ie: InternalEvent|
+                    AtomicState::internal_transitions(pre.program.state, post.program.state, ie);
+
+                reveal(<RefinementProof as RefinementObligation<ConcreteProgramModel>>::i);
+                match ie {
+                    InternalEvent::StoreInternal{} => {
+                        // store_internal: only store changes (AbstractCrashAwareMap internal step)
+                        // i_journal() unchanged, inflight_on_disk unchanged, versions unchanged.
+                        reveal(SystemModel::State::<_>::i_ephemeral);
+                        reveal(AbstractCrashAwareMap::State::next);
+                        reveal(AbstractCrashAwareMap::State::next_by);
+
+                        // TODO: wf() invariant `store.in_flight is Some <==> self.in_flight is Some`
+                        // is too strong: freeze_map_internal/freeze_persistent_internal can set
+                        // store.in_flight without setting self.in_flight (that happens later in
+                        // execute_sync_begin). Similarly, ephemeral_map().seq_end may change.
+                        assume(post.program.state.wf());
+                    },
+                    InternalEvent::JournalRecovery{..} | InternalEvent::MapRecovery{..} => {
+                        // During recovery, client_ready() is false for both pre and post.
+                        // i() uses i_persistent() which only depends on disk content.
+                        // Disk doesn't change in program_internal, so ipre == ipost.
+
+                        // TODO: inv() blocked on Cache::inv_next (has assume(false) in Cache_v.rs)
+                        // and cache_reads_agree_with_disk needs cache transition reasoning
+                        assume(post.inv());
+                    },
+                    InternalEvent::RecoveryComplete{} => {
+                        // Transitions from !client_ready to client_ready.
+                        // i() switches from i_persistent to i_ephemeral.
+                        assume(false); // TODO: must prove i_persistent(pre) == i_ephemeral(post)
+                    },
+                }
                 assert(ipre == ipost);
                 assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::noop()));
                 assert( post.inv() );
@@ -928,7 +1068,7 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                     let info = pre.program.state.in_flight.unwrap();
                     assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::sync(info.journal_version as int)));
                 } else {
-                    assume(false); // TODO: needs proof for outstanding_reqs_consistent preservation
+                    assume(false); // TODO: needs disk step case analysis (process_read/process_write)
                     assert(post.inv());
                     assert(ipre == ipost);
                     assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::noop()));
