@@ -2126,7 +2126,8 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
             self.system_inv_implies_atomic_state_wf();
             assert(pre_state.state.wf());
         }
-        let result = self.journal.recover_index_step(&mut self.cache);
+        let ghost journal_raw_disk = self.system_inv_journal_pages_parsable();
+        let result = self.journal.recover_index_step(&mut self.cache, Ghost(journal_raw_disk));
         proof {
             assert(self.cache.valid_load_handles_preserved(cache_before_index));
         }
@@ -2354,7 +2355,8 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
             let ghost pre_cache = self.cache@;
             let ghost pre_outstanding = self.outstanding_requests@;
             let ghost pre_store_lsn = self.store_lsn as nat;
-            let fetch = self.journal.recover_map_step(&mut self.cache, self.store_lsn);
+            let ghost journal_raw_disk = self.system_inv_journal_pages_parsable();
+            let fetch = self.journal.recover_map_step(&mut self.cache, self.store_lsn, Ghost(journal_raw_disk));
 
             // we need to track some
             match fetch {

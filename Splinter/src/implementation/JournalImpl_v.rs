@@ -374,7 +374,7 @@ impl JournalImpl {
         }
     }
 
-    pub exec fn recover_map_step(&self, cache: &mut FracCacheImpl, start_lsn: ILsn)
+    pub exec fn recover_map_step(&self, cache: &mut FracCacheImpl, start_lsn: ILsn, journal_raw_disk_ghost: Ghost<Map<Address, RawPage>>)
         -> (out: RecoverMapResult)
     requires
         self.wf(),
@@ -383,6 +383,7 @@ impl JournalImpl {
         self.seq_start() <= (start_lsn as nat),
         (start_lsn as nat) < self.seq_end(),
         old(cache).wf(),
+        all_pages_parsable(journal_raw_disk_ghost@),
     ensures ({
         &&& self@ == self@
         &&& self.wf()
@@ -428,11 +429,11 @@ impl JournalImpl {
         }
 
         let ghost cache_pre = cache@;
-        let ghost journal_raw_disk : Map<Address, RawPage> = arbitrary();
+        // A9: journal_raw_disk from system invariant via caller
+        let ghost journal_raw_disk = journal_raw_disk_ghost@;
         proof {
-            // TODO: system invariant
-            // Assumed global invariants linking cache/index to journal disk contents.
-            assume(journal_raw_disk_inv(self.fmt, journal_raw_disk));
+            reveal(JournalImpl::wf);
+            assert(journal_raw_disk_inv(self.fmt, journal_raw_disk));
             assume(cache_matches_raw_disk(old(cache)@, journal_raw_disk));
             // TODO: system invariants, index in the kvstore model matches with the physical index
             // system inv would relate the model index to the system disk, and that's how we get these facts
@@ -609,12 +610,13 @@ impl JournalImpl {
 
     // Incrementally reconstruct the index from the journal chain.
     // Keeps explicit intermediate state to avoid restarting from head on each cache interaction.
-    pub exec fn recover_index_step(&mut self, cache: &mut FracCacheImpl)
+    pub exec fn recover_index_step(&mut self, cache: &mut FracCacheImpl, journal_raw_disk_ghost: Ghost<Map<Address, RawPage>>)
         -> (out: RecoverIndexResult)
     requires
         old(self).wf(),
         !old(self).index_ready(),
         old(cache).wf(),
+        all_pages_parsable(journal_raw_disk_ghost@),
     ensures ({
         &&& self.wf()
         &&& self@.wf()
@@ -655,10 +657,15 @@ impl JournalImpl {
             // NOTE: builder becomes None when we are out of the building phase
             None => { assert(false); None },
             // NOTE: builder is a hint for continued fetch
-            Some(mut builder) => { 
-                // TODO: system invariants
-                let ghost journal_raw_disk : Map<Address, RawPage> = arbitrary();
-                assume(journal_raw_disk_inv(self.fmt, journal_raw_disk));
+            Some(mut builder) => {
+                // A9: journal_raw_disk from system invariant via caller
+                let ghost journal_raw_disk = journal_raw_disk_ghost@;
+                proof {
+                    reveal(JournalImpl::wf);
+                    // wf() gives self.fmt.valid(), which constrains fmt fields to match spec_new()
+                    // all_pages_parsable uses spec_new().parsable; since fields match, so does self.fmt.parsable
+                    assert(journal_raw_disk_inv(self.fmt, journal_raw_disk));
+                }
                 assume(cache_matches_raw_disk(cache@, journal_raw_disk));
 
                 match builder.next_head.freshest_rec {
