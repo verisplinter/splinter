@@ -18,9 +18,12 @@ use crate::allocation_layer::LikesJournal_v::{LikesJournal, LsnAddrIndex};
 use crate::implementation::ConcreteProgramModel_v::ConcreteProgramModel;
 use crate::implementation::MultisetMapRelation_v::{all_elems_single, multiset_map_membership, multiset_map_singleton_ensures, multiset_to_map};
 use crate::implementation::DiskLayout_v::{DiskLayout, spec_superblock_addr};
-use crate::implementation::SuperblockTypes_v::{ASuperblock, Superblock};
+use crate::implementation::SuperblockTypes_v::{ASuperblock, Superblock, singleton_floating_seq};
 use crate::marshalling::IJournalRecordFormat_v::IJournalRecordFormat;
 use crate::marshalling::Marshalling_v::Marshal;
+use crate::abstract_system::AbstractCrashAwareMap_v::AbstractCrashAwareMap;
+use crate::abstract_system::AbstractCrashAwareSystemRefinement_v::floating_versions;
+use crate::abstract_system::StampedMap_v::LSN;
 
 verus!{
 
@@ -468,49 +471,58 @@ impl SystemModel::State<ConcreteProgramModel>  {
     //         ==> DiskLayout::impl_inv(self.disk.requests[id]->data)
     // }
 
-//     // interpretation given no ephemeral state and only on persistent disk
-//     closed spec(checked) fn i_persistent(self) -> (mapspec: CrashTolerantAsyncMap::State)
-//     recommends
-//         !self.program.state.client_ready(),
-//         self.disk.content.contains_key(spec_superblock_addr()),    // quash recommendation not met
-//     {
-//         let sb = DiskLayout::spec_new().spec_parse(self.disk.content[spec_superblock_addr()]);
-//         CrashTolerantAsyncMap::State{
-//             versions: sb.initial_history(),
-//             async_ephemeral: EphemeralState{
-//                 requests: self.requests.dom(),
-//                 replies: self.replies.dom(),
-//             },
-//             sync_requests: Map::empty(),
-//         }
-//     }
+    // interpretation given no ephemeral state and only on persistent disk
+    closed spec(checked) fn i_persistent(self) -> (mapspec: CrashTolerantAsyncMap::State)
+    recommends
+        !self.program.state.client_ready(),
+        self.disk.content.contains_key(spec_superblock_addr()),    // quash recommendation not met
+    {
+        let sb = DiskLayout::spec_new().spec_parse(self.disk.content[spec_superblock_addr()]);
+        CrashTolerantAsyncMap::State{
+            versions: singleton_floating_seq(sb.store.seq_end, sb.store.value),
+            async_ephemeral: EphemeralState{
+                requests: multiset_to_set(self.requests),
+                replies: multiset_to_set(self.replies),
+            },
+            sync_requests: Map::empty(),
+        }
+    }
 
-//     // ephemeral depends on whether things have landed on disk
-//     closed spec(checked) fn i_ephemeral(self) -> (mapspec: CrashTolerantAsyncMap::State)
-//     recommends
-//         self.program.state.wf(),
-//         self.program.state.client_ready(),
-//     {
-//         arbitrary()
-//         // let model = self.program.state;
-//         // let actual_versions =
-//         //     if model.in_flight is Some
-//         //         && self.disk.responses.contains_key(model.in_flight.unwrap().req_id)
-//         //     {
-//         //         model.history.get_suffix(model.in_flight.unwrap().version as int)
-//         //     } else {
-//         //         model.history
-//         //     };
+    // ephemeral depends on whether things have landed on disk
+    closed spec fn i_ephemeral(self) -> (mapspec: CrashTolerantAsyncMap::State)
+    recommends
+        self.program.state.wf(),
+        self.program.state.client_ready(),
+    {
+        let state = self.program.state;
+        let journal = self.i_journal(); // AbstractCrashAwareJournal::State (TODO: returns arbitrary)
+        let mapadt = state.store;       // AbstractCrashAwareMap::State
 
-//         // CrashTolerantAsyncMap::State{
-//         //     versions: actual_versions,
-//         //     async_ephemeral: EphemeralState{
-//         //         requests: self.requests.dom(),
-//         //         replies: self.replies.dom(),
-//         //     },
-//         //     sync_requests: self.program.state.sync_req_map,
-//         //  }
-//     }
+        // Mirror CoordinationSystem.iversions_known() structure
+        let inflight_on_disk =
+            state.in_flight is Some
+            && journal.in_flight is Some
+            && self.disk.responses.contains_key(state.in_flight.unwrap().req_id);
+
+        let versions = if inflight_on_disk {
+            let in_flight_map = mapadt.in_flight.unwrap();
+            let remaining_journal = journal.i().discard_old(in_flight_map.seq_end);
+            let stable_lsn = journal.in_flight.unwrap().seq_end;
+            floating_versions(in_flight_map, remaining_journal, stable_lsn)
+        } else {
+            let stable_lsn = journal.persistent.seq_end;
+            floating_versions(mapadt.persistent, journal.i(), stable_lsn)
+        };
+
+        CrashTolerantAsyncMap::State{
+            versions,
+            async_ephemeral: EphemeralState{
+                requests: multiset_to_set(self.requests),
+                replies: multiset_to_set(self.replies),
+            },
+            sync_requests: state.sync_req_map,
+        }
+    }
 
     closed spec fn sb_landed(self: Self, post: Self) -> bool
     {
@@ -533,20 +545,11 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
 
     closed spec fn i(model: SystemModel::State<ConcreteProgramModel>) -> (mapspec: CrashTolerantAsyncMap::State)
     {
-        // if client ready 
-        // either way we need a way to get from disk 
-
-        
-
-        // go from likes journal to abstracted version
-            
-        arbitrary()
-
-        // if model.program.state.client_ready() {
-        //     model.i_ephemeral()
-        // } else {
-        //     model.i_persistent()
-        // }
+        if model.program.state.client_ready() {
+            model.i_ephemeral()
+        } else {
+            model.i_persistent()
+        }
     }
 
     closed spec fn i_lbl(pre: SystemModel::State<ConcreteProgramModel>, post: SystemModel::State<ConcreteProgramModel>, lbl: SystemModel::Label) -> (ctam_lbl: CrashTolerantAsyncMap::Label)
