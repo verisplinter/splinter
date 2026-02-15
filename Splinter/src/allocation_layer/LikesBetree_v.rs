@@ -967,37 +967,55 @@ pub open spec fn add_betree_likes<T: Addrs + Likeable>(new_addrs: T, path_addrs:
 }
 
 pub open spec(checked) fn split_discard_betree<T>(path: Path<T>, request: SplitRequest) -> Likes
+    recommends
+        path.valid(),
+        path.target().wf(),
+        path.target().has_root(),
+        path.target().root().valid_child_index(request.get_child_idx()),
 {
     let old_child = path.target().child_at_idx(request.get_child_idx());
     path.addrs_on_path().to_multiset().add(path.target().root_likes()).add(old_child.root_likes())
 }
 
 pub open spec(checked) fn split_add_buffers<T>(path: Path<T>, request: SplitRequest) -> Likes
+    recommends
+        path.valid(),
+        path.target().wf(),
+        path.target().has_root(),
+        path.target().root().valid_child_index(request.get_child_idx()),
 {
     let old_child = path.target().child_at_idx(request.get_child_idx());
     old_child.buffer_likes(old_child.root_likes())
 }
 
 pub open spec(checked) fn flush_discard_betree<T>(path: Path<T>, child_idx: nat) -> Likes
+    recommends
+        path.valid(),
+        path.target().wf(),
+        path.target().has_root(),
+        path.target().root().valid_child_index(child_idx),
 {
-    let old_parent = path.target();
-    let old_child = old_parent.child_at_idx(child_idx);
-    path.addrs_on_path().to_multiset().add(old_parent.root_likes()).add(old_child.root_likes())
+    let old_child = path.target().child_at_idx(child_idx);
+    path.addrs_on_path().to_multiset().add(path.target().root_likes()).add(old_child.root_likes())
 }
 
 pub open spec(checked) fn flush_discard_buffers<T>(path: Path<T>, buffer_gc: nat) -> Likes
+    recommends
+        path.valid(),
+        path.target().has_root(),
+        buffer_gc <= path.target().root().buffers.len(),
 {
-    let old_parent = path.target();
-    old_parent.root().buffers.slice(0, buffer_gc as int).addrs.to_multiset()
+    path.target().root().buffers.slice(0, buffer_gc as int).addrs.to_multiset()
 }
 
 pub open spec(checked) fn flush_add_buffers<T>(path: Path<T>, child_idx: nat) -> Likes
+    recommends path.valid()
 {
-    let old_parent = path.target();
-    old_parent.flush_buffers(child_idx).addrs.to_multiset()
+    path.target().flush_buffers(child_idx).addrs.to_multiset()
 }
 
 pub open spec(checked) fn compact_discard_betree<T>(path: Path<T>) -> Likes
+    recommends path.valid()
 {
     path.addrs_on_path().to_multiset().add(path.target().root_likes())
 }
@@ -1008,6 +1026,10 @@ pub open spec(checked) fn compact_add_betree(new_addrs: TwoAddrs, path_addrs: Pa
 }
 
 pub open spec(checked) fn compact_discard_buffers<T>(path: Path<T>, start: nat, end: nat) -> Likes
+    recommends
+        path.valid(),
+        path.target().has_root(),
+        start <= end <= path.target().root().buffers.len(),
 {
     path.target().root().buffers.slice(start as int, end as int).addrs.to_multiset()
 }

@@ -829,7 +829,8 @@ impl<T: Buffer> LinkedBetree<T> {
         }
     }
 
-    pub open spec(checked) fn compact_buffer_valid_domain(self, start: nat, end: nat, 
+    // curtailing spec(checked) here until verus offers proof blocks inside spec fns
+    pub open spec /*(checked)*/ fn compact_buffer_valid_domain(self, start: nat, end: nat,
         buffer: T, new_buffer_dv: BufferDisk<T>, buffer_addr: Address) -> bool
         recommends 
             self.wf(),
@@ -841,7 +842,8 @@ impl<T: Buffer> LinkedBetree<T> {
     }
 
     // #[verifier::opaque]
-    pub open spec(checked) fn compact_buffer_valid_range(self, start: nat, end: nat, 
+    // curtailing spec(checked) here until verus offers proof blocks inside spec fns
+    pub open spec /*(checked)*/ fn compact_buffer_valid_range(self, start: nat, end: nat,
         buffer: T, new_buffer_dv: BufferDisk<T>, buffer_addr: Address) -> bool
         recommends 
             self.wf(),
@@ -1541,7 +1543,8 @@ impl<T> LinkedBetree<T> {
         assert(self.child_at_idx(idx).valid_ranking(self.the_ranking()));
     }
 
-    pub open spec(checked) fn child_subtree_contains_addr(self, ranking: Ranking, addr: Address, start: nat, i: nat) -> bool
+    // curtailing spec(checked) here until verus offers proof blocks inside spec fns
+    pub open spec /*(checked)*/ fn child_subtree_contains_addr(self, ranking: Ranking, addr: Address, start: nat, i: nat) -> bool
         recommends self.wf(), self.valid_ranking(ranking)
     {
         &&& start <= i < self.child_count()
