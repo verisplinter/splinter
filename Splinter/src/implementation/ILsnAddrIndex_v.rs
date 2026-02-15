@@ -31,7 +31,7 @@ impl ILsnAddrIndex {
     {
         &&& self.bounds.len() == self.addrs.len() + 1
         &&& forall |i| 0 <= i < self.bounds.len() - 1 ==> self.sorted_entry(i)
-        &&& forall |i: int, j: int| 0 <= i < j < self.addrs.len() ==> self.addrs[i]@ != self.addrs[j]@
+        &&& forall |i: int, j: int| #![auto] 0 <= i < j < self.addrs.len() ==> self.addrs[i]@ != self.addrs[j]@
     }
 
     // TODO maybe delete; does any caller care?
@@ -313,7 +313,7 @@ impl ILsnAddrIndex {
             implies exists |start_lsn: LSN, end_lsn: LSN|
                 complete_lsn_range_for_addr(self@, self.seq_start() as nat, addr, start_lsn, end_lsn)
         by {
-            let lsn0 = choose |lsn: LSN| self@.contains_key(lsn) && self@[lsn] == addr;
+            let lsn0 = choose |lsn: LSN| #![auto] self@.contains_key(lsn) && self@[lsn] == addr;
             assert(self.seq_start() <= lsn0 < self.seq_end());
             let idx = self.find_segment(lsn0);
             let start_lsn = self.bounds[idx] as nat;
@@ -641,7 +641,7 @@ impl ILsnAddrIndex {
                     assert(old_snap.sorted_entry(i - 1)); // trigger
                 }
             }
-            assert forall |i: int, j: int| 0 <= i < j < self.addrs.len()
+            assert forall |i: int, j: int| #![auto] 0 <= i < j < self.addrs.len()
                 implies self.addrs[i]@ != self.addrs[j]@ by {
                 if i == 0 {
                     assert(self.addrs[i]@ == addr@);

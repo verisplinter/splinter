@@ -46,7 +46,7 @@ impl IJournalSnapshot {
 
 pub open spec fn all_pages_parsable(pages: Map<Address, RawPage>) -> bool
 {
-    forall |addr: Address| pages.contains_key(addr)
+    forall |addr: Address| #![auto] pages.contains_key(addr)
         ==> IJournalRecordFormat::spec_new().parsable(pages[addr])
 }
 
