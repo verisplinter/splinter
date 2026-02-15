@@ -1853,7 +1853,14 @@ impl Implementation {
         let ghost pre_outstanding = self.outstanding_requests@;
         let req_info = self.outstanding_requests.remove(&id);
         match req_info {
-            None => { Self::todo_placeholder(); }
+            None => {
+                // A7: system invariant proves id ∈ outstanding_requests, contradicting
+                // remove returning None. Branch is provably unreachable.
+                proof {
+                    self.system_inv_response_in_outstanding(id, disk_response, response_shard);
+                    assert(false);
+                }
+            }
             Some(req_info) => match req_info {
                 OutstandingReqInfo::SuperBlockReq{} => {
                     // TODO: remove-at-top breaks model_reqs_in_outstanding, outstanding_req_is_superblock.
