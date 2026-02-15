@@ -248,6 +248,8 @@ impl Implementation {
         &&& self.state().recovery_state is Begin
         &&& self.cache.wf()
         &&& self.outstanding_requests@.dom() == Set::<ID>::empty()
+        &&& self.state().in_flight is None
+        &&& self.state().outstanding_cache_reqs == Map::<ID, Address>::empty()
     }
 
     pub closed spec fn outstanding_req_is_superblock(self, id: ID) -> bool {
@@ -313,6 +315,14 @@ impl Implementation {
     closed spec fn outstanding_requests_match_cache_reqs(self) -> bool
     {
         Self::outstanding_requests_match_cache_reqs_map(self.outstanding_requests@, self.state().outstanding_cache_reqs)
+    }
+
+    // Every model-level outstanding ID is tracked in the exec-level map.
+    // This is the "model ⊆ exec" direction of outstanding_reqs_match_model.
+    pub closed spec fn model_reqs_in_outstanding(self) -> bool {
+        let state = self.state();
+        let in_flight_sb_id = if state.in_flight is Some { set!{state.in_flight.unwrap().req_id} } else { set!{} };
+        state.outstanding_cache_reqs.dom() + in_flight_sb_id <= self.outstanding_requests@.dom()
     }
 
     closed spec fn inv_running(self) -> bool {
@@ -426,6 +436,7 @@ impl Implementation {
             && self.outstanding_requests@[id] is SuperBlockReq
             ==> self.in_flight is Some
                 && !self.state().outstanding_cache_reqs.dom().contains(id)
+        &&& self.model_reqs_in_outstanding()
         &&& self.model@.instance_id() == self.instance@.id()
     }
 
@@ -1566,11 +1577,25 @@ impl Implementation {
         });
     }
 
+    // B5: Every disk response matches an outstanding request.
+    // Uses outstanding_reqs_consistent + model_reqs_in_outstanding to show that
+    // any disk response ID is tracked in outstanding_requests.
+    proof fn system_inv_response_in_outstanding(self, disk_req_id: ID, i_disk_response: IDiskResponse, disk_response_token: Tracked<DiskRespShard>)
+    requires
+        self.inv(),
+        disk_response_token@.multiset() == multiset_map_singleton(disk_req_id, i_disk_response@),
+    ensures
+        self.outstanding_requests@.dom().contains(disk_req_id),
+    {
+        let model = open_system_invariant_disk_response_singleton::<ConcreteProgramModel, RefinementProof>(
+            self.model, disk_response_token, disk_req_id, i_disk_response@);
+    }
+
     // A reply to a superblock read only ever occurs as the first operation after reboot; those get
     // handled in-line by the recover procedure.
 
     // In normal operations, we will see write acknowledgements to superblock commits.
-    pub exec fn handle_disk_superblock_write_response(&mut self, id: ID, disk_response: IDiskResponse, response_shard: Tracked<DiskRespShard>,
+    exec fn handle_disk_superblock_write_response(&mut self, id: ID, disk_response: IDiskResponse, response_shard: Tracked<DiskRespShard>,
         api: &mut ClientAPI<ConcreteProgramModel>)
     requires
         old(self).inv_api(old(api)),
@@ -1582,6 +1607,9 @@ impl Implementation {
     ensures
         self.inv_api(api),
         self.ready_for_user_operation(),
+        // After the superblock write completes, in_flight is cleared and id is not a cache req
+        self.state().in_flight is None,
+        !self.state().outstanding_cache_reqs.dom().contains(id),
     {
         let mut ready_reqs = vec![];
         std::mem::swap(&mut self.sync_requests.superblocking_reqs, &mut ready_reqs);

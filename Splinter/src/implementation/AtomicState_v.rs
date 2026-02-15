@@ -186,8 +186,8 @@ impl AtomicState {
             journal: arbitrary(),
             store: arbitrary(), 
             persistent_journal_seq_end: arbitrary(),
-            in_flight: arbitrary(),
-            sync_req_map: arbitrary(),
+            in_flight: None,
+            sync_req_map: Map::empty(),
         }
     }
 
