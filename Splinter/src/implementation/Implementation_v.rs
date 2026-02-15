@@ -1578,6 +1578,25 @@ impl Implementation {
     }
 
     // B5: Every disk response matches an outstanding request.
+    // B6: The superblock read response's store has unique keys.
+    // Uses persistent_sb_disk_inv (asb.wf()) + awaiting_sb_response_is_disk_content.
+    proof fn system_inv_sb_store_unique_keys(self, disk_req_id: ID, i_disk_response: IDiskResponse, disk_response_token: Tracked<DiskRespShard>)
+    requires
+        self.state().recovery_state is AwaitingSuperblock,
+        i_disk_response is ReadResp,
+        disk_response_token@.multiset() == multiset_map_singleton(disk_req_id, i_disk_response@),
+    ensures
+        VecMap::unique_keys(DiskLayout::spec_new().spec_parse_inner(i_disk_response@->data).store)
+    {
+        let model = open_system_invariant_disk_response_singleton::<ConcreteProgramModel, RefinementProof>(
+            self.model, disk_response_token, disk_req_id, i_disk_response@);
+        // awaiting_sb_response_is_disk_content: response data == disk content at sb addr
+        assert(model.awaiting_sb_response_is_disk_content());
+        assert(model.disk.responses[disk_req_id]->data == model.disk.content[spec_superblock_addr()]);
+        // persistent_sb_disk_inv: ASuperblock parsed from disk content has wf() (unique_keys)
+        assert(model.persistent_sb_disk_inv());
+    }
+
     // Uses outstanding_reqs_consistent + model_reqs_in_outstanding to show that
     // any disk response ID is tracked in outstanding_requests.
     proof fn system_inv_response_in_outstanding(self, disk_req_id: ID, i_disk_response: IDiskResponse, disk_response_token: Tracked<DiskRespShard>)
@@ -1905,16 +1924,17 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                 }
             };
 
+            // B6: derive unique_keys from system invariant BEFORE model swap
+            proof {
+                self.system_inv_sb_store_unique_keys(disk_req_id, i_disk_response, disk_response_token);
+            }
+
             let tracked mut model = KVStoreTokenized::model::arbitrary();
             proof { tracked_swap(self.model.borrow_mut(), &mut model); }
 
             let layout = DiskLayout::new();
             let superblock: ISuperblock = layout.parse(&raw_page);
             Self::debug_print(&superblock);
-
-            assert( VecMap::unique_keys(superblock.store@) ) by {
-                assume( false );    // get this from a system invariant about the superblock on the disk
-            }
 
             self.persistent_store = VecMap::from_vec(superblock.store);
             self.journal = JournalImpl::new(superblock.journal_snapshot);

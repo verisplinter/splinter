@@ -212,6 +212,7 @@ impl SystemModel::State<ConcreteProgramModel>  {
         //         .apply_to_stamped_map(self.in_flight_map())
 
         &&& self.persistent_sb_disk_inv()
+        &&& self.awaiting_sb_response_is_disk_content()
         &&& self.no_writes_till_recovery_complete()
         &&& self.outstanding_reqs_consistent()
         &&& self.sb_req_id_disjoint_cache_reqs()
@@ -247,9 +248,12 @@ impl SystemModel::State<ConcreteProgramModel>  {
         let state = self.program.state;
         &&& self.disk.content.contains_key(spec_superblock_addr())
         &&& {
-            let sb : Superblock = DiskLayout::spec_new().spec_parse(self.disk.content[spec_superblock_addr()]);
+            let asb : ASuperblock = DiskLayout::spec_new().spec_parse_inner(self.disk.content[spec_superblock_addr()]);
+            let sb : Superblock = asb@;
+            // The raw store always has unique keys (survives crashes, writes)
+            &&& asb.wf()
             &&& sb.wf()
-            &&& state.client_ready() ==> 
+            &&& state.client_ready() ==>
             {
                 if state.in_flight is Some && self.disk.responses.contains_key(state.in_flight.unwrap().req_id) {
                     sb == state.in_flight_sb()
@@ -258,6 +262,17 @@ impl SystemModel::State<ConcreteProgramModel>  {
                 }
             }
         }
+    }
+
+    // During AwaitingSuperblock, the only disk activity was the superblock read.
+    // No writes happen (no_writes_till_recovery_complete), so the read response
+    // data matches the current disk content at the superblock address.
+    pub open spec fn awaiting_sb_response_is_disk_content(self) -> bool
+    {
+        self.program.state.recovery_state is AwaitingSuperblock ==>
+            forall |id| #[trigger] self.disk.responses.contains_key(id)
+                && self.disk.responses[id] is ReadResp
+                ==> self.disk.responses[id]->data == self.disk.content[spec_superblock_addr()]
     }
 
     // NOTE: I think we needed this before to ensure that up until recovery is done all requests are read resps
