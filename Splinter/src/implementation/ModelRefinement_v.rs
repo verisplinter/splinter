@@ -514,12 +514,11 @@ impl SystemModel::State<ConcreteProgramModel>  {
 
     closed spec fn sb_landed(self: Self, post: Self) -> bool
     {
-        false
-        // let state = self.program.state;
-        // &&& state.client_ready()
-        // &&& state.in_flight is Some
-        // &&& !self.disk.responses.contains_key(state.in_flight.unwrap().req_id)
-        // &&& post.disk.responses.contains_key(state.in_flight.unwrap().req_id)
+        let state = self.program.state;
+        &&& state.client_ready()
+        &&& state.in_flight is Some
+        &&& !self.disk.responses.contains_key(state.in_flight.unwrap().req_id)
+        &&& post.disk.responses.contains_key(state.in_flight.unwrap().req_id)
     }
 }
 
