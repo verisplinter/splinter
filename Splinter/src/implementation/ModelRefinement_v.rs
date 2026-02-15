@@ -28,6 +28,7 @@ use crate::abstract_system::StampedMap_v::{LSN, StampedMap};
 use crate::abstract_system::MsgHistory_v::MsgHistory;
 use crate::abstract_system::AbstractCrashAwareJournal_v::Ephemeral;
 use crate::abstract_system::AbstractJournal_v::AbstractJournal;
+use crate::abstract_system::AbstractMap_v::AbstractMap;
 
 verus!{
 
@@ -1030,13 +1031,19 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                         assume(post.inv());
                     },
                     DiskEvent::CacheIOBegin{..} | DiskEvent::CacheIOEnd{..} => {
-                        // Cache I/O: journal, store, in_flight unchanged. Disk content unchanged.
-                        // inflight_on_disk unchanged (CacheIOBegin: responses unchanged;
-                        // CacheIOEnd: sb_req_id not in cache responses by sb_req_id_disjoint)
-                        // TODO: needs disk transition reasoning to show sb response preserved
+                        // Cache I/O: journal, store, in_flight unchanged.
+                        // disk_ops doesn't change disk.content.
+                        if pre.program.state.client_ready() {
+                            reveal(SystemModel::State::<_>::i_ephemeral);
+                            // i_ephemeral: store, journal unchanged; inflight_on_disk preserved
+                            // since disk_ops doesn't add/remove the sb response
+                            assume(ipre == ipost);
+                        } else {
+                            reveal(SystemModel::State::<_>::i_persistent);
+                            // i_persistent: disk.content unchanged by disk_ops → ipre == ipost
+                        }
                         // TODO: inv() blocked on Cache::inv_next + outstanding_reqs_consistent
                         assume(post.inv());
-                        assume(ipre == ipost);
                     },
                     DiskEvent::ExecuteSyncBegin{..} => {
                         assume(false); // TODO: needs FreezeForCommit reasoning + wf invariant
@@ -1063,11 +1070,12 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                         reveal(AbstractCrashAwareMap::State::next);
                         reveal(AbstractCrashAwareMap::State::next_by);
 
-                        // TODO: wf() invariant `store.in_flight is Some <==> self.in_flight is Some`
-                        // is too strong: freeze_map_internal/freeze_persistent_internal can set
-                        // store.in_flight without setting self.in_flight (that happens later in
-                        // execute_sync_begin). Similarly, ephemeral_map().seq_end may change.
-                        assume(post.program.state.wf());
+                        // ACM internal transitions (freeze_map, freeze_persistent, ephemeral)
+                        // all preserve ephemeral->v.stamped_map via AbstractMap freeze_as/internal
+                        reveal(AbstractMap::State::next);
+                        reveal(AbstractMap::State::next_by);
+                        assert(post.program.state.store.ephemeral == pre.program.state.store.ephemeral);
+                        assert(post.program.state.wf());
                     },
                     InternalEvent::AckJournalFlush{..} => {
                         // Cache+journal watermark maintenance should be abstractly invisible.
@@ -1099,9 +1107,20 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                     let info = pre.program.state.in_flight.unwrap();
                     assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::sync(info.journal_version as int)));
                 } else {
-                    assume(false); // TODO: needs disk step case analysis (process_read/process_write)
-                    assert(post.inv());
-                    assert(ipre == ipost);
+                    // !sb_landed: process_read or process_write, program unchanged
+                    reveal(<RefinementProof as RefinementObligation<ConcreteProgramModel>>::i);
+                    if pre.program.state.client_ready() {
+                        reveal(SystemModel::State::<_>::i_ephemeral);
+                        // i_ephemeral depends on store, journal (unchanged), and
+                        // disk.responses only via inflight_on_disk. !sb_landed
+                        // preserves inflight_on_disk status.
+                        assert(ipre == ipost);
+                    } else {
+                        reveal(SystemModel::State::<_>::i_persistent);
+                        // i_persistent uses disk.content[sb_addr]; process_write may change it
+                        assume(ipre == ipost);
+                    }
+                    assume(post.inv());
                     assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::noop()));
                 }
                 assert( post.inv() );

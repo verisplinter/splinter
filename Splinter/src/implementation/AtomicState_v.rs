@@ -169,7 +169,7 @@ impl AtomicState {
             &&& self.journal.wf()
             &&& self.journal.seq_start() == self.persistent_map().seq_end
             &&& self.journal.seq_end() == self.ephemeral_map().seq_end
-            &&& self.store.in_flight is Some <==> self.in_flight is Some
+            &&& self.in_flight is Some ==> self.store.in_flight is Some
             &&& if let Some(ifl) = self.in_flight 
                 { self.persistent_map().seq_end <= self.in_flight_map().seq_end } 
                 else { true }
