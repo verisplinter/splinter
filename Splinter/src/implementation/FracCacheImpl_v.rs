@@ -250,6 +250,29 @@ impl FracCacheImpl {
         reveal(FracCacheImpl::view_state);
     }
 
+    // Connects valid_load_handle (exec level) to the model view:
+    // the model entry at the handle's slot is Loading (not Filled),
+    // and the model lookup_map maps the address to the handle's slot.
+    pub proof fn valid_load_handle_model_entry(cache: &FracCacheImpl, addr: &IAddress, handle: MutHandle)
+    requires
+        cache.wf(),
+        cache.entry_fetched(addr),
+        cache.valid_load_handle(addr, handle),
+    ensures
+        cache@.entries.contains_key(handle.idx),
+        cache@.entries[handle.idx] is Loading,
+        !(cache@.entries[handle.idx] is Filled),
+        cache@.lookup_map.contains_key(addr@),
+        cache@.lookup_map[addr@] == handle.idx,
+    {
+        reveal(FracCacheImpl::entry_fetched);
+        reveal(FracCacheImpl::slot_entry);
+        reveal(FracCacheImpl::lookup_addr_slot);
+        reveal(FracCacheImpl::view_state);
+        reveal(FracCacheImpl::view_entries);
+        reveal(FracCacheImpl::wf);
+    }
+
     pub closed spec fn lookup_addr_slot(self, addr: &IAddress) -> Slot
         recommends self.entry_fetched(addr)
     {

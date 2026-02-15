@@ -1332,6 +1332,42 @@ impl Implementation {
             self.model, disk_response_token, disk_req_id, i_disk_response@);
     }
 
+    // A disk response for a cache load request is always ReadResp.
+    // The system invariant says WriteResp + cache_req → Writeback status,
+    // but CacheLoadReq → Loading entry → NotFilled status, contradiction.
+    proof fn system_inv_cache_load_is_read_resp(self, disk_req_id: ID, i_disk_response: IDiskResponse,
+        disk_response_token: Tracked<DiskRespShard>,
+        pre_outstanding: Map<ID, OutstandingReqInfo>)
+    requires
+        self.inv(),
+        disk_response_token@.multiset() == multiset_map_singleton(disk_req_id, i_disk_response@),
+        pre_outstanding.contains_key(disk_req_id),
+        pre_outstanding[disk_req_id] is CacheLoadReq,
+        Self::outstanding_requests_match_cache_reqs_map(pre_outstanding, self.state().outstanding_cache_reqs),
+        Self::outstanding_requests_wf_map(pre_outstanding, self.cache),
+    ensures
+        i_disk_response is ReadResp,
+    {
+        // Extract system invariant — gives model with outstanding_reqs_consistent + state.wf()
+        let model = open_system_invariant_disk_response_singleton::<ConcreteProgramModel, RefinementProof>(
+            self.model, disk_response_token, disk_req_id, i_disk_response@);
+
+        // From outstanding_requests_match_cache_reqs_map: CacheLoadReq → outstanding_cache_reqs has id
+        reveal(Implementation::outstanding_requests_match_cache_reqs_map);
+
+        // From outstanding_requests_wf_map: CacheLoadReq → valid_load_handle
+        reveal(Implementation::outstanding_requests_wf_map);
+        reveal(Implementation::inv);
+        match pre_outstanding[disk_req_id] {
+            OutstandingReqInfo::CacheLoadReq{read_addr, load_handle} => {
+                // Connect exec valid_load_handle to model view: entries[slot] is Loading (not Filled)
+                FracCacheImpl::valid_load_handle_model_entry(&self.cache, &read_addr, load_handle);
+//                 let slot = load_handle.idx;
+            }
+            _ => {} // unreachable: precondition says CacheLoadReq
+        }
+    }
+
     // When in_flight is Some, the superblock write ID is not in outstanding_cache_reqs.
     // This follows from sb_req_id_disjoint_cache_reqs in the system invariant.
     proof fn system_inv_sb_id_not_in_cache_reqs(self)
@@ -1905,11 +1941,14 @@ impl Implementation {
         self.recovery_phase == old(self).recovery_phase,
     {
         let ghost pre_outstanding = pre_outstanding@;
+        proof {
+            self.system_inv_cache_load_is_read_resp(id, disk_response, response_shard, pre_outstanding);
+        }
         let OutstandingReqInfo::CacheLoadReq{read_addr, mut load_handle} = req_info else { unreached() };
         let data = match disk_response {
             IDiskResponse::ReadResp{data} => data,
             IDiskResponse::WriteResp{} => {
-                assume(false); // should be impossible for a cache load
+                assert(false); // proved unreachable by system_inv_cache_load_is_read_resp
                 unreached()
             }
         };
