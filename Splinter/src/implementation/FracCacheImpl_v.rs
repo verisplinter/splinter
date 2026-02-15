@@ -13,10 +13,11 @@ use vstd::prelude::*;
 use vstd::pcm::Loc;
 use vstd::tokens::frac::*;
 use vstd::pervasive::unreached;
+use crate::trusted::ClientAPI_t::BLOCK_SIZE;
 
 verus!{
 
-pub const PAGE_SIZE_BYTES: usize = 4096;
+pub const PAGE_SIZE_BYTES: usize = BLOCK_SIZE;
 pub const CACHE_SIZE_RECS: usize = 1000;
 
 pub type IRawPage = Vec<u8>;

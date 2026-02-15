@@ -278,10 +278,11 @@ impl<ProgramModel: ProgramModelTrait> ClientAPI<ProgramModel>{
     }
 
     #[verifier::external_body]
-    pub fn send_disk_request(&mut self, disk_req: IDiskRequest, id_perm: Tracked<ID>, 
+    pub fn send_disk_request(&mut self, disk_req: IDiskRequest, id_perm: Tracked<ID>,
         disk_request_tokens: Tracked<KVStoreTokenized::disk_requests_multiset<ProgramModel>>) -> (out: ID)
     requires
         disk_request_tokens@.multiset() == multiset_map_singleton(id_perm@, disk_req@),
+        disk_req is WriteReq ==> disk_req->data.len() == BLOCK_SIZE,
     ensures
         self.instance_id() == old(self).instance_id(),
         out == id_perm@,
@@ -315,6 +316,7 @@ impl<ProgramModel: ProgramModelTrait> ClientAPI<ProgramModel>{
             Some(rec) => {
                 &&& rec.token@.instance_id() == self.instance_id()
                 &&& rec.token@.multiset() == multiset_map_singleton(rec.id, rec.disk_response@)
+                &&& rec.disk_response is ReadResp ==> rec.disk_response->data.len() == BLOCK_SIZE
             }
         }
     {
@@ -340,6 +342,7 @@ impl<ProgramModel: ProgramModelTrait> ClientAPI<ProgramModel>{
         self.instance_id() == old(self).instance_id(),
         rec.token@.instance_id() == self.instance_id(),
         rec.token@.multiset() == multiset_map_singleton(rec.id, rec.disk_response@),
+        rec.disk_response is ReadResp ==> rec.disk_response->data.len() == BLOCK_SIZE,
     {
         let mut t = 0;
         loop

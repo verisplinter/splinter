@@ -91,6 +91,7 @@ impl DiskLayout {
         self.wf(),
     ensures
         sb@@ == self.spec_parse(out@),
+        out.len() == BLOCK_SIZE,
     {
         assert( self.fmt.valid() );
         assume( self.fmt.marshallable(sb.parsedv()) );

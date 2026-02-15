@@ -1936,6 +1936,7 @@ impl Implementation {
         req_info is CacheLoadReq,
         Self::outstanding_requests_wf_map(pre_outstanding@, old(self).cache),
         Self::outstanding_requests_match_cache_reqs_map(pre_outstanding@, old(self).state().outstanding_cache_reqs),
+        disk_response is ReadResp ==> disk_response->data.len() == PAGE_SIZE_BYTES,
     ensures
         self.inv_api(api),
         self.recovery_phase == old(self).recovery_phase,
@@ -1952,9 +1953,6 @@ impl Implementation {
                 unreached()
             }
         };
-
-        // assume disk always returns full pages
-        assume(data.len() == PAGE_SIZE_BYTES);
         load_handle.rec = data;
         self.cache.load_release(&read_addr, load_handle);
 
@@ -2018,6 +2016,7 @@ impl Implementation {
         !(old(self).recovery_phase is FetchingSuperblock),
         old(self).good_disk_response(id, disk_response, response_shard@),
         response_shard@.multiset() == multiset_map_singleton(id, disk_response@),
+        disk_response is ReadResp ==> disk_response->data.len() == PAGE_SIZE_BYTES,
     ensures
         self.inv_api(api),
         self.recovery_phase.advances(old(self).recovery_phase),
