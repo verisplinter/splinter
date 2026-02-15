@@ -19,6 +19,8 @@ use crate::implementation::ConcreteProgramModel_v::ConcreteProgramModel;
 use crate::implementation::MultisetMapRelation_v::{all_elems_single, multiset_map_membership, multiset_map_singleton_ensures, multiset_to_map};
 use crate::implementation::DiskLayout_v::{DiskLayout, spec_superblock_addr};
 use crate::implementation::SuperblockTypes_v::{ASuperblock, Superblock};
+use crate::marshalling::IJournalRecordFormat_v::IJournalRecordFormat;
+use crate::marshalling::Marshalling_v::Marshal;
 
 verus!{
 
@@ -218,6 +220,7 @@ impl SystemModel::State<ConcreteProgramModel>  {
         &&& self.sb_req_id_disjoint_cache_reqs()
         &&& self.sb_response_is_write_resp()
         &&& self.sync_requests_inv()
+        &&& self.journal_pages_parsable()
 
         // id history tracking
         &&& self.requests_have_unique_ids()
@@ -273,6 +276,17 @@ impl SystemModel::State<ConcreteProgramModel>  {
             forall |id| #[trigger] self.disk.responses.contains_key(id)
                 && self.disk.responses[id] is ReadResp
                 ==> self.disk.responses[id]->data == self.disk.content[spec_superblock_addr()]
+    }
+
+    // All non-superblock disk pages are parsable as journal records.
+    // This follows from: mkfs only writes the superblock, and journal writes
+    // only write marshalled (hence parsable) journal records.
+    pub open spec fn journal_pages_parsable(self) -> bool
+    {
+        let fmt = IJournalRecordFormat::spec_new();
+        forall |addr: Address| self.disk.content.contains_key(addr)
+            && addr != spec_superblock_addr()
+            ==> #[trigger] fmt.parsable(self.disk.content[addr])
     }
 
     // NOTE: I think we needed this before to ensure that up until recovery is done all requests are read resps

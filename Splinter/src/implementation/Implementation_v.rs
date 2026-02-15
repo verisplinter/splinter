@@ -39,6 +39,8 @@ use crate::implementation::CachedJournal_v::CachedJournal;
 use crate::implementation::CachedJournal_v;
 use crate::marshalling::Marshalling_v::Parsedview;
 use crate::marshalling::WF_v::WF;
+use crate::marshalling::IJournalRecordFormat_v::IJournalRecordFormat;
+use crate::marshalling::Marshalling_v::Marshal;
 use crate::implementation::OverflowFiction_v::*;
 use crate::abstract_system::AbstractCrashAwareMap_v;
 use crate::implementation::Cache_v::Cache;
@@ -1595,6 +1597,20 @@ impl Implementation {
         assert(model.disk.responses[disk_req_id]->data == model.disk.content[spec_superblock_addr()]);
         // persistent_sb_disk_inv: ASuperblock parsed from disk content has wf() (unique_keys)
         assert(model.persistent_sb_disk_inv());
+    }
+
+    // B7: All non-superblock disk pages are parsable as journal records.
+    // Opens the system invariant to derive journal_pages_parsable, returns
+    // disk content (minus superblock) as a ghost map with parsability guarantee.
+    proof fn system_inv_journal_pages_parsable(self) -> (journal_raw_disk: Map<Address, RawPage>)
+    ensures
+        all_pages_parsable(journal_raw_disk),
+    {
+        let tracked empty_disk_responses: Tracked<KVStoreTokenized::disk_responses_multiset<ConcreteProgramModel>>
+            = Tracked(KVStoreTokenized::disk_responses_multiset::empty(self.instance_id()));
+        let model = open_system_invariant_disk_response::<ConcreteProgramModel, RefinementProof>(self.model, empty_disk_responses);
+        assert(model.journal_pages_parsable());
+        model.disk.content.remove(spec_superblock_addr())
     }
 
     // Uses outstanding_reqs_consistent + model_reqs_in_outstanding to show that

@@ -44,6 +44,12 @@ impl IJournalSnapshot {
     }
 }
 
+pub open spec fn all_pages_parsable(pages: Map<Address, RawPage>) -> bool
+{
+    forall |addr: Address| pages.contains_key(addr)
+        ==> IJournalRecordFormat::spec_new().parsable(pages[addr])
+}
+
 pub open spec fn iaddr_view(ptr: Option<IAddress>) -> Option<Address>
 {
     match ptr {
@@ -603,7 +609,7 @@ impl JournalImpl {
 
     // Incrementally reconstruct the index from the journal chain.
     // Keeps explicit intermediate state to avoid restarting from head on each cache interaction.
-    pub exec fn recover_index_step(&mut self, cache: &mut FracCacheImpl) 
+    pub exec fn recover_index_step(&mut self, cache: &mut FracCacheImpl)
         -> (out: RecoverIndexResult)
     requires
         old(self).wf(),
