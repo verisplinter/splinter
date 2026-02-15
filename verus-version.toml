@@ -1,0 +1,6 @@
+# Verus build configuration for CI.
+# Update verus_commit when the required verus version changes.
+# verus_repo can point to a fork if the needed commit isn't on mainline.
+verus_repo = "https://github.com/verus-lang/verus.git"
+verus_commit = "d4eb2346bf5db8c0aeb8644e3a3adb2bf58b3951"
+rust_toolchain = "1.93.0"
