@@ -619,6 +619,13 @@ impl JournalImpl {
         old(cache).wf(),
         all_pages_parsable(journal_raw_disk_ghost@),
         cache_matches_raw_disk(old(cache)@, journal_raw_disk_ghost@),
+        old(self)@.snapshot.freshest_rec is Some ==>
+            journal_disk_inv(
+                LinkedJournal_v::DiskView{
+                    boundary_lsn: old(self)@.snapshot.boundary_lsn,
+                    entries: to_journal_reads(journal_raw_disk_ghost@),
+                },
+                old(self)@.snapshot.freshest_rec),
     ensures ({
         &&& self.wf()
         &&& self@.wf()
@@ -687,10 +694,8 @@ impl JournalImpl {
                             let mut index_initialized = false;
                             index = ILsnAddrIndex::new(u64::MAX);
 
-                            // Assumed global disk model for index reconstruction.
-                            // TODO: system invariants, use a lemma to construct this disk view
+                            // journal_disk_inv now from requires (system invariant pull-down)
                             let ghost journal_disk = LinkedJournal_v::DiskView{boundary_lsn: bdy as nat, entries: to_journal_reads(journal_raw_disk)};
-                            assume(journal_disk_inv(journal_disk, iaddr_view(curr)));
 
                             let ghost ranking = journal_disk.the_ranking();
                             let ghost seq_end = journal_disk.entries[root@].message_seq.seq_end;

@@ -14,6 +14,7 @@ use crate::trusted::KVStoreTrait_t::{KVStoreTrait, open_system_invariant_disk_re
 use crate::trusted::KVStoreTokenized_t::KVStoreTokenized;
 use crate::trusted::ProgramModelTrait_t::{ProgramDiskInfo, ProgramLabel, ProgramModelTrait, ProgramUserOp};
 use crate::abstract_system::StampedMap_v::LSN;
+use crate::journal::LinkedJournal_v;
 
 use crate::spec::MapSpec_t::{ID, MapSpec};
 use crate::spec::TotalKMMap_t::TotalKMMap;
@@ -32,7 +33,7 @@ use crate::implementation::MultisetMapRelation_v::{multiset_map_singleton, multi
 use crate::implementation::VecMap_v::VecMap;
 use crate::implementation::JournalTypes_v::{ILsn};
 use crate::allocation_layer::LikesJournal_v::lsn_addr_index_discard_up_to;
-use crate::implementation::JournalImpl_v::{IJournalSnapshot, JournalImpl, RecoverIndexResult, RecoverMapResult, all_pages_parsable, cache_matches_raw_disk, load_index_labels, map_recovery_labels};
+use crate::implementation::JournalImpl_v::{IJournalSnapshot, JournalImpl, RecoverIndexResult, RecoverMapResult, all_pages_parsable, cache_matches_raw_disk, iaddr_view, journal_disk_inv, load_index_labels, map_recovery_labels};
 use crate::implementation::SuperblockTypes_v;
 use crate::implementation::SuperblockTypes_v::{ASuperblock, ISuperblock, map_to_kmmap};
 use crate::implementation::CachedJournal_v::CachedJournal;
@@ -1599,25 +1600,33 @@ impl Implementation {
         assert(model.persistent_sb_disk_inv());
     }
 
-    // A9 + cache coherence: All non-superblock disk pages are parsable as journal records,
-    // and during recovery the cache faithfully mirrors disk content.
-    // Opens the system invariant to derive journal_pages_parsable + cache_reads_agree_with_disk,
-    // returns disk content (minus superblock) as a ghost map.
+    // A9 + cache coherence + journal structure: All non-superblock disk pages are parsable
+    // as journal records, the cache faithfully mirrors disk content, and the journal chain
+    // on disk is structurally valid. Opens the system invariant once for all three.
     proof fn system_inv_journal_pages_parsable(self) -> (journal_raw_disk: Map<Address, RawPage>)
     requires
         self.inv(),
         !(self.state().recovery_state is RecoveryComplete),
+        !(self.state().recovery_state is Begin),
     ensures
         all_pages_parsable(journal_raw_disk),
         cache_matches_raw_disk(self.cache@, journal_raw_disk),
+        self.journal@.snapshot.freshest_rec is Some ==>
+            journal_disk_inv(
+                LinkedJournal_v::DiskView{
+                    boundary_lsn: self.journal@.snapshot.boundary_lsn,
+                    entries: to_journal_reads(journal_raw_disk),
+                },
+                self.journal@.snapshot.freshest_rec),
     {
         let tracked empty_disk_responses: Tracked<KVStoreTokenized::disk_responses_multiset<ConcreteProgramModel>>
             = Tracked(KVStoreTokenized::disk_responses_multiset::empty(self.instance_id()));
         let model = open_system_invariant_disk_response::<ConcreteProgramModel, RefinementProof>(self.model, empty_disk_responses);
         assert(model.journal_pages_parsable());
         assert(model.cache_reads_agree_with_disk());
+        assert(model.persistent_journal_structure());
         let journal_raw_disk = model.disk.content.remove(spec_superblock_addr());
-        // Connect model cache to exec cache: model.program == self.model@.value(),
+        // Connect model state to exec state: model.program == self.model@.value(),
         // so model.program.state == self.state(). From self.inv(): self.state().cache == self.cache@.
         reveal(Implementation::inv);
         assert(model.program.state.cache == self.cache@);
@@ -1628,6 +1637,11 @@ impl Implementation {
             // From cache_reads_agree_with_disk: addr != sb_addr, disk has addr, disk[addr] == data
             // Since addr != sb_addr: journal_raw_disk = disk.remove(sb_addr) still has addr
         }
+        // Connect model journal snapshot to exec journal snapshot:
+        // !(Begin) + inv() → !(FetchingSuperblock) → inv_post_superblock_common()
+        // → self.state().journal == self.journal@ → model.program.state.journal.snapshot == self.journal.snapshot@
+        // persistent_journal_structure fires: !(AwaitingSuperblock) ∧ !(RecoveryComplete)
+        // (AwaitingSuperblock can't hold when inv() holds and !(Begin) — only Begin maps to FetchingSuperblock)
         journal_raw_disk
     }
 
@@ -2145,6 +2159,7 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
             assert(pre_state.state.wf());
             // inv_reading_journal gives recovery_state is SuperblockAvailable
             assert(!(self.state().recovery_state is RecoveryComplete));
+            assert(!(self.state().recovery_state is Begin));
         }
         let ghost journal_raw_disk = self.system_inv_journal_pages_parsable();
         let result = self.journal.recover_index_step(&mut self.cache, Ghost(journal_raw_disk));
@@ -2381,6 +2396,7 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                 }
                 // inv_applying_journal gives recovery_state is JournalIndexComplete
                 assert(!(self.state().recovery_state is RecoveryComplete));
+                assert(!(self.state().recovery_state is Begin));
             }
             let ghost journal_raw_disk = self.system_inv_journal_pages_parsable();
             let fetch = self.journal.recover_map_step(&mut self.cache, self.store_lsn, Ghost(journal_raw_disk));

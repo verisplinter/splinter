@@ -11,7 +11,8 @@ use crate::trusted::ProgramModelTrait_t::{DiskLabel, ProgramModelTrait, ProgramU
 use crate::disk::GenericDisk_v::Pointer;
 use crate::abstract_system::AbstractCrashAwareJournal_v::AbstractCrashAwareJournal;
 use crate::journal::LinkedJournal_v::DiskView;
-use crate::implementation::AtomicState_v::{AtomicState, DiskEvent, raw_page_to_record, to_map_label};
+use crate::implementation::AtomicState_v::{AtomicState, DiskEvent, raw_page_to_record, to_journal_reads, to_map_label};
+use crate::implementation::JournalImpl_v::journal_disk_inv;
 use crate::implementation::Cache_v::{Cache, Slot};
 use crate::implementation::CachedJournal_v::build_lsn_addr_index_from_reads;
 use crate::allocation_layer::LikesJournal_v::{LikesJournal, LsnAddrIndex};
@@ -238,6 +239,7 @@ impl SystemModel::State<ConcreteProgramModel>  {
         &&& self.journal_pages_parsable()
         &&& self.journal_seq_end_inv()
         &&& self.cache_reads_agree_with_disk()
+        &&& self.persistent_journal_structure()
 
         // id history tracking
         &&& self.requests_have_unique_ids()
@@ -318,6 +320,27 @@ impl SystemModel::State<ConcreteProgramModel>  {
         forall |addr: Address| self.disk.content.contains_key(addr)
             && addr != spec_superblock_addr()
             ==> #[trigger] fmt.parsable(self.disk.content[addr])
+    }
+
+    // During recovery, the journal chain on disk is structurally valid: acyclic,
+    // decodable from the model's snapshot root, and boundary_lsn < root.seq_end.
+    // Uses the model's journal.snapshot (which matches the disk superblock during
+    // recovery, since no writes happen before RecoveryComplete).
+    // Conditioned on post-superblock-fetch, pre-RecoveryComplete recovery states.
+    pub open spec fn persistent_journal_structure(self) -> bool
+    {
+        let state = self.program.state;
+        !(state.recovery_state is AwaitingSuperblock)
+        && !(state.recovery_state is RecoveryComplete)
+        ==> {
+            let raw_disk = self.disk.content.remove(spec_superblock_addr());
+            let journal_disk = DiskView{
+                boundary_lsn: state.journal.snapshot.boundary_lsn,
+                entries: to_journal_reads(raw_disk),
+            };
+            state.journal.snapshot.freshest_rec is Some
+                ==> journal_disk_inv(journal_disk, state.journal.snapshot.freshest_rec)
+        }
     }
 
     // NOTE: I think we needed this before to ensure that up until recovery is done all requests are read resps
