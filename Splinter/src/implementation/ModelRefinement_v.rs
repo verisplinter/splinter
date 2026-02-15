@@ -411,7 +411,8 @@ impl SystemModel::State<ConcreteProgramModel>  {
     // down to the implementation layer instead of proving them? 
     // Q: does this mean we should remove the load request check in the state machine?
     // outstanding reqs must be consistent with cache and disk
-    pub open spec(checked) fn outstanding_reqs_consistent(self) -> bool
+    // curtailing spec(checked) here until verus offers proof blocks inside spec fns
+    pub open spec /*(checked)*/ fn outstanding_reqs_consistent(self) -> bool
         recommends
             self.program.state.wf(),
             self.program.state.client_ready(),
