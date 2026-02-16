@@ -191,6 +191,14 @@ enum OutstandingReqInfo{
     CacheWriteReq{write_addr: IAddress, handle: MutHandle},
 }
 
+// Data-free mirror of OutstandingReqInfo, used to capture the variant from a
+// borrowed peek (get) without holding the borrow across &mut self calls.
+enum OutstandingReqKind{
+    SuperBlockReq,
+    CacheLoadReq,
+    CacheWriteReq,
+}
+
 // This struct supplies KVStoreTrait, which has both the entry point to the implementation and the
 // proof hooks to satisfy the refinement obligation trait.
 pub struct Implementation {
@@ -445,12 +453,15 @@ impl Implementation {
         // working backward from stuff we know to infer physical phase (used when applying system
         // invs to infer current state)
         &&& self.in_flight is Some ==> self.recovery_phase is ReadyForUserOperation
-        // A SuperBlockReq in outstanding_requests implies in_flight is Some
-        // and the ID is NOT a cache request (it's the superblock write ID).
+        // A SuperBlockReq in outstanding_requests implies in_flight is Some,
+        // the ID is NOT a cache request, and the ID matches the in_flight req_id.
+        // The last conjunct establishes uniqueness: at most one SuperBlockReq entry.
         &&& forall |id| #![auto] self.outstanding_requests@.dom().contains(id)
             && self.outstanding_requests@[id] is SuperBlockReq
             ==> self.in_flight is Some
                 && !self.state().outstanding_cache_reqs.dom().contains(id)
+                && self.state().in_flight is Some
+                && id == self.state().in_flight.unwrap().req_id
         &&& self.model_reqs_in_outstanding()
         &&& self.model@.instance_id() == self.instance@.id()
     }
@@ -1717,15 +1728,18 @@ impl Implementation {
         old(self).good_disk_response(id, disk_response, response_shard@),
         response_shard@.multiset() == multiset_map_singleton(id, disk_response@),
         disk_response is WriteResp,
-        old(self).outstanding_req_is_superblock(id),
+        old(self).outstanding_requests@.dom().contains(id),
+        old(self).outstanding_requests@[id] is SuperBlockReq,
         old(self).ready_for_user_operation(),
     ensures
         self.inv_api(api),
         self.ready_for_user_operation(),
-        // After the superblock write completes, in_flight is cleared and id is not a cache req
-        self.state().in_flight is None,
-        !self.state().outstanding_cache_reqs.dom().contains(id),
     {
+        // Remove the superblock request entry from outstanding_requests.
+        // This is done here (rather than in the dispatcher) so that inv() holds
+        // at the point of dispatch — model_reqs_in_outstanding is maintained.
+        let _req_info = self.outstanding_requests.remove(&id);
+
         let mut ready_reqs = vec![];
         std::mem::swap(&mut self.sync_requests.superblocking_reqs, &mut ready_reqs);
 
@@ -1733,19 +1747,15 @@ impl Implementation {
         // which Noop a reply corresponds to.
         let ghost pre_state = self.model@.value();
 
-        // From inv(): SuperBlockReq ==> in_flight is Some && !cache_reqs.contains(id)
-        // From system invariant: !cache_reqs.contains(id) ==> in_flight.req_id == id
+        // From old(self).inv(): SuperBlockReq ==> in_flight is Some && !cache_reqs.contains(id)
+        // From system invariant: in_flight.req_id == id
         proof {
-            // inv() forall: outstanding_req_is_superblock(id) ==> in_flight is Some
-            //   && !outstanding_cache_reqs.dom().contains(id)
-            assert(self.outstanding_req_is_superblock(id));
-            assert(self.in_flight is Some);
-            assert(!self.i().outstanding_cache_reqs.dom().contains(id));
+            // old(self) had the SuperBlockReq entry — triggers the forall in old(self).inv():
+            //   in_flight is Some, !cache_reqs.contains(id), req_id == id
+            reveal(Implementation::inv);
+            // in_flight and model are unchanged by remove
             self.system_inv_response_implies_in_flight(id, disk_response, response_shard);
         }
-        assert( self.in_flight is Some );
-        assert( self.model@.value().state.journal.status is Some );
-        assert( self.recovery_phase is ReadyForUserOperation );
 
         let mut in_flight = None;
         std::mem::swap(&mut self.in_flight, &mut in_flight);
@@ -1903,18 +1913,7 @@ impl Implementation {
                     // Journal empty: seq_start == seq_end, so freshest_rec must be None
                     self.journal.freshest_rec_none_when_empty();
                 }
-
-                // G1 consequence: the remove-at-top in handle_disk_response removed the
-                // sole SuperBlockReq entry from outstanding_requests, but this handler can't
-                // see that. After setting in_flight to None, the solver can't prove no
-                // SuperBlockReq entries remain. The real fix is G1 (move remove into handler).
-                assume(forall |id2: ID| #![auto]
-                    self.outstanding_requests@.dom().contains(id2)
-                    && self.outstanding_requests@[id2] is SuperBlockReq
-                    ==> self.in_flight is Some
-                        && !self.state().outstanding_cache_reqs.dom().contains(id2));
             }
-            assert(self.inv());
             self.deliver_inflight_replies(&mut ready_reqs, api);
 
             // maybe launch another superblock
@@ -1925,27 +1924,38 @@ impl Implementation {
         }
     }
 
-    exec fn handle_disk_cache_load_response(&mut self, id: ID, disk_response: IDiskResponse, response_shard: Tracked<DiskRespShard>, req_info: OutstandingReqInfo, pre_outstanding: Ghost<Map<ID, OutstandingReqInfo>>, api: &mut ClientAPI<ConcreteProgramModel>)
+    exec fn handle_disk_cache_load_response(&mut self, id: ID, disk_response: IDiskResponse, response_shard: Tracked<DiskRespShard>, api: &mut ClientAPI<ConcreteProgramModel>)
     requires
         old(self).inv_api(old(api)),
         old(self).good_disk_response(id, disk_response, response_shard@),
         response_shard@.multiset() == multiset_map_singleton(id, disk_response@),
-        old(self).outstanding_requests@ == pre_outstanding@.remove(id),
-        pre_outstanding@.contains_key(id),
-        pre_outstanding@[id] == req_info,
-        req_info is CacheLoadReq,
-        Self::outstanding_requests_wf_map(pre_outstanding@, old(self).cache),
-        Self::outstanding_requests_match_cache_reqs_map(pre_outstanding@, old(self).state().outstanding_cache_reqs),
+        old(self).outstanding_requests@.contains_key(id),
+        old(self).outstanding_requests@[id] is CacheLoadReq,
         disk_response is ReadResp ==> disk_response->data.len() == PAGE_SIZE_BYTES,
     ensures
         self.inv_api(api),
         self.recovery_phase == old(self).recovery_phase,
     {
-        let ghost pre_outstanding = pre_outstanding@;
+        let ghost pre_outstanding = old(self).outstanding_requests@;
+        let ghost pre_cache_reqs = old(self).state().outstanding_cache_reqs;
         proof {
+            // Call before remove — self.inv() still holds (no mutation yet).
+            // inv() gives outstanding_requests_wf and outstanding_requests_match_cache_reqs
+            // on self.outstanding_requests@ (= pre_outstanding).
+            reveal(Implementation::inv);
+            reveal(Implementation::state);
             self.system_inv_cache_load_is_read_resp(id, disk_response, response_shard, pre_outstanding);
+            // Establish sb_req_id disjointness BEFORE the remove, while self.state() is fresh.
+            // If in_flight is Some, in_flight.req_id is NOT in cache_reqs.
+            // Combined with CacheLoadReq ==> id IS in cache_reqs, this gives in_flight.req_id != id.
+            if self.state().in_flight is Some {
+                self.system_inv_sb_id_not_in_cache_reqs();
+                reveal(Implementation::outstanding_requests_match_cache_reqs_map);
+            }
         }
-        let OutstandingReqInfo::CacheLoadReq{read_addr, mut load_handle} = req_info else { unreached() };
+        // Remove the cache load request entry after proving ReadResp
+        let req_info = self.outstanding_requests.remove(&id);
+        let OutstandingReqInfo::CacheLoadReq{read_addr, mut load_handle} = req_info.unwrap() else { unreached() };
         let data = match disk_response {
             IDiskResponse::ReadResp{data} => data,
             IDiskResponse::WriteResp{} => {
@@ -1978,19 +1988,15 @@ impl Implementation {
             let finished_cache_reqs = pre_state.state.outstanding_cache_reqs.restrict(resp_map.dom()).invert();
             let cache_resps = Map::new(|addr| finished_cache_reqs.contains_key(addr), |addr| resp_map[finished_cache_reqs[addr]]);
             assert(map_to_multiset(resp_map) == info.resps) by {
+                // trigger
                 Self::map_to_multiset_singleton(id, disk_response@);
             }
             assert(cache_resps == map!{read_addr@ => disk_response@}) by {
+                //trigger
                 Self::cache_resps_singleton(pre_cache_reqs, id, read_addr@, disk_response@);
             }
-            assert(Cache::State::next(pre_state.state.cache, post_state.state.cache,
-                Cache::Label::DiskOps{requests: set![], responses: cache_resps})) by {
-                assert(Cache::State::next(pre_state.state.cache, post_state.state.cache,
-                    Cache::Label::DiskOps{requests: set![], responses: map!{read_addr@ => disk_response@}}));
-            }
+            // trigger
             assert(AtomicState::disk_transition(pre_state.state, post_state.state, disk_event, info.reqs, info.resps));
-            assert(ConcreteProgramModel::valid_disk_transition(pre_state, post_state, info));
-            assert(ConcreteProgramModel::next(pre_state, post_state, ProgramLabel::DiskIO{info}));
         }
 
         let tracked _disk_req_token = self.instance.borrow().disk_transitions(
@@ -2006,6 +2012,11 @@ impl Implementation {
         self.model = Tracked(model);
         proof {
             self.system_inv_implies_atomic_state_wf();
+
+            // Help verifier re-establish inv() after remove + model transition.
+            reveal(Implementation::inv);
+            reveal(Implementation::state);
+            reveal(Implementation::model_reqs_in_outstanding);
         }
     }
 
@@ -2021,73 +2032,54 @@ impl Implementation {
         self.inv_api(api),
         self.recovery_phase.advances(old(self).recovery_phase),
     {
-        let ghost pre_outstanding = self.outstanding_requests@;
-        let req_info = self.outstanding_requests.remove(&id);
-        match req_info {
+        // Peek at the outstanding request to determine its kind without removing it.
+        // Each sub-handler does its own remove so that inv() holds at dispatch time
+        // (the remove would break model_reqs_in_outstanding).
+        let kind: OutstandingReqKind = match self.outstanding_requests.get(&id) {
             None => {
                 // A7: system invariant proves id ∈ outstanding_requests, contradicting
-                // remove returning None. Branch is provably unreachable.
+                // get returning None. Branch is provably unreachable.
                 proof {
                     self.system_inv_response_in_outstanding(id, disk_response, response_shard);
                     assert(false);
                 }
+                unreached()
             }
-            Some(req_info) => match req_info {
-                OutstandingReqInfo::SuperBlockReq{} => {
-                    // A6: Derive disk_response is WriteResp from the system invariant.
-                    // After the remove, self.outstanding_requests no longer has id, but
-                    // self.model (hence self.state()) and self.in_flight are unchanged.
-                    // From old(self).inv() we chain through A3 and A6.
-                    proof {
-                        reveal(Implementation::inv);
-                        reveal(Implementation::inv_running);
-                        reveal(Implementation::state);
-                        reveal(Implementation::i);
+            Some(info) => match info {
+                OutstandingReqInfo::SuperBlockReq{} => OutstandingReqKind::SuperBlockReq,
+                OutstandingReqInfo::CacheLoadReq{..} => OutstandingReqKind::CacheLoadReq,
+                OutstandingReqInfo::CacheWriteReq{..} => OutstandingReqKind::CacheWriteReq,
+            }
+        };
+        // Borrow from get() is dropped — self is free for &mut calls.
 
-                        // remove returned Some(SuperBlockReq), so old map had id => SuperBlockReq.
-                        // Triggers the forall in old(self).inv() (line 437):
-                        //   old(self).in_flight is Some
-                        //   !old(self).state().outstanding_cache_reqs.dom().contains(id)
-                        assert(old(self).outstanding_requests@.dom().contains(id));
-                        assert(old(self).outstanding_requests@[id] is SuperBlockReq);
+        match kind {
+        OutstandingReqKind::SuperBlockReq => {
+            // SuperBlockReq branch.
+            // A6: Derive disk_response is WriteResp from the system invariant.
+            // inv() holds because we haven't removed anything yet.
+            proof {
+                reveal(Implementation::inv);
+                reveal(Implementation::inv_running);
+                reveal(Implementation::state);
+                reveal(Implementation::i);
 
-                        // in_flight and model are unchanged by the remove
-                        assert(self.in_flight is Some);
-
-                        // inv chain: in_flight is Some => ReadyForUserOperation => inv_running
-                        // inv_running gives: state.in_flight <==> self.in_flight, recovery_state is RecoveryComplete
-                        // state() depends only on model, which is unchanged
-                        assert(self.state().in_flight is Some);
-                        assert(self.i().recovery_state is RecoveryComplete);
-                        assert(!self.i().outstanding_cache_reqs.dom().contains(id));
-
-                        // A3: state().in_flight.unwrap().req_id == id
-                        self.system_inv_response_implies_in_flight(id, disk_response, response_shard);
-                        // A6: disk_response is WriteResp
-                        self.system_inv_sb_response_is_write_resp(id, disk_response, response_shard);
-                    }
-                    proof {
-                        // G1: remove-at-top still breaks these handler preconditions
-                        assume(self.inv());
-                        assume(self.outstanding_req_is_superblock(id));
-                    }
-                    self.handle_disk_superblock_write_response(id, disk_response, response_shard, api);
-                },
-                OutstandingReqInfo::CacheLoadReq{..} => {
-                    // TODO: remove-at-top breaks model_reqs_in_outstanding.
-                    // Reconcile with handler preconditions.
-                    proof {
-                        assume(self.inv());
-                    }
-                    self.handle_disk_cache_load_response(id, disk_response, response_shard, req_info, Ghost(pre_outstanding), api);
-                },
-                OutstandingReqInfo::CacheWriteReq{write_addr, handle} => {
-                    // handle cache write response
-                    assume(false);
-                },
+                // A3: state().in_flight.unwrap().req_id == id
+                self.system_inv_response_implies_in_flight(id, disk_response, response_shard);
+                // A6: disk_response is WriteResp
+                self.system_inv_sb_response_is_write_resp(id, disk_response, response_shard);
+            }
+            self.handle_disk_superblock_write_response(id, disk_response, response_shard, api);
+        }
+        OutstandingReqKind::CacheLoadReq => {
+            self.handle_disk_cache_load_response(id, disk_response, response_shard, api);
+        }
+        OutstandingReqKind::CacheWriteReq => {
+            // E2: unimplemented
+            assume(false);
+        }
         }
     }
-}
 
 fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>)
     requires
