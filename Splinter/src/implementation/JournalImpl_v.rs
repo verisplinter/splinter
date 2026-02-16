@@ -385,6 +385,20 @@ impl JournalImpl {
         old(cache).wf(),
         all_pages_parsable(journal_raw_disk_ghost@),
         cache_matches_raw_disk(old(cache)@, journal_raw_disk_ghost@),
+        // B15: when freshest_rec is Some, the journal on disk is structurally valid
+        // and the model index matches the DiskView index
+        self@.snapshot.freshest_rec is Some ==> {
+            let journal_dv = LinkedJournal_v::DiskView{
+                boundary_lsn: self@.snapshot.boundary_lsn,
+                entries: to_journal_reads(journal_raw_disk_ghost@),
+            };
+            let tj = LinkedJournal_v::TruncatedJournal{
+                freshest_rec: self@.snapshot.freshest_rec,
+                disk_view: journal_dv,
+            };
+            &&& journal_disk_inv(journal_dv, self@.snapshot.freshest_rec)
+            &&& tj.build_lsn_addr_index() == self@.status.unwrap().lsn_addr_index
+        },
     ensures ({
         &&& self@ == self@
         &&& self.wf()
@@ -413,36 +427,88 @@ impl JournalImpl {
         let seq_end = self.exec_seq_end();
         proof {
             reveal(JournalImpl::no_unmarshalled_entries);
-            assert(self.snapshot.boundary_lsn == self.status.unwrap().lsn_addr_index.seq_start());
-            assert(self.snapshot.boundary_lsn <= start_lsn);
-            assert(start_lsn < seq_end);
-            assert(seq_end as nat == self.seq_end());
-            assert(self.status.unwrap().lsn_addr_index.seq_end() as nat == self.seq_end());
-            assert((start_lsn as nat) < (self.status.unwrap().lsn_addr_index.seq_end() as nat));
-            assert(start_lsn < self.status.unwrap().lsn_addr_index.seq_end());
+            // trigger
             assert(self.status.unwrap().lsn_addr_index.seq_start() <= start_lsn < self.status.unwrap().lsn_addr_index.seq_end());
         }
 
         let index = &self.status.as_ref().unwrap().lsn_addr_index;
         let addr = index.lookup_lsn(start_lsn);
-        proof {
-            assert(addr@ == self.status.unwrap().lsn_addr_index@[start_lsn as nat]);
-        }
 
         let ghost cache_pre = cache@;
-        // A9: journal_raw_disk from system invariant via caller
         let ghost journal_raw_disk = journal_raw_disk_ghost@;
         proof {
             reveal(JournalImpl::wf);
-            assert(journal_raw_disk_inv(self.fmt, journal_raw_disk));
-            // cache_matches_raw_disk now from requires (system invariant pull-down)
-            // TODO: system invariants, index in the kvstore model matches with the physical index
-            // system inv would relate the model index to the system disk, and that's how we get these facts
-            assume(forall |a: Address| #[trigger] self.status.unwrap().lsn_addr_index@.values().contains(a)
-                ==> journal_raw_disk.contains_key(a)
-                    && raw_page_to_record(journal_raw_disk[a]).message_seq.seq_end <= self.seq_end());
-            assume(raw_page_to_record(journal_raw_disk[addr@]).message_seq.seq_start <= start_lsn as nat);
-            assume((start_lsn as nat) < raw_page_to_record(journal_raw_disk[addr@]).message_seq.seq_end);
+
+            // Construct DiskView and TruncatedJournal matching the requires
+            let journal_dv = LinkedJournal_v::DiskView{
+                boundary_lsn: self@.snapshot.boundary_lsn,
+                entries: to_journal_reads(journal_raw_disk),
+            };
+            let tj = LinkedJournal_v::TruncatedJournal{
+                freshest_rec: self@.snapshot.freshest_rec,
+                disk_view: journal_dv,
+            };
+            let model_index = self@.status.unwrap().lsn_addr_index;
+
+            // Explicitly call the broadcast proof to get index properties
+            tj.build_lsn_addr_index_ensures();
+
+            // Establish tj.seq_end() == self.seq_end() via domain equality
+            reveal(LinkedJournal_v::TruncatedJournal::index_domain_valid);
+            // index_domain_valid: model_index.contains_key(lsn) <==> tj.seq_start() <= lsn < tj.seq_end()
+            self.status.unwrap().lsn_addr_index.view_domain();
+            // view_domain: model_index.dom() =~= Set::new(|lsn| lai.seq_start() <= lsn < lai.seq_end())
+            // wf: boundary_lsn == lai.seq_start(), so tj.seq_start() == lai.seq_start()
+            // no_unmarshalled_entries: lai.seq_end() as nat == self.seq_end()
+            let lai_seq_end = self.status.unwrap().lsn_addr_index.seq_end() as nat;
+            if lai_seq_end > tj.seq_end() {
+                // tj.seq_end() is in lai domain: seq_start <= tj.seq_end() < lai_seq_end
+                // since start_lsn < tj.seq_end() and seq_start <= start_lsn
+                // But index_domain_valid: contains_key(tj.seq_end()) ==> tj.seq_end() < tj.seq_end()
+                assert(false);
+            }
+            if lai_seq_end < tj.seq_end() {
+                // lai_seq_end is in index domain: seq_start <= lai_seq_end < tj.seq_end()
+                // since boundary_lsn < lai_seq_end (from wf)
+                // But view_domain: lai_seq_end NOT in domain since lai_seq_end < lai_seq_end is false
+                assert(!model_index.dom().contains(lai_seq_end)); // trigger
+                assert(false);
+            }
+//             assert(tj.seq_end() == self.seq_end());
+
+            journal_dv.instantiate_index_keys_map_to_valid_entries(model_index, start_lsn as nat);
+
+            assert forall |a: Address|
+                #[trigger] model_index.values().contains(a)
+            implies
+                journal_raw_disk.contains_key(a)
+                && raw_page_to_record(journal_raw_disk[a]).message_seq.seq_end <= self.seq_end()
+            by {
+                // Witness: some lsn maps to this address
+                let lsn = choose |lsn: LSN| #![auto] model_index.contains_key(lsn) && model_index[lsn] == a;
+                journal_dv.instantiate_index_keys_map_to_valid_entries(model_index, lsn);
+                // → journal_dv.entries.contains_key(a) → journal_raw_disk.contains_key(a)
+
+                // seq_end bound: contradiction if record.seq_end > tj.seq_end()
+                let record = journal_dv.entries[a];
+                if record.message_seq.seq_end > tj.seq_end() {
+                    // From instantiate: entries[a].contains_lsn(bdy, lsn)
+                    // = max(bdy, seq_start) <= lsn < record.seq_end
+                    // From index_domain_valid: lsn < tj.seq_end()
+                    // So max(bdy, seq_start) <= lsn < tj.seq_end() < record.seq_end
+                    assert(lsn < tj.seq_end());
+                    // Therefore cropped_msg_seq_contains_lsn(bdy, record.message_seq, tj.seq_end())
+                    assert(LinkedJournal_v::DiskView::cropped_msg_seq_contains_lsn(
+                        journal_dv.boundary_lsn,
+                        record.message_seq,
+                        tj.seq_end()));
+                    // From index_range_valid: every_lsn_at_addr_indexed_to_addr(model_index, a)
+                    // Trigger fires on cropped_msg_seq_contains_lsn → model_index.contains_key(tj.seq_end())
+                    // But index_domain_valid: contains_key(tj.seq_end()) ==> tj.seq_end() < tj.seq_end()
+                    assert(false);
+                }
+                // Now record.seq_end <= tj.seq_end() == self.seq_end()
+            };
         }
         match cache.fetch(&addr, false) {
             FetchErrorCode::Success{slot_handle} => {

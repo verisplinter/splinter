@@ -1677,6 +1677,17 @@ impl Implementation {
                     entries: to_journal_reads(journal_raw_disk),
                 },
                 self.journal@.snapshot.freshest_rec),
+        self.journal@.status is Some && self.journal@.snapshot.freshest_rec is Some ==> {
+            let journal_dv = LinkedJournal_v::DiskView{
+                boundary_lsn: self.journal@.snapshot.boundary_lsn,
+                entries: to_journal_reads(journal_raw_disk),
+            };
+            let tj = LinkedJournal_v::TruncatedJournal{
+                freshest_rec: self.journal@.snapshot.freshest_rec,
+                disk_view: journal_dv,
+            };
+            tj.build_lsn_addr_index() == self.journal@.status.unwrap().lsn_addr_index
+        },
     {
         let tracked empty_disk_responses: Tracked<KVStoreTokenized::disk_responses_multiset<ConcreteProgramModel>>
             = Tracked(KVStoreTokenized::disk_responses_multiset::empty(self.instance_id()));
@@ -1701,6 +1712,9 @@ impl Implementation {
         // → self.state().journal == self.journal@ → model.program.state.journal.snapshot == self.journal.snapshot@
         // persistent_journal_structure fires: !(AwaitingSuperblock) ∧ !(RecoveryComplete)
         // (AwaitingSuperblock can't hold when inv() holds and !(Begin) — only Begin maps to FetchingSuperblock)
+
+        // persistent_journal_index_matches_disk: when JournalIndexComplete with freshest_rec,
+        // tj.build_lsn_addr_index() == model's lsn_addr_index == self.journal@.status.unwrap().lsn_addr_index
         journal_raw_disk
     }
 

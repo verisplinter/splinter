@@ -10,7 +10,7 @@ use crate::trusted::RefinementObligation_t::RefinementObligation;
 use crate::trusted::ProgramModelTrait_t::{DiskLabel, ProgramModelTrait, ProgramUserOp};
 use crate::disk::GenericDisk_v::Pointer;
 use crate::abstract_system::AbstractCrashAwareJournal_v::AbstractCrashAwareJournal;
-use crate::journal::LinkedJournal_v::DiskView;
+use crate::journal::LinkedJournal_v::{DiskView, TruncatedJournal};
 use crate::implementation::AtomicState_v::{AtomicState, DiskEvent, InternalEvent, ProgramEvent, raw_page_to_record, to_map_label, to_journal_reads};
 use crate::implementation::JournalImpl_v::journal_disk_inv;
 use crate::implementation::Cache_v::{Cache, Slot};
@@ -244,6 +244,7 @@ impl SystemModel::State<ConcreteProgramModel>  {
         &&& self.journal_seq_end_inv()
         &&& self.cache_reads_agree_with_disk()
         &&& self.persistent_journal_structure()
+        &&& self.persistent_journal_index_matches_disk()
 
         // id history tracking
         &&& self.requests_have_unique_ids()
@@ -344,6 +345,31 @@ impl SystemModel::State<ConcreteProgramModel>  {
             };
             state.journal.snapshot.freshest_rec is Some
                 ==> journal_disk_inv(journal_disk, state.journal.snapshot.freshest_rec)
+        }
+    }
+
+    // During recovery (pre-RecoveryComplete) with index built, the model's
+    // lsn_addr_index equals the one built from the persistent journal on disk.
+    // This connects the exec-level index (used by recover_map_step) to the
+    // DiskView-level index (which has structural guarantees from build_lsn_addr_index_ensures).
+    // Conditioned on pre-RecoveryComplete because after that, writes may change the disk.
+    pub open spec fn persistent_journal_index_matches_disk(self) -> bool
+    {
+        let state = self.program.state;
+        !(state.recovery_state is RecoveryComplete)
+        && state.journal.status is Some
+        && state.journal.snapshot.freshest_rec is Some
+        ==> {
+            let raw_disk = self.disk.content.remove(spec_superblock_addr());
+            let journal_dv = DiskView{
+                boundary_lsn: state.journal.snapshot.boundary_lsn,
+                entries: to_journal_reads(raw_disk),
+            };
+            let tj = TruncatedJournal{
+                freshest_rec: state.journal.snapshot.freshest_rec,
+                disk_view: journal_dv,
+            };
+            tj.build_lsn_addr_index() == state.journal.status.unwrap().lsn_addr_index
         }
     }
 
