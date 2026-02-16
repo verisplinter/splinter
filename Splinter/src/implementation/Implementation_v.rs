@@ -547,11 +547,7 @@ impl Implementation {
                 proof {
                     let map_req = req.mapspec_req();
                     let map_reply = reply.mapspec_reply();
-                    let ghost map_lbl = MapSpec::Label::Noop{input: map_req.input, output: map_reply.output};
-                    let program_event = ProgramEvent::NoOp{};
-                    assert( AtomicState::execute_transition(pre_state.state, post_state.state, map_req, map_reply, program_event) );
-                    assert( ConcreteProgramModel::next(pre_state, post_state,
-                        ProgramLabel::UserIO{op: ProgramUserOp::Execute{req: map_req, reply: map_reply}}) );
+                    assert( AtomicState::execute_transition(pre_state.state, post_state.state, map_req, map_reply, ProgramEvent::NoOp{}) ); // witness
                 }
 
                 let tracked new_reply_token = self.instance.borrow().execute_transition(
@@ -563,7 +559,6 @@ impl Implementation {
                 self.model = Tracked(model);
 
                 api.send_reply(reply, Tracked(new_reply_token), true);
-                assert( self.inv_api(api) );
             },
             _ => unreached(),
         }
@@ -634,9 +629,7 @@ impl Implementation {
                         CachedJournal::Step::put()) );
 
                 assert( AtomicState::execute_transition(
-                        pre_state.state, post_state.state, map_req, map_reply, ProgramEvent::Put{puts}) );
-                assert( ConcreteProgramModel::next(pre_state, post_state,
-                    ProgramLabel::UserIO{op: ProgramUserOp::Execute{req: map_req, reply: map_reply}}) );
+                        pre_state.state, post_state.state, map_req, map_reply, ProgramEvent::Put{puts}) ); // witness
             }
 
              let tracked new_reply_token = self.instance.borrow().execute_transition(
@@ -710,11 +703,8 @@ impl Implementation {
                         AbstractCrashAwareMap::Label::QueryLabel{end_lsn, key, value},
                         AbstractCrashAwareMap::Step::query(post_state.state.store.ephemeral->v)) );
 
-                assert( AtomicState::execute_query(pre_state.state, post_state.state, map_req, map_reply, end_lsn, key, value) );
                 assert( AtomicState::execute_transition(
-                        pre_state.state, post_state.state, map_req, map_reply, ProgramEvent::Query{end_lsn, key, value}) );
-                assert( ConcreteProgramModel::next(pre_state, post_state,
-                    ProgramLabel::UserIO{op: ProgramUserOp::Execute{req: map_req, reply: map_reply}}) );
+                        pre_state.state, post_state.state, map_req, map_reply, ProgramEvent::Query{end_lsn, key, value}) ); // witness
             }
 
             let tracked new_reply_token = self.instance.borrow().execute_transition(
@@ -845,7 +835,6 @@ impl Implementation {
         let mut sb;
         let mut self_in_flight;
         let ghost mut new_abstract_store;
-        let ghost mut cache_before_fetch = self.cache;
         let mut frozen_journal;
         match motivation {
             SuperblockMotivation::PushMap => {
@@ -871,20 +860,11 @@ impl Implementation {
                 // that the journal record's message_seq.seq_end matches frozen_seq_end
                 frozen_journal = self.journal.freeze_journal(&self.cache);
                 
-                // Capture cache state before fetch for proving cache is unchanged after release
-                proof {
-                    cache_before_fetch = self.cache;
-                }
-                
                 let slot_handle = match frozen_journal.snapshot.freshest_rec {
                     Some(freshest_addr) => {
                         let fetch_result = self.cache.fetch(&freshest_addr, true);
                         match fetch_result {
                             FetchErrorCode::Success{slot_handle} => {
-                                proof {
-                                    assert( cache_before_fetch@.entries[slot_handle.idx].get_addr() == freshest_addr@ );
-                                    assert( cache_before_fetch.wf() );
-                                }
                                 Some(slot_handle)
                             },
                             _ => {
@@ -906,7 +886,6 @@ impl Implementation {
                 if let Some(handle) = slot_handle {
                     if let Some(freshest_addr) = frozen_journal.snapshot.freshest_rec {
                         self.cache.handle_release(&freshest_addr, handle);
-                        // cache@ == cache_before_fetch@ follows from fetch+release round-trip
                     }
                 }
                 
@@ -979,27 +958,12 @@ impl Implementation {
                         post_state.state,
                         InternalEvent::StoreInternal{}
                     )) by {
-                        assert(old(self).inv());
                         reveal(Implementation::inv);
                         reveal(Implementation::ready_for_user_operation);
-                        assert(old(self).ready_for_user_operation());
-                        assert(old(self).recovery_phase is ReadyForUserOperation);
-                        assert(old(self).inv_running());
                         reveal(Implementation::inv_running);
                         broadcast use JournalImpl::view_ensures;
-                        assert(old(self).state().journal.status is Some) by {
-                            assert(old(self).state().journal == old(self).journal@);
-                            assert(old(self).journal.index_ready() <==> old(self).journal@.status is Some);
-                            assert(old(self).journal@.status is Some);
-                        }
-                        assert(old(self).state().client_ready());
-                        assert(model.value().state == old(self).state());
-                        assert(model.value().state.client_ready());
-                        assert(post_state.state == AtomicState{store: post_state.state.store, ..model.value().state});
-                        assert(AtomicState::store_internal(model.value().state, post_state.state));
                     }
                 }
-                assert(ConcreteProgramModel::next(model.value(), post_state, ProgramLabel::Internal{}));
                 self.instance.borrow().internal(
                     KVStoreTokenized::Label::InternalOp,
                     post_state,
@@ -1106,17 +1070,9 @@ impl Implementation {
             assert( CachedJournal::State::next_by(pre.journal, post.journal, journal_lbl,
                 CachedJournal::Step::freeze_for_commit(0nat)) );
             
-            // 6. Disk request matches superblock
-            // The superblock we're writing matches what execute_sync_begin expects
-            // expected_sb.store = pre.in_flight_map() = new_abstract_store
-            // expected_sb.journal = frozen_journal = sb@.journal
-            // sb@@ comes from DiskLayout::marshall postcondition
-            // Need: new_abstract_store == sb@@.store
-            // marshall ensures sb@@ == spec_parse(output), and disk_request@->data == raw_page@
-            assert( sb@@.store == new_abstract_store );
             assert( disk_reqs == Multiset::singleton((disk_req_id, disk_request@)) ) by {
                 assert( disk_reqs == multiset_map_singleton(disk_req_id, disk_request@) );
-            };
+            }; // trigger
 
             // Witness the existential in valid_disk_transition
             let pre_model = ConcreteProgramModel{state: state_after_freeze};
@@ -1253,11 +1209,6 @@ impl Implementation {
         let tracked mut model = KVStoreTokenized::model::arbitrary();
         proof { tracked_swap(self.model.borrow_mut(), &mut model); }
 
-        assert(ConcreteProgramModel::next(pre_state, post_state,
-                ProgramLabel::UserIO{
-                    op: ProgramUserOp::DeliverSyncReply{sync_req_id: req.id}
-                }
-                ));
         let tracked reply_shard = self.instance.borrow().deliver_sync_reply(
             KVStoreTokenized::Label::ReplySyncOp{sync_req_id: req.id},
             post_state,
@@ -1853,23 +1804,14 @@ impl Implementation {
                     journal_lbl, CachedJournal::Step::discard_old()) );
 
                 // evictable_check: discard_addrs is empty because boundary doesn't advance
-                // The lsn_addr_index only has keys >= boundary_lsn (= seq_start),
-                // so lsn_addr_index_discard_up_to(index, boundary_lsn) is a no-op.
-                assert( self.journal.wf() && self.journal.index_ready() ) by {
-                    reveal(Implementation::inv_running);
-                }
-                // All keys in lsn_addr_index are >= boundary_lsn
+                // discard_addrs is empty because boundary doesn't advance
+                reveal(Implementation::inv_running);
                 self.journal.lsn_addr_index_keys_bounded_below();
-                // inv_post_superblock_common: pre_state.state.journal == self.journal@
-                // So the same holds for pre_state.state.journal.status.unwrap().lsn_addr_index
-                // new_boundary_lsn as nat == self.journal@.snapshot.boundary_lsn (from inv_running + view_seq_start)
                 self.journal.view_seq_start_ensures();
-                // discard_up_to(index, bdy) keeps keys >= bdy, so all keys are kept
                 crate::allocation_layer::LikesJournal_v::lsn_addr_index_discard_up_to_ensures(
                     pre_state.state.journal.status.unwrap().lsn_addr_index,
                     new_boundary_lsn as LSN);
-                // trigger extn?
-                assert( discard_addrs =~= Set::empty() );
+                assert( discard_addrs =~= Set::empty() ); // extn
 
                 reveal(Cache::State::next_by);
                 reveal(Cache::State::next);
@@ -2129,9 +2071,7 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                     resps: disk_response_tuples,
                 };
                 assert(AtomicState::disk_transition(
-                    pre_state.state, post_state.state, disk_event, info.reqs, info.resps));
-                assert(ConcreteProgramModel::valid_disk_transition(pre_state, post_state, info));
-                assert(ConcreteProgramModel::next(pre_state, post_state, ProgramLabel::DiskIO{info}));
+                    pre_state.state, post_state.state, disk_event, info.reqs, info.resps)); // witness
             }
 
             let tracked disk_request_tokens = self.instance.borrow().disk_transitions(
@@ -2144,14 +2084,10 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                 empty_disk_responses,
             );
 
-            assert( model.value() == post_state );
-
             // this models external_diskop with the disk label
             let disk_req_id = api.send_disk_request(disk_req, req_id_perm, Tracked(disk_request_tokens));
             self.model = Tracked(model);
         }
-
-        assert( self.model@.value().state.recovery_state is AwaitingSuperblock );
         api.log("await superblock response");
         { // braces to scope variables used in this step
             let ghost pre_state = self.model@.value();
@@ -2215,22 +2151,13 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
             let ghost disk_request_tuples = Multiset::empty();
 
             proof {
-                assert(superblock@@ == psb);
-                assert(psb.journal == superblock.journal_snapshot@);
-                assert(self.journal@.snapshot == superblock.journal_snapshot@);
-                assert(psb.store.seq_end == psb.journal.boundary_lsn);
                 self.journal.view_seq_start_ensures();
-                assert(psb.store.seq_end == self.journal.seq_start());
-
-                // Something about constructing a ProgramDiskInfo object is necessary to trigger a
-                // pattern match in the disk_transitions preconditions below.
                 let info = ProgramDiskInfo{
                     reqs: disk_request_tuples,
                     resps: disk_response_tuples,
                 };
-                assert(post_state.state.store.ephemeral is Known);
                 assert(AtomicState::disk_transition(
-                    pre_state.state, post_state.state, disk_event, info.reqs, info.resps)); // step witness
+                    pre_state.state, post_state.state, disk_event, info.reqs, info.resps)); // witness
             }
 
             let tracked disk_request_tokens = self.instance.borrow().disk_transitions(
@@ -2243,36 +2170,17 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                 disk_response_token.get(),
             );
             self.model = Tracked(model);
-            assert(self.i().store.ephemeral is Known);
-            proof {
-                assert(self.state().store.persistent.seq_end == self.journal.seq_start());
-            }
         }
 
         api.log("recovery phase now ReadingJournalIndex");
         self.recovery_phase = RecoveryPhase::ReadingJournalIndex;
 
         proof {
-            assert(self.outstanding_requests@ == pre_outstanding);
-            assert(pre_outstanding == Map::<ID, OutstandingReqInfo>::empty()) by {
-                reveal(Implementation::inv);
-                assert(old(self).inv());
-                assert(old(self).recovery_phase is FetchingSuperblock);
-                assert(old(self).inv_recover());
-                reveal(Implementation::inv_recover);
-            }
-            assert(self.outstanding_requests@ == Map::<ID, OutstandingReqInfo>::empty());
-            assert forall |id| #[trigger] self.outstanding_requests@.contains_key(id)
-                implies self.outstanding_requests@[id] is CacheLoadReq
-            by {
-                if self.outstanding_requests@.contains_key(id) {
-                    broadcast use vstd::map::axiom_map_empty;
-                    assert(!Map::<ID, OutstandingReqInfo>::empty().contains_key(id));
-                    assert(false);
-                }
-            }
+            reveal(Implementation::inv);
+            reveal(Implementation::inv_recover);
+            assert(pre_outstanding == Map::<ID, OutstandingReqInfo>::empty());
+            broadcast use vstd::map::axiom_map_empty;
         }
-        assert( self.inv() );
     }
 
     fn recover_read_journal_index(&mut self, api: &mut ClientAPI<ConcreteProgramModel>) -> (progress: bool)
@@ -2285,42 +2193,20 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
         self.inv_api(api),
         self.recovery_phase is ReadingJournalIndex || self.recovery_phase is ApplyingJournalToRecoverEphemeralMap,
     {
-        assert( self.journal.wf() );
-        
         let ghost pre_state = self.model@.value();
-        let ghost pre_outstanding = self.outstanding_requests@;
         let ghost cache_before_index = self.cache;
-        let ghost start_store_lsn = self.store_lsn as nat;
-        let ghost start_journal_seq_start = self.journal.seq_start();
         proof {
-            assert(self.inv());
-            assert(self.recovery_phase is ReadingJournalIndex);
-            assert(self.inv_reading_journal()) by {
-                reveal(Implementation::inv);
-                assert(self.inv());
-            }
-            assert(start_store_lsn == start_journal_seq_start);
+            reveal(Implementation::inv);
             self.system_inv_implies_atomic_state_wf();
-            assert(pre_state.state.wf());
-            // inv_reading_journal gives recovery_state is SuperblockAvailable
-            assert(!(self.state().recovery_state is RecoveryComplete));
-            assert(!(self.state().recovery_state is Begin));
         }
         let ghost journal_raw_disk = self.system_inv_journal_pages_parsable();
         let result = self.journal.recover_index_step(&mut self.cache, Ghost(journal_raw_disk));
-        proof {
-            assert(self.cache.valid_load_handles_preserved(cache_before_index));
-        }
-
         match result {
             RecoverIndexResult::CacheLoad{slot_handle, addr} => {
             let tracked mut model = KVStoreTokenized::model::arbitrary();
             proof { tracked_swap(self.model.borrow_mut(), &mut model); }
 
                 let ghost old_outstanding = self.outstanding_requests@;
-                proof {
-                    assert(self.outstanding_requests@ == pre_outstanding);
-                }
 
                 let req_id_perm = Tracked( api.send_disk_request_predict_id() );
                 let disk_req = IDiskRequest::ReadReq{from: addr};
@@ -2352,42 +2238,25 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                         Self::singleton_map_value(req_id_perm@, disk_req@);
                     }
 
-                    assert(Cache::State::next(old(self).cache@, self.cache@, cache_lbl));
-                    assert(Cache::State::next(pre_state.state.cache, post_state.state.cache, cache_lbl));
-                    assert(!cache_before_index.entry_fetched(&addr));
+                    assert(Cache::State::next(pre_state.state.cache, post_state.state.cache, cache_lbl)); // trigger
 
                     let updated_outstanding_cache_reqs = Map::new(|id| disk_event->req_map.contains_key(id), |id| disk_event->req_map[id].addr());
                     let new_outstanding_cache_reqs = pre_state.state.outstanding_cache_reqs.union_prefer_right(updated_outstanding_cache_reqs);
                     assert(updated_outstanding_cache_reqs == map!{req_id_perm@ => addr@}) by {
                         assert_maps_equal!(updated_outstanding_cache_reqs, map!{req_id_perm@ => addr@}, id2 => {
                             if id2 == req_id_perm@ {
-                                assert(disk_event->req_map.contains_key(id2));
-                                assert(updated_outstanding_cache_reqs.contains_key(id2));
-                                assert(updated_outstanding_cache_reqs[id2] == disk_event->req_map[id2].addr());
                                 vstd::map::axiom_map_insert_same(Map::<ID, DiskRequest>::empty(), req_id_perm@, disk_req@);
-                                assert(disk_event->req_map[id2] == disk_req@);
-                                assert(updated_outstanding_cache_reqs[id2] == addr@);
                                 vstd::map::axiom_map_insert_same(Map::<ID, Address>::empty(), req_id_perm@, addr@);
                             } else {
-                                assert(!disk_event->req_map.contains_key(id2)) by {
-                                    Self::singleton_map_dom(req_id_perm@, disk_req@);
-                                }
-                                assert(!updated_outstanding_cache_reqs.contains_key(id2));
-                                assert(!map!{req_id_perm@ => addr@}.contains_key(id2)) by {
-                                    Self::singleton_map_dom(req_id_perm@, addr@);
-                                }
+                                Self::singleton_map_dom(req_id_perm@, disk_req@);
+                                Self::singleton_map_dom(req_id_perm@, addr@);
                             }
                         });
                     }
                     assert(new_outstanding_cache_reqs == pre_state.state.outstanding_cache_reqs.insert(req_id_perm@, addr@)) by {
                         vstd::map_lib::lemma_union_insert_right(pre_state.state.outstanding_cache_reqs, Map::<ID, Address>::empty(), req_id_perm@, addr@);
-                        assert(pre_state.state.outstanding_cache_reqs.union_prefer_right(Map::<ID, Address>::empty()) =~= pre_state.state.outstanding_cache_reqs);
                     }
-                    assert(post_state.state.outstanding_cache_reqs == new_outstanding_cache_reqs);
-                    assert(AtomicState::cache_io_begin(pre_state.state, post_state.state, disk_event->req_map, disk_request_tuples, disk_response_tuples));
                     assert(AtomicState::disk_transition(pre_state.state, post_state.state, disk_event, program_lbl->info.reqs, program_lbl->info.resps)); // witness
-                    assert(ConcreteProgramModel::valid_disk_transition(pre_state, post_state, program_lbl->info)); 
-                    assert(ConcreteProgramModel::next(pre_state, post_state, program_lbl)); 
                 }
 
                 let tracked empty_disk_responses: DiskRespShard = DiskRespShard::empty(self.instance_id());
@@ -2447,13 +2316,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
 
                     }
                 }
-                proof {
-                    assert(self.store_lsn as nat == start_store_lsn);
-                    assert(self.journal.seq_start() == start_journal_seq_start);
-                    assert(self.store_lsn as nat == self.journal.seq_start());
-                }
-                assert( self.inv_api(api) );
-
                 return false; // cache waiting on data, not ready to make more progress
             }
             RecoverIndexResult::IndexComplete{reads} => {
@@ -2472,7 +2334,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                 };
 
                 proof {
-                    assert(model.value() == pre_state);
                     assert(ConcreteProgramModel::valid_internal_transition(pre_state, post_state)) by {
                         assert(AtomicState::internal_transitions(
                             pre_state.state,
@@ -2480,13 +2341,8 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                             InternalEvent::JournalRecovery{reads: reads@}
                         )) by {
                             let (cache_lbl, journal_lbl) = load_index_labels(reads@);
-                            assert(pre_state.state.recovery_state is SuperblockAvailable);
-                            assert(Cache::State::next(pre_state.state.cache, post_state.state.cache, cache_lbl));
-                            assert(CachedJournal::State::next(pre_state.state.journal, post_state.state.journal, journal_lbl));
-                            assert(AtomicState::journal_recovery(pre_state.state, post_state.state, reads@));
                         };
                     }
-                    assert(ConcreteProgramModel::next(pre_state, post_state, ProgramLabel::Internal{}));
                 }
 
                 let tracked new_reply_token = self.instance.borrow().internal(
@@ -2496,25 +2352,12 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                 );
                 self.model = Tracked(model);
 
-                // index complete means that we can now 
-                assert( self.i().recovery_state is JournalIndexComplete );
-                proof {
-                    assert(self.store_lsn as nat == start_store_lsn);
-                    assert(self.journal.seq_start() == start_journal_seq_start);
-                    assert(self.store_lsn as nat == self.journal.seq_start());
-                    assert(self.journal.seq_start() <= self.journal.seq_end());
-                    assert(self.store_lsn as nat <= self.journal.seq_end());
-                }
                 proof {
                     self.system_inv_implies_atomic_state_wf();
                 }
-                assert(self.inv());
-                assert(self.inv_api(api));
             }
             RecoverIndexResult::IndexProgress{} => { }
         }
-        assert(self.inv());
-        assert(self.inv_api(api));
         return true; // either index is complete or journal has made progress building the index
     }
 
@@ -2597,7 +2440,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                     decreases record_seq_end - next_lsn
                     {
                         let km = record.messages[next_index];
-                        let ghost old_store = self.store;
                         let ghost old_store_lsn = self.store_lsn as nat;
 
                         match km.message {
@@ -2605,35 +2447,14 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                                 let key = km.key;
                                 self.store.insert(key, value);
                                 proof {
-                                    assert(records.seq_start <= old_store_lsn < records.seq_end);
-                                    assert(records.contains(old_store_lsn));
-                                    assert(record_msgs.msgs[old_store_lsn]
-                                        == record.messages[(old_store_lsn - record.header.start_lsn as nat) as int]);
-                                    assert(records.msgs[old_store_lsn]
-                                        == KeyedMessage{key, message: Message::Define{value}});
-
                                     let prefix = records.discard_recent(old_store_lsn);
                                     let next_prefix = records.discard_recent((old_store_lsn + 1) as nat);
-                                    assert(!next_prefix.is_empty());
-                                    assert(next_prefix.contains(old_store_lsn));
-                                    assert(next_prefix.msgs.contains_key(old_store_lsn));
-                                    assert(next_prefix.msgs[old_store_lsn]
-                                        == KeyedMessage{key, message: Message::Define{value}});
                                     assert(next_prefix.discard_recent(old_store_lsn) == prefix) by {
                                         MsgHistory::ext_equal_is_equality();
                                         assert(next_prefix.discard_recent(old_store_lsn).ext_equal(prefix));
                                     }
 
-                                    assert(view_as_kmmap(self.store)
-                                        == view_as_kmmap(old_store).insert(key, Message::Define{value}));
-                                    assert(next_prefix.wf());
-                                    assert(next_prefix.can_follow(pre_state.state.ephemeral_map().seq_end));
                                     reveal_with_fuel(MsgHistory::apply_to_stamped_map, 2);
-                                    assert(MsgHistory::map_plus_history(pre_state.state.ephemeral_map(), next_prefix).value
-                                        == MsgHistory::map_plus_history(pre_state.state.ephemeral_map(), prefix).value
-                                            .insert(key, Message::Define{value}));
-                                    assert(view_as_kmmap(self.store)
-                                        == MsgHistory::map_plus_history(pre_state.state.ephemeral_map(), next_prefix).value);
                                 }
                             }
                             Message::Update{delta} => {
@@ -2665,10 +2486,7 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                             == MsgHistory::map_plus_history(pre_state.state.ephemeral_map(), records).value) by {
                             assert(records.discard_recent(self.store_lsn as nat) == records);
                         }
-                        assert(post_state.state.store.ephemeral is Known);
                         MsgHistory::map_plus_history_seq_end_lemma(pre_state.state.ephemeral_map(), records);
-                        assert(post_state.state.store.ephemeral->v.stamped_map
-                            == MsgHistory::map_plus_history(pre_state.state.ephemeral_map(), records));
 
                         reveal(AbstractMap::State::next_by);
                         reveal(AbstractMap::State::next);
@@ -2677,8 +2495,7 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                             post_state.state.store.ephemeral->v,
                             AbstractMap::Label::PutLabel{puts: records},
                             AbstractMap::Step::put{}
-                        ));
-
+                        )); // witness
                         reveal(AbstractCrashAwareMap::State::next_by);
                         reveal(AbstractCrashAwareMap::State::next);
                         assert(AbstractCrashAwareMap::State::next_by(
@@ -2686,13 +2503,7 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                             post_state.state.store,
                             map_lbl,
                             AbstractCrashAwareMap::Step::put_records(post_state.state.store.ephemeral->v)
-                        ));
-                        assert(AbstractCrashAwareMap::State::next(
-                            pre_state.state.store,
-                            post_state.state.store,
-                            map_lbl
-                        ));
-
+                        )); // witness
                         assert(ConcreteProgramModel::valid_internal_transition(pre_state, post_state)) by {
                                 assert(AtomicState::internal_transitions(
                                 pre_state.state,
@@ -2701,16 +2512,11 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                             )) by {
                                 let cache_lbl = Cache::Label::Access{reads: reads@, writes: Map::empty()};
                                 let ghost journal_reads = to_journal_reads(reads@);
-                                let ghost map_records = journal_reads[addr@].message_seq
-                                    .maybe_discard_old(pre_state.state.store.ephemeral->v.stamped_map.seq_end);
 
-                                assert(pre_state.state.recovery_state is JournalIndexComplete);
-                                assert(pre_state.state.store.ephemeral is Known);
                                 assert(Cache::State::next(pre_state.state.cache, post_state.state.cache, cache_lbl)) by {
                                     assert(Cache::State::next(pre_cache, cache_after_fetch, fetch_lbls.0));
                                     reveal(map_recovery_labels);
                                 }
-                                assert(reads@.contains_key(addr@));
                                 assert(CachedJournal::State::next(
                                     pre_state.state.journal,
                                     post_state.state.journal,
@@ -2725,11 +2531,8 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                                         <= record.parsedv().view().message_seq.seq_end);
                                 }
                                 reveal(map_recovery_labels);
-
-                                assert(AtomicState::map_recovery(pre_state.state, post_state.state, records, reads@, addr@));
                             };
                         }
-                        assert(ConcreteProgramModel::next(pre_state, post_state, ProgramLabel::Internal{}));
                     }
                     let tracked instance = self.instance.borrow();
                     let tracked new_reply_token = instance.internal(
@@ -2737,8 +2540,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                         post_state,
                         self.model.borrow_mut(),
                     );
-
-                    assert(self.inv_api(api));
 
                     if self.store_lsn < exec_seq_end {
                         return true;
@@ -2748,28 +2549,12 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
         }
         let exec_seq_end = self.journal.exec_seq_end();
         if self.store_lsn < exec_seq_end {
-            assert(self.inv_api(api));
             return true;
         }
         let ghost pre_state = self.state();
         proof {
-            assert(self.inv_api(api));
-            assert(self.recovery_phase is ApplyingJournalToRecoverEphemeralMap);
-            assert(self.inv_applying_journal()) by {
-                reveal(Implementation::inv);
-                assert(self.inv());
-            }
-            assert(pre_state.recovery_state is JournalIndexComplete);
-            assert(self.store_lsn >= exec_seq_end);
-            assert(self.store_lsn as nat >= self.journal.seq_end());
+            reveal(Implementation::inv);
             self.journal.view_seq_end_ensures();
-            assert(pre_state.ephemeral_map().seq_end == pre_state.journal.seq_end()) by {
-                assert(self.store_lsn as nat == pre_state.ephemeral_map().seq_end);
-                assert(pre_state.journal == self.journal@);
-                assert(pre_state.journal.status is Some);
-                assert(pre_state.journal.seq_end() == self.journal.seq_end());
-                assert(pre_state.ephemeral_map().seq_end == self.journal.seq_end());
-            }
         }
 
         {
@@ -2797,8 +2582,7 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                         InternalEvent::RecoveryComplete{}
                     )) by {
                         let end_lsn = pre_state.ephemeral_map().seq_end;
-                        let journal_lbl = CachedJournal::Label::QueryEndLsn{end_lsn: end_lsn};
-                        assert(pre_state.recovery_state is JournalIndexComplete);
+                        let journal_lbl = CachedJournal::Label::QueryEndLsn{end_lsn};
                         reveal(CachedJournal::State::next_by);
                         reveal(CachedJournal::State::next);
                         assert(CachedJournal::State::next_by(
@@ -2806,16 +2590,11 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                             post_state.state.journal,
                             journal_lbl,
                             CachedJournal::Step::query_end_lsn()
-                        ));
-                        assert(AtomicState::recovery_complete(pre_state, post_state.state));
+                        )); // witness
                     };
                 }
             }
 
-            assert( ConcreteProgramModel::next(
-                    ConcreteProgramModel { state: pre_state },
-                    post_state,
-                    ProgramLabel::Internal{}) );
             let tracked new_reply_token = self.instance.borrow().internal(
                 KVStoreTokenized::Label::InternalOp{},
                 post_state,
@@ -2825,9 +2604,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
             proof {
                 self.system_inv_implies_atomic_state_wf();
             }
-
-            assert( self.i().recovery_state is RecoveryComplete  );
-            assert( self.inv_api(api) );
         }
         true
     }
@@ -2933,7 +2709,6 @@ impl KVStoreTrait for Implementation {
     fn kvstore_main(&mut self, mut api: ClientAPI<Self::ProgramModel>)
     {
         api.log("knstore_main begins");
-        proof { assert(self.inv()); }
         self.recover_fetch_superblock(&mut api);
 
         let debug_print = true;

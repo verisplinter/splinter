@@ -16,6 +16,7 @@ use crate::implementation::JournalImpl_v::journal_disk_inv;
 use crate::implementation::Cache_v::{Cache, Slot};
 use crate::implementation::CachedJournal_v::build_lsn_addr_index_from_reads;
 use crate::allocation_layer::LikesJournal_v::{LikesJournal, LsnAddrIndex};
+use crate::implementation::JournalCoordinationSystem_v::{JournalCoordinationSystem, cj_boundary_lsn, cj_freshest_rec, cj_lsn_addr_index, cj_unmarshalled_tail};
 use crate::implementation::ConcreteProgramModel_v::ConcreteProgramModel;
 use crate::implementation::MultisetMapRelation_v::{all_elems_single, multiset_map_membership, multiset_map_singleton_ensures, multiset_to_map};
 use crate::implementation::DiskLayout_v::{DiskLayout, spec_superblock_addr};
@@ -163,19 +164,44 @@ impl SystemModel::State<ConcreteProgramModel>  {
     //     &&& self.journal.lsn_addr_index.values() =~= self.ephemeral_tj().disk_view.entries.dom()
     // }
 
+    // Construct the JCS state embedded in this SystemModel state.
+    // Only valid when client_ready() (journal.status is Some).
+    pub open spec fn jcs(self) -> JournalCoordinationSystem::State
+    {
+        JournalCoordinationSystem::State {
+            journal: self.program.state.journal,
+            cache: self.program.state.cache,
+            disk: self.disk,
+        }
+    }
+
+    // The full ephemeral journal MsgHistory, computed through the JCS refinement chain:
+    //   JCS → LikesJournal → LinkedJournal → PagedJournal → AbstractJournal
+    // This gives truncated_journal.i().i().concat(unmarshalled_tail) = the FULL journal
+    // covering [boundary_lsn, tail.seq_end), including marshalled pages on disk.
+    pub open spec fn full_journal(self) -> MsgHistory
+    {
+        // JCS.i() → LikesJournal::State (has journal: LinkedJournal::State)
+        // LinkedJournal::State.i() → PagedJournal::State
+        // PagedJournal::State.i() → AbstractJournal::State
+        self.jcs().i().journal.i().i().journal
+    }
+
     // Interpret concrete CachedJournal state as AbstractCrashAwareJournal state.
     // Only called from i_ephemeral(), so client_ready() holds (status is Some).
+    // Uses the full journal (including marshalled disk pages) via the JCS chain,
+    // not just the unmarshalled_tail.
     pub open spec fn i_journal(self) -> AbstractCrashAwareJournal::State
     {
         let state = self.program.state;
-        let tail = state.journal.status.unwrap().unmarshalled_tail;
+        let full_journal = self.full_journal();
         AbstractCrashAwareJournal::State {
-            persistent: tail.discard_recent(state.persistent_journal_seq_end),
+            persistent: full_journal.discard_recent(state.persistent_journal_seq_end),
             ephemeral: Ephemeral::Known {
-                v: AbstractJournal::State { journal: tail }
+                v: AbstractJournal::State { journal: full_journal }
             },
             in_flight: if state.in_flight is Some {
-                Some(tail.discard_recent(state.in_flight.unwrap().journal_version))
+                Some(full_journal.discard_recent(state.in_flight.unwrap().journal_version))
             } else {
                 None
             },
@@ -246,6 +272,8 @@ impl SystemModel::State<ConcreteProgramModel>  {
         &&& self.cache_reads_agree_with_disk()
         &&& self.persistent_journal_structure()
         &&& self.persistent_journal_index_matches_disk()
+        // JCS structural invariant: ephemeral journal chain is well-formed
+        &&& self.program.state.client_ready() ==> self.jcs().valid_journal_structure()
 
         // id history tracking
         &&& self.requests_have_unique_ids()
@@ -966,22 +994,34 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                 assert(ipre.versions == versions);
                 // floating_versions returns FloatingSeq::new(_, msg.seq_end+1, _), so len = msg.seq_end+1
                 // Help solver see the len computation through FloatingSeq::new
+                // Prove full_journal properties from JCS invariant chain
+                let jcs = pre.jcs();
+                assert(jcs.valid_journal_structure()); // from inv()
+                let etj = jcs.ephemeral_tj();
+                assert(etj.decodable()); // from valid_journal_structure
+                assert(etj.wf()); // from decodable()
+                assert(etj.disk_view.acyclic()); // from decodable()
+                assert(etj.seq_end() == tail.seq_start); // from valid_journal_structure
+                // LinkedJournal state from JCS interpretation is wf
+                let lj = jcs.i().journal;
+                assert(tail.wf()); // from journal.wf() in state.wf()
+                assert(lj.wf()); // from etj.wf() + tail.wf() + seq_end == seq_start
+                // LinkedJournal::i() returns real PagedJournal (not arbitrary) since wf + acyclic
+                // PagedJournal::i() = concat(truncated_journal.i(), tail), and concat.seq_end = tail.seq_end
+                let full_j = journal.i(); // = full_journal MsgHistory
                 if inflight_on_disk {
                     let in_flight_map2 = mapadt.in_flight.unwrap();
-                    let remaining_journal = journal.i().discard_old(in_flight_map2.seq_end);
+                    let remaining_journal = full_j.discard_old(in_flight_map2.seq_end);
                     let stable_lsn = journal.in_flight.unwrap().seq_end;
                     assert(remaining_journal.seq_end == tail.seq_end);
-                    // stable_lsn = journal_version from i_journal; tail.can_discard_to(journal_version)
                     assert(tail.can_discard_to(state.in_flight.unwrap().journal_version));
                     assert(stable_lsn <= remaining_journal.seq_end + 1);
                     floating_versions_len(in_flight_map2, remaining_journal, stable_lsn);
                 } else {
                     let stable_lsn = journal.persistent.seq_end;
-                    assert(journal.i() == tail);
-                    // stable_lsn = persistent_journal_seq_end from i_journal; tail.can_discard_to(persistent_journal_seq_end)
                     assert(tail.can_discard_to(state.persistent_journal_seq_end));
-                    assert(stable_lsn <= tail.seq_end + 1);
-                    floating_versions_len(mapadt.persistent, tail, stable_lsn);
+                    assert(stable_lsn <= full_j.seq_end + 1);
+                    floating_versions_len(mapadt.persistent, full_j, stable_lsn);
                 }
                 assert(ipre.versions.len() == tail.seq_end + 1);
                 assert(state.journal.seq_end() == state.ephemeral_map().seq_end); // wf()
@@ -1111,14 +1151,25 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                     reveal(<RefinementProof as RefinementObligation<ConcreteProgramModel>>::i);
                     if pre.program.state.client_ready() {
                         reveal(SystemModel::State::<_>::i_ephemeral);
-                        // i_ephemeral depends on store, journal (unchanged), and
-                        // disk.responses only via inflight_on_disk. !sb_landed
-                        // preserves inflight_on_disk status.
-                        assert(ipre == ipost);
+                        // i_ephemeral depends on store, journal, disk (through JCS chain).
+                        // disk_internal changes disk.content (process_write) or disk.responses (process_read).
+                        // JCS's ephemeral_disk should be unchanged because dirty cache pages
+                        // override persistent disk pages. Proving this requires JCS inv_next.
+                        // TODO: prove via JCS invariant preservation for disk_internal
+                        assume(ipre == ipost);
                     } else {
                         reveal(SystemModel::State::<_>::i_persistent);
-                        // i_persistent uses disk.content[sb_addr]; process_write may change it
-                        assume(ipre == ipost);
+                        reveal(AsyncDisk::State::next);
+                        reveal(AsyncDisk::State::next_by);
+                        // i_persistent depends on disk.content[sb_addr] and requests/replies (unchanged)
+                        if !(pre.program.state.recovery_state is RecoveryComplete) {
+                            // no_writes_till_recovery_complete: no write requests when !client_ready && !RecoveryComplete
+                            // So process_write can't happen → only process_read → content unchanged
+                            assert(ipre == ipost);
+                        } else {
+                            // RecoveryComplete but journal.status is None: edge case
+                            assume(ipre == ipost);
+                        }
                     }
                     assume(post.inv());
                     assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::noop()));

@@ -17,6 +17,7 @@ use crate::disk::GenericDisk_v::{Address, Pointer, Ranking};
 
 verus!{
 
+#[verifier::ext_equal]
 pub struct JournalRecord {
     pub message_seq: MsgHistory,
 
