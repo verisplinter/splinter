@@ -383,6 +383,34 @@ impl JournalCoordinationSystem::State {
             lsn_addr_index: cj_lsn_addr_index(self.journal),
         }
     }
+
+    pub open spec fn tj_at(self, snapshot: JournalSnapshot) -> TruncatedJournal
+    {
+        let disk = self.ephemeral_disk();
+        TruncatedJournal{
+            freshest_rec: snapshot.freshest_rec,
+            disk_view: DiskView{
+                boundary_lsn: snapshot.boundary_lsn,
+                entries: disk.entries,
+            }
+        }
+    }
+}
+
+impl JournalCoordinationSystem::Label {
+    pub open spec fn i(self, state: JournalCoordinationSystem::State) -> LikesJournal::Label
+    {
+        match self {
+            Self::ReadForRecovery{messages} => { LikesJournal::Label::ReadForRecovery{messages} }
+            Self::FreezeForCommit{frozen} => {
+                LikesJournal::Label::FreezeForCommit{frozen_journal: state.tj_at(frozen)}
+            }
+            Self::QueryEndLsn{end_lsn} => { LikesJournal::Label::QueryEndLsn{end_lsn} }
+            Self::Put{messages} => { LikesJournal::Label::Put{messages} }
+            Self::DiscardOld{start_lsn, require_end} => { LikesJournal::Label::DiscardOld{start_lsn, require_end} }
+            Self::Internal{} => { LikesJournal::Label::Internal{} }
+        }
+    }
 }
 
 }

@@ -10,7 +10,11 @@ pub mod CachedJournal_v;
 pub mod ILsnAddrIndex_v;
 pub mod JournalImpl_v; // copy of LikesJournal_v
 pub mod JournalCoordinationSystem_v;
-// pub mod JournalCoordinationRefinement_v; // TODO
+pub mod JournalCoordinationRefinement_v;
+pub mod ConcreteJournal_v;
+pub mod ConcreteJournalRefinement_v;
+pub mod SystemModelTwo_v;
+pub mod BracketRefinement_v;
 pub mod VecMap_v;
 pub mod JournalTypes_v;
 pub mod SuperblockTypes_v;

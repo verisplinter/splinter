@@ -17,52 +17,13 @@ use crate::abstract_system::StampedMap_v::LSN;
 use crate::abstract_system::MsgHistory_v::*;
 use crate::journal::LinkedJournal_v::*;
 use crate::implementation::CachedJournal_v::*;
+use crate::implementation::CachedJournal_v::{addr_to_lsns, min_lsn, min_lsn_ensures};
 use crate::implementation::Cache_v::*;
-use crate::allocation_layer::LikesJournal_v::*;
+use crate::allocation_layer::LikesJournal_v::{LikesJournal, LsnAddrIndex};
 use crate::implementation::JournalCoordinationSystem_v::*;
+use crate::implementation::AtomicState_v::{raw_page_to_record, to_journal_reads};
 
 verus!{
-
-impl JournalCoordinationSystem::State {
-    pub open spec fn i(self) -> LikesJournal::State
-    {
-        LikesJournal::State{
-            journal: LinkedJournal::State{
-                truncated_journal: self.ephemeral_tj(),  
-                unmarshalled_tail: self.journal.unmarshalled_tail
-            },
-            lsn_addr_index: self.journal.lsn_addr_index,
-        }
-    }
-
-    pub open spec fn tj_at(self, snapshot: JournalSnapshot) -> TruncatedJournal
-    {
-        let disk = self.ephemeral_disk();
-        TruncatedJournal{
-            freshest_rec: snapshot.freshest_rec,
-            disk_view: DiskView{
-                boundary_lsn: snapshot.boundary_lsn,
-                entries: disk.entries,
-            }
-        }
-    }
-}
-
-impl JournalCoordinationSystem::Label {
-    pub open spec fn i(self, state: JournalCoordinationSystem::State) -> LikesJournal::Label
-    {
-        match self {
-            Self::ReadForRecovery{messages} => { LikesJournal::Label::ReadForRecovery{messages} }
-            Self::FreezeForCommit{frozen} => { 
-                LikesJournal::Label::FreezeForCommit{frozen_journal: state.tj_at(frozen)}
-            }
-            Self::QueryEndLsn{end_lsn} => { LikesJournal::Label::QueryEndLsn{end_lsn} }
-            Self::Put{messages} => { LikesJournal::Label::Put{messages} }
-            Self::DiscardOld{start_lsn, require_end} => { LikesJournal::Label::DiscardOld{start_lsn, require_end} }
-            Self::Internal{} => { LikesJournal::Label::Internal{} }
-        }
-    }
-}
 
 impl JournalCoordinationSystem::State {
     // TODO(JL): this almost feels like something we should have adopted in likesjournal
@@ -73,14 +34,14 @@ impl JournalCoordinationSystem::State {
             self.ephemeral_disk().is_nondangling_pointer(ptr),
         ensures ({
             let result = self.journal.next_index(ptr);
-            let index = self.journal.lsn_addr_index;
+            let index = cj_lsn_addr_index(self.journal);
             &&& result is Some ==> index.contains_value(result.unwrap())
             &&& result == self.ephemeral_disk().next(ptr)
         })
     {
         let addr = ptr.unwrap();
-        let bdy = self.journal.boundary_lsn;
-        let index = self.journal.lsn_addr_index;
+        let bdy = self.journal.snapshot.boundary_lsn;
+        let index = self.journal.status.unwrap().lsn_addr_index;
 
         let record = self.ephemeral_disk().entries[addr];
         let next = record.cropped_prior(bdy);
@@ -169,7 +130,7 @@ impl JournalCoordinationSystem::State {
         requires 
             self.inv(), 
             self.journal.can_crop_index(root, depth),
-            root is Some ==> self.journal.lsn_addr_index.contains_value(root.unwrap()),
+            root is Some ==> cj_lsn_addr_index(self.journal).contains_value(root.unwrap()),
         ensures 
             self.ephemeral_disk().can_crop(root, depth),
             self.ephemeral_disk().pointer_after_crop(root, depth)
@@ -260,7 +221,7 @@ impl JournalCoordinationSystem::State {
         reveal(LinkedJournal::State::next);
         reveal(LikesJournal::State::next_by);
         reveal(LikesJournal::State::next);
-        assert(LikesJournal::State::next_by(self.i(), post.i(), lbl.i(self), LikesJournal::Step::read_for_recovery()));
+        assert(LikesJournal::State::next_by(self.i(), post.i(), lbl.i(self), LikesJournal::Step::read_for_recovery(depth)));
     }
 
     proof fn freeze_for_commit_refines(self, post: Self, lbl: JournalCoordinationSystem::Label, frozen_domain: Set<Address>, reads: Map<Address, RawPage>)
@@ -270,10 +231,10 @@ impl JournalCoordinationSystem::State {
         reveal(CachedJournal::State::next);
         reveal(CachedJournal::State::next_by);
 
-        let journal_lbl = CachedJournal::Label::FreezeForCommit{
-            frozen: lbl->frozen,
-            frozen_seq_end: lbl->frozen.boundary_lsn,
-        };
+        let frozen_reads = to_journal_reads(reads);
+        let frozen_ptr = lbl->frozen.freshest_rec;
+        let frozen_seq_end = if frozen_ptr is Some { frozen_reads[frozen_ptr.unwrap()].message_seq.seq_end } else { lbl->frozen.boundary_lsn };
+        let journal_lbl = CachedJournal::Label::FreezeForCommit{frozen: lbl->frozen, frozen_seq_end, frozen_domain, reads: frozen_reads};
         let journal_step = choose |journal_step| CachedJournal::State::next_by(self.journal, post.journal, journal_lbl, journal_step);
         let depth = journal_step.arrow_freeze_for_commit_0();
 
@@ -281,12 +242,12 @@ impl JournalCoordinationSystem::State {
         let i_frozen = i_lbl->frozen_journal;
         let new_bdy = i_frozen.seq_start();
 
-        self.can_crop_ptr_after_index_refines(self.journal.freshest_rec, depth);
-        assert(self.ephemeral_disk().can_crop(self.journal.freshest_rec, depth));
-        assert(self.journal.boundary_lsn <= new_bdy);
+        self.can_crop_ptr_after_index_refines(cj_freshest_rec(self.journal), depth);
+        assert(self.ephemeral_disk().can_crop(cj_freshest_rec(self.journal), depth));
+        assert(cj_boundary_lsn(self.journal) <= new_bdy);
 
         let cropped_tj = self.ephemeral_tj().crop(depth);
-        let ptr = self.journal.pointer_after_crop_index(self.journal.freshest_rec, depth);
+        let ptr = self.journal.pointer_after_crop_index(cj_freshest_rec(self.journal), depth);
         self.ephemeral_tj().crop_ensures(depth);
         assert(cropped_tj.freshest_rec == ptr);
 
@@ -303,7 +264,7 @@ impl JournalCoordinationSystem::State {
 
         let post_discard = cropped_tj.discard_old(new_bdy);
         let frozen_lsns = Set::new(|lsn: LSN| new_bdy <= lsn && lsn < post_discard.seq_end());
-        let frozen_index = self.journal.lsn_addr_index.restrict(frozen_lsns);
+        let frozen_index = cj_lsn_addr_index(self.journal).restrict(frozen_lsns);
 
         assert(cropped_tj.discard_old_cond(new_bdy, frozen_index.values(), i_frozen));
 
@@ -313,8 +274,8 @@ impl JournalCoordinationSystem::State {
             LikesJournal::Step::freeze_for_commit(depth)));
     }
 
-    proof fn init_refines(self, disk: AsyncDisk::State, cache: Cache::State, journal: CachedJournal::State, snapshot: JournalSnapshot, reads: Map<Address, RawPage>) 
-        requires self.inv(), JournalCoordinationSystem::State::initialize(self, disk, cache, journal, snapshot, reads), 
+    proof fn init_refines(self, disk: AsyncDisk::State, cache: Cache::State, journal: CachedJournal::State)
+        requires self.inv(), JournalCoordinationSystem::State::initialize(self, disk, cache, journal),
         ensures LikesJournal::State::initialize(self.i(), self.ephemeral_tj())
     {
     }

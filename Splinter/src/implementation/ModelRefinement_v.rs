@@ -10,6 +10,7 @@ use crate::trusted::RefinementObligation_t::RefinementObligation;
 use crate::trusted::ProgramModelTrait_t::{DiskLabel, ProgramModelTrait, ProgramUserOp};
 use crate::disk::GenericDisk_v::Pointer;
 use crate::abstract_system::AbstractCrashAwareJournal_v::AbstractCrashAwareJournal;
+use crate::implementation::ConcreteJournal_v::ConcreteJournal;
 use crate::journal::LinkedJournal_v::{DiskView, TruncatedJournal};
 use crate::implementation::AtomicState_v::{AtomicState, DiskEvent, InternalEvent, ProgramEvent, raw_page_to_record, to_map_label, to_journal_reads};
 use crate::implementation::JournalImpl_v::journal_disk_inv;
@@ -164,48 +165,36 @@ impl SystemModel::State<ConcreteProgramModel>  {
     //     &&& self.journal.lsn_addr_index.values() =~= self.ephemeral_tj().disk_view.entries.dom()
     // }
 
-    // Construct the JCS state embedded in this SystemModel state.
-    // Only valid when client_ready() (journal.status is Some).
-    pub open spec fn jcs(self) -> JournalCoordinationSystem::State
+    // Project to ConcreteJournal state: bundles journal, cache, disk, and crash state.
+    // Only fully meaningful when client_ready() (journal.status is Some).
+    pub open spec fn concrete_journal(self) -> ConcreteJournal::State
     {
-        JournalCoordinationSystem::State {
+        ConcreteJournal::State {
             journal: self.program.state.journal,
             cache: self.program.state.cache,
             disk: self.disk,
+            persistent_journal_seq_end: self.program.state.persistent_journal_seq_end,
+            in_flight: self.program.state.in_flight,
         }
     }
 
-    // The full ephemeral journal MsgHistory, computed through the JCS refinement chain:
-    //   JCS → LikesJournal → LinkedJournal → PagedJournal → AbstractJournal
-    // This gives truncated_journal.i().i().concat(unmarshalled_tail) = the FULL journal
-    // covering [boundary_lsn, tail.seq_end), including marshalled pages on disk.
+    // Convenience: access the JCS view through concrete_journal
+    pub open spec fn jcs(self) -> JournalCoordinationSystem::State
+    {
+        self.concrete_journal().jcs_view()
+    }
+
+    // Convenience: access the full journal through concrete_journal
     pub open spec fn full_journal(self) -> MsgHistory
     {
-        // JCS.i() → LikesJournal::State (has journal: LinkedJournal::State)
-        // LinkedJournal::State.i() → PagedJournal::State
-        // PagedJournal::State.i() → AbstractJournal::State
-        self.jcs().i().journal.i().i().journal
+        self.concrete_journal().full_journal()
     }
 
     // Interpret concrete CachedJournal state as AbstractCrashAwareJournal state.
-    // Only called from i_ephemeral(), so client_ready() holds (status is Some).
-    // Uses the full journal (including marshalled disk pages) via the JCS chain,
-    // not just the unmarshalled_tail.
+    // Now simply delegates to ConcreteJournal::i().
     pub open spec fn i_journal(self) -> AbstractCrashAwareJournal::State
     {
-        let state = self.program.state;
-        let full_journal = self.full_journal();
-        AbstractCrashAwareJournal::State {
-            persistent: full_journal.discard_recent(state.persistent_journal_seq_end),
-            ephemeral: Ephemeral::Known {
-                v: AbstractJournal::State { journal: full_journal }
-            },
-            in_flight: if state.in_flight is Some {
-                Some(full_journal.discard_recent(state.in_flight.unwrap().journal_version))
-            } else {
-                None
-            },
-        }
+        self.concrete_journal().i()
     }
 
     // pub open spec fn i(self) -> CrashTolerantAsyncMap::State
