@@ -56,11 +56,25 @@ impl MutHandle {
     }
 }
 
+pub struct WritebackHandle {
+    pub token: Tracked<Perm>,
+    pub idx: Slot,
+    pub rec: IRawPage,
+}
+
+impl WritebackHandle {
+    pub open spec fn inv(&self) -> bool
+    {
+        &&& self.token@.resource() == self.idx
+    }
+}
+
 pub struct FracCacheImpl {
     perms: Tracked<Seq<Perm>>, // ghost permission tracking
     internal_slots: Vec<Option<IRawPage>>, // reserved cache memory
     metadata: Vec<Metadata>,
     lookup_map: HashMapWithView<IAddress, Slot>,
+    writeback_loans: Ghost<Map<Slot, RawPage>>,
 }
 
 // release handle returns to specific slot
@@ -81,6 +95,13 @@ pub enum FetchErrorCode {
     // WritebackEviction, // slots are filled, have to writeback to evict, require additional calls
     LoadInitiate{slot_handle: MutHandle},   // cache is asking caller to initiate the disk IO on cache's behalf
     Awaiting,   // IO request has been sent, haven't heard back yet.
+}
+
+pub enum WritebackAcquireResult {
+    NotPresent,
+    NotDirty,
+    Busy, // page is dirty but currently borrowed by another handle
+    Acquired{handle: WritebackHandle},
 }
 
 pub open spec fn cache_load_label(addr: &IAddress) -> Cache::Label
@@ -112,6 +133,17 @@ impl FracCacheImpl {
     {
         forall |i| 0 <= i < self.total_slots() && self.internal_slots[i] is Some
             ==> #[trigger] self.internal_slots[i].unwrap().len() == PAGE_SIZE_BYTES
+    }
+
+    closed spec fn writeback_loans_inv(self) -> bool
+    {
+        &&& forall |slot: Slot| #[trigger] self.writeback_loans@.contains_key(slot) ==> {
+            &&& slot < self.total_slots()
+            &&& self.writeback_loans@[slot].len() == PAGE_SIZE_BYTES
+            &&& self.metadata[slot as int].entry is Filled
+            &&& self.metadata[slot as int].status is Writeback
+            &&& self.internal_slots[slot as int] is None
+        }
     }
 
     closed spec fn perms_consistent_with_slots(self) -> bool
@@ -162,6 +194,12 @@ impl FracCacheImpl {
         }
     }
 
+    closed spec fn empty_entry_not_writeback(self) -> bool
+    {
+        forall |slot| #![auto] 0 <= slot < self.total_slots()
+        ==> self.metadata[slot].entry is Empty ==> !(self.metadata[slot].status is Writeback)
+    }
+
     pub closed spec fn wf(self) -> bool
     {
         &&& self.internal_slots.len() == self.total_slots()
@@ -173,9 +211,11 @@ impl FracCacheImpl {
         &&& self.lookup_map_inv()
         &&& self.perms_consistent_with_slots()
         &&& self.metadata_consistent_with_slots()
+        &&& self.empty_entry_not_writeback()
         &&& self.lookup_map_consistent_with_slots()
         &&& self.lookup_map_bijection()
         &&& self.lookup_map_injective()
+        &&& self.writeback_loans_inv()
     }
 
     closed spec fn view_state(self) -> Cache::State
@@ -196,10 +236,14 @@ impl FracCacheImpl {
                 IEntry::Loading{addr} => Entry::Loading{addr: addr@},
                 IEntry::Filled{addr} => Entry::Filled{
                     addr: addr@,
-                    // NOTE: changed from empty_page to arbitrary because we want to 
-                    // support loading directly into the page
-                    data: if self.internal_slots[k as int] is None { Self::empty_page() }
-                            else { self.internal_slots[k as int].unwrap()@ }
+                    data: if self.internal_slots[k as int] is Some {
+                        self.internal_slots[k as int].unwrap()@
+                    } else if self.metadata[k as int].status is Writeback
+                        && self.writeback_loans@.contains_key(k) {
+                        self.writeback_loans@[k]
+                    } else {
+                        Self::empty_page()
+                    }
                 },
             }
         })
@@ -214,10 +258,14 @@ impl FracCacheImpl {
             IEntry::Loading{addr} => Entry::Loading{addr: addr@},
             IEntry::Filled{addr} => Entry::Filled{
                 addr: addr@,
-                // NOTE: changed from empty_page to arbitrary because we want to 
-                // support loading directly into the page
-                data: if self.internal_slots[k as int] is None { Self::empty_page() } 
-                        else { self.internal_slots[k as int].unwrap()@ }
+                data: if self.internal_slots[k as int] is Some {
+                    self.internal_slots[k as int].unwrap()@
+                } else if self.metadata[k as int].status is Writeback
+                    && self.writeback_loans@.contains_key(k) {
+                    self.writeback_loans@[k]
+                } else {
+                    Self::empty_page()
+                }
             },
         }
     }
@@ -293,6 +341,7 @@ impl FracCacheImpl {
         &&& handle.idx < self.total_slots()
         &&& handle.token@.frac() == 1
         &&& handle.token@.id() == self.entry_token_id(handle.idx)
+        &&& !(self@.status_map[handle.idx] is Writeback)
     }
 
     pub closed spec fn slot_entry(self, slot: Slot) -> IEntry
@@ -306,6 +355,21 @@ impl FracCacheImpl {
         &&& self.valid_handle(handle)
         &&& self.lookup_addr_slot(addr) == handle.idx
         &&& self.slot_entry(handle.idx) == IEntry::Loading{addr: *addr}
+    }
+
+    pub closed spec fn valid_writeback_handle(self, addr: &IAddress, handle: WritebackHandle) -> bool
+    {
+        &&& handle.inv()
+        &&& self.entry_fetched(addr)
+        &&& handle.idx < self.total_slots()
+        &&& handle.token@.frac() == 1
+        &&& handle.token@.id() == self.entry_token_id(handle.idx)
+        &&& self.lookup_addr_slot(addr) == handle.idx
+        &&& self.slot_entry(handle.idx) == IEntry::Filled{addr: *addr}
+        &&& self@.status_map[handle.idx] is Writeback
+        &&& self.internal_slots[handle.idx as int] is None
+        &&& self.writeback_loans@.contains_key(handle.idx)
+        &&& self.writeback_loans@[handle.idx] == handle.rec@
     }
 
     pub open spec fn valid_load_handles_preserved(self, old: Self) -> bool
@@ -423,8 +487,24 @@ impl FracCacheImpl {
                 assert(new.entry_fetched(&addr2));
             }
             assert(handle2.idx != except_idx);
-            assert(new.valid_handle(handle2));
             assert(handle2.idx < new.total_slots());
+            assert(old.valid_handle(handle2));
+            assert(!(new@.status_map[handle2.idx] is Writeback)) by {
+                let i = handle2.idx as int;
+                assert(0 <= i < new.total_slots());
+                assert(i != except_idx as int);
+                assert(new.perms@[i] == old.perms@[i]) by {
+                    assert(new.entries_same_except(old, except_idx));
+                }
+                assert(new.internal_slots[i] == old.internal_slots[i]);
+                assert(new.metadata[i] == old.metadata[i]);
+                assert(new.metadata[i] == old.metadata[i]);
+                assert(!(old@.status_map[handle2.idx] is Writeback));
+                reveal(FracCacheImpl::view_state);
+            }
+            assert(new.valid_handle(handle2)) by {
+                assert(new.entry_token_id(handle2.idx) == old.entry_token_id(handle2.idx));
+            }
             Self::slot_entry_same_except(old, new, except_idx, handle2.idx);
         }
     }
@@ -551,6 +631,7 @@ impl FracCacheImpl {
             internal_slots,
             metadata,
             lookup_map: HashMapWithView::new(),
+            writeback_loans: Ghost(Map::empty()),
         }
     }
 
@@ -612,8 +693,17 @@ impl FracCacheImpl {
     {
         if self.lookup_map.contains_key(addr) {
             let slot = *self.lookup_map.get(addr).unwrap();
-            self.internal_slots.push(None);
             assert(self.lookup_map@.contains_value(slot));
+            match self.metadata[slot].status {
+                Status::Writeback => {
+                    proof {
+                        Self::valid_load_handles_preserved_if_maps_same(*old(self), *self);
+                    }
+                    return FetchErrorCode::Awaiting;
+                },
+                _ => {},
+            }
+            self.internal_slots.push(None);
 
             let taken = self.internal_slots.swap_remove(slot);
             let slot_handle = match taken {
@@ -668,6 +758,13 @@ impl FracCacheImpl {
         {
             if let IEntry::Empty = self.metadata[slot].entry {
                 let status = self.metadata[slot].status;
+                match status {
+                    Status::Writeback => {
+                        slot = slot + 1;
+                        continue;
+                    },
+                    _ => {},
+                }
                 self.lookup_map.insert(*addr, slot);
                 self.metadata[slot] = Metadata{
                     status, 
@@ -755,9 +852,16 @@ impl FracCacheImpl {
                         exists |req| #[trigger] addr_maps_to_req(cache_lbl->requests, req, slot_addr)
                     by {
                         if new_slots_mapping.contains_value(slot_addr) {
-                            assert(addr_maps_to_req(cache_lbl->requests, load_request, addr@));
+                            assert(slot_addr == addr@);
+                            assert(addr_maps_to_req(cache_lbl->requests, load_request, slot_addr));
                         }
                         if exists |req| addr_maps_to_req(cache_lbl->requests, req, slot_addr) {
+                            let req = choose |req| addr_maps_to_req(cache_lbl->requests, req, slot_addr);
+                            assert(cache_lbl->requests.contains(req));
+                            assert(req == load_request);
+                            assert(slot_addr == addr@);
+                            assert(new_slots_mapping.contains_pair(slot, addr@));
+                            assert(new_slots_mapping.contains_value(slot_addr));
                         }
                     }
                     let updated_entries = Map::new(
@@ -870,6 +974,12 @@ impl FracCacheImpl {
             self.perms.borrow_mut().tracked_insert(idx as int, perm);
             // relate perms view to the old one (remove + insert at same index)
         }
+        match self.metadata[idx].status {
+            Status::Writeback => {
+                unreached::<()>();
+            },
+            _ => {},
+        }
         self.internal_slots[idx] = Some(rec);
         proof {
             // vector update view for internal_slots
@@ -877,6 +987,152 @@ impl FracCacheImpl {
             reveal(FracCacheImpl::view_entries);
             assert(self@.entries == old(self)@.entries.insert(idx, Entry::Filled{addr: addr@, data: rec@}));
             // wf follows since we only changed internal_slots at idx and restored the perm fraction
+        }
+    }
+
+    pub exec fn begin_writeback(&mut self, addr: &IAddress) -> (result: WritebackAcquireResult)
+        requires
+            old(self).wf(),
+        ensures ({
+            &&& self.wf()
+            &&& match result {
+                WritebackAcquireResult::Acquired{handle} => {
+                    &&& self.entry_fetched(addr)
+                    &&& self.valid_writeback_handle(addr, handle)
+                },
+                _ => true
+            }
+        }),
+    {
+        if !self.lookup_map.contains_key(addr) {
+            return WritebackAcquireResult::NotPresent;
+        }
+
+        let slot = *self.lookup_map.get(addr).unwrap();
+        assert(self.lookup_map@.contains_value(slot));
+        assert(slot < self.total_slots());
+        assert(slot < self.metadata.len());
+        let status = self.metadata[slot].status;
+
+        match status {
+            Status::Dirty => {},
+            _ => {
+                return WritebackAcquireResult::NotDirty;
+            }
+        }
+        match self.metadata[slot].entry {
+            IEntry::Filled{addr: entry_addr} => {
+                proof {
+                    reveal(FracCacheImpl::view_entries);
+                    let entries = self.view_entries();
+                    assert(entries.contains_key(slot)) by {
+                        assert(slot < self.total_slots());
+                    }
+                    assert(entries[slot] is Filled);
+                    assert(entries[slot].get_addr() == entry_addr@);
+                    assert(self.lookup_map_bijection());
+                    assert(self.lookup_map@.contains_key(entry_addr@) && self.lookup_map@[entry_addr@] == slot);
+                    assert(self.lookup_map@.contains_key(addr@));
+                    assert(self.lookup_map@[addr@] == slot);
+                    assert(self.lookup_map_injective());
+                    assert(addr@ == entry_addr@);
+                    assert(entry_addr == *addr);
+                }
+            },
+            _ => {
+                return WritebackAcquireResult::NotDirty;
+            }
+        }
+
+        match &self.internal_slots[slot] {
+            None => {
+                return WritebackAcquireResult::Busy;
+            },
+            Some(_) => {},
+        }
+
+        self.internal_slots.push(None);
+        assert(self.lookup_map@.contains_value(slot));
+        let taken = self.internal_slots.swap_remove(slot);
+        let rec = match taken {
+            None => {
+                unreached::<IRawPage>()
+            },
+            Some(rec) => {
+                rec
+            }
+        };
+        if rec.len() != PAGE_SIZE_BYTES {
+            self.internal_slots[slot] = Some(Self::new_empty_page());
+            return WritebackAcquireResult::NotDirty;
+        }
+
+        let tracked perm = self.perms.borrow_mut().tracked_remove(slot as int);
+        let tracked handle_perm = perm.split(1);
+        proof {
+            self.perms.borrow_mut().tracked_insert(slot as int, perm);
+        }
+        let ghost loans = self.writeback_loans@;
+        self.writeback_loans = Ghost(loans.insert(slot, rec@));
+        let handle = WritebackHandle{token: Tracked(handle_perm), idx: slot, rec};
+
+        self.metadata[slot] = Metadata{
+            entry: IEntry::Filled{addr: *addr},
+            status: Status::Writeback
+        };
+           
+        WritebackAcquireResult::Acquired{handle}
+    }
+
+    pub exec fn complete_writeback(&mut self, addr: &IAddress, handle: WritebackHandle)
+        requires
+            old(self).wf(),
+            old(self).entry_fetched(addr),
+            old(self).valid_writeback_handle(addr, handle),
+        ensures ({
+            let resp = DiskResponse::WriteResp{};
+            let cache_lbl = Cache::Label::DiskOps{requests: set!{}, responses: map!{addr@ => resp}};
+            &&& self.wf()
+            &&& Cache::State::next(old(self)@, self@, cache_lbl)
+        })
+    {
+        let WritebackHandle{token, idx, rec} = handle;
+        proof {
+            let tracked(handle_perm) = token.get();
+            let tracked mut perm = self.perms.borrow_mut().tracked_remove(idx as int);
+            perm.agree(&handle_perm);
+            perm.combine(handle_perm);
+            perm.bounded();
+            self.perms.borrow_mut().tracked_insert(idx as int, perm);
+        }
+        let ghost loans = self.writeback_loans@;
+        self.writeback_loans = Ghost(loans.remove(idx));
+        self.internal_slots[idx] = Some(rec);
+        self.metadata[idx] = Metadata{
+            status: Status::Clean,
+            entry: IEntry::Filled{addr: *addr},
+        };
+
+        proof {
+            let resp = DiskResponse::WriteResp{};
+            let cache_lbl = Cache::Label::DiskOps{requests: set!{}, responses: map!{addr@ => resp}};
+
+            let slot_addr_map = old(self)@.lookup_map.restrict(cache_lbl->responses.dom()).invert();
+            assert(slot_addr_map =~= map!{idx => addr@}) by {
+                assert(old(self)@.lookup_map.restrict(cache_lbl->responses.dom()).contains_pair(addr@, idx));
+                reveal(Map::invert);
+            }
+
+            let updated_status_map = Map::new(
+                |slot| slot_addr_map.contains_key(slot),
+                |slot| Status::Clean
+            );
+            assert(self@.entries =~= old(self)@.entries);
+            assert(self@.lookup_map =~= old(self)@.lookup_map);
+            assert(self@.status_map =~= old(self)@.status_map.union_prefer_right(updated_status_map));
+            reveal(Cache::State::next_by);
+            assert(Cache::State::next_by(old(self)@, self@, cache_lbl, Cache::Step::writeback_complete()));
+            reveal(Cache::State::next);
         }
     }
 }
