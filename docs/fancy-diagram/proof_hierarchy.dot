@@ -1,0 +1,146 @@
+digraph proof_hierarchy {
+    rankdir=BT;
+    compound=true;
+    newrank=true;
+    fontname="Helvetica";
+    node [fontname="Helvetica", fontsize=10];
+    edge [fontname="Helvetica", fontsize=8];
+    ranksep=0.8;
+    nodesep=0.4;
+
+    // ===== TOP: MapSpec =====
+    MapSpec [shape=box, style="bold", label="MapSpec\n(top-level KV spec)"];
+
+    // ===== Level 3: CrashTolerantAsyncMap (abstract composition) =====
+    subgraph cluster_CTAM {
+        label="CrashTolerantAsyncMap";
+        labeljust=l; style=bold; fontsize=11; color=blue;
+
+        subgraph cluster_ACAJ {
+            label="AbstractCrashAwareJournal";
+            labeljust=l; fontsize=9; color="#6666cc"; style=solid;
+
+            CTAM_AJ [shape=box, label="Abstract\nJournal", style=filled, fillcolor="#e8e8ff"];
+            CTAM_JCrash [shape=box, label="Journal\nCrashState", style=filled, fillcolor="#ffe8e8"];
+        }
+        CTAM_Map [shape=box, label="AbstractCrash\nAwareMap", style=filled, fillcolor="#e8ffe8"];
+        CTAM_Coord [shape=box, label="Coordination\nState", style=filled, fillcolor="#ffffe8"];
+
+        { rank=same; CTAM_AJ; CTAM_JCrash; CTAM_Map; CTAM_Coord; }
+    }
+
+    // CTAM refines to MapSpec
+    CTAM_AJ -> MapSpec [
+        label="  SystemRefinement_v.rs",
+        style=bold, color=blue, ltail=cluster_CTAM];
+
+    // ===== Journal refinement chain (vertical, left side) =====
+    PagedJ [shape=box, label="PagedJournal", style=filled, fillcolor="#f0f0ff"];
+    LinkedJ [shape=box, label="LinkedJournal", style=filled, fillcolor="#f0f0ff"];
+    LJ [shape=box, label="LikesJournal", style=filled, fillcolor="#f0f0ff"];
+
+    LJ -> LinkedJ [label="  LikesJournalRefinement_v.rs"];
+    LinkedJ -> PagedJ [label="  LinkedJournalRefinement_v.rs"];
+    PagedJ -> CTAM_AJ [label="  PagedJournalRefinement_v.rs"];
+
+    // ===== Level 2: SystemModelTwo =====
+    subgraph cluster_SM2 {
+        label="SystemModelTwo  (state_machine!)";
+        labeljust=l; style="bold,dashed"; fontsize=11; color="#660066";
+
+        subgraph cluster_ConcJ {
+            label="ConcreteJournal  (state_machine!)";
+            labeljust=l; fontsize=9; color="#996600"; style=solid;
+
+            subgraph cluster_JCS {
+                label="JCS view  (state_machine!)";
+                labeljust=l; fontsize=8; color="#996600"; style=dashed;
+
+                SM2_CJ [shape=box, label="Cached\nJournal"];
+                SM2_Cache [shape=box, label="Cache"];
+                SM2_Disk [shape=box, label="Async\nDisk"];
+            }
+            SM2_PersistJSE [shape=box, label="persistent\njournal_seq_end"];
+            SM2_InFlight [shape=box, label="in_flight\n(SB write)"];
+        }
+        SM2_Map [shape=box, label="AbstractCrash\nAwareMap", style=filled, fillcolor="#e8ffe8"];
+        SM2_Coord [shape=box, label="recovery_state\nsync_req_map\nreqs/replies/ids", style=filled, fillcolor="#ffffe8"];
+
+        { rank=same; SM2_CJ; SM2_Cache; SM2_Disk; SM2_PersistJSE; SM2_InFlight; SM2_Map; SM2_Coord; }
+    }
+
+    // JCS -> LikesJournal (leftmost refinement — innermost, developed first)
+    SM2_CJ -> LJ [
+        label=<  JournalCoordinationRefinement_v.rs<BR/>  <FONT COLOR="red">(4 assume stubs)</FONT>>,
+        style=bold, color="#996600",
+        ltail=cluster_JCS];
+
+    // ConcreteJournal -> ACAJ (middle — uses journal chain)
+    SM2_PersistJSE -> CTAM_JCrash [
+        label=<  ConcreteJournalRefinement_v.rs<BR/>  <FONT COLOR="red">(13 assume stubs)</FONT>>,
+        style=bold, color="#996600",
+        ltail=cluster_ConcJ, lhead=cluster_ACAJ];
+
+    // SM2 -> CTAM (rightmost, outermost — uses ConcreteJournalRefinement)
+    SM2_Coord -> CTAM_Coord [
+        label=<  ModelRefinementTwo_v.rs<BR/>  <FONT COLOR="red">(assumes in 13 of 16 cases)</FONT>>,
+        style=bold, color="#660066",
+        ltail=cluster_SM2, lhead=cluster_CTAM];
+
+    // ===== Level 1: SystemModel (original grouping) =====
+    subgraph cluster_SM1 {
+        label="SystemModel<ConcreteProgramModel>";
+        labeljust=l; style=bold; fontsize=11; color=blue;
+
+        subgraph cluster_CPM {
+            label="ConcreteProgramModel  (AtomicState)";
+            labeljust=l; fontsize=9; color=darkgreen; style=dashed;
+
+            SM1_CJ [shape=box, label="Cached\nJournal"];
+            SM1_Cache [shape=box, label="Cache"];
+            SM1_Map [shape=box, label="AbstractCrash\nAwareMap", style=filled, fillcolor="#e8ffe8"];
+            SM1_Coord [shape=box, label="recovery_state\nsync_req_map\nin_flight, etc.", style=filled, fillcolor="#ffffe8"];
+        }
+        SM1_Disk [shape=box, label="Async\nDisk"];
+        SM1_IO [shape=box, label="requests\nreplies\nsync_*\nid_history", style=filled, fillcolor="#fff0d0"];
+
+        { rank=same; SM1_CJ; SM1_Cache; SM1_Map; SM1_Coord; SM1_Disk; SM1_IO; }
+    }
+
+    // SM1 -> SM2 bracket refinement
+    SM1_CJ -> SM2_CJ [
+        label=<  BracketRefinement_v.rs  <FONT COLOR="darkgreen">&#x2713; verified</FONT><BR/>  (isomorphism: same state, different nesting;<BR/>   disk moves into ConcreteJournal)>,
+        style=bold, color=red,
+        ltail=cluster_SM1, lhead=cluster_SM2];
+
+    // ===== Adapter =====
+    Adapter [shape=box, style="rounded,filled", fillcolor="#f0e8ff",
+        label=<ModelRefinement_v.rs  (thin adapter)<BR/>composes BracketRefinement + ModelRefinementTwo<BR/>to satisfy RefinementObligation trait>];
+
+    Adapter -> SM1_CJ [style=dashed, color=gray, arrowhead=none,
+        label=<  wraps SM1&#x2192;SM2&#x2192;CTAM>,
+        lhead=cluster_SM1];
+
+    // ===== Implementation =====
+    Impl [shape=box, style="rounded,filled", fillcolor="#e8f8e8",
+        label="Implementation_v.rs  (exec code)\nJournalImpl, FracCacheImpl, VecMap, ..."];
+
+    Impl -> SM1_CJ [style=bold, color=darkgreen,
+        label=<  exec code refines ConcreteProgramModel  <FONT COLOR="darkgreen">&#x2713; 38 verified</FONT>>,
+        lhead=cluster_CPM];
+
+    // ===== Layout hints =====
+    {rank=max; MapSpec;}
+
+    // Legend
+    legend [shape=none, margin=0, label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="4">
+  <TR><TD COLSPAN="2" BGCOLOR="white"><B>Proof structure</B></TD></TR>
+  <TR><TD>solid arrow</TD><TD>refinement (proved in named file)</TD></TR>
+  <TR><TD>box in box</TD><TD>composition (state containment)</TD></TR>
+  <TR><TD>dashed box</TD><TD>regrouped/virtual boundary</TD></TR>
+  <TR><TD COLSPAN="2" BGCOLOR="white"><B>Status</B></TD></TR>
+  <TR><TD BGCOLOR="#e8ffe8"><FONT COLOR="darkgreen">&#x2713;</FONT></TD><TD>fully verified</TD></TR>
+  <TR><TD BGCOLOR="#ffe8e8"><FONT COLOR="red">assumes</FONT></TD><TD>has proof gaps</TD></TR>
+</TABLE>>];
+}
