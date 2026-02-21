@@ -48,7 +48,7 @@ impl SystemModelTwo::State {
     }
 
     /// The bracket refinement: every SystemModel step induces a SystemModelTwo step.
-    proof fn next_refines(
+    pub proof fn next_refines(
         pre: SystemModel::State<ConcreteProgramModel>,
         post: SystemModel::State<ConcreteProgramModel>,
         lbl: SystemModel::Label,

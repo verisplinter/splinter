@@ -15,6 +15,7 @@ pub mod ConcreteJournal_v;
 pub mod ConcreteJournalRefinement_v;
 pub mod SystemModelTwo_v;
 pub mod BracketRefinement_v;
+pub mod ModelRefinementTwo_v;
 pub mod VecMap_v;
 pub mod JournalTypes_v;
 pub mod SuperblockTypes_v;
