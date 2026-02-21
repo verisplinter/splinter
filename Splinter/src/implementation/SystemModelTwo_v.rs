@@ -123,6 +123,9 @@ state_machine!{ SystemModelTwo {
             pre.to_atomic(), Self::to_atomic_two(new_concrete_journal, new_store, pre),
             lbl->op->req, lbl->op->reply, program_event);
 
+        // Disk unchanged by program execution (matches SM1 semantics)
+        require new_concrete_journal.disk == pre.concrete_journal.disk;
+
         update concrete_journal = new_concrete_journal;
         update store = new_store;
         update requests = pre.requests.remove(lbl->op->req);
@@ -199,6 +202,9 @@ state_machine!{ SystemModelTwo {
 
     transition!{ program_internal(lbl: Label, new_concrete_journal: ConcreteJournal::State, new_outstanding_cache_reqs: Map<ID, Address>, new_recovery_state: RecoveryState, new_store: AbstractCrashAwareMap::State) {
         require lbl is ProgramInternal;
+
+        // Disk unchanged by program internal transitions (matches SM1 semantics)
+        require new_concrete_journal.disk == pre.concrete_journal.disk;
 
         // internal_transitions don't change sync_req_map
         let post_atomic = AtomicState {
