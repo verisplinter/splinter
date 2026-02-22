@@ -77,13 +77,13 @@ digraph proof_hierarchy {
 
     // ConcreteJournal -> ACAJ (middle — uses journal chain)
     SM2_PersistJSE -> CTAM_JCrash [
-        label=<  ConcreteJournalRefinement_v.rs<BR/>  <FONT COLOR="red">(10 assume stubs)</FONT>>,
+        label=<  ConcreteJournalRefinement_v.rs<BR/>  <FONT COLOR="darkgreen">&#x2713; no assume stubs</FONT>>,
         style=bold, color="#996600",
         ltail=cluster_ConcJ, lhead=cluster_ACAJ];
 
     // SM2 -> CTAM (rightmost, outermost — uses ConcreteJournalRefinement)
     SM2_Coord -> CTAM_Coord [
-        label=<  ModelRefinementTwo_v.rs<BR/>  <FONT COLOR="red">(assumes in 13 of 16 cases)</FONT>>,
+        label=<  ModelRefinementTwo_v.rs<BR/>  <FONT COLOR="red">(legacy assume gaps remain)</FONT>>,
         style=bold, color="#660066",
         ltail=cluster_SM2, lhead=cluster_CTAM];
 

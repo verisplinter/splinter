@@ -35,6 +35,7 @@ state_machine!{ ConcreteJournal {
         pub cache: Cache::State,
         pub disk: AsyncDisk::State,
         pub persistent_journal_seq_end: LSN,
+        pub persistent_image: MsgHistory,
         pub in_flight: Option<InflightInfo>,
     }
 
@@ -231,6 +232,9 @@ state_machine!{ ConcreteJournal {
         require Cache::State::next(pre.cache, pre.cache, cache_lbl);
 
         update persistent_journal_seq_end = pre.in_flight.unwrap().journal_version;
+        update persistent_image = pre.full_journal()
+            .discard_recent(pre.in_flight.unwrap().journal_version)
+            .discard_old(pre.in_flight.unwrap().new_boundary_lsn);
         update journal = new_journal;
         update in_flight = None;
     }}
@@ -246,6 +250,13 @@ state_machine!{ ConcreteJournal {
             pre.in_flight.unwrap().journal_version
         } else {
             pre.persistent_journal_seq_end
+        };
+        update persistent_image = if lbl->keep_in_flight && pre.in_flight is Some && pre.journal.status is Some {
+            pre.full_journal()
+                .discard_recent(pre.in_flight.unwrap().journal_version)
+                .discard_old(pre.in_flight.unwrap().new_boundary_lsn)
+        } else {
+            pre.persistent_image
         };
         // Reset ephemeral state
         update journal = CachedJournal::State{
@@ -276,10 +287,10 @@ state_machine!{ ConcreteJournal {
         }.i().journal.i().i().journal;
         let loaded_aj = AbstractJournal::State{journal: loaded_full_journal};
         require loaded_full_journal.can_discard_to(pre.persistent_journal_seq_end);
-        require loaded_full_journal.discard_recent(pre.persistent_journal_seq_end) == pre.i().persistent;
+        require loaded_full_journal.discard_recent(pre.persistent_journal_seq_end) == pre.persistent_image;
         require AbstractJournal::State::init_by(
             loaded_aj,
-            AbstractJournal::Config::initialize(pre.i().persistent),
+            AbstractJournal::Config::initialize(pre.persistent_image),
         );
         update journal = new_journal;
     }}
@@ -297,6 +308,7 @@ state_machine!{ ConcreteJournal {
             &&& self.journal.wf()
             &&& self.jcs_view().valid_journal_structure()
             &&& self.journal_seq_end_inv()
+            &&& self.persistent_image == self.full_journal().discard_recent(self.persistent_journal_seq_end)
         }
     }
 
@@ -422,7 +434,7 @@ impl ConcreteJournal::State {
         } else {
             // During crash/recovery: ephemeral is unknown
             AbstractCrashAwareJournal::State {
-                persistent: arbitrary(), // only meaningful with disk content + superblock
+                persistent: self.persistent_image,
                 ephemeral: Ephemeral::Unknown,
                 in_flight: None,
             }

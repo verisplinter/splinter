@@ -619,11 +619,24 @@ impl ConcreteJournal::State {
         assert(post.journal.status is None);
         assert(post.i().ephemeral is Unknown);
         assert(post.i().in_flight is None);
-        assume(post.i().persistent == if lbl->keep_in_flight && pre.i().in_flight is Some {
-            pre.i().in_flight.unwrap()
+        if pre.journal.status is Some {
+            assert(pre.persistent_image == pre.i().persistent);
+            if lbl->keep_in_flight && pre.in_flight is Some {
+                assert(post.persistent_image
+                    == pre.full_journal()
+                        .discard_recent(pre.in_flight.unwrap().journal_version)
+                        .discard_old(pre.in_flight.unwrap().new_boundary_lsn));
+                assert(pre.i().in_flight is Some);
+                assert(post.i().persistent == pre.i().in_flight.unwrap());
+            } else {
+                assert(post.persistent_image == pre.persistent_image);
+                assert(post.i().persistent == pre.i().persistent);
+            }
         } else {
-            pre.i().persistent
-        });
+            assert(pre.i().in_flight is None);
+            assert(post.persistent_image == pre.persistent_image);
+            assert(post.i().persistent == pre.i().persistent);
+        }
         assert(AbstractCrashAwareJournal::State::next_by(
             pre.i(),
             post.i(),

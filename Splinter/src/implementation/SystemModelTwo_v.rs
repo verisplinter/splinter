@@ -26,6 +26,7 @@ use crate::implementation::CachedJournal_v::*;
 use crate::implementation::Cache_v::*;
 use crate::implementation::AtomicState_v::{AtomicState, RecoveryState, InflightInfo, DiskEvent, InternalEvent, ProgramEvent, raw_page_to_record, to_journal_reads};
 use crate::implementation::ConcreteJournal_v::ConcreteJournal;
+use crate::implementation::JournalCoordinationSystem_v::JournalCoordinationSystem;
 use crate::implementation::MultisetMapRelation_v::multiset_to_map;
 use crate::trusted::ProgramModelTrait_t::{DiskLabel, DiskModel, ProgramDiskInfo, ProgramLabel, ProgramModelTrait, ProgramUserOp};
 use crate::trusted::SystemModel_t::SystemModel;
@@ -125,6 +126,8 @@ state_machine!{ SystemModelTwo {
 
         // Disk unchanged by program execution (matches SM1 semantics)
         require new_concrete_journal.disk == pre.concrete_journal.disk;
+        require new_concrete_journal.journal == pre.concrete_journal.journal ==>
+            new_concrete_journal.persistent_image == pre.concrete_journal.persistent_image;
 
         update concrete_journal = new_concrete_journal;
         update store = new_store;
@@ -205,6 +208,8 @@ state_machine!{ SystemModelTwo {
 
         // Disk unchanged by program internal transitions (matches SM1 semantics)
         require new_concrete_journal.disk == pre.concrete_journal.disk;
+        require new_concrete_journal.journal == pre.concrete_journal.journal ==>
+            new_concrete_journal.persistent_image == pre.concrete_journal.persistent_image;
 
         // internal_transitions don't change sync_req_map
         let post_atomic = AtomicState {
@@ -313,6 +318,15 @@ impl SystemModelTwo::State {
                 cache: sm.program.state.cache,
                 disk: sm.disk,
                 persistent_journal_seq_end: sm.program.state.persistent_journal_seq_end,
+                persistent_image: if sm.program.state.journal.status is Some {
+                    JournalCoordinationSystem::State {
+                        journal: sm.program.state.journal,
+                        cache: sm.program.state.cache,
+                        disk: sm.disk,
+                    }.i().journal.i().i().journal.discard_recent(sm.program.state.persistent_journal_seq_end)
+                } else {
+                    MsgHistory::empty_history_at(sm.program.state.persistent_journal_seq_end)
+                },
                 in_flight: sm.program.state.in_flight,
             },
             store: sm.program.state.store,
