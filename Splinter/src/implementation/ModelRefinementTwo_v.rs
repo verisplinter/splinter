@@ -858,7 +858,11 @@ pub proof fn next_refines_ctam(pre: SystemModelTwo::State, post: SystemModelTwo:
                     assert(post.to_atomic().wf());
                 },
                 InternalEvent::JournalRecovery{..} | InternalEvent::MapRecovery{..} => {
-                    assume(ipre == ipost);
+                    // During recovery: !client_ready for both pre and post.
+                    // i() uses i_persistent() which only depends on disk.content[sb_addr]
+                    // and requests/replies. Disk unchanged (SM2 constraint), requests/replies
+                    // unchanged by internal transitions.
+                    reveal(SystemModelTwo::State::i_persistent);
                     assume(post.inv());
                 },
                 InternalEvent::RecoveryComplete{} => {

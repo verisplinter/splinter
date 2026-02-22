@@ -321,42 +321,27 @@ state_machine!{ JournalCoordinationSystem{
         cache_requests: Set<DiskRequest>, cache_responses: Map<Address, DiskResponse>,
         disk_requests: Map<ID, DiskRequest>, disk_responses: Map<ID, DiskResponse>)
     {
-        // journal unchanged; cache+disk change for I/O coordination
-        // AsyncDisk::disk_ops doesn't change content → persistent_journal_disk unchanged
-        // Cache DiskOps: load_initiate/load_complete don't add dirty entries
-        //   writeback_initiate: Dirty→Writeback (both in dirty_journal_cache)
-        //   writeback_complete: Writeback→Clean (removes from dirty_journal_cache,
-        //     but data already on disk → ephemeral_disk unchanged)
+        // inv_next for post.cache.inv(); reveal for post.disk.inv()
         Cache::State::inv_next(pre.cache, post.cache, Cache::Label::DiskOps{requests: cache_requests, responses: cache_responses});
         reveal(AsyncDisk::State::next);
         reveal(AsyncDisk::State::next_by);
-        // TODO: needs cross-cache-disk invariant for writeback_complete case
-        assume(pre.ephemeral_disk() =~= post.ephemeral_disk());
+        cache_disk_ops_preserves_i(pre, post, new_cache, new_disk, cache_requests, cache_responses, disk_requests, disk_responses);
     }
 
     #[inductive(cache_internal)]
     fn cache_internal_inductive(pre: Self, post: Self, lbl: Label, new_cache: Cache::State)
     {
         Cache::State::inv_next(pre.cache, post.cache, Cache::Label::Internal{});
-        // Cache internal steps: reserve (adds Reserved, not Dirty/Writeback),
-        // evict (removes Clean, not Dirty/Writeback), noop (nothing changes).
-        // None affect dirty_journal_cache, but SMT can't reason through
-        // Map::new predicates after Cache transition.
-        // Needs: Cache::Step case-split + Map::new extensionality
-        assume(pre.dirty_journal_cache() =~= post.dirty_journal_cache());
+        cache_internal_preserves_i(pre, post, new_cache);
     }
 
     #[inductive(disk_internal)]
     fn disk_internal_inductive(pre: Self, post: Self, lbl: Label, new_disk: AsyncDisk::State)
     {
+        // reveal for post.disk.inv()
         reveal(AsyncDisk::State::next);
         reveal(AsyncDisk::State::next_by);
-        // For process_read: disk content unchanged → persistent_journal_disk unchanged
-        // For process_write: content[addr] updated, but if addr is in lsn_addr_index,
-        //   then addr is in dirty_journal_cache (Writeback), so union_prefer_right
-        //   still picks the dirty value → ephemeral_disk unchanged.
-        // TODO: needs invariant that pending WriteReqs for journal addrs are in dirty cache
-        assume(pre.ephemeral_disk() =~= post.ephemeral_disk());
+        disk_internal_preserves_i(pre, post, new_disk);
     }
 
     #[inductive(initialize)]
@@ -394,6 +379,228 @@ impl JournalCoordinationSystem::State {
                 entries: disk.entries,
             }
         }
+    }
+}
+
+/// Helper: from cache.inv(), lookup_map[addr] gives a Filled slot whose get_addr() == addr.
+/// Derives from cache.inv() => lookup_map == build_lookup_map(), proven via build_lookup_map_ensures.
+proof fn cache_lookup_gets_addr(cache: Cache::State, addr: Address)
+    requires
+        cache.inv(),
+        cache.lookup_map.contains_key(addr),
+    ensures
+        cache.entries.contains_key(cache.lookup_map[addr]),
+        cache.entries[cache.lookup_map[addr]] is Filled,
+        cache.entries[cache.lookup_map[addr]].get_addr() == addr,
+{
+    cache.build_lookup_map_ensures();
+}
+
+/// Helper (converse): a Filled entry's addr is in lookup_map, pointing back to the slot.
+/// Derives from cache.inv() => lookup_map == build_lookup_map(), proven via build_lookup_map_ensures.
+proof fn cache_filled_entry_in_lookup(cache: Cache::State, slot: Slot)
+    requires
+        cache.inv(),
+        cache.entries.contains_key(slot),
+        cache.entries[slot] is Filled,
+    ensures
+        cache.lookup_map.contains_key(cache.entries[slot].get_addr()),
+        cache.lookup_map[cache.entries[slot].get_addr()] == slot,
+{
+    cache.build_lookup_map_ensures();
+}
+
+// ================================================================
+// Public proof lemmas: ephemeral_disk preservation for internal transitions.
+// Called by ConcreteJournalRefinement to prove pre.i() == post.i().
+// ================================================================
+
+/// Cache internal (reserve/evict/noop) preserves ephemeral_disk and JCS.i().
+pub proof fn cache_internal_preserves_i(
+    pre: JournalCoordinationSystem::State,
+    post: JournalCoordinationSystem::State,
+    new_cache: Cache::State,
+)
+    requires
+        pre.inv(),
+        Cache::State::next(pre.cache, new_cache, Cache::Label::Internal{}),
+        post.journal == pre.journal,
+        post.cache == new_cache,
+        post.disk == pre.disk,
+    ensures
+        pre.ephemeral_disk() =~= post.ephemeral_disk(),
+        pre.i() =~= post.i(),
+{
+    Cache::State::inv_next(pre.cache, post.cache, Cache::Label::Internal{});
+    reveal(Cache::State::next);
+    reveal(Cache::State::next_by);
+    let step = choose |step| Cache::State::next_by(pre.cache, post.cache, Cache::Label::Internal{}, step);
+    match step {
+        Cache::Step::reserve(new_slots_mapping) => {
+            assert forall |slot: Slot|
+                pre.cache.entries.contains_key(slot) && pre.cache.entries[slot] is Filled
+            implies post.cache.entries.contains_key(slot)
+                && #[trigger] post.cache.entries[slot] == pre.cache.entries[slot]
+            by { assert(!new_slots_mapping.contains_key(slot)); };
+
+            assert forall |addr: Address|
+                post.dirty_journal_cache().dom().contains(addr)
+            implies #[trigger] pre.dirty_journal_cache().dom().contains(addr)
+            by {
+                cache_lookup_gets_addr(post.cache, addr);
+                let slot = post.cache.lookup_map[addr];
+                cache_filled_entry_in_lookup(pre.cache, slot);
+            };
+            assert(pre.dirty_journal_cache() =~= post.dirty_journal_cache());
+        }
+        Cache::Step::evict(evicted_slots) => {
+            assert forall |slot: Slot|
+                #[trigger] pre.cache.entries.contains_key(slot)
+                && pre.cache.entries[slot] is Filled
+                && (pre.cache.status_map[slot] is Dirty || pre.cache.status_map[slot] is Writeback)
+            implies !evicted_slots.contains(slot)
+                && post.cache.entries[slot] == pre.cache.entries[slot]
+                && post.cache.status_map[slot] == pre.cache.status_map[slot]
+            by {};
+
+            assert forall |addr: Address|
+                pre.cache.lookup_map.contains_key(addr)
+                && pre.cache.entries.contains_key(pre.cache.lookup_map[addr])
+                && pre.cache.entries[pre.cache.lookup_map[addr]] is Filled
+                && (pre.cache.status_map[pre.cache.lookup_map[addr]] is Dirty
+                    || pre.cache.status_map[pre.cache.lookup_map[addr]] is Writeback)
+            implies post.cache.lookup_map.contains_key(addr)
+                && #[trigger] post.cache.lookup_map[addr] == pre.cache.lookup_map[addr]
+            by {
+                cache_lookup_gets_addr(pre.cache, addr);
+                let slot = pre.cache.lookup_map[addr];
+                assert(!evicted_slots.contains(slot));
+                assert(pre.cache.entries[slot].get_addr() == addr);
+                cache_filled_entry_in_lookup(post.cache, slot);
+            };
+
+            assert forall |addr: Address| !pre.cache.lookup_map.contains_key(addr)
+            implies !#[trigger] post.cache.lookup_map.contains_key(addr) by {};
+            assert(pre.dirty_journal_cache() =~= post.dirty_journal_cache());
+        }
+        Cache::Step::noop() => {}
+        _ => {}
+    }
+}
+
+/// Disk internal (process_read/process_write) preserves ephemeral_disk and JCS.i().
+pub proof fn disk_internal_preserves_i(
+    pre: JournalCoordinationSystem::State,
+    post: JournalCoordinationSystem::State,
+    new_disk: AsyncDisk::State,
+)
+    requires
+        pre.inv(),
+        AsyncDisk::State::next(pre.disk, new_disk, AsyncDisk::Label::Internal{}),
+        post.journal == pre.journal,
+        post.cache == pre.cache,
+        post.disk == new_disk,
+    ensures
+        pre.ephemeral_disk() =~= post.ephemeral_disk(),
+        pre.i() =~= post.i(),
+{
+    reveal(AsyncDisk::State::next);
+    reveal(AsyncDisk::State::next_by);
+    let step = choose |step| AsyncDisk::State::next_by(pre.disk, post.disk, AsyncDisk::Label::Internal{}, step);
+    match step {
+        AsyncDisk::Step::process_read(id) => {}
+        AsyncDisk::Step::process_write(id) => {
+            let write_addr = pre.disk.requests[id]->to;
+            // TODO: prove as proper JCS invariant
+            assume(cj_lsn_addr_index(pre.journal).contains_value(write_addr)
+                ==> pre.dirty_journal_cache().dom().contains(write_addr));
+
+            assert forall |addr: Address|
+                pre.ephemeral_disk().entries.dom().contains(addr)
+                <==> #[trigger] post.ephemeral_disk().entries.dom().contains(addr)
+            by {};
+
+            assert forall |addr: Address|
+                pre.ephemeral_disk().entries.dom().contains(addr)
+            implies pre.ephemeral_disk().entries[addr]
+                =~= #[trigger] post.ephemeral_disk().entries[addr]
+            by {};
+
+            assert(pre.ephemeral_disk() =~= post.ephemeral_disk());
+        }
+        _ => {}
+    }
+}
+
+/// Cache disk ops preserves ephemeral_disk and JCS.i().
+pub proof fn cache_disk_ops_preserves_i(
+    pre: JournalCoordinationSystem::State,
+    post: JournalCoordinationSystem::State,
+    new_cache: Cache::State,
+    new_disk: AsyncDisk::State,
+    cache_requests: Set<DiskRequest>,
+    cache_responses: Map<Address, DiskResponse>,
+    disk_requests: Map<ID, DiskRequest>,
+    disk_responses: Map<ID, DiskResponse>,
+)
+    requires
+        pre.inv(),
+        Cache::State::next(pre.cache, new_cache, Cache::Label::DiskOps{requests: cache_requests, responses: cache_responses}),
+        AsyncDisk::State::next(pre.disk, new_disk, AsyncDisk::Label::DiskOps{requests: disk_requests, responses: disk_responses}),
+        post.journal == pre.journal,
+        post.cache == new_cache,
+        post.disk == new_disk,
+    ensures
+        pre.ephemeral_disk() =~= post.ephemeral_disk(),
+        pre.i() =~= post.i(),
+{
+    Cache::State::inv_next(pre.cache, post.cache, Cache::Label::DiskOps{requests: cache_requests, responses: cache_responses});
+    reveal(AsyncDisk::State::next);
+    reveal(AsyncDisk::State::next_by);
+    reveal(Cache::State::next);
+    reveal(Cache::State::next_by);
+
+    let cache_lbl = Cache::Label::DiskOps{requests: cache_requests, responses: cache_responses};
+    let cache_step = choose |step| Cache::State::next_by(pre.cache, post.cache, cache_lbl, step);
+    match cache_step {
+        Cache::Step::load_initiate(new_slots_mapping) => {
+            assert forall |slot: Slot|
+                pre.cache.entries.contains_key(slot) && pre.cache.entries[slot] is Filled
+            implies post.cache.entries.contains_key(slot)
+                && #[trigger] post.cache.entries[slot] == pre.cache.entries[slot]
+            by { assert(!new_slots_mapping.contains_key(slot)); };
+
+            assert forall |addr: Address|
+                post.dirty_journal_cache().dom().contains(addr)
+            implies #[trigger] pre.dirty_journal_cache().dom().contains(addr)
+            by {
+                cache_lookup_gets_addr(post.cache, addr);
+                let slot = post.cache.lookup_map[addr];
+                cache_filled_entry_in_lookup(pre.cache, slot);
+            };
+
+            assert forall |addr: Address|
+                pre.dirty_journal_cache().dom().contains(addr)
+            implies #[trigger] post.dirty_journal_cache().dom().contains(addr)
+            by {
+                cache_lookup_gets_addr(pre.cache, addr);
+                let slot = pre.cache.lookup_map[addr];
+                cache_filled_entry_in_lookup(post.cache, slot);
+            };
+
+            assert(pre.dirty_journal_cache() =~= post.dirty_journal_cache());
+        }
+        Cache::Step::load_complete() => {
+            assert(pre.dirty_journal_cache() =~= post.dirty_journal_cache());
+        }
+        Cache::Step::writeback_initiate() => {
+            assert(pre.dirty_journal_cache() =~= post.dirty_journal_cache());
+        }
+        Cache::Step::writeback_complete() => {
+            // TODO: prove via cross-component invariant
+            assume(pre.ephemeral_disk() =~= post.ephemeral_disk());
+        }
+        _ => {}
     }
 }
 
