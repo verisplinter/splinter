@@ -1,8 +1,6 @@
 # Splinter Verification Status
 
-## Current State: Step 11c — CJR assumes reduced from 13 to 10
-
-### Refinement Chain (fully compositional)
+## Refinement Chain (fully compositional)
 ```
 SystemModel<ConcreteProgramModel>
   --[BracketRefinement]--> SystemModelTwo
@@ -16,64 +14,48 @@ And ConcreteJournal.jcs_view():
   --[JournalCoordinationRefinement]--> LikesJournal
 ```
 
-### Step 11c: JCS public lemmas + CJR internal ops proven
+## Where to Pick Up
 
-**JCS public proof lemmas** (in JournalCoordinationSystem_v.rs, outside state_machine!):
-- `cache_internal_preserves_i`: FULLY PROVEN — reserve/evict/noop preserve dirty_journal_cache
-- `disk_internal_preserves_i`: 1 targeted assume — process_write needs invariant
-  "write addrs in lsn_addr_index are in dirty_journal_cache"
-- `cache_disk_ops_preserves_i`: 1 targeted assume in writeback_complete — needs invariant
-  "data already landed on disk before Writeback→Clean transition"
+The most productive next targets, in suggested order:
 
-**CJR proofs using JCS lemmas** (3 assume(pre.i()==post.i()) eliminated):
-- `internal_cache_refines`: proven via cache_internal_preserves_i
-- `internal_disk_refines`: proven via disk_internal_preserves_i
-- `internal_cache_disk_ops_refines`: proven via cache_disk_ops_preserves_i
-- Pattern: assert(pre.jcs_view().inv()) → call JCS lemma → assert(pre.full_journal() == post.full_journal())
+1. **internal_marshal_refines** (CJR, 1 assume): Marshal moves data from unmarshalled_tail
+   to on-disk page via cache. `full_journal() = on-disk decoded ++ tail` should be unchanged.
+   This is a JCS-level property: marshal doesn't change `jcs_view().i()`. Unlike the other
+   internal ops, marshal updates *both* journal and cache (new page in cache, shorter tail in
+   journal). A new JCS public lemma `marshal_preserves_i` is likely needed. Look at the
+   existing pattern in `cache_internal_preserves_i` etc.
 
-**Fully proved (0 assumes):**
-- `query_lsn_persistence_refines`
-- `query_end_lsn_refines` (via full_journal_wf + full_journal_seq_end)
-- `put_refines` (via assert_maps_equal! for concat assoc + discard_recent stability)
-- `internal_cache_refines` (via JCS cache_internal_preserves_i)
-- `internal_disk_refines` (via JCS disk_internal_preserves_i)
-- `internal_cache_disk_ops_refines` (via JCS cache_disk_ops_preserves_i)
+2. **commit_start_refines / commit_complete_refines** (CJR, 2 assumes): These correspond to
+   ACAJ freeze/discard_old steps. commit_start freezes a journal snapshot; commit_complete
+   discards old entries. These are real refinement steps (not stutter), so the proof needs to
+   construct the ACAJ witness step from the CJ transition.
 
-**Remaining assumes (10 total):**
-- `read_for_recovery_refines`: assume(includes_subseq) — needs cross-layer JCS→PJ chain
-- `internal_refines`: assume(false) Unknown case — architectural
-- `internal_marshal_refines`: assume(pre.i()==post.i()) — marshal changes both journal+cache
-- `internal_cache_disk_ops_refines`: assume(false) Unknown ephemeral case — architectural
-- `internal_cache_refines`: assume(false) Unknown ephemeral case — architectural
-- `internal_disk_refines`: assume(false) Unknown ephemeral case — architectural
-- `commit_start_refines`: assume(false) — freeze reasoning
-- `commit_complete_refines`: assume(false) — discard_old reasoning
-- `crash_refines`: assume(false) — crash semantics
-- `load_ephemeral_refines`: assume(false) — recovery
+3. **JCS targeted assumes** (2 assumes): These underpin the CJR internal ops proofs. They need
+   cross-component invariants added to JCS:
+   - `disk_internal_preserves_i` process_write: "WriteReq addrs for journal pages are in
+     dirty_journal_cache (Writeback status)" — ensures ephemeral_disk stable when disk lands writes
+   - `cache_disk_ops_preserves_i` writeback_complete: "Writeback entries' data matches disk.content
+     at that addr" — ensures removing from dirty cache is safe because disk already has the data
 
-**Blocking analysis:**
-1. **internal_marshal pre.i()==post.i() (1 assume)**: Marshal moves data from unmarshalled_tail
-   to on-disk via cache. full_journal() = on-disk decoded ++ tail should be unchanged, but
-   proof needs JCS-level reasoning about how marshal preserves the composed interpretation.
-2. **Unknown-ephemeral cases (4 assume(false))**: ACAJ InternalLabel requires Known ephemeral.
-   CJ internal transitions don't guard on journal.status is Some. Options:
-   (a) Strengthen CJ guards, (b) Prove unreachability, (c) Add ACAJ stutter step.
-3. **read_for_recovery includes_subseq (1 assume)**: Needs to connect CachedJournal
-   read_for_recovery (depth-based disk reads) through JCS→LJ→PJ chain to invoke
-   PagedJournal::State::read_for_recovery_refines.
-4. **commit_start/complete (2 assume(false))**: freeze_for_commit and discard_old at CJ
-   level, need to show correspondence with ACAJ commit steps.
-5. **crash (1 assume(false))**: CJ.i() uses arbitrary() for persistent when journal.status
-   is None. Needs interpretation function fix.
-6. **load_ephemeral (1 assume(false))**: Blocked by same interpretation function issue as crash.
+4. **Unknown-ephemeral cases** (4 assume(false)): internal_refines + 3 internal_*_refines else
+   branches. ACAJ InternalLabel requires Known ephemeral, but CJ internal transitions don't guard
+   on `journal.status is Some`. Options: (a) strengthen CJ guards to require status is Some,
+   (b) prove unreachability via invariant, (c) add ACAJ stutter step. This is a design decision.
 
-### Key Technical Insight: CJ.i() Interpretation Gap
-The CJ interpretation function returns `persistent: arbitrary()` when `journal.status is None`
-(crash state). This makes crash_refines and load_ephemeral_refines fundamentally unblocked only
-when the interpretation is fixed to compute persistent from disk content (the superblock's
-journal extent on persistent_journal_disk). This is a design fix needed in ConcreteJournal_v.rs.
+5. **read_for_recovery_refines** (1 assume): Needs cross-layer chain connecting CachedJournal
+   disk reads through JCS→LJ→PJ to invoke PagedJournal::State::read_for_recovery_refines.
 
-### Module Verification Counts
+6. **crash_refines + load_ephemeral_refines** (2 assumes): BLOCKED by CJ.i() interpretation gap.
+   CJ.i() returns `persistent: arbitrary()` when `journal.status is None`. Fix needed in
+   ConcreteJournal_v.rs to compute persistent from disk content (superblock's journal extent on
+   persistent_journal_disk).
+
+## Current verify.sh Target
+
+`--verify-module implementation::ConcreteJournalRefinement_v`
+
+## Module Verification Counts
+
 | Module | Verified | Errors |
 |--------|----------|--------|
 | Implementation_v | 38 | 0 |
@@ -81,40 +63,60 @@ journal extent on persistent_journal_disk). This is a design fix needed in Concr
 | ModelRefinementTwo_v | 7 | 0 |
 | BracketRefinement_v | 2 | 0 |
 | ConcreteJournalRefinement_v | 16 | 0 |
+| JournalCoordinationSystem_v | 16 | 0 |
 
-### Remaining assumes in ModelRefinementTwo_v.rs
-These are all **pre-existing** proof gaps (present in original ModelRefinement_v.rs):
-- `program_execute / Put`: assume(false) — Put extends journal, appends a new version
-- `program_execute / non-NoopInput`: assume(MapSpec::State::next(...))
-- `program_disk / InitiateRecovery|SuperblockRecovery`: assume(post.inv())
-- `program_disk / CacheIO*`: assume(ipre==ipost), assume(post.inv())
-- `program_disk / ExecuteSyncBegin`: assume(false)
-- `program_disk / ExecuteSyncEnd`: assume(false)
-- `program_internal / JournalRecovery|MapRecovery`: assume(post.inv())
-- `program_internal / RecoveryComplete`: assume(false)
-- `disk_internal / sb_landed`: assume(false) — maps to SyncOp
-- `disk_internal / non-sb_landed client_ready`: assume(ipre==ipost)
-- `disk_internal / non-sb_landed RecoveryComplete`: assume(ipre==ipost)
-- `disk_internal`: assume(post.inv())
-- `crash`: assume(false)
-- `init_refines` (ModelRefinement_v adapter): assume(false)
+## CJR Proof Status (ConcreteJournalRefinement_v.rs)
 
-### Other proof gaps (lower layers)
-- JournalCoordinationSystem_v:
-  - Inductive proofs delegate to public lemmas (cache_internal_preserves_i, etc.)
-  - `cache_internal_preserves_i`: FULLY PROVEN (no assumes)
-  - `disk_internal_preserves_i`: 1 targeted assume — needs invariant "WriteReq addrs for journal
-    pages are in dirty_journal_cache" (cross-component: cache status ↔ disk requests)
-  - `cache_disk_ops_preserves_i`: 1 targeted assume in writeback_complete case — needs invariant
-    "Writeback entries with no pending WriteReq have matching disk.content" (cross-component:
-    process_write already flushed data before response delivered to cache)
-  - `initialize`: assume(post.valid_journal_structure()) — needs recovery protocol
-  - Helper lemmas `cache_lookup_gets_addr` and `cache_filled_entry_in_lookup` proven via
-    `Cache::State::build_lookup_map_ensures()` (no assumes)
-- JournalCoordinationRefinement_v: 4 assume(false) stubs
+**Fully proved (0 assumes):**
+- `query_lsn_persistence_refines`
+- `query_end_lsn_refines` (via full_journal_wf + full_journal_seq_end)
+- `put_refines` (via assert_maps_equal! for concat assoc + discard_recent stability)
+- `internal_cache_refines` (via JCS cache_internal_preserves_i)*
+- `internal_disk_refines` (via JCS disk_internal_preserves_i)*
+- `internal_cache_disk_ops_refines` (via JCS cache_disk_ops_preserves_i)*
+
+*These 3 are proved in CJR but depend on 2 targeted assumes in the JCS lemmas they call.
+
+**Remaining assumes (10 total):**
+- `read_for_recovery_refines`: assume(includes_subseq)
+- `internal_refines`: assume(false) — Unknown ephemeral case
+- `internal_marshal_refines`: assume(pre.i()==post.i())
+- `internal_cache_disk_ops_refines`: assume(false) — Unknown ephemeral case
+- `internal_cache_refines`: assume(false) — Unknown ephemeral case
+- `internal_disk_refines`: assume(false) — Unknown ephemeral case
+- `commit_start_refines`: assume(false)
+- `commit_complete_refines`: assume(false)
+- `crash_refines`: assume(false) — blocked by CJ.i() interpretation gap
+- `load_ephemeral_refines`: assume(false) — blocked by CJ.i() interpretation gap
+
+## JCS Proof Status (JournalCoordinationSystem_v.rs)
+
+Public proof lemmas (outside state_machine!, callable from CJR):
+- `cache_internal_preserves_i`: FULLY PROVEN (no assumes)
+- `disk_internal_preserves_i`: 1 targeted assume in process_write case
+- `cache_disk_ops_preserves_i`: 1 targeted assume in writeback_complete case
+
+Inductive proofs (inside state_machine!) delegate to the public lemmas above.
+
+Other:
+- `initialize`: assume(post.valid_journal_structure()) — needs recovery protocol
+- Helper lemmas `cache_lookup_gets_addr` and `cache_filled_entry_in_lookup` proven
+  via `Cache::State::build_lookup_map_ensures()` (no assumes)
+
+Proof pattern for CJR calling JCS lemmas:
+```
+assert(pre.jcs_view().inv());  // derives from CJ.inv() + journal.status is Some
+cache_internal_preserves_i(pre.jcs_view(), post.jcs_view(), new_cache);
+assert(pre.full_journal() == post.full_journal());  // chains jcs_view().i() =~= through
+```
+
+## Other Proof Gaps (lower priority)
+
+- JournalCoordinationRefinement_v: 4 assume(false) + 1 assume(lsns.finite())
 - Cache_v: 9 assume(false) stubs (Cache::State::inv_next uses assume(false))
+- ModelRefinementTwo_v: ~14 pre-existing assumes (present in original ModelRefinement_v.rs)
 
-### Key Design Decisions
+## Key Design Decisions
 1. ConcreteJournal as `state_machine!` — gives real `next(pre, post, lbl)` predicate
 2. Active transitions use JCS-style sub-component steps (not JCS::State::next)
 3. crash/load_ephemeral handled at ConcreteJournal level (not through JCS)

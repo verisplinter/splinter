@@ -77,7 +77,7 @@ digraph proof_hierarchy {
 
     // ConcreteJournal -> ACAJ (middle — uses journal chain)
     SM2_PersistJSE -> CTAM_JCrash [
-        label=<  ConcreteJournalRefinement_v.rs<BR/>  <FONT COLOR="red">(13 assume stubs)</FONT>>,
+        label=<  ConcreteJournalRefinement_v.rs<BR/>  <FONT COLOR="red">(10 assume stubs)</FONT>>,
         style=bold, color="#996600",
         ltail=cluster_ConcJ, lhead=cluster_ACAJ];
 
