@@ -211,6 +211,10 @@ impl AtomicState {
 
     pub open spec fn execute_query(pre: Self, post: Self, req: Request, reply: Reply, end_lsn: LSN, key: Key, value: Value) -> bool
     {
+        &&& req.input is QueryInput
+        &&& reply.output is QueryOutput
+        &&& key == req.input.arrow_QueryInput_key()
+        &&& value == reply.output.arrow_QueryOutput_value()
         &&& AbstractCrashAwareMap::State::next(pre.store, post.store, AbstractCrashAwareMap::Label::QueryLabel{end_lsn, key, value})
         &&& post == Self{
                 store: post.store,
@@ -222,6 +226,11 @@ impl AtomicState {
     {
         &&& pre.client_ready()
         &&& valid_request_reply_pair(req, reply)
+        &&& match req.input {
+            Input::NoopInput{} => event is NoOp,
+            Input::QueryInput{..} => event is Query,
+            Input::PutInput{..} => event is Put,
+        }
         &&& match event {
             ProgramEvent::NoOp{} => Self::execute_noop(pre, post, req, reply),
             ProgramEvent::Put{puts} => Self::execute_put(pre, post, req, reply, puts),
