@@ -15,7 +15,7 @@ use crate::journal::LinkedJournal_v::{DiskView, TruncatedJournal};
 use crate::implementation::AtomicState_v::{AtomicState, DiskEvent, InternalEvent, ProgramEvent, raw_page_to_record, to_map_label, to_journal_reads};
 use crate::implementation::JournalImpl_v::journal_disk_inv;
 use crate::implementation::Cache_v::{Cache, Slot};
-use crate::implementation::CachedJournal_v::build_lsn_addr_index_from_reads;
+use crate::implementation::CachedJournal_v::{CachedJournal, build_lsn_addr_index_from_reads};
 use crate::allocation_layer::LikesJournal_v::{LikesJournal, LsnAddrIndex};
 use crate::implementation::JournalCoordinationSystem_v::{JournalCoordinationSystem, cj_boundary_lsn, cj_freshest_rec, cj_lsn_addr_index, cj_unmarshalled_tail};
 use crate::implementation::ConcreteProgramModel_v::ConcreteProgramModel;
@@ -819,19 +819,139 @@ pub proof fn next_refines_ctam(pre: SystemModelTwo::State, post: SystemModelTwo:
                     assert(!pre.client_ready());
                     assert(!post.client_ready());
                 },
-                DiskEvent::CacheIOBegin{..} | DiskEvent::CacheIOEnd{..} => {
+                DiskEvent::CacheIOBegin{..} => {
                     if pre.client_ready() {
                         reveal(SystemModelTwo::State::i_ephemeral);
-                        assume(ipre == ipost);
+                        assert(pre.requests == post.requests);
+                        assert(pre.replies == post.replies);
+                        assert(pre.sync_req_map == post.sync_req_map);
+                        assert(ipre.async_ephemeral == ipost.async_ephemeral);
+                        assert(ipre.sync_requests == ipost.sync_requests);
+                        assume(pre.i_journal() == post.i_journal()); // TODO: prove cache I/O preserves interpreted journal
+                        assert(pre.recovery_state == post.recovery_state);
+                        assert(pre.concrete_journal.journal == post.concrete_journal.journal);
+                        assert(post.client_ready());
+                        assert(pre.concrete_journal.in_flight == post.concrete_journal.in_flight);
+                        assert(ipre.versions == ipost.versions);
+                        assert(ipre == ipost);
                     } else {
                         reveal(SystemModelTwo::State::i_persistent);
                     }
                 },
-                DiskEvent::ExecuteSyncBegin{..} => {
-                    assume(ipre == ipost); // TODO: prove FreezeForCommit is CTAM-noop
+                DiskEvent::CacheIOEnd{..} => {
+                    if pre.client_ready() {
+                        reveal(SystemModelTwo::State::i_ephemeral);
+                        assert(pre.requests == post.requests);
+                        assert(pre.replies == post.replies);
+                        assert(pre.sync_req_map == post.sync_req_map);
+                        assert(ipre.async_ephemeral == ipost.async_ephemeral);
+                        assert(ipre.sync_requests == ipost.sync_requests);
+                        assume(pre.i_journal() == post.i_journal()); // TODO: prove cache I/O preserves interpreted journal
+                        if pre.concrete_journal.in_flight is Some {
+                            let sb_req_id = pre.concrete_journal.in_flight.unwrap().req_id;
+                            assert(pre.concrete_journal.in_flight == post.concrete_journal.in_flight);
+                            assume(
+                                pre.concrete_journal.disk.responses.contains_key(sb_req_id)
+                                == post.concrete_journal.disk.responses.contains_key(sb_req_id)
+                            ); // TODO: show cache I/O end does not toggle SB response presence
+                        }
+                        assert(pre.recovery_state == post.recovery_state);
+                        assert(pre.concrete_journal.journal == post.concrete_journal.journal);
+                        assert(post.client_ready());
+                        assert(ipre.versions == ipost.versions);
+                        assert(ipre == ipost);
+                    } else {
+                        reveal(SystemModelTwo::State::i_persistent);
+                    }
                 },
-                DiskEvent::ExecuteSyncEnd{..} => {
-                    assume(ipre == ipost); // TODO: prove commit_complete is CTAM-noop here
+                DiskEvent::ExecuteSyncBegin{req_id, req, frozen_journal, frozen_seq_end} => {
+                    assert(pre.requests == post.requests);
+                    assert(pre.replies == post.replies);
+                    assert(pre.sync_req_map == post.sync_req_map);
+                    assert(pre.client_ready());
+                    assert(pre.recovery_state == post.recovery_state);
+
+                    assert(AtomicState::execute_sync_begin(
+                        pre.to_atomic(),
+                        post.to_atomic(),
+                        req_id, req, lbl->info.reqs, lbl->info.resps,
+                        frozen_journal, frozen_seq_end
+                    ));
+
+                    let cj_lbl = CachedJournal::Label::FreezeForCommit{
+                        frozen: frozen_journal,
+                        frozen_seq_end: frozen_seq_end,
+                    };
+                    reveal(CachedJournal::State::next);
+                    reveal(CachedJournal::State::next_by);
+                    assert(CachedJournal::State::next(pre.concrete_journal.journal, post.concrete_journal.journal, cj_lbl));
+                    let cj_step = choose |cj_step|
+                        CachedJournal::State::next_by(pre.concrete_journal.journal, post.concrete_journal.journal, cj_lbl, cj_step);
+                    match cj_step {
+                        CachedJournal::Step::freeze_for_commit(depth) => {
+                            assert(pre.concrete_journal.journal == post.concrete_journal.journal);
+                        },
+                        _ => {
+                            assert(false);
+                        },
+                    }
+                    assert(post.concrete_journal.journal.status is Some);
+                    assert(post.client_ready());
+                    assert(ipre.async_ephemeral == ipost.async_ephemeral);
+                    assert(ipre.sync_requests == ipost.sync_requests);
+
+                    let map_lbl = AbstractCrashAwareMap::Label::CommitStartLabel{
+                        new_boundary_lsn: frozen_journal.boundary_lsn,
+                    };
+                    reveal(AbstractCrashAwareMap::State::next);
+                    reveal(AbstractCrashAwareMap::State::next_by);
+                    assert(AbstractCrashAwareMap::State::next(pre.store, post.store, map_lbl));
+                    let map_step = choose |map_step|
+                        AbstractCrashAwareMap::State::next_by(pre.store, post.store, map_lbl, map_step);
+                    match map_step {
+                        AbstractCrashAwareMap::Step::commit_start() => {
+                            assert(pre.store == post.store);
+                        },
+                        _ => {
+                            assert(false);
+                        },
+                    }
+                    assert(pre.store == post.store);
+                    assert(pre.concrete_journal.in_flight is None);
+                    assert(post.concrete_journal.in_flight is Some);
+                    assert(post.concrete_journal.in_flight.unwrap().req_id == req_id);
+                    assume(!post.concrete_journal.disk.responses.contains_key(req_id));
+                    assert(ipre.versions == ipost.versions);
+                    assert(ipre == ipost);
+                },
+                DiskEvent::ExecuteSyncEnd{discard_addrs} => {
+                    assert(pre.requests == post.requests);
+                    assert(pre.replies == post.replies);
+                    assert(pre.sync_req_map == post.sync_req_map);
+                    assert(pre.client_ready());
+                    assert(pre.recovery_state == post.recovery_state);
+
+                    assert(AtomicState::execute_sync_end(
+                        pre.to_atomic(),
+                        post.to_atomic(),
+                        lbl->info.reqs, lbl->info.resps,
+                        discard_addrs
+                    ));
+
+                    let cj_lbl = CachedJournal::Label::DiscardOld{
+                        start_lsn: post.to_atomic().persistent_map().seq_end,
+                        require_end: post.to_atomic().ephemeral_map().seq_end,
+                        discard_addrs,
+                    };
+                    reveal(CachedJournal::State::next);
+                    reveal(CachedJournal::State::next_by);
+                    assert(CachedJournal::State::next(pre.concrete_journal.journal, post.concrete_journal.journal, cj_lbl));
+                    assert(post.concrete_journal.journal.status is Some);
+                    assert(post.client_ready());
+                    assert(ipre.async_ephemeral == ipost.async_ephemeral);
+                    assert(ipre.sync_requests == ipost.sync_requests);
+                    assume(ipre.versions == ipost.versions); // TODO: use inflight-landed versions relation for commit_complete
+                    assert(ipre == ipost);
                 },
             }
             assume(post.inv());
@@ -863,7 +983,15 @@ pub proof fn next_refines_ctam(pre: SystemModelTwo::State, post: SystemModelTwo:
                 },
                 InternalEvent::AckJournalFlush{..} => {
                     assume(post.inv());
-                    assume(ipre == ipost); // TODO: journal flush ack should be CTAM-noop
+                    reveal(SystemModelTwo::State::i_ephemeral);
+                    assume(pre.i_journal() == post.i_journal()); // TODO: prove JournalFlush leaves interpreted journal unchanged
+                    assert(pre.store == post.store);
+                    assert(pre.sync_req_map == post.sync_req_map);
+                    assert(pre.requests == post.requests);
+                    assert(pre.replies == post.replies);
+                    assert(pre.concrete_journal.in_flight == post.concrete_journal.in_flight);
+                    assert(pre.concrete_journal.persistent_journal_seq_end == post.concrete_journal.persistent_journal_seq_end);
+                    assert(ipre == ipost);
                 },
                 InternalEvent::JournalRecovery{..} | InternalEvent::MapRecovery{..} => {
                     // During recovery: !client_ready for both pre and post.
