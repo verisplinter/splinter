@@ -95,11 +95,6 @@ impl Marshal for MessageFormat {
     }
 
     exec fn exec_marshall(&self, value: &Self::U, data: &mut Vec<u8>, start: usize) -> (end: usize) {
-        assert(self.valid());
-        assert(value.wf());
-        assert(self.marshallable(value.parsedv()));
-        assert(self.impl_marshallable(*value));
-        assert(start as int + self.spec_size(value.parsedv()) as int <= old(data).len());
         match value {
             Message::Define { value: Value(v) } => {
                 let end = self.inner.exec_marshall(v, data, start);
@@ -112,7 +107,7 @@ impl Marshal for MessageFormat {
                     assert(Parsedview::<int>::parsedv(v) == (*v as int));
                     assert(self.inner.parse(subr) == (*v as int));
                     assert(self.parse(subr) == Message::Define { value: Value(self.inner.parse(subr) as u64) });
-                    assert(self.parse(subr) == value.parsedv());
+                    assert(self.parse(subr) == value.parsedv()); // trigger
                 }
                 end
             }
@@ -121,8 +116,6 @@ impl Marshal for MessageFormat {
     }
 
     exec fn try_parse(&self, slice: &Slice, data: &Vec<u8>) -> (ov: Option<Self::U>) {
-        assert(self.valid());
-        assert(slice@.valid(data@));
         match self.inner.try_parse(slice, data) {
             Some(v) => {
                 proof {
@@ -134,7 +127,7 @@ impl Marshal for MessageFormat {
                     assert(self.parse(idata) == Message::Define { value: Value(self.inner.parse(idata) as u64) });
                     let result = Message::Define { value: Value(v) };
                     assert(result.parsedv() == result);
-                    assert(result.wf());
+                    assert(result.wf()); // trigger
                 }
                 Some(Message::Define { value: Value(v) })
             }

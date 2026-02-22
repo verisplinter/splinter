@@ -325,12 +325,6 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
     exec fn exec_set(&self, dslice: &Slice, data: &mut Vec<u8>, idx: usize, value: &EltFormat::U)
     ensures idx < self.length(dslice@.i(data@)) ==> self.untampered_bytes(dslice@, old(data)@, data@)
     {
-        assert(self.seq_valid());
-        assert(value.wf());
-        assert(dslice@.valid(old(data)@));
-        assert(self.elt_marshallable(value.parsedv()));
-        assert(self.impl_elt_marshallable(*value));
-        assert(self.settable(dslice@.i(old(data)@), idx as int, value.parsedv()));
         proof { self.index_bounds_facts(idx as int); }
         let elt_start = dslice.start + self.exec_size_of_length_field() + idx * self.eltf.exec_uniform_size();
         let Ghost(elt_end) = self.eltf.exec_marshall(value, data, elt_start);
@@ -368,8 +362,7 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
                 // assert( self.untampered_bytes(dslice@, old(data)@, data@) );
             }
         }
-        assert(dslice@.agree_beyond_slice(old(data)@, data@));
-        assert(self.sets(dslice@.i(old(data)@), idx as int, value.parsedv(), dslice@.i(data@)));
+        assert(self.sets(dslice@.i(old(data)@), idx as int, value.parsedv(), dslice@.i(data@))); // trigger
     }
 
     /////////////////////////////////////////////////////////////////////////
@@ -392,9 +385,6 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
     exec fn resize(&self, dslice: &Slice, data: &mut Vec<u8>, newlen: usize)
     ensures self.untampered_bytes(dslice@, old(data)@, data@)
     {
-        assert(self.seq_valid());
-        assert(dslice@.valid(old(data)@));
-        assert(self.resizable(dslice@.i(old(data)@), newlen as int));
         let length_val = LenType::from_usize(newlen);
         proof { length_val.always_wf(); }
         let length_end = self.lenf.exec_marshall(&length_val, data, dslice.start);
@@ -425,9 +415,7 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
             // goal
 //             assert( self.resizes(dslice@.i(old(data)@), newlen as int, dslice@.i(data@)) );
         }
-        assert(data@.len() == old(data)@.len());
-        assert(dslice@.agree_beyond_slice(old(data)@, data@));
-        assert(self.resizes(dslice@.i(old(data)@), newlen as int, dslice@.i(data@)));
+        assert(self.resizes(dslice@.i(old(data)@), newlen as int, dslice@.i(data@))); // trigger
     }
 
     /////////////////////////////////////////////////////////////////////////
@@ -474,13 +462,6 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
     exec fn exec_append(&self, dslice: &Slice, data: &mut Vec<u8>, value: &EltFormat::U)
     ensures self.untampered_bytes(dslice@, old(data)@, data@)
     {
-        assert(self.seq_valid());
-        assert(value.wf());
-        assert(dslice@.valid(old(data)@));
-        assert(self.well_formed(dslice@.i(old(data)@)));
-        assert(self.elt_marshallable(value.parsedv()));
-        assert(self.impl_elt_marshallable(*value));
-        assert(self.appendable(dslice@.i(old(data)@), value.parsedv()));
         let ghost sliced_begin = dslice@.i(data@);
         let len = self.exec_length(dslice, data);
         self.resize(dslice, data, len + 1);
@@ -493,9 +474,7 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
             assert( self.preserves_entry(dslice@.i(old(data)@), i, sliced_middle) );   // trigger
             assert( self.preserves_entry(sliced_middle, i, dslice@.i(data@)) );        // trigger
         }
-        assert(data@.len() == old(data)@.len());
-        assert(dslice@.agree_beyond_slice(old(data)@, data@));
-        assert(self.appends(dslice@.i(old(data)@), value.parsedv(), dslice@.i(data@)));
+        assert(self.appends(dslice@.i(old(data)@), value.parsedv(), dslice@.i(data@))); // trigger
     }
 }
 
@@ -576,11 +555,9 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
 
     exec fn try_parse(&self, dslice: &Slice, data: &Vec<u8>) -> (ovalue: Option<Vec<EltFormat::U>>)
     {
-        assert(self.valid());
-        assert(dslice@.valid(data@));
         match self.try_length(dslice, data) {
             None => {
-                assert(!self.parsable(dslice@.i(data@)));
+                assert(!self.parsable(dslice@.i(data@))); // trigger
                 return None;
             },
             Some(len) => {

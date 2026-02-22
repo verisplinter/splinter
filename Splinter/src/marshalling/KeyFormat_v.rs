@@ -88,11 +88,6 @@ impl Marshal for KeyFormat {
     }
 
     exec fn exec_marshall(&self, value: &Self::U, data: &mut Vec<u8>, start: usize) -> (end: usize) {
-        assert(self.valid());
-        assert(value.wf());
-        assert(self.marshallable(value.parsedv()));
-        assert(self.impl_marshallable(*value));
-        assert(start as int + self.spec_size(value.parsedv()) as int <= old(data).len());
         let end = self.inner.exec_marshall(&value.0, data, start);
         proof {
             let subr = data@.subrange(start as int, end as int);
@@ -105,7 +100,7 @@ impl Marshal for KeyFormat {
             assert(Parsedview::<int>::parsedv(&value.0) == (value.0 as int));
             assert(self.inner.parse(subr) == (value.0 as int));
             assert(self.parse(subr) == Key(self.inner.parse(subr) as u64));
-            assert(self.parse(subr) == value.parsedv());
+            assert(self.parse(subr) == value.parsedv()); // trigger
         }
         end
     }
