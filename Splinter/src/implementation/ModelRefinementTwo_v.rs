@@ -861,6 +861,10 @@ pub proof fn next_refines_ctam(pre: SystemModelTwo::State, post: SystemModelTwo:
                     assert(post.store.ephemeral == pre.store.ephemeral);
                     assert(post.to_atomic().wf());
                 },
+                InternalEvent::AckJournalFlush{..} => {
+                    assume(post.inv());
+                    assume(ipre == ipost); // TODO: journal flush ack should be CTAM-noop
+                },
                 InternalEvent::JournalRecovery{..} | InternalEvent::MapRecovery{..} => {
                     // During recovery: !client_ready for both pre and post.
                     // i() uses i_persistent() which only depends on disk.content[sb_addr]

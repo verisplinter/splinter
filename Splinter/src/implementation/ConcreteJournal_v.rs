@@ -183,8 +183,7 @@ state_machine!{ ConcreteJournal {
         let frozen_seq_end = if ptr is Some { to_journal_reads(reads)[ptr.unwrap()].message_seq.seq_end } else { frozen.boundary_lsn };
 
         let journal_lbl = CachedJournal::Label::FreezeForCommit{
-            frozen, frozen_seq_end, frozen_domain,
-            reads: to_journal_reads(reads)};
+            frozen, frozen_seq_end};
         require CachedJournal::State::next(pre.journal, pre.journal, journal_lbl);
 
         // Record in_flight with the frozen journal version

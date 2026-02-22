@@ -107,8 +107,7 @@ state_machine!{ JournalCoordinationSystem{
         let frozen_seq_end = if ptr is Some { to_journal_reads(reads)[ptr.unwrap()].message_seq.seq_end } else { lbl->frozen.boundary_lsn };
 
         let journal_lbl = CachedJournal::Label::FreezeForCommit{
-            frozen: lbl->frozen, frozen_seq_end, frozen_domain,
-            reads: to_journal_reads(reads)};
+            frozen: lbl->frozen, frozen_seq_end};
         require CachedJournal::State::next(pre.journal, pre.journal, journal_lbl);
     }}
 

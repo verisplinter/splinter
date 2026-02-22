@@ -445,7 +445,7 @@ impl AtomicState {
 
         // superblock writes
         let inflight_info = InflightInfo{
-            new_boundary_lsn: frozen_journal.boundary_lsn,
+            new_boundary_lsn: frozen.boundary_lsn,
             journal_version: frozen_seq_end,
             req_id
         };

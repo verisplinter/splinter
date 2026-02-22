@@ -237,7 +237,7 @@ impl JournalCoordinationSystem::State {
         let frozen_reads = to_journal_reads(reads);
         let frozen_ptr = lbl->frozen.freshest_rec;
         let frozen_seq_end = if frozen_ptr is Some { frozen_reads[frozen_ptr.unwrap()].message_seq.seq_end } else { lbl->frozen.boundary_lsn };
-        let journal_lbl = CachedJournal::Label::FreezeForCommit{frozen: lbl->frozen, frozen_seq_end, frozen_domain, reads: frozen_reads};
+        let journal_lbl = CachedJournal::Label::FreezeForCommit{frozen: lbl->frozen, frozen_seq_end};
         let journal_step = choose |journal_step| CachedJournal::State::next_by(self.journal, post.journal, journal_lbl, journal_step);
         let depth = journal_step.arrow_freeze_for_commit_0();
 
