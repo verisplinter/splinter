@@ -6,9 +6,13 @@ use vstd::prelude::*;
 
 use vstd::prelude::*;
 use crate::disk::GenericDisk_v::Pointer;
+use crate::abstract_system::StampedMap_v::LSN;
 use crate::journal::LinkedJournal_v;
 use crate::journal::LinkedJournal_v::{LinkedJournal, TruncatedJournal};
-use crate::allocation_layer::LikesJournal_v::{LikesJournal, can_crop_index, minmin, next_index, pointer_after_crop_index};
+use crate::allocation_layer::LikesJournal_v::{
+    LikesJournal, can_crop_index, minmin, next_index, pointer_after_crop_index,
+    largest_lsn_plus_one, maxmax,
+};
 
 verus!{
 
@@ -106,6 +110,108 @@ impl LikesJournal::State {
         }
     }
 
+    proof fn cropped_ptr_in_index_values(self, root: Pointer, depth: nat)
+        requires
+            self.inv(),
+            can_crop_index(self.lsn_addr_index, self.tj().disk_view.boundary_lsn, root, depth),
+            root is Some ==> self.lsn_addr_index.values().contains(root.unwrap()),
+        ensures
+            pointer_after_crop_index(self.lsn_addr_index, self.tj().disk_view.boundary_lsn, root, depth) is Some
+                ==> self.lsn_addr_index.values().contains(
+                    pointer_after_crop_index(self.lsn_addr_index, self.tj().disk_view.boundary_lsn, root, depth).unwrap()),
+        decreases depth
+    {
+        if depth == 0 {
+            if pointer_after_crop_index(self.lsn_addr_index, self.tj().disk_view.boundary_lsn, root, depth) is Some {
+                assert(root is Some);
+                assert(self.lsn_addr_index.values().contains(root.unwrap()));
+            }
+        } else {
+            assert(root is Some);
+            self.next_index_refines(root);
+            let next = next_index(self.lsn_addr_index, self.tj().disk_view.boundary_lsn, root);
+            assert(next is Some ==> self.lsn_addr_index.values().contains(next.unwrap()));
+            self.cropped_ptr_in_index_values(next, (depth - 1) as nat);
+        }
+    }
+
+    proof fn largest_lsn_plus_one_matches_seq_end(self, ptr: Pointer)
+        requires
+            self.inv(),
+            ptr is Some,
+            self.lsn_addr_index.values().contains(ptr.unwrap()),
+        ensures
+            largest_lsn_plus_one(self.lsn_addr_index, ptr)
+                == self.tj().disk_view.entries[ptr.unwrap()].message_seq.seq_end,
+    {
+        let tj = self.tj();
+        let index = self.lsn_addr_index;
+        let addr = ptr.unwrap();
+        let bdy = tj.disk_view.boundary_lsn;
+        let msgs = tj.disk_view.entries[addr].message_seq;
+
+        tj.build_lsn_addr_index_ensures();
+        reveal(TruncatedJournal::index_domain_valid);
+
+        assert(tj.disk_view.index_keys_map_to_valid_entries(index));
+        assert(tj.index_range_valid(index));
+        assert(tj.every_lsn_at_addr_indexed_to_addr(index, addr));
+
+        let witness_lsn = choose |lsn: LSN| #![auto] index.contains_key(lsn) && index[lsn] == addr;
+        assert(index.contains_key(witness_lsn) && index[witness_lsn] == addr);
+        tj.disk_view.instantiate_index_keys_map_to_valid_entries(index, witness_lsn);
+        assert(LinkedJournal_v::DiskView::cropped_msg_seq_contains_lsn(bdy, msgs, witness_lsn));
+        assert(bdy < msgs.seq_end) by {
+            assert(bdy <= witness_lsn);
+            assert(witness_lsn < msgs.seq_end);
+        }
+
+        let end_minus_one = (msgs.seq_end - 1) as nat;
+        assert(LinkedJournal_v::DiskView::cropped_msg_seq_contains_lsn(bdy, msgs, end_minus_one)) by {
+            assert(bdy <= end_minus_one) by {
+                if !(bdy <= end_minus_one) {
+                    assert(end_minus_one < bdy);
+                    assert(msgs.seq_end <= bdy);
+                    assert(false);
+                }
+            }
+            assert(msgs.seq_start <= end_minus_one) by {
+                assert(tj.disk_view.entries.contains_key(addr));
+                assert(tj.disk_view.entries[addr].wf());
+                if !(msgs.seq_start <= end_minus_one) {
+                    assert(end_minus_one < msgs.seq_start);
+                    assert(msgs.seq_end <= msgs.seq_start);
+                    assert(false);
+                }
+            }
+            assert(end_minus_one < msgs.seq_end);
+        }
+        assert(index.contains_key(end_minus_one));
+        assert(index[end_minus_one] == addr);
+        assert(index.contains_pair(end_minus_one, addr));
+
+        assert forall |other_lsn| (#[trigger] index.contains_key(other_lsn) && index[other_lsn] == addr)
+            implies other_lsn <= end_minus_one by {
+            tj.disk_view.instantiate_index_keys_map_to_valid_entries(index, other_lsn);
+            assert(other_lsn < msgs.seq_end);
+            assert(other_lsn <= end_minus_one);
+        }
+        assert(maxmax(index, addr, end_minus_one));
+        assert(exists |lsn: LSN| maxmax(index, addr, lsn));
+
+        let max_lsn = choose |lsn: LSN| maxmax(index, addr, lsn);
+        assert(maxmax(index, addr, max_lsn));
+        assert(max_lsn <= end_minus_one) by {
+            assert(index.contains_pair(max_lsn, addr));
+        }
+        assert(end_minus_one <= max_lsn) by {
+            assert(index.contains_pair(end_minus_one, addr));
+        }
+        assert(max_lsn == end_minus_one);
+        assert(largest_lsn_plus_one(index, ptr) == (max_lsn + 1) as nat);
+        assert((max_lsn + 1) as nat == msgs.seq_end);
+    }
+
     pub proof fn read_for_recovery_refines(self, post: Self, lbl: LikesJournal::Label, depth: nat)
     requires 
         self.inv(), 
@@ -147,21 +253,88 @@ impl LikesJournal::State {
 
         let fj = lbl->frozen_journal;
         let tj = self.journal.truncated_journal;
+        let frozen_bdy = fj.seq_start();
+        let cropped_ptr = pointer_after_crop_index(self.lsn_addr_index, tj.seq_start(), tj.freshest_rec, depth);
 
         self.can_crop_ptr_after_index_refines(tj.freshest_rec, depth);
-        assert(tj.disk_view.can_crop(tj.freshest_rec, depth));
-        assert(tj.seq_start() <= fj.seq_start());
+        tj.build_lsn_addr_index_ensures();
+        if tj.freshest_rec is Some {
+            assert(self.lsn_addr_index.contains_value(tj.freshest_rec.unwrap()));
+        }
+        self.cropped_ptr_in_index_values(tj.freshest_rec, depth);
+        assert(tj.seq_start() <= frozen_bdy);
 
         let cropped_tj = tj.crop(depth);
         tj.crop_ensures(depth);
-        assert(cropped_tj.can_discard_to(fj.seq_start())); 
-        assert(tj.disk_view.can_crop(tj.freshest_rec, depth));
+        assert(cropped_tj.freshest_rec == tj.disk_view.pointer_after_crop(tj.freshest_rec, depth));
+        assert(cropped_tj.freshest_rec == cropped_ptr);
+        assert(fj.freshest_rec == self.discard_old_ptr_by_index(cropped_ptr, frozen_bdy));
 
-        tj.disk_view.pointer_after_crop_ensures(tj.freshest_rec, depth);
-        let post_discard = cropped_tj.discard_old(fj.seq_start());
+        if fj.freshest_rec is Some {
+            let addr = fj.freshest_rec.unwrap();
+            assert(cropped_ptr is Some);
+            assert(self.lsn_addr_index.contains_value(cropped_ptr.unwrap())) by {
+                assert(cropped_ptr is Some ==> self.lsn_addr_index.values().contains(cropped_ptr.unwrap()));
+                assert(cropped_ptr is Some);
+            }
+            if largest_lsn_plus_one(self.lsn_addr_index, cropped_ptr) == frozen_bdy {
+                assert(self.discard_old_ptr_by_index(cropped_ptr, frozen_bdy) is None);
+                assert(false);
+            }
+            assert(self.discard_old_ptr_by_index(cropped_ptr, frozen_bdy) == cropped_ptr);
+            assert(fj.freshest_rec == cropped_ptr);
+            assert(cropped_tj.freshest_rec == fj.freshest_rec);
+
+            assert(fj.disk_view.block_in_bounds(fj.freshest_rec));
+            assert(fj.disk_view.is_sub_disk_with_newer_lsn(tj.disk_view));
+            assert(tj.disk_view.entries.contains_key(addr));
+            assert(tj.disk_view.entries[addr] == fj.disk_view.entries[addr]);
+            assert(frozen_bdy < fj.disk_view.entries[addr].message_seq.seq_end);
+            assert(cropped_tj.seq_end() == tj.disk_view.entries[addr].message_seq.seq_end);
+        } else {
+            assert(frozen_bdy == tj.seq_start());
+            if cropped_ptr is Some {
+                assert(self.discard_old_ptr_by_index(cropped_ptr, frozen_bdy) is None);
+                assert(self.lsn_addr_index.contains_value(cropped_ptr.unwrap())) by {
+                    assert(cropped_ptr is Some ==> self.lsn_addr_index.values().contains(cropped_ptr.unwrap()));
+                    assert(cropped_ptr is Some);
+                }
+                assert(largest_lsn_plus_one(self.lsn_addr_index, cropped_ptr) == frozen_bdy) by {
+                    if largest_lsn_plus_one(self.lsn_addr_index, cropped_ptr) != frozen_bdy {
+                        assert(self.discard_old_ptr_by_index(cropped_ptr, frozen_bdy) == cropped_ptr);
+                        assert(false);
+                    }
+                }
+                self.largest_lsn_plus_one_matches_seq_end(cropped_ptr);
+                assert(cropped_tj.freshest_rec == cropped_ptr);
+                let addr = cropped_ptr.unwrap();
+                assert(cropped_tj.seq_end() == tj.disk_view.entries[addr].message_seq.seq_end);
+                assert(largest_lsn_plus_one(self.lsn_addr_index, cropped_ptr) == cropped_tj.seq_end());
+                assert(cropped_tj.wf());
+                assert(cropped_tj.disk_view.block_in_bounds(cropped_tj.freshest_rec));
+                assert(tj.seq_start() < cropped_tj.seq_end());
+                assert(frozen_bdy < cropped_tj.seq_end());
+                assert(false);
+            }
+            assert(cropped_tj.freshest_rec is None);
+            assert(frozen_bdy <= cropped_tj.seq_end());
+        }
+        assert(cropped_tj.can_discard_to(frozen_bdy));
+
+        let post_discard = cropped_tj.discard_old(frozen_bdy);
         let post_tight = post_discard.build_tight();
-        
-        cropped_tj.discard_old_decodable(fj.seq_start());
+
+        if fj.freshest_rec is Some {
+            assert(post_discard.freshest_rec == cropped_tj.freshest_rec);
+        } else {
+            assert(frozen_bdy == tj.seq_start());
+            assert(cropped_tj.freshest_rec is None);
+            assert(cropped_tj.seq_end() == tj.seq_start());
+            assert(post_discard.freshest_rec is None);
+        }
+        assert(fj.freshest_rec == post_discard.freshest_rec);
+
+        cropped_tj.discard_old_decodable(frozen_bdy);
         assert(post_discard.disk_view.acyclic()); 
         post_discard.disk_view.build_tight_ensures(post_discard.freshest_rec);
         post_discard.disk_view.build_tight_domain_is_build_lsn_addr_index_range(post_discard.freshest_rec);
@@ -173,7 +346,6 @@ impl LikesJournal::State {
 
         let fj_index = fj.build_lsn_addr_index();
         assert(fj.disk_view.is_sub_disk(post_discard.disk_view));
-        assert(fj.freshest_rec == post_discard.freshest_rec);        
 
         fj.disk_view.sub_disk_repr_index(post_discard.disk_view, fj.freshest_rec);
         assert(fj_index == post_discard_repr);
@@ -197,7 +369,7 @@ impl LikesJournal::State {
                 reveal(LinkedJournal_v::DiskView::index_keys_map_to_valid_entries);
             }
             assert(post_tight.disk_view.entries.dom() <= fj.disk_view.entries.dom());
-            assert(cropped_tj.valid_discard_old(fj.seq_start(), fj));
+            assert(cropped_tj.valid_discard_old(frozen_bdy, fj));
         }
     }
 

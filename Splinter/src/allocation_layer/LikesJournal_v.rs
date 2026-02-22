@@ -681,6 +681,17 @@ state_machine!{ LikesJournal {
         require messages == dv.entries[ptr.unwrap()].message_seq.maybe_discard_old(dv.boundary_lsn);
     } }
 
+    pub open spec fn discard_old_ptr_by_index(self, ptr: Pointer, new_lsn: LSN) -> Pointer
+        recommends
+            ptr is Some ==> self.lsn_addr_index.contains_value(ptr.unwrap())
+    {
+        if ptr is Some && largest_lsn_plus_one(self.lsn_addr_index, ptr) == new_lsn {
+            None
+        } else {
+            ptr
+        }
+    }
+
     transition!{ freeze_for_commit(lbl: Label, depth: nat) {
         require lbl is FreezeForCommit;
         let tj = pre.journal.truncated_journal;
@@ -689,13 +700,12 @@ state_machine!{ LikesJournal {
         require can_crop_index(pre.lsn_addr_index, tj.disk_view.boundary_lsn, tj.freshest_rec, depth);
         require fj.decodable();
         require fj.disk_view.is_sub_disk_with_newer_lsn(tj.disk_view);
-        require fj.freshest_rec == pointer_after_crop_index(pre.lsn_addr_index, tj.disk_view.boundary_lsn, tj.freshest_rec, depth);
 
         let frozen_bdy = fj.disk_view.boundary_lsn;
-        require match fj.freshest_rec {
-            Some(addr) => frozen_bdy < tj.disk_view.entries[addr].message_seq.seq_end,
-            None => frozen_bdy == tj.disk_view.boundary_lsn,
-        };
+        let cropped_freshest_rec = pointer_after_crop_index(pre.lsn_addr_index, tj.disk_view.boundary_lsn, tj.freshest_rec, depth);
+
+        require fj.freshest_rec == pre.discard_old_ptr_by_index(cropped_freshest_rec, frozen_bdy);
+        require fj.freshest_rec is None ==> frozen_bdy == tj.disk_view.boundary_lsn;
     } }
 
     transition!{ query_end_lsn(lbl: Label) {
@@ -873,6 +883,23 @@ pub open spec fn minmin(index: LsnAddrIndex, addr: Address, lsn: LSN) -> bool
     &&& index.contains_pair(lsn, addr)
     &&& forall |other_lsn| (#[trigger] index.contains_key(other_lsn)
         && index[other_lsn] == addr) ==> lsn <= other_lsn
+}
+
+pub open spec fn maxmax(index: LsnAddrIndex, addr: Address, lsn: LSN) -> bool
+{
+    &&& index.contains_pair(lsn, addr)
+    &&& forall |other_lsn| (#[trigger] index.contains_key(other_lsn)
+        && index[other_lsn] == addr) ==> other_lsn <= lsn
+}
+
+// Largest mapped lsn for this address, plus one (exclusive end).
+pub open spec /*(checked)*/ fn largest_lsn_plus_one(index: LsnAddrIndex, ptr: Pointer) -> LSN
+    recommends
+        ptr is Some,
+        index.contains_value(ptr.unwrap()),
+{
+    let max_lsn = choose |lsn: LSN| maxmax(index, ptr.unwrap(), lsn);
+    (max_lsn + 1) as nat
 }
 
 // curtailing spec(checked) here until verus offers proof blocks inside spec fns
