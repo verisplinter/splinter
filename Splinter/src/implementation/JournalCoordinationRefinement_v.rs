@@ -220,7 +220,7 @@ impl JournalCoordinationSystem::State {
             LinkedJournal::Step::read_for_recovery(depth))) by {
             reveal(LinkedJournal::State::next_by);
         }
-        reveal(LinkedJournal::State::next);
+        // reveal(LinkedJournal::State::next);
         reveal(LikesJournal::State::next_by);
         reveal(LikesJournal::State::next);
         assert(LikesJournal::State::next_by(self.i(), post.i(), lbl.i(self), LikesJournal::Step::read_for_recovery(depth)));

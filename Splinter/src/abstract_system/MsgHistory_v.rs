@@ -336,13 +336,13 @@ impl MsgHistory {
 
     assert(sub.wf()) by {
       assert(sub.seq_start <= sub.seq_end);
-      assert forall |lsn| sub.msgs.dom().contains(lsn) <==> sub.contains(lsn) by {};
+      assert forall |lsn| #![auto] sub.msgs.dom().contains(lsn) <==> sub.contains(lsn) by {};
     }
 
     assert(self.seq_start <= sub.seq_start);
     assert(sub.seq_end <= self.seq_end);
     assert(self.includes_subseq(sub)) by {
-      assert forall |lsn| sub.contains(lsn) implies self.contains(lsn) && self.msgs[lsn] === sub.msgs[lsn] by {};
+      assert forall |lsn| #![auto] sub.contains(lsn) implies self.contains(lsn) && self.msgs[lsn] === sub.msgs[lsn] by {};
     }
   }
 
