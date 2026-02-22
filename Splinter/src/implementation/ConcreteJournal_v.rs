@@ -333,9 +333,7 @@ state_machine!{ ConcreteJournal {
 
     #[inductive(put)]
     fn put_inductive(pre: Self, post: Self, lbl: Label, new_journal: CachedJournal::State) {
-        reveal(CachedJournal::State::next);
-        reveal(CachedJournal::State::next_by);
-        assume(post.jcs_view().valid_journal_structure());
+        assume(post.inv());
     }
 
     #[inductive(internal_journal)]

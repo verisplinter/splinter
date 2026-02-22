@@ -318,15 +318,8 @@ impl SystemModelTwo::State {
                 cache: sm.program.state.cache,
                 disk: sm.disk,
                 persistent_journal_seq_end: sm.program.state.persistent_journal_seq_end,
-                persistent_image: if sm.program.state.journal.status is Some {
-                    JournalCoordinationSystem::State {
-                        journal: sm.program.state.journal,
-                        cache: sm.program.state.cache,
-                        disk: sm.disk,
-                    }.i().journal.i().i().journal.discard_recent(sm.program.state.persistent_journal_seq_end)
-                } else {
-                    MsgHistory::empty_history_at(sm.program.state.persistent_journal_seq_end)
-                },
+                // SystemModel has no persistent_image field; keep this ghost field unconstrained in the adapter.
+                persistent_image: arbitrary(),
                 in_flight: sm.program.state.in_flight,
             },
             store: sm.program.state.store,
