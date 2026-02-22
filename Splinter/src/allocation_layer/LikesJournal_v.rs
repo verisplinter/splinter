@@ -704,8 +704,8 @@ state_machine!{ LikesJournal {
         let frozen_bdy = fj.disk_view.boundary_lsn;
         let cropped_freshest_rec = pointer_after_crop_index(pre.lsn_addr_index, tj.disk_view.boundary_lsn, tj.freshest_rec, depth);
 
+        require cropped_freshest_rec is None ==> frozen_bdy == tj.disk_view.boundary_lsn;
         require fj.freshest_rec == pre.discard_old_ptr_by_index(cropped_freshest_rec, frozen_bdy);
-        require fj.freshest_rec is None ==> frozen_bdy == tj.disk_view.boundary_lsn;
     } }
 
     transition!{ query_end_lsn(lbl: Label) {

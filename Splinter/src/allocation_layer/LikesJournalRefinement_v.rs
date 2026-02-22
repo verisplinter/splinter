@@ -266,6 +266,7 @@ impl LikesJournal::State {
 
         let cropped_tj = tj.crop(depth);
         tj.crop_ensures(depth);
+        assert(cropped_tj.wf());
         assert(cropped_tj.freshest_rec == tj.disk_view.pointer_after_crop(tj.freshest_rec, depth));
         assert(cropped_tj.freshest_rec == cropped_ptr);
         assert(fj.freshest_rec == self.discard_old_ptr_by_index(cropped_ptr, frozen_bdy));
@@ -292,7 +293,6 @@ impl LikesJournal::State {
             assert(frozen_bdy < fj.disk_view.entries[addr].message_seq.seq_end);
             assert(cropped_tj.seq_end() == tj.disk_view.entries[addr].message_seq.seq_end);
         } else {
-            assert(frozen_bdy == tj.seq_start());
             if cropped_ptr is Some {
                 assert(self.discard_old_ptr_by_index(cropped_ptr, frozen_bdy) is None);
                 assert(self.lsn_addr_index.contains_value(cropped_ptr.unwrap())) by {
@@ -310,31 +310,35 @@ impl LikesJournal::State {
                 let addr = cropped_ptr.unwrap();
                 assert(cropped_tj.seq_end() == tj.disk_view.entries[addr].message_seq.seq_end);
                 assert(largest_lsn_plus_one(self.lsn_addr_index, cropped_ptr) == cropped_tj.seq_end());
-                assert(cropped_tj.wf());
-                assert(cropped_tj.disk_view.block_in_bounds(cropped_tj.freshest_rec));
-                assert(tj.seq_start() < cropped_tj.seq_end());
-                assert(frozen_bdy < cropped_tj.seq_end());
-                assert(false);
+                assert(frozen_bdy == cropped_tj.seq_end());
+            } else {
+                assert(cropped_ptr is None);
+                assert(frozen_bdy == tj.seq_start());
+                assert(cropped_tj.freshest_rec is None);
+                assert(cropped_tj.seq_end() == tj.seq_start());
+                assert(frozen_bdy == cropped_tj.seq_end());
             }
-            assert(cropped_tj.freshest_rec is None);
             assert(frozen_bdy <= cropped_tj.seq_end());
         }
         assert(cropped_tj.can_discard_to(frozen_bdy));
 
         let post_discard = cropped_tj.discard_old(frozen_bdy);
+        cropped_tj.discard_old_decodable(frozen_bdy);
         let post_tight = post_discard.build_tight();
 
         if fj.freshest_rec is Some {
             assert(post_discard.freshest_rec == cropped_tj.freshest_rec);
         } else {
-            assert(frozen_bdy == tj.seq_start());
-            assert(cropped_tj.freshest_rec is None);
-            assert(cropped_tj.seq_end() == tj.seq_start());
+            if cropped_tj.freshest_rec is Some {
+                assert(frozen_bdy == cropped_tj.seq_end());
+            } else {
+                assert(cropped_tj.seq_end() == tj.seq_start());
+                assert(frozen_bdy == tj.seq_start());
+            }
             assert(post_discard.freshest_rec is None);
         }
         assert(fj.freshest_rec == post_discard.freshest_rec);
 
-        cropped_tj.discard_old_decodable(frozen_bdy);
         assert(post_discard.disk_view.acyclic()); 
         post_discard.disk_view.build_tight_ensures(post_discard.freshest_rec);
         post_discard.disk_view.build_tight_domain_is_build_lsn_addr_index_range(post_discard.freshest_rec);
@@ -362,7 +366,15 @@ impl LikesJournal::State {
             assert forall |lsn| #[trigger] post_discard_repr.contains_key(lsn)
             implies post_discard_repr[lsn] == self.lsn_addr_index[lsn]
             by {
+                assert(post_discard_repr.contains_key(lsn));
+                assert(post_discard_repr <= tj_sub_index);
                 assert(tj_sub_index.contains_key(lsn));
+                assert(tj_sub_index <= self.lsn_addr_index);
+                assert(post_discard_repr[lsn] == tj_sub_index[lsn]);
+                assert(tj_sub_index.contains_pair(lsn, tj_sub_index[lsn]));
+                assert(self.lsn_addr_index.contains_pair(lsn, tj_sub_index[lsn]));
+                assert(self.lsn_addr_index.contains_key(lsn));
+                assert(tj_sub_index[lsn] == self.lsn_addr_index[lsn]);
             }
 
             assert(post_discard_repr.values() <= fj.disk_view.entries.dom()) by {
