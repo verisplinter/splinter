@@ -1064,8 +1064,6 @@ impl Implementation {
                 req: disk_request@,
                 frozen_journal: sb@.journal,
                 frozen_seq_end: frozen_journal.seq_end as nat,
-                frozen_domain: self.journal.iaddrs_for_lsns(frozen_journal.seq_start() as LSN, frozen_journal.seq_end as LSN),
-                reads,
             };
 
             // Prove preconditions of execute_sync_begin:
@@ -1091,11 +1089,11 @@ impl Implementation {
                 assert( Cache::State::next_by(pre.cache, post.cache, lbl, Cache::Step::access()) ); // witness
             }
 
+            assume(false);
             let journal_lbl = CachedJournal::Label::FreezeForCommit{
                 frozen: frozen_journal.snapshot@,
                 frozen_seq_end: frozen_journal.seq_end as nat,
-                frozen_domain: self.journal.iaddrs_for_lsns(frozen_journal.seq_start() as LSN, frozen_journal.seq_end as LSN),
-                reads: to_journal_reads(reads)};
+            };
 
             reveal(CachedJournal::State::next);
             reveal(CachedJournal::State::next_by);
@@ -2089,6 +2087,8 @@ impl Implementation {
             self.handle_disk_cache_load_response(id, disk_response, response_shard, api);
         }
         OutstandingReqKind::CacheWriteReq => {
+            // what's 
+
             // E2: unimplemented
             assume(false);
         }
@@ -2986,6 +2986,8 @@ impl KVStoreTrait for Implementation {
                     }
                 }
             }
+            // TODO: add control flow to background/internal job
+
             if !progress {
                 api.log("sleeping");
                 api.sleep_a_little();

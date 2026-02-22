@@ -11,7 +11,7 @@ use crate::journal::LinkedJournal_v;
 use crate::journal::LinkedJournal_v::{LinkedJournal, TruncatedJournal};
 use crate::allocation_layer::LikesJournal_v::{
     LikesJournal, can_crop_index, minmin, next_index, pointer_after_crop_index,
-    largest_lsn_plus_one, maxmax,
+    largest_lsn_plus_one, maxmax, discard_old_ptr_by_index,
 };
 
 verus!{
@@ -269,7 +269,7 @@ impl LikesJournal::State {
         assert(cropped_tj.wf());
         assert(cropped_tj.freshest_rec == tj.disk_view.pointer_after_crop(tj.freshest_rec, depth));
         assert(cropped_tj.freshest_rec == cropped_ptr);
-        assert(fj.freshest_rec == self.discard_old_ptr_by_index(cropped_ptr, frozen_bdy));
+        assert(fj.freshest_rec == discard_old_ptr_by_index(self.lsn_addr_index, cropped_ptr, frozen_bdy));
 
         if fj.freshest_rec is Some {
             let addr = fj.freshest_rec.unwrap();
@@ -279,10 +279,10 @@ impl LikesJournal::State {
                 assert(cropped_ptr is Some);
             }
             if largest_lsn_plus_one(self.lsn_addr_index, cropped_ptr) == frozen_bdy {
-                assert(self.discard_old_ptr_by_index(cropped_ptr, frozen_bdy) is None);
+                assert(discard_old_ptr_by_index(self.lsn_addr_index, cropped_ptr, frozen_bdy) is None);
                 assert(false);
             }
-            assert(self.discard_old_ptr_by_index(cropped_ptr, frozen_bdy) == cropped_ptr);
+            assert(discard_old_ptr_by_index(self.lsn_addr_index, cropped_ptr, frozen_bdy) == cropped_ptr);
             assert(fj.freshest_rec == cropped_ptr);
             assert(cropped_tj.freshest_rec == fj.freshest_rec);
 
@@ -294,14 +294,14 @@ impl LikesJournal::State {
             assert(cropped_tj.seq_end() == tj.disk_view.entries[addr].message_seq.seq_end);
         } else {
             if cropped_ptr is Some {
-                assert(self.discard_old_ptr_by_index(cropped_ptr, frozen_bdy) is None);
+                assert(discard_old_ptr_by_index(self.lsn_addr_index, cropped_ptr, frozen_bdy) is None);
                 assert(self.lsn_addr_index.contains_value(cropped_ptr.unwrap())) by {
                     assert(cropped_ptr is Some ==> self.lsn_addr_index.values().contains(cropped_ptr.unwrap()));
                     assert(cropped_ptr is Some);
                 }
                 assert(largest_lsn_plus_one(self.lsn_addr_index, cropped_ptr) == frozen_bdy) by {
                     if largest_lsn_plus_one(self.lsn_addr_index, cropped_ptr) != frozen_bdy {
-                        assert(self.discard_old_ptr_by_index(cropped_ptr, frozen_bdy) == cropped_ptr);
+                        assert(discard_old_ptr_by_index(self.lsn_addr_index, cropped_ptr, frozen_bdy) == cropped_ptr);
                         assert(false);
                     }
                 }

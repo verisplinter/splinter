@@ -191,6 +191,7 @@ impl View for IJournalStatus {
         Self::V {
             unmarshalled_tail: self.tail_as_history(),
             lsn_addr_index: self.lsn_addr_index@,
+            clean_watermark_lsn: self.clean_watermark_lsn as nat,
         }
     }
 }
@@ -208,6 +209,13 @@ pub enum RecoverIndexResult{
 pub enum RecoverMapResult{
     FetchSuccess{reads: Ghost<Map<Address, RawPage>>, addr: Ghost<Address>, record: IJournalRecord},
     NotInCache{},
+}
+
+pub enum JournalSyncStatus {
+    Success{},
+    WorkInProgress{},
+    NeedMarshalling{},
+    OutOfRange{},
 }
 
 pub struct JournalImpl {
@@ -284,8 +292,11 @@ impl JournalImpl {
             Some(status) => {
                 &&& status.wf()
                 &&& self.snapshot.boundary_lsn == status.lsn_addr_index.seq_start()
-                &&& self.snapshot.boundary_lsn <= status.clean_watermark_lsn
-                &&& status.clean_watermark_lsn <= status.lsn_addr_index.seq_end()
+                &&& status.clean_watermark_lsn == status.lsn_addr_index.seq_end()
+                &&& forall |lsn: LSN| #![auto]
+                    status.lsn_addr_index@.contains_key(lsn) ==> lsn < status.clean_watermark_lsn as nat
+                &&& self.snapshot.boundary_lsn < status.clean_watermark_lsn
+                    ==> status.lsn_addr_index@.contains_key((status.clean_watermark_lsn - 1) as nat)
                 &&& self.snapshot.boundary_lsn < status.lsn_addr_index.seq_end()
                     ==> self.snapshot.freshest_rec is Some
                 &&& self.snapshot.boundary_lsn < status.lsn_addr_index.seq_end()
@@ -328,6 +339,10 @@ impl JournalImpl {
                 status.lsn_addr_index.seq_end() as nat + status.unmarshalled_tail.len() as nat
             }
         }
+    }
+
+    pub closed spec fn marshalled_seq_end(&self) -> LSN {
+        self.status.unwrap().lsn_addr_index.seq_end() as nat
     }
 
     pub exec fn exec_seq_end(&self) -> (out: ILsn)
@@ -1212,6 +1227,49 @@ impl JournalImpl {
             Cache::Label::EvictableCheck{addrs: self.iaddrs_for_lsns(out.seq_start() as LSN, out.seq_end as LSN)},
             Cache::Step::evictable())
     }
+
+    // /// Classify sync progress for `target_lsn`:
+    // /// - Success: target is at or below clean watermark (already durable)
+    // /// - WorkInProgress: target is in the marshalled index domain
+    // /// - NeedMarshalling: target is past marshalled index end but not past overall seq_end
+    // /// - OutOfRange: target is beyond this journal's current seq_end
+    // pub exec fn journal_sync(&self, target_lsn: ILsn) -> (out: JournalSyncStatus)
+    // requires
+    //     self.wf(),
+    //     self.index_ready(),
+    // ensures
+    //     match out {
+    //         JournalSyncStatus::Success{} => {
+    //             (target_lsn as nat) <= self.clean_watermark()
+    //         },
+    //         JournalSyncStatus::WorkInProgress{} => {
+    //             &&& self.clean_watermark() < (target_lsn as nat)
+    //             &&& (target_lsn as nat) < self.marshalled_seq_end()
+    //         },
+    //         JournalSyncStatus::NeedMarshalling{} => {
+    //             &&& self.marshalled_seq_end() <= (target_lsn as nat)
+    //             &&& (target_lsn as nat) <= self.seq_end()
+    //         },
+    //         JournalSyncStatus::OutOfRange{} => {
+    //             self.seq_end() < (target_lsn as nat)
+    //         },
+    //     },
+    // {
+    //     let status = self.status.as_ref().unwrap();
+    //     let clean_watermark = status.clean_watermark_lsn;
+    //     let index_end = status.lsn_addr_index.exec_seq_end();
+    //     let tail_end = self.exec_seq_end();
+
+    //     if target_lsn <= clean_watermark {
+    //         JournalSyncStatus::Success{}
+    //     } else if target_lsn < index_end {
+    //         JournalSyncStatus::WorkInProgress{}
+    //     } else if target_lsn <= tail_end {
+    //         JournalSyncStatus::NeedMarshalling{}
+    //     } else {
+    //         JournalSyncStatus::OutOfRange{}
+    //     }
+    // }
 
     /// Check whether the journal is clean up to target_lsn.
     /// Returns true iff target_lsn <= clean_watermark (all pages up to there are Filled+Clean).

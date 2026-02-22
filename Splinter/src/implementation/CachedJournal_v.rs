@@ -98,6 +98,18 @@ pub open spec fn all_addrs_have_finite_lsn_sets(
         ==> addr_to_lsns(lsn_addr_index, addr, bdy).finite()
 }
 
+pub open spec fn lsn_is_largest_for_its_addr(
+    lsn_addr_index: LsnAddrIndex,
+    lsn: LSN,
+) -> bool
+    recommends lsn_addr_index.contains_key(lsn)
+{
+    forall |other_lsn: LSN| #![auto]
+        lsn_addr_index.contains_key(other_lsn)
+            && lsn_addr_index[other_lsn] == lsn_addr_index[lsn]
+        ==> other_lsn <= lsn
+}
+
 pub open spec fn acyclic_reads(bdy: LSN, reads: Map<Address, JournalRecord>) -> bool
 {
     DiskView{boundary_lsn: bdy, entries: reads}.acyclic()
@@ -474,6 +486,7 @@ pub struct JournalSnapshot {
 pub struct JournalStatus {
     pub unmarshalled_tail: MsgHistory, // in memory journal
     pub lsn_addr_index: LsnAddrIndex,
+    pub clean_watermark_lsn: LSN,
 }
 
 state_machine!{ CachedJournal {
@@ -488,6 +501,7 @@ state_machine!{ CachedJournal {
         self.status is Some ==> {
             &&& self.seq_start() <= self.seq_end()
             &&& self.status.unwrap().unmarshalled_tail.wf()
+            &&& self.seq_start() <= self.clean_watermark() <= self.marshalled_seq_end()
         }
     }
 
@@ -500,6 +514,12 @@ state_machine!{ CachedJournal {
     recommends self.status is Some
     {
         self.status.unwrap().unmarshalled_tail.seq_start
+    }
+
+    pub open spec(checked) fn clean_watermark(self) -> LSN
+    recommends self.status is Some
+    {
+        self.status.unwrap().clean_watermark_lsn
     }
 
     pub open spec(checked) fn seq_end(self) -> LSN
@@ -518,7 +538,8 @@ state_machine!{ CachedJournal {
     {
         LoadIndex{reads: Map<Address, JournalRecord>},
         ReadForRecovery{messages: MsgHistory, reads: Map<Address, JournalRecord>},
-        FreezeForCommit{frozen: JournalSnapshot, frozen_seq_end: LSN, frozen_domain: Set<Address>, reads: Map<Address, JournalRecord>},
+        FreezeForCommit{frozen: JournalSnapshot, frozen_seq_end: LSN},
+        JournalFlush{flushed_domain: Set<Address>},
         QueryEndLsn{end_lsn: LSN},
         Put{messages: MsgHistory},
         DiscardOld{start_lsn: LSN, require_end: LSN, discard_addrs: Set<Address>},
@@ -537,7 +558,6 @@ state_machine!{ CachedJournal {
 
         // the depth issue feels like something we should maintain 
         // read for recovery should require ranges and not depth
-
         require pre.can_crop_index(pre.snapshot.freshest_rec, depth);
 
         let ptr = pre.pointer_after_crop_index(pre.snapshot.freshest_rec, depth);
@@ -547,28 +567,42 @@ state_machine!{ CachedJournal {
 
     transition!{ freeze_for_commit(lbl: Label, depth: nat) {
         require pre.status is Some;
+        require let Label::FreezeForCommit{frozen, frozen_seq_end} = lbl;
 
-    // FreezeForCommit{frozen: JournalSnapshot, frozen_domain: Set<Address>, reads: Map<Address, JournalRecord>},
-        require let Label::FreezeForCommit{frozen, frozen_seq_end, frozen_domain, reads} = lbl;
-        require pre.seq_start() <= frozen.boundary_lsn;
+        require pre.seq_start() <= frozen.boundary_lsn <= frozen_seq_end;
         require pre.can_crop_index(pre.snapshot.freshest_rec, depth);
 
         let ptr = pre.pointer_after_crop_index(pre.snapshot.freshest_rec, depth);
-        require ptr == frozen.freshest_rec;
-        require ptr is Some ==> reads.contains_key(ptr.unwrap());
+        require ptr is None ==> pre.snapshot.boundary_lsn == frozen.boundary_lsn;
+        require frozen.freshest_rec == discard_old_ptr_by_index(pre.status.unwrap().lsn_addr_index, ptr, frozen.boundary_lsn);
+        
+        require frozen_seq_end ==
+            if frozen.freshest_rec is Some { 
+                largest_lsn_plus_one(pre.status.unwrap().lsn_addr_index, frozen.freshest_rec) 
+            } else { frozen.boundary_lsn };
 
-        require frozen_seq_end == if ptr is Some { reads[ptr.unwrap()].message_seq.seq_end } else { pre.snapshot.boundary_lsn };
-        require frozen.boundary_lsn <= frozen_seq_end;
-        require ptr is Some ==> frozen.boundary_lsn < frozen_seq_end;
-
-        let frozen_lsns = Set::new(|lsn: LSN| frozen.boundary_lsn <= lsn && lsn < frozen_seq_end);
-        require frozen_domain == pre.status.unwrap().lsn_addr_index.restrict(frozen_lsns).values();
+        require frozen.freshest_rec is Some ==> frozen_seq_end <= pre.clean_watermark();
     }}
 
     transition!{ query_end_lsn(lbl: Label) {
         require pre.status is Some;              
         require lbl is QueryEndLsn;
         require lbl->end_lsn == pre.seq_end();
+    }}
+
+    transition!{ advance_watermark(lbl: Label, target_lsn: LSN) {
+        require pre.status is Some;
+        require lbl is JournalFlush;
+        require pre.clean_watermark() < target_lsn <= pre.marshalled_seq_end();
+
+        let index = pre.status.unwrap().lsn_addr_index;
+        let flushed_lsns = Set::new(|lsn: LSN| pre.clean_watermark() <= lsn && lsn < target_lsn);
+        require lbl->flushed_domain == index.restrict(flushed_lsns).values();
+
+        update status = Some(JournalStatus{
+            clean_watermark_lsn: target_lsn,
+            ..pre.status.unwrap()
+        });
     }}
 
     transition!{ put(lbl: Label) {
@@ -585,13 +619,21 @@ state_machine!{ CachedJournal {
 
         require lbl->require_end == pre.seq_end(); // pre.marshalled_seq_end();
         require pre.seq_start() <= lbl->start_lsn <= lbl->require_end;
+        // NOTE: additional restriction
+        require lbl->start_lsn <= pre.marshalled_seq_end();
 
         let new_freshest_rec = if lbl->start_lsn == lbl->require_end { None } else { pre.snapshot.freshest_rec };
         let new_lsn_addr_index = lsn_addr_index_discard_up_to(pre.status.unwrap().lsn_addr_index, lbl->start_lsn);
+        let new_clean_watermark = if lbl->start_lsn > pre.clean_watermark() { lbl->start_lsn } else { pre.clean_watermark() };
+
         require lbl->discard_addrs == pre.status.unwrap().lsn_addr_index.values() - new_lsn_addr_index.values();
 
         update snapshot = JournalSnapshot{boundary_lsn: lbl->start_lsn, freshest_rec: new_freshest_rec};
-        update status = Some(JournalStatus{lsn_addr_index: new_lsn_addr_index, ..pre.status.unwrap()});
+        update status = Some(JournalStatus{
+            lsn_addr_index: new_lsn_addr_index,
+            clean_watermark_lsn: new_clean_watermark,
+            ..pre.status.unwrap()
+        });
     }}
 
     transition!{ internal_journal_marshal(lbl: Label, cut: LSN, addr: Address) {
@@ -610,7 +652,9 @@ state_machine!{ CachedJournal {
         update status = Some(JournalStatus{
             lsn_addr_index: lsn_addr_index_append_record(pre.status.unwrap().lsn_addr_index, 
                 marshalled_msgs.seq_start, marshalled_msgs.seq_end, addr), 
-            unmarshalled_tail:  pre.status.unwrap().unmarshalled_tail.discard_old(cut)});
+            unmarshalled_tail:  pre.status.unwrap().unmarshalled_tail.discard_old(cut),
+            clean_watermark_lsn: cut,
+        });
     }}
 
     transition!{ load_index(lbl: Label) {
@@ -628,10 +672,15 @@ state_machine!{ CachedJournal {
 
         let seq_end = if ptr is Some { reads[ptr.unwrap()].message_seq.seq_end } else { bdy };
         let lsn_addr_index = build_lsn_addr_index_from_reads(reads, bdy, ptr);
+        let clean_watermark_lsn = seq_end;
 
         // this ensures that range is contiguous
         require lsn_addr_index.dom() == Set::new(|lsn: LSN| bdy <= lsn < seq_end); // how do we expose this
-        update status = Some(JournalStatus{lsn_addr_index, unmarshalled_tail: MsgHistory::empty_history_at(seq_end)});
+        update status = Some(JournalStatus{
+            lsn_addr_index,
+            unmarshalled_tail: MsgHistory::empty_history_at(seq_end),
+            clean_watermark_lsn,
+        });
     }}
 
     // this makes it so that we can't really initialize everything in a single transition
@@ -648,6 +697,9 @@ state_machine!{ CachedJournal {
     
     #[inductive(query_end_lsn)]
     fn query_end_lsn_inductive(pre: Self, post: Self, lbl: Label) { }
+
+    #[inductive(advance_watermark)]
+    fn advance_watermark_inductive(pre: Self, post: Self, lbl: Label, target_lsn: LSN) { }
     
     #[inductive(put)]
     fn put_inductive(pre: Self, post: Self, lbl: Label) { }

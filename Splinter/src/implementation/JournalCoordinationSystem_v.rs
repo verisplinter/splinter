@@ -164,7 +164,10 @@ state_machine!{ JournalCoordinationSystem{
         let cache_lbl2 = Cache::Label::EvictableCheck{addrs: frozen_domain};
         require Cache::State::next(pre.cache, pre.cache, cache_lbl2);
 
-        let journal_lbl = CachedJournal::Label::FreezeForCommit{frozen: lbl->frozen, frozen_domain, reads: to_journal_reads(reads)};
+        let journal_lbl = CachedJournal::Label::FreezeForCommit{
+            frozen: lbl->frozen,
+            frozen_seq_end: lbl->frozen.boundary_lsn,
+        };
         require CachedJournal::State::next(pre.journal, pre.journal, journal_lbl);
     }}
 

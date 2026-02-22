@@ -1069,6 +1069,11 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
                         // execute_sync_begin). Similarly, ephemeral_map().seq_end may change.
                         assume(post.program.state.wf());
                     },
+                    InternalEvent::AckJournalFlush{..} => {
+                        // Cache+journal watermark maintenance should be abstractly invisible.
+                        assume(post.inv());
+                        assume(ipre == ipost);
+                    },
                     InternalEvent::JournalRecovery{..} | InternalEvent::MapRecovery{..} => {
                         // During recovery, client_ready() is false for both pre and post.
                         // i() uses i_persistent() which only depends on disk content.

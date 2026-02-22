@@ -270,7 +270,10 @@ impl JournalCoordinationSystem::State {
         reveal(CachedJournal::State::next);
         reveal(CachedJournal::State::next_by);
 
-        let journal_lbl = CachedJournal::Label::FreezeForCommit{frozen: lbl->frozen, frozen_domain, reads: to_journal_reads(reads)};
+        let journal_lbl = CachedJournal::Label::FreezeForCommit{
+            frozen: lbl->frozen,
+            frozen_seq_end: lbl->frozen.boundary_lsn,
+        };
         let journal_step = choose |journal_step| CachedJournal::State::next_by(self.journal, post.journal, journal_lbl, journal_step);
         let depth = journal_step.arrow_freeze_for_commit_0();
 

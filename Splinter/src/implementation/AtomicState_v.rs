@@ -69,7 +69,7 @@ pub enum DiskEvent{
     SuperblockRecovery{req_id: ID, raw_page: RawPage},
     // superblock write
     ExecuteSyncBegin{req_id: ID, req: DiskRequest, frozen_journal: JournalSnapshot, 
-        frozen_seq_end: LSN, frozen_domain: Set<Address>, reads: Map<Address, RawPage>},
+        frozen_seq_end: LSN},
     ExecuteSyncEnd{discard_addrs: Set<Address>},
     // other I/Os
     CacheIOBegin{req_map: Map<ID, DiskRequest>},
@@ -78,6 +78,7 @@ pub enum DiskEvent{
 
 pub enum InternalEvent{
     StoreInternal{},
+    AckJournalFlush{flushed_domain: Set<Address>},
     JournalRecovery{reads: Map<Address, RawPage>},
     MapRecovery{records: MsgHistory, reads: Map<Address, RawPage>, addr: Address},
     RecoveryComplete{},
@@ -366,6 +367,25 @@ impl AtomicState {
         }
     }
 
+    pub open spec fn acknowledge_flushed_journal_pages(
+        pre: Self,
+        post: Self,
+        flushed_domain: Set<Address>,
+    ) -> bool
+    {
+        let cache_lbl = Cache::Label::EvictableCheck{addrs: flushed_domain};
+        let journal_lbl = CachedJournal::Label::JournalFlush{flushed_domain};
+
+        &&& pre.client_ready()
+        &&& Cache::State::next(pre.cache, post.cache, cache_lbl)
+        &&& CachedJournal::State::next(pre.journal, post.journal, journal_lbl)
+        &&& post == Self{
+            cache: post.cache,
+            journal: post.journal,
+            ..pre
+        }
+    }
+
     pub open spec fn cache_io_begin(pre: Self, post: Self, req_map: Map<ID, DiskRequest>, reqs: Multiset<(ID, DiskRequest)>, resps: Multiset<(ID, DiskResponse)>) -> bool
     {
         let updated_outstanding_cache_reqs = Map::new(|id| req_map.contains_key(id), |id| req_map[id].addr());
@@ -403,16 +423,14 @@ impl AtomicState {
     // superblock sync
     pub open spec fn execute_sync_begin(pre: Self, post: Self, 
         req_id: ID, req: DiskRequest, reqs: Multiset<(ID, DiskRequest)>, resps: Multiset<(ID, DiskResponse)>, 
-        frozen_journal: JournalSnapshot, frozen_seq_end: LSN, frozen_domain: Set<Address>, reads: Map<Address, RawPage>) -> bool
+        frozen: JournalSnapshot, frozen_seq_end: LSN) -> bool
     {
-        let map_lbl = AbstractCrashAwareMap::Label::CommitStartLabel{new_boundary_lsn: frozen_journal.boundary_lsn};
-        let cache_lbl1 = Cache::Label::Access{reads: reads, writes: Map::empty()};
-        let cache_lbl2 = Cache::Label::EvictableCheck{addrs: frozen_domain};
-        let journal_lbl = CachedJournal::Label::FreezeForCommit{frozen: frozen_journal, frozen_seq_end, frozen_domain, reads: to_journal_reads(reads)};
+        let map_lbl = AbstractCrashAwareMap::Label::CommitStartLabel{new_boundary_lsn: frozen.boundary_lsn};
+        let journal_lbl = CachedJournal::Label::FreezeForCommit{frozen, frozen_seq_end};
 
         let sb = Superblock{
             store: pre.in_flight_map(),
-            journal: frozen_journal,
+            journal: frozen,
         };
 
         // superblock writes
@@ -438,9 +456,9 @@ impl AtomicState {
         // be able to push a single journal page at a time (in the case where we're syncing
         // frequently and we don't want to burn an AU on a single journal record).
         // So, the journal needs to read this page from the cache.
-        &&& Cache::State::next(pre.cache, post.cache, cache_lbl1)
-        // checks that frozen journal has been flushed
-        &&& Cache::State::next(pre.cache, post.cache, cache_lbl2)
+        // &&& Cache::State::next(pre.cache, post.cache, cache_lbl1)
+        // // checks that frozen journal has been flushed
+        // &&& Cache::State::next(pre.cache, post.cache, cache_lbl2)
         &&& CachedJournal::State::next(pre.journal, post.journal, journal_lbl)
 
         &&& req is WriteReq
@@ -450,7 +468,6 @@ impl AtomicState {
         &&& resps.is_empty()
         &&& post == Self{ 
             store: post.store,
-            cache: post.cache,
             journal: post.journal,
             in_flight: Some(inflight_info), 
             .. pre}
@@ -494,8 +511,8 @@ impl AtomicState {
         match disk_event {
             DiskEvent::InitiateRecovery{req_id} => Self::initiate_recovery(pre, post, reqs, resps, req_id),
             DiskEvent::SuperblockRecovery{req_id, raw_page} => Self::superblock_recovery(pre, post, reqs, resps, req_id, raw_page),
-            DiskEvent::ExecuteSyncBegin{req_id, req, frozen_journal, frozen_seq_end, frozen_domain, reads} 
-                => Self::execute_sync_begin(pre, post, req_id, req, reqs, resps, frozen_journal, frozen_seq_end, frozen_domain, reads),
+            DiskEvent::ExecuteSyncBegin{req_id, req, frozen_journal, frozen_seq_end} 
+                => Self::execute_sync_begin(pre, post, req_id, req, reqs, resps, frozen_journal, frozen_seq_end),
             DiskEvent::ExecuteSyncEnd{discard_addrs} => Self::execute_sync_end(pre, post, reqs, resps, discard_addrs),
             DiskEvent::CacheIOBegin{req_map} => Self::cache_io_begin(pre, post, req_map, reqs, resps),
             DiskEvent::CacheIOEnd{resp_map} => Self::cache_io_end(pre, post, resp_map, reqs, resps),
@@ -506,6 +523,8 @@ impl AtomicState {
     {
         match internal_event {
             InternalEvent::StoreInternal{} => Self::store_internal(pre, post),
+            InternalEvent::AckJournalFlush{flushed_domain} =>
+                Self::acknowledge_flushed_journal_pages(pre, post, flushed_domain),
             InternalEvent::JournalRecovery{reads} => Self::journal_recovery(pre, post, reads),
             InternalEvent::MapRecovery{records, reads, addr} => Self::map_recovery(pre, post, records, reads, addr),
             InternalEvent::RecoveryComplete{} => Self::recovery_complete(pre, post),

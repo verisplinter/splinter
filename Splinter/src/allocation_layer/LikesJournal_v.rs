@@ -681,17 +681,6 @@ state_machine!{ LikesJournal {
         require messages == dv.entries[ptr.unwrap()].message_seq.maybe_discard_old(dv.boundary_lsn);
     } }
 
-    pub open spec fn discard_old_ptr_by_index(self, ptr: Pointer, new_lsn: LSN) -> Pointer
-        recommends
-            ptr is Some ==> self.lsn_addr_index.contains_value(ptr.unwrap())
-    {
-        if ptr is Some && largest_lsn_plus_one(self.lsn_addr_index, ptr) == new_lsn {
-            None
-        } else {
-            ptr
-        }
-    }
-
     transition!{ freeze_for_commit(lbl: Label, depth: nat) {
         require lbl is FreezeForCommit;
         let tj = pre.journal.truncated_journal;
@@ -705,7 +694,7 @@ state_machine!{ LikesJournal {
         let cropped_freshest_rec = pointer_after_crop_index(pre.lsn_addr_index, tj.disk_view.boundary_lsn, tj.freshest_rec, depth);
 
         require cropped_freshest_rec is None ==> frozen_bdy == tj.disk_view.boundary_lsn;
-        require fj.freshest_rec == pre.discard_old_ptr_by_index(cropped_freshest_rec, frozen_bdy);
+        require fj.freshest_rec == discard_old_ptr_by_index(pre.lsn_addr_index, cropped_freshest_rec, frozen_bdy);
     } }
 
     transition!{ query_end_lsn(lbl: Label) {
@@ -890,6 +879,17 @@ pub open spec fn maxmax(index: LsnAddrIndex, addr: Address, lsn: LSN) -> bool
     &&& index.contains_pair(lsn, addr)
     &&& forall |other_lsn| (#[trigger] index.contains_key(other_lsn)
         && index[other_lsn] == addr) ==> other_lsn <= lsn
+}
+
+pub open spec fn discard_old_ptr_by_index(index: LsnAddrIndex, ptr: Pointer, new_lsn: LSN) -> Pointer
+    recommends
+        ptr is Some ==> index.contains_value(ptr.unwrap())
+{
+    if ptr is Some && largest_lsn_plus_one(index, ptr) == new_lsn {
+        None
+    } else {
+        ptr
+    }
 }
 
 // Largest mapped lsn for this address, plus one (exclusive end).
