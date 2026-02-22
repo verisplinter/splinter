@@ -189,8 +189,10 @@ impl Wrappable for IJournalRecordWrappable {
 
     exec fn exec_from_pair(pair: (IJournalHeader, Vec<KeyedMessage>)) -> (u: Self::U)
     {
+        assert(pair.wf());
         let u = Self::U{ header: pair.0, messages: pair.1 };
         assert( u.parsedv() == Self::from_pair(pair.parsedv()) );   // manually  trigger trait ensures extn
+        assert(u.wf());
         u
     }
 
