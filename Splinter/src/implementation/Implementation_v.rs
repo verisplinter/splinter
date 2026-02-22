@@ -984,6 +984,7 @@ impl Implementation {
 
         // inflight_info records the frozen journal's seq_end (the clean watermark)
         let ghost inflight_info = InflightInfo{
+            new_boundary_lsn: frozen_journal.seq_start as nat,
             journal_version: frozen_journal.seq_end as nat,
             req_id: disk_req_id
         };

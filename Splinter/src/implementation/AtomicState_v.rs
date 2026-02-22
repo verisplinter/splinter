@@ -37,6 +37,7 @@ pub enum RecoveryState {
 
 // This is state we need in addition to the in-flight state hiding inside AbstractCrashAwareMap.
 pub struct InflightInfo {
+    pub new_boundary_lsn: LSN,
     pub journal_version: LSN,
     pub req_id: ID,
 }
@@ -435,6 +436,7 @@ impl AtomicState {
 
         // superblock writes
         let inflight_info = InflightInfo{
+            new_boundary_lsn: frozen_journal.boundary_lsn,
             journal_version: frozen_seq_end,
             req_id
         };

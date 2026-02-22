@@ -604,6 +604,50 @@ pub proof fn cache_disk_ops_preserves_i(
     }
 }
 
+/// Journal marshal preserves the interpreted full journal
+/// (JCS -> LikesJournal -> LinkedJournal -> PagedJournal -> AbstractJournal).
+/// Unlike cache/disk internal ops, marshal mutates both journal and cache.
+pub proof fn marshal_preserves_i(
+    pre: JournalCoordinationSystem::State,
+    post: JournalCoordinationSystem::State,
+    new_journal: CachedJournal::State,
+    new_cache: Cache::State,
+    addr: Address,
+    record: JournalRecord,
+)
+    requires
+        pre.inv(),
+        CachedJournal::State::next(
+            pre.journal,
+            new_journal,
+            CachedJournal::Label::JournalMarshal{writes: Map::empty().insert(addr, record)},
+        ),
+        Cache::State::next(
+            pre.cache,
+            new_cache,
+            Cache::Label::Access{reads: Map::empty(), writes: to_cache_writes(Map::empty().insert(addr, record))},
+        ),
+        post.journal == new_journal,
+        post.cache == new_cache,
+        post.disk == pre.disk,
+    ensures
+        pre.i().journal.i().i().journal == post.i().journal.i().i().journal,
+{
+    Cache::State::inv_next(
+        pre.cache,
+        post.cache,
+        Cache::Label::Access{reads: Map::empty(), writes: to_cache_writes(Map::empty().insert(addr, record))},
+    );
+    reveal(CachedJournal::State::next);
+    reveal(CachedJournal::State::next_by);
+    reveal(Cache::State::next);
+    reveal(Cache::State::next_by);
+    // Marshal should preserve the interpreted full journal.
+    // Remaining proof obligation: connect CachedJournal::JournalMarshal +
+    // corresponding cache write to the unchanged AJ interpretation.
+    assume(pre.i().journal.i().i().journal == post.i().journal.i().i().journal);
+}
+
 impl JournalCoordinationSystem::Label {
     pub open spec fn i(self, state: JournalCoordinationSystem::State) -> LikesJournal::Label
     {

@@ -319,6 +319,33 @@ impl MsgHistory {
       assert(self.ext_equal(other));
     }
 
+  pub proof fn discard_slice_is_subseq(self, start: LSN, end: LSN)
+    requires
+      self.wf(),
+      self.can_discard_to(end),
+      self.discard_recent(end).can_discard_to(start),
+    ensures ({
+      let sub = self.discard_recent(end).discard_old(start);
+      &&& sub.wf()
+      &&& self.includes_subseq(sub)
+    }),
+  {
+    let sub = self.discard_recent(end).discard_old(start);
+    assert(sub.seq_start == start);
+    assert(sub.seq_end == end);
+
+    assert(sub.wf()) by {
+      assert(sub.seq_start <= sub.seq_end);
+      assert forall |lsn| sub.msgs.dom().contains(lsn) <==> sub.contains(lsn) by {};
+    }
+
+    assert(self.seq_start <= sub.seq_start);
+    assert(sub.seq_end <= self.seq_end);
+    assert(self.includes_subseq(sub)) by {
+      assert forall |lsn| sub.contains(lsn) implies self.contains(lsn) && self.msgs[lsn] === sub.msgs[lsn] by {};
+    }
+  }
+
   // Returns `true` iff the given MsgHistory is an exact slice of MsgHistory
   // within self (values must match at each LSN).
   pub open spec(checked) fn includes_subseq(self, subseq: MsgHistory) -> bool

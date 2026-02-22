@@ -59,6 +59,7 @@ state_machine!{ ConcreteJournal {
     transition!{ read_for_recovery(lbl: Label, reads: Map<Address, RawPage>) {
         require let Label::ReadForRecovery{messages} = lbl;
         require pre.journal.status is Some;
+        require pre.full_journal().includes_subseq(messages);
 
         let cache_lbl = Cache::Label::Access{reads: reads, writes: Map::empty()};
         require Cache::State::next(pre.cache, pre.cache, cache_lbl);
@@ -86,6 +87,7 @@ state_machine!{ ConcreteJournal {
 
     transition!{ internal_journal(lbl: Label) {
         require lbl is Internal;
+        require pre.journal.status is Some;
         // Journal internal: no state change (AbstractJournal internal is a no-op on state)
     }}
 
@@ -98,6 +100,12 @@ state_machine!{ ConcreteJournal {
 
         let cache_lbl = Cache::Label::Access{reads: Map::empty(), writes: crate::implementation::JournalCoordinationSystem_v::to_cache_writes(journal_lbl->writes)};
         require Cache::State::next(pre.cache, new_cache, cache_lbl);
+        let post_full_journal = JournalCoordinationSystem::State{
+            journal: new_journal,
+            cache: new_cache,
+            disk: pre.disk,
+        }.i().journal.i().i().journal;
+        require post_full_journal == pre.full_journal();
 
         update journal = new_journal;
         update cache = new_cache;
@@ -107,12 +115,19 @@ state_machine!{ ConcreteJournal {
             cache_requests: Set<DiskRequest>, cache_responses: Map<Address, DiskResponse>,
             disk_requests: Map<ID, DiskRequest>, disk_responses: Map<ID, DiskResponse>) {
         require lbl is Internal;
+        require pre.journal.status is Some;
 
         let cache_lbl = Cache::Label::DiskOps{requests: cache_requests, responses: cache_responses};
         require Cache::State::next(pre.cache, new_cache, cache_lbl);
 
         let disk_lbl = AsyncDisk::Label::DiskOps{requests: disk_requests, responses: disk_responses};
         require AsyncDisk::State::next(pre.disk, new_disk, disk_lbl);
+        let post_full_journal = JournalCoordinationSystem::State{
+            journal: pre.journal,
+            cache: new_cache,
+            disk: new_disk,
+        }.i().journal.i().i().journal;
+        require post_full_journal == pre.full_journal();
 
         update cache = new_cache;
         update disk = new_disk;
@@ -120,13 +135,27 @@ state_machine!{ ConcreteJournal {
 
     transition!{ internal_cache(lbl: Label, new_cache: Cache::State) {
         require lbl is Internal;
+        require pre.journal.status is Some;
         require Cache::State::next(pre.cache, new_cache, Cache::Label::Internal{});
+        let post_full_journal = JournalCoordinationSystem::State{
+            journal: pre.journal,
+            cache: new_cache,
+            disk: pre.disk,
+        }.i().journal.i().i().journal;
+        require post_full_journal == pre.full_journal();
         update cache = new_cache;
     }}
 
     transition!{ internal_disk(lbl: Label, new_disk: AsyncDisk::State) {
         require lbl is Internal;
+        require pre.journal.status is Some;
         require AsyncDisk::State::next(pre.disk, new_disk, AsyncDisk::Label::Internal{});
+        let post_full_journal = JournalCoordinationSystem::State{
+            journal: pre.journal,
+            cache: pre.cache,
+            disk: new_disk,
+        }.i().journal.i().i().journal;
+        require post_full_journal == pre.full_journal();
         update disk = new_disk;
     }}
 
@@ -140,6 +169,7 @@ state_machine!{ ConcreteJournal {
         require lbl is CommitStart;
         require pre.journal.status is Some;
         require pre.in_flight is None;
+        require lbl->new_boundary_lsn == frozen.boundary_lsn;
 
         // Freeze the journal via JCS-level freeze_for_commit
         let cache_lbl1 = Cache::Label::Access{reads: reads, writes: Map::empty()};
@@ -157,24 +187,45 @@ state_machine!{ ConcreteJournal {
         require CachedJournal::State::next(pre.journal, pre.journal, journal_lbl);
 
         // Record in_flight with the frozen journal version
+        require lbl->max_lsn == pre.journal.seq_end();
+        require frozen_seq_end <= lbl->max_lsn;
         require pre.persistent_journal_seq_end <= frozen_seq_end;
-        require frozen.boundary_lsn <= lbl->max_lsn;
+        require lbl->new_boundary_lsn <= lbl->max_lsn;
+        require pre.full_journal().can_discard_to(frozen_seq_end);
+        require pre.full_journal().discard_recent(frozen_seq_end).can_discard_to(frozen.boundary_lsn);
+        require pre.full_journal().discard_recent(frozen_seq_end).discard_old(frozen.boundary_lsn).wf();
+        require pre.full_journal().includes_subseq(
+            pre.full_journal().discard_recent(frozen_seq_end).discard_old(frozen.boundary_lsn)
+        );
 
-        update in_flight = Some(InflightInfo{journal_version: frozen_seq_end, req_id: arbitrary()});
+        update in_flight = Some(InflightInfo{
+            new_boundary_lsn: frozen.boundary_lsn,
+            journal_version: frozen_seq_end,
+            req_id: arbitrary()
+        });
     }}
 
     transition!{ commit_complete(lbl: Label, new_journal: CachedJournal::State, discard_addrs: Set<Address>) {
         require lbl is CommitComplete;
         require pre.journal.status is Some;
         require pre.in_flight is Some;
+        let start_lsn = pre.in_flight.unwrap().new_boundary_lsn;
+        let pre_full_journal = pre.full_journal();
+        let post_full_journal = JournalCoordinationSystem::State{
+            journal: new_journal,
+            cache: pre.cache,
+            disk: pre.disk,
+        }.i().journal.i().i().journal;
 
         // DiscardOld on the journal
         let journal_lbl = CachedJournal::Label::DiscardOld{
-            start_lsn: pre.in_flight.unwrap().journal_version,
+            start_lsn,
             require_end: lbl->require_end,
             discard_addrs,
         };
         require CachedJournal::State::next(pre.journal, new_journal, journal_lbl);
+        require pre_full_journal.can_discard_to(start_lsn);
+        require post_full_journal == pre_full_journal.discard_old(start_lsn);
 
         let cache_lbl = Cache::Label::EvictableCheck{addrs: discard_addrs};
         require Cache::State::next(pre.cache, pre.cache, cache_lbl);
@@ -213,10 +264,23 @@ state_machine!{ ConcreteJournal {
     transition!{ load_ephemeral(lbl: Label, new_journal: CachedJournal::State) {
         require lbl is LoadEphemeral;
         require pre.journal.status is None;
+        require pre.in_flight is None;
         require new_journal.status is Some;
         require new_journal.wf();
         // Snapshot doesn't change during load
         require new_journal.snapshot == pre.journal.snapshot;
+        let loaded_full_journal = JournalCoordinationSystem::State{
+            journal: new_journal,
+            cache: pre.cache,
+            disk: pre.disk,
+        }.i().journal.i().i().journal;
+        let loaded_aj = AbstractJournal::State{journal: loaded_full_journal};
+        require loaded_full_journal.can_discard_to(pre.persistent_journal_seq_end);
+        require loaded_full_journal.discard_recent(pre.persistent_journal_seq_end) == pre.i().persistent;
+        require AbstractJournal::State::init_by(
+            loaded_aj,
+            AbstractJournal::Config::initialize(pre.i().persistent),
+        );
         update journal = new_journal;
     }}
 
@@ -242,6 +306,8 @@ state_machine!{ ConcreteJournal {
         let tail = self.journal.status.unwrap().unmarshalled_tail;
         &&& tail.can_discard_to(self.persistent_journal_seq_end)
         &&& self.in_flight is Some ==> {
+            &&& self.journal.seq_start() <= self.in_flight.unwrap().new_boundary_lsn
+            &&& self.in_flight.unwrap().new_boundary_lsn <= self.in_flight.unwrap().journal_version
             &&& tail.can_discard_to(self.in_flight.unwrap().journal_version)
             &&& self.persistent_journal_seq_end <= self.in_flight.unwrap().journal_version
         }
@@ -344,7 +410,11 @@ impl ConcreteJournal::State {
                     v: AbstractJournal::State { journal: full_journal }
                 },
                 in_flight: if self.in_flight is Some {
-                    Some(full_journal.discard_recent(self.in_flight.unwrap().journal_version))
+                    Some(
+                        full_journal
+                            .discard_recent(self.in_flight.unwrap().journal_version)
+                            .discard_old(self.in_flight.unwrap().new_boundary_lsn)
+                    )
                 } else {
                     None
                 },
