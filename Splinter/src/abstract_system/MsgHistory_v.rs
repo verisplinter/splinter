@@ -303,7 +303,6 @@ impl MsgHistory {
   {
     let left = self.discard_old(start).discard_recent(end);
     let right = self.discard_recent(end).discard_old(start);
-    assert(left.ext_equal(right));
   }
 
   pub proof fn added_slices_union(self, middle: LSN)
@@ -316,7 +315,6 @@ impl MsgHistory {
         == self,
     {
       let other = self.discard_recent(middle).concat(self.discard_old(middle));
-      assert(self.ext_equal(other));
     }
 
   pub proof fn discard_slice_is_subseq(self, start: LSN, end: LSN)

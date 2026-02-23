@@ -6,17 +6,29 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, Mutex};
+use std::thread;
+
+#[derive(Debug, Clone)]
+enum Mode {
+    Single { file: PathBuf, module: String },
+    AllFiles,
+}
 
 #[derive(Debug, Clone)]
 struct Config {
-    file: PathBuf,
-    module: String,
+    mode: Mode,
     verus: String,
     entry: String,
     workdir: PathBuf,
     label: String,
     function_filters: Vec<String>,
     extra_verus_args: Vec<String>,
+    jobs: usize,
+    wave_size: usize,
+    global_verify_cmd: Option<String>,
+    snapshot_cmd: Option<String>,
+    stream_verus: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -26,25 +38,60 @@ struct FunctionSpan {
     end_line: usize,
 }
 
+#[derive(Debug, Clone)]
+struct FileTask {
+    rel_from_repo: PathBuf,
+    rel_from_workdir: PathBuf,
+    module: String,
+}
+
+#[derive(Debug, Clone)]
+struct FileProcessResult {
+    task: FileTask,
+    changed: bool,
+    removed: usize,
+    kept: usize,
+    content: Option<String>,
+    skipped: bool,
+    message: String,
+}
+
 fn usage() -> String {
     [
         "Usage:",
         "  proof_prune --file <path> --module <module> --verus <path> [options] [-- <extra verus args>]",
+        "  proof_prune --all-files --verus <path> [options] [-- <extra verus args>]",
         "",
-        "Options:",
+        "Mode options:",
+        "  --file <path>          Single-file mode target",
+        "  --module <module>      Single-file mode module path",
+        "  --all-files            Batch mode: enumerate all .rs files under --workdir",
+        "",
+        "Common options:",
+        "  --verus <path>         Verus binary path",
         "  --entry <path>         Verus entry file (default: main.rs)",
-        "  --workdir <path>       Working directory for verus invocations (default: .)",
-        "  --label <label>        Label to append to needed asserts (default: trigger)",
-        "  --function <substr>    Restrict to function names containing this substring; repeatable",
+        "  --workdir <path>       Working directory for verus (default: .)",
+        "  --label <label>        Label for required asserts (default: trigger)",
+        "  --function <substr>    Restrict to function names containing substring; repeatable",
+        "  --stream-verus         Stream verus stdout/stderr instead of capturing",
         "",
-        "Example:",
-        "  proof_prune \\",
-        "    --file marshalling/ResizableUniformSizedSeq_v.rs \\",
-        "    --module marshalling::ResizableUniformSizedSeq_v \\",
-        "    --verus ~/work/verus/source/target-verus/release/verus \\",
-        "    --entry main.rs \\",
-        "    --workdir ../../src \\",
-        "    -- --triggers-mode silent --multiple-errors 2",
+        "Batch options:",
+        "  --jobs <n>             Parallel file workers (default: 1)",
+        "  --wave-size <n>        Files per wave before drain/merge/global verify (default: jobs)",
+        "  --global-verify-cmd <cmd>",
+        "                        Command run after each wave merge (default: '<verus> [extra] <entry>')",
+        "  --snapshot-cmd <cmd>   Command run after successful wave global verify",
+        "",
+        "Example (single file):",
+        "  proof_prune --file marshalling/KeyFormat_v.rs --module marshalling::KeyFormat_v \\",
+        "    --verus ~/work/verus/source/target-verus/release/verus --entry main.rs \\",
+        "    --workdir Splinter/src -- --triggers-mode silent",
+        "",
+        "Example (batch):",
+        "  proof_prune --all-files --verus ~/work/verus/source/target-verus/release/verus \\",
+        "    --workdir Splinter/src --jobs 4 --wave-size 8 \\",
+        "    --global-verify-cmd '~/work/verus/source/target-verus/release/verus --triggers-mode silent main.rs' \\",
+        "    --snapshot-cmd 'git commit -am \"proof_prune wave\"'",
     ]
     .join("\n")
 }
@@ -54,12 +101,18 @@ fn parse_args() -> Result<Config, String> {
 
     let mut file: Option<PathBuf> = None;
     let mut module: Option<String> = None;
+    let mut all_files = false;
     let mut verus: Option<String> = None;
     let mut entry = "main.rs".to_string();
     let mut workdir = env::current_dir().map_err(|e| format!("failed to get cwd: {e}"))?;
     let mut label = "trigger".to_string();
     let mut function_filters = Vec::new();
     let mut extra_verus_args = Vec::new();
+    let mut jobs: usize = 1;
+    let mut wave_size: Option<usize> = None;
+    let mut global_verify_cmd: Option<String> = None;
+    let mut snapshot_cmd: Option<String> = None;
+    let mut stream_verus = false;
 
     while let Some(arg) = args.pop_front() {
         if arg == "--" {
@@ -69,22 +122,25 @@ fn parse_args() -> Result<Config, String> {
 
         match arg.as_str() {
             "--file" => {
-                let v = args
-                    .pop_front()
-                    .ok_or_else(|| "missing value for --file".to_string())?;
-                file = Some(PathBuf::from(v));
+                file = Some(PathBuf::from(
+                    args.pop_front()
+                        .ok_or_else(|| "missing value for --file".to_string())?,
+                ));
             }
             "--module" => {
-                let v = args
-                    .pop_front()
-                    .ok_or_else(|| "missing value for --module".to_string())?;
-                module = Some(v);
+                module = Some(
+                    args.pop_front()
+                        .ok_or_else(|| "missing value for --module".to_string())?,
+                );
+            }
+            "--all-files" => {
+                all_files = true;
             }
             "--verus" => {
-                let v = args
-                    .pop_front()
-                    .ok_or_else(|| "missing value for --verus".to_string())?;
-                verus = Some(v);
+                verus = Some(
+                    args.pop_front()
+                        .ok_or_else(|| "missing value for --verus".to_string())?,
+                );
             }
             "--entry" => {
                 entry = args
@@ -92,10 +148,10 @@ fn parse_args() -> Result<Config, String> {
                     .ok_or_else(|| "missing value for --entry".to_string())?;
             }
             "--workdir" => {
-                let v = args
-                    .pop_front()
-                    .ok_or_else(|| "missing value for --workdir".to_string())?;
-                workdir = PathBuf::from(v);
+                workdir = PathBuf::from(
+                    args.pop_front()
+                        .ok_or_else(|| "missing value for --workdir".to_string())?,
+                );
             }
             "--label" => {
                 label = args
@@ -103,10 +159,48 @@ fn parse_args() -> Result<Config, String> {
                     .ok_or_else(|| "missing value for --label".to_string())?;
             }
             "--function" => {
+                function_filters.push(
+                    args.pop_front()
+                        .ok_or_else(|| "missing value for --function".to_string())?,
+                );
+            }
+            "--jobs" => {
                 let v = args
                     .pop_front()
-                    .ok_or_else(|| "missing value for --function".to_string())?;
-                function_filters.push(v);
+                    .ok_or_else(|| "missing value for --jobs".to_string())?;
+                jobs = v
+                    .parse::<usize>()
+                    .map_err(|e| format!("invalid --jobs value '{v}': {e}"))?;
+                if jobs == 0 {
+                    return Err("--jobs must be >= 1".to_string());
+                }
+            }
+            "--wave-size" => {
+                let v = args
+                    .pop_front()
+                    .ok_or_else(|| "missing value for --wave-size".to_string())?;
+                let parsed = v
+                    .parse::<usize>()
+                    .map_err(|e| format!("invalid --wave-size value '{v}': {e}"))?;
+                if parsed == 0 {
+                    return Err("--wave-size must be >= 1".to_string());
+                }
+                wave_size = Some(parsed);
+            }
+            "--global-verify-cmd" => {
+                global_verify_cmd = Some(
+                    args.pop_front()
+                        .ok_or_else(|| "missing value for --global-verify-cmd".to_string())?,
+                );
+            }
+            "--snapshot-cmd" => {
+                snapshot_cmd = Some(
+                    args.pop_front()
+                        .ok_or_else(|| "missing value for --snapshot-cmd".to_string())?,
+                );
+            }
+            "--stream-verus" => {
+                stream_verus = true;
             }
             "-h" | "--help" => {
                 return Err(usage());
@@ -117,20 +211,65 @@ fn parse_args() -> Result<Config, String> {
         }
     }
 
-    let file = file.ok_or_else(|| format!("missing --file\n\n{}", usage()))?;
-    let module = module.ok_or_else(|| format!("missing --module\n\n{}", usage()))?;
     let verus = verus.ok_or_else(|| format!("missing --verus\n\n{}", usage()))?;
 
+    let mode = if all_files {
+        if file.is_some() || module.is_some() {
+            return Err("--all-files cannot be combined with --file/--module".to_string());
+        }
+        Mode::AllFiles
+    } else {
+        let file = file.ok_or_else(|| format!("missing --file\n\n{}", usage()))?;
+        let module = module.ok_or_else(|| format!("missing --module\n\n{}", usage()))?;
+        Mode::Single { file, module }
+    };
+
+    let wave_size = wave_size.unwrap_or(jobs);
+
     Ok(Config {
-        file,
-        module,
+        mode,
         verus,
         entry,
         workdir,
         label,
         function_filters,
         extra_verus_args,
+        jobs,
+        wave_size,
+        global_verify_cmd,
+        snapshot_cmd,
+        stream_verus,
     })
+}
+
+fn run_shell(cmd: &str, cwd: &Path) -> Result<bool, String> {
+    let status = Command::new("bash")
+        .arg("-lc")
+        .arg(cmd)
+        .current_dir(cwd)
+        .status()
+        .map_err(|e| format!("failed to run shell command '{cmd}': {e}"))?;
+    Ok(status.success())
+}
+
+fn find_repo_root(from_dir: &Path) -> Result<PathBuf, String> {
+    let output = Command::new("git")
+        .arg("rev-parse")
+        .arg("--show-toplevel")
+        .current_dir(from_dir)
+        .output()
+        .map_err(|e| format!("failed to run git rev-parse: {e}"))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "git rev-parse failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    Ok(PathBuf::from(
+        String::from_utf8_lossy(&output.stdout).trim().to_string(),
+    ))
 }
 
 fn strip_line_comment(line: &str) -> &str {
@@ -334,22 +473,14 @@ fn add_label_to_assert_line(line: &str, label: &str) -> String {
         return line.to_string();
     }
 
-    if let Some(comment_idx) = line.find("//") {
-        let (before, comment) = line.split_at(comment_idx);
-        if before.trim_end().is_empty() {
-            return line.to_string();
-        }
-        format!("{}{} {}\n", before.trim_end(), comment, label)
+    if line.ends_with('\n') {
+        let mut s = line.trim_end_matches('\n').to_string();
+        s.push_str(" // ");
+        s.push_str(label);
+        s.push('\n');
+        s
     } else {
-        if line.ends_with('\n') {
-            let mut s = line.trim_end_matches('\n').to_string();
-            s.push_str(" // ");
-            s.push_str(label);
-            s.push('\n');
-            s
-        } else {
-            format!("{} // {}", line, label)
-        }
+        format!("{} // {}", line, label)
     }
 }
 
@@ -358,49 +489,133 @@ fn write_lines(path: &Path, lines: &[String]) -> Result<(), String> {
     fs::write(path, text).map_err(|e| format!("failed to write {}: {e}", path.display()))
 }
 
-fn run_verify_function(cfg: &Config, fn_name: &str) -> Result<bool, String> {
+fn run_verify_function(
+    verus: &str,
+    workdir: &Path,
+    entry: &str,
+    module: &str,
+    fn_name: &str,
+    extra_verus_args: &[String],
+    stream: bool,
+) -> Result<(bool, String), String> {
+    fn run_once(
+        verus: &str,
+        workdir: &Path,
+        entry: &str,
+        module: &str,
+        fn_name: &str,
+        extra_verus_args: &[String],
+        stream: bool,
+    ) -> Result<(bool, String, String), String> {
+        let selector = format!("*{}*", fn_name);
+
+        let mut cmd = Command::new(verus);
+        cmd.current_dir(workdir);
+
+        for a in extra_verus_args {
+            cmd.arg(a);
+        }
+
+        cmd.arg("--verify-only-module")
+            .arg(module)
+            .arg("--verify-function")
+            .arg(&selector)
+            .arg(entry);
+
+        let output = cmd
+            .output()
+            .map_err(|e| format!("failed to run verus for {fn_name}: {e}"))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+        if stream {
+            if !stdout.is_empty() {
+                print!("{stdout}");
+            }
+            if !stderr.is_empty() {
+                eprint!("{stderr}");
+            }
+        }
+
+        Ok((output.status.success(), stdout, stderr))
+    }
+
+    fn parse_child_modules(stderr: &str, module: &str) -> Vec<String> {
+        let needle = "could not find module";
+        if !stderr.contains(needle) {
+            return Vec::new();
+        }
+        let prefix = format!("{module}::");
+        let mut out = Vec::new();
+        for line in stderr.lines() {
+            let t = line.trim_start();
+            if let Some(rest) = t.strip_prefix("- ") {
+                let m = rest.trim();
+                if m.starts_with(&prefix) {
+                    out.push(m.to_string());
+                }
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
     let selector = format!("*{}*", fn_name);
+    let _ = selector; // keep local behavior explicit and avoid accidental API drift
 
-    let mut cmd = Command::new(&cfg.verus);
-    cmd.current_dir(&cfg.workdir);
-
-    for a in &cfg.extra_verus_args {
-        cmd.arg(a);
+    let (ok, _stdout, stderr) = run_once(
+        verus,
+        workdir,
+        entry,
+        module,
+        fn_name,
+        extra_verus_args,
+        stream,
+    )?;
+    if ok {
+        return Ok((true, module.to_string()));
     }
 
-    cmd.arg("--verify-only-module")
-        .arg(&cfg.module)
-        .arg("--verify-function")
-        .arg(&selector)
-        .arg(&cfg.entry);
-
-    let output = cmd
-        .output()
-        .map_err(|e| format!("failed to run verus for {fn_name}: {e}"))?;
-
-    if output.status.success() {
-        Ok(true)
-    } else {
-        Ok(false)
+    let children = parse_child_modules(&stderr, module);
+    if children.is_empty() {
+        return Ok((false, module.to_string()));
     }
+
+    for child in children {
+        let (ok_child, _out_child, _err_child) = run_once(
+            verus,
+            workdir,
+            entry,
+            &child,
+            fn_name,
+            extra_verus_args,
+            stream,
+        )?;
+        if ok_child {
+            return Ok((true, child));
+        }
+    }
+
+    Ok((false, module.to_string()))
 }
 
-fn main() {
-    let cfg = match parse_args() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(2);
-        }
-    };
-
-    let original = match fs::read_to_string(&cfg.file) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("failed to read {}: {e}", cfg.file.display());
-            std::process::exit(1);
-        }
-    };
+fn process_one_file(
+    abs_file: &Path,
+    display_file: &str,
+    module: &str,
+    verus: &str,
+    workdir: &Path,
+    entry: &str,
+    label: &str,
+    function_filters: &[String],
+    extra_verus_args: &[String],
+    stream_verus: bool,
+    worker_id: usize,
+) -> Result<(bool, usize, usize, usize, usize, String), String> {
+    let original = fs::read_to_string(abs_file)
+        .map_err(|e| format!("failed to read {}: {e}", abs_file.display()))?;
 
     let mut lines: Vec<String> = original
         .split_inclusive('\n')
@@ -412,95 +627,589 @@ fn main() {
 
     let functions = discover_functions(&lines);
     if functions.is_empty() {
-        eprintln!("no functions discovered in {}", cfg.file.display());
-        std::process::exit(1);
+        return Ok((
+            false,
+            0,
+            0,
+            0,
+            0,
+            "no functions discovered".to_string(),
+        ));
     }
 
     let mut total_removed = 0usize;
     let mut total_kept = 0usize;
+    let mut total_unlabeled = 0usize;
+    let mut total_candidate_fns = 0usize;
+    let mut any_change = false;
+    let mut module_for_verify = module.to_string();
 
     for f in functions {
-        if !cfg.function_filters.is_empty()
-            && !cfg
-                .function_filters
-                .iter()
-                .any(|needle| f.name.contains(needle))
+        if !function_filters.is_empty()
+            && !function_filters.iter().any(|needle| f.name.contains(needle))
         {
             continue;
-        }
-
-        match run_verify_function(&cfg, &f.name) {
-            Ok(true) => {}
-            Ok(false) => {
-                eprintln!("[skip] {}: control verify failed", f.name);
-                continue;
-            }
-            Err(e) => {
-                eprintln!("[skip] {}: {e}", f.name);
-                continue;
-            }
         }
 
         let candidates = find_candidates(&lines, &f);
         if candidates.is_empty() {
             continue;
         }
+        total_unlabeled += candidates.len();
+        total_candidate_fns += 1;
 
-        println!("[{}] candidates: {}", f.name, candidates.len());
+        println!(
+            "[{}] running control for {}:{}",
+            worker_id, display_file, f.name
+        );
+        let (ok_control, resolved) = run_verify_function(
+            verus,
+            workdir,
+            entry,
+            &module_for_verify,
+            &f.name,
+            extra_verus_args,
+            stream_verus,
+        )?;
+        module_for_verify = resolved;
+        if !ok_control {
+            continue;
+        }
 
-        for idx in candidates.into_iter().rev() {
+        println!(
+            "[{}] found {} assert candidate(s) for {}:{}",
+            worker_id,
+            candidates.len(),
+            display_file,
+            f.name
+        );
+        let total_candidates = candidates.len();
+
+        for (k, idx) in candidates.into_iter().rev().enumerate() {
             if idx >= lines.len() {
                 continue;
             }
 
             let original_line = lines[idx].clone();
+            println!(
+                "[{}] trying assert {}/{} for {}:{} (line {})",
+                worker_id,
+                k + 1,
+                total_candidates,
+                display_file,
+                f.name,
+                idx + 1
+            );
+            println!(
+                "[{}] deleting assert {}/{} for {}:{}",
+                worker_id,
+                k + 1,
+                total_candidates,
+                display_file,
+                f.name
+            );
             lines.remove(idx);
+            write_lines(abs_file, &lines)?;
 
-            if let Err(e) = write_lines(&cfg.file, &lines) {
-                eprintln!("write failed while pruning {}:{}: {e}", f.name, idx + 1);
-                std::process::exit(1);
-            }
-
-            let keep_removed = match run_verify_function(&cfg, &f.name) {
-                Ok(v) => v,
-                Err(e) => {
-                    eprintln!("verify failed while pruning {}:{}: {e}", f.name, idx + 1);
-                    std::process::exit(1);
-                }
-            };
+            let (keep_removed, resolved) = run_verify_function(
+                verus,
+                workdir,
+                entry,
+                &module_for_verify,
+                &f.name,
+                extra_verus_args,
+                stream_verus,
+            )?;
+            module_for_verify = resolved;
 
             if keep_removed {
                 total_removed += 1;
-                println!("  - removed line {}", idx + 1);
+                any_change = true;
+                println!(
+                    "[{}] assert {}/{} removed for {}:{}",
+                    worker_id,
+                    k + 1,
+                    total_candidates,
+                    display_file,
+                    f.name
+                );
             } else {
-                let relabeled = add_label_to_assert_line(&original_line, &cfg.label);
+                let relabeled = add_label_to_assert_line(&original_line, label);
                 lines.insert(idx, relabeled);
-                if let Err(e) = write_lines(&cfg.file, &lines) {
-                    eprintln!("write failed while restoring {}:{}: {e}", f.name, idx + 1);
-                    std::process::exit(1);
-                }
+                write_lines(abs_file, &lines)?;
                 total_kept += 1;
-                println!("  - kept+labelled line {}", idx + 1);
+                any_change = true;
+                println!(
+                    "[{}] marking assert {}/{} as {} for {}:{}",
+                    worker_id,
+                    k + 1,
+                    total_candidates,
+                    label,
+                    display_file,
+                    f.name
+                );
             }
+            let remaining = total_candidates - (k + 1);
+            println!(
+                "[{}] progress for {}:{}: {}/{} done, {} to go (fn removed={}, fn kept={})",
+                worker_id,
+                display_file,
+                f.name,
+                k + 1,
+                total_candidates,
+                remaining,
+                total_removed,
+                total_kept
+            );
         }
 
-        match run_verify_function(&cfg, &f.name) {
-            Ok(true) => {}
-            Ok(false) => {
-                eprintln!("function {} does not verify after pruning", f.name);
-                std::process::exit(1);
-            }
-            Err(e) => {
-                eprintln!("post-check failed for {}: {e}", f.name);
-                std::process::exit(1);
-            }
+        println!(
+            "[{}] post-check for {}:{}",
+            worker_id, display_file, f.name
+        );
+        let (ok, resolved) = run_verify_function(
+            verus,
+            workdir,
+            entry,
+            &module_for_verify,
+            &f.name,
+            extra_verus_args,
+            stream_verus,
+        )?;
+        module_for_verify = resolved;
+        if !ok {
+            return Err(format!("function {} failed post-check", f.name));
         }
     }
 
-    if let Err(e) = write_lines(&cfg.file, &lines) {
-        eprintln!("failed final write {}: {e}", cfg.file.display());
+    write_lines(abs_file, &lines)?;
+    let message = format!("removed {total_removed}, kept+labelled {total_kept}");
+    Ok((
+        any_change,
+        total_removed,
+        total_kept,
+        total_unlabeled,
+        total_candidate_fns,
+        message,
+    ))
+}
+
+fn derive_module_from_rel(rel_from_workdir: &Path) -> Option<String> {
+    if rel_from_workdir.extension().and_then(|e| e.to_str()) != Some("rs") {
+        return None;
+    }
+
+    let mut comps: Vec<String> = rel_from_workdir
+        .components()
+        .filter_map(|c| c.as_os_str().to_str().map(|s| s.to_string()))
+        .collect();
+
+    if comps.is_empty() {
+        return None;
+    }
+
+    let last = comps.last()?.clone();
+    if last == "mod.rs" {
+        comps.pop();
+    } else if let Some(stripped) = last.strip_suffix(".rs") {
+        *comps.last_mut().unwrap() = stripped.to_string();
+    } else {
+        return None;
+    }
+
+    if comps.is_empty() {
+        return None;
+    }
+
+    Some(comps.join("::"))
+}
+
+fn walk_rs_files(root: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    let entries = fs::read_dir(root)
+        .map_err(|e| format!("failed to read dir {}: {e}", root.display()))?;
+
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("failed to read dir entry: {e}"))?;
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+
+        if path.is_dir() {
+            if name == "target" || name == ".git" {
+                continue;
+            }
+            walk_rs_files(&path, out)?;
+        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            out.push(path);
+        }
+    }
+
+    Ok(())
+}
+
+fn default_global_verify_cmd(cfg: &Config) -> String {
+    let mut parts = Vec::new();
+    parts.push(shell_escape(&cfg.verus));
+    for a in &cfg.extra_verus_args {
+        parts.push(shell_escape(a));
+    }
+    parts.push(shell_escape(&cfg.entry));
+    parts.join(" ")
+}
+
+fn shell_escape(s: &str) -> String {
+    if s.chars().all(|c| c.is_ascii_alphanumeric() || "-._/:=+".contains(c)) {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
+}
+
+fn run_single(cfg: &Config) -> Result<(), String> {
+    let (file, module) = match &cfg.mode {
+        Mode::Single { file, module } => (file, module),
+        Mode::AllFiles => return Err("internal mode error".to_string()),
+    };
+
+    let changed = process_one_file(
+        file,
+        &file.display().to_string(),
+        module,
+        &cfg.verus,
+        &cfg.workdir,
+        &cfg.entry,
+        &cfg.label,
+        &cfg.function_filters,
+        &cfg.extra_verus_args,
+        cfg.stream_verus,
+        0,
+    )?;
+
+    println!("done: {}", changed.5);
+    Ok(())
+}
+
+fn create_worker_worktree(repo_root: &Path, worker_id: usize) -> Result<PathBuf, String> {
+    let dir = PathBuf::from(format!("/tmp/proof_prune_worker_{}_{}", std::process::id(), worker_id));
+
+    if dir.exists() {
+        fs::remove_dir_all(&dir)
+            .map_err(|e| format!("failed to clean {}: {e}", dir.display()))?;
+    }
+
+    let status = Command::new("git")
+        .current_dir(repo_root)
+        .arg("worktree")
+        .arg("add")
+        .arg("--detach")
+        .arg(&dir)
+        .arg("HEAD")
+        .status()
+        .map_err(|e| format!("failed to create worktree {}: {e}", dir.display()))?;
+
+    if !status.success() {
+        return Err(format!("git worktree add failed for {}", dir.display()));
+    }
+
+    Ok(dir)
+}
+
+fn remove_worker_worktree(repo_root: &Path, dir: &Path) {
+    let _ = Command::new("git")
+        .current_dir(repo_root)
+        .arg("worktree")
+        .arg("remove")
+        .arg("--force")
+        .arg(dir)
+        .status();
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+fn run_batch(cfg: &Config) -> Result<(), String> {
+    let repo_root = find_repo_root(&cfg.workdir)?;
+    let workdir_abs = fs::canonicalize(&cfg.workdir)
+        .map_err(|e| format!("failed to canonicalize workdir {}: {e}", cfg.workdir.display()))?;
+    let workdir_rel_from_repo = workdir_abs
+        .strip_prefix(&repo_root)
+        .map_err(|_| {
+            format!(
+                "workdir {} is not inside git repo root {}",
+                workdir_abs.display(),
+                repo_root.display()
+            )
+        })?
+        .to_path_buf();
+
+    let mut files = Vec::new();
+    walk_rs_files(&workdir_abs, &mut files)?;
+    files.sort();
+
+    let entry_abs = workdir_abs.join(&cfg.entry);
+
+    let mut tasks = Vec::new();
+    for abs in files {
+        if abs == entry_abs {
+            continue;
+        }
+
+        let rel_from_workdir = abs
+            .strip_prefix(&workdir_abs)
+            .map_err(|_| format!("path {} not under workdir", abs.display()))?
+            .to_path_buf();
+
+        let Some(module) = derive_module_from_rel(&rel_from_workdir) else {
+            continue;
+        };
+
+        let rel_from_repo = abs
+            .strip_prefix(&repo_root)
+            .map_err(|_| format!("path {} not under repo root", abs.display()))?
+            .to_path_buf();
+
+        tasks.push(FileTask {
+            rel_from_repo,
+            rel_from_workdir,
+            module,
+        });
+    }
+
+    if tasks.is_empty() {
+        println!("no tasks found");
+        return Ok(());
+    }
+
+    println!(
+        "discovered {} file tasks under {}",
+        tasks.len(),
+        workdir_abs.display()
+    );
+
+    let global_verify_cmd = cfg
+        .global_verify_cmd
+        .clone()
+        .unwrap_or_else(|| default_global_verify_cmd(cfg));
+
+    let mut wave_num = 0usize;
+    let mut total_removed = 0usize;
+    let mut total_kept = 0usize;
+    let mut cursor = 0usize;
+
+    while cursor < tasks.len() {
+        wave_num += 1;
+        let end = (cursor + cfg.wave_size).min(tasks.len());
+        let wave_tasks = tasks[cursor..end].to_vec();
+        cursor = end;
+
+        println!(
+            "\\n=== wave {}: {} file(s), jobs={} ===",
+            wave_num,
+            wave_tasks.len(),
+            cfg.jobs
+        );
+
+        let queue = Arc::new(Mutex::new(VecDeque::from(wave_tasks)));
+        let results: Arc<Mutex<Vec<FileProcessResult>>> = Arc::new(Mutex::new(Vec::new()));
+        let errors: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let mut handles = Vec::new();
+        for worker_id in 0..cfg.jobs {
+            let queue = Arc::clone(&queue);
+            let results = Arc::clone(&results);
+            let errors = Arc::clone(&errors);
+            let repo_root = repo_root.clone();
+            let cfg = cfg.clone();
+            let workdir_rel_from_repo = workdir_rel_from_repo.clone();
+
+            let h = thread::spawn(move || {
+                let worktree = match create_worker_worktree(&repo_root, worker_id) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        errors.lock().unwrap().push(e);
+                        return;
+                    }
+                };
+
+                let worker_workdir = worktree.join(&workdir_rel_from_repo);
+
+                let mut thread_removed = 0usize;
+                let mut thread_unlabeled = 0usize;
+                let mut thread_fns = 0usize;
+
+                loop {
+                    let task = {
+                        let mut q = queue.lock().unwrap();
+                        q.pop_front()
+                    };
+
+                    let Some(task) = task else { break; };
+
+                    let worker_file = worktree.join(&task.rel_from_repo);
+                    println!(
+                        "[{}] Thread {} starts, owns {} ({})",
+                        worker_id,
+                        worker_id,
+                        task.rel_from_workdir.display(),
+                        task.module
+                    );
+
+                    let processed = process_one_file(
+                        &worker_file,
+                        &task.rel_from_workdir.display().to_string(),
+                        &task.module,
+                        &cfg.verus,
+                        &worker_workdir,
+                        &cfg.entry,
+                        &cfg.label,
+                        &cfg.function_filters,
+                        &cfg.extra_verus_args,
+                        cfg.stream_verus,
+                        worker_id,
+                    );
+
+                    match processed {
+                        Ok((changed, removed, kept, unlabeled, fns, msg)) => {
+                            thread_removed += removed;
+                            thread_unlabeled += unlabeled;
+                            thread_fns += fns;
+                            let content = if changed {
+                                match fs::read_to_string(&worker_file) {
+                                    Ok(s) => Some(s),
+                                    Err(e) => {
+                                        errors.lock().unwrap().push(format!(
+                                            "failed reading worker output {}: {e}",
+                                            worker_file.display()
+                                        ));
+                                        None
+                                    }
+                                }
+                            } else {
+                                None
+                            };
+
+                            let result = FileProcessResult {
+                                task,
+                                changed,
+                                removed,
+                                kept,
+                                content,
+                                skipped: false,
+                                message: msg,
+                            };
+                            results.lock().unwrap().push(result);
+                        }
+                        Err(e) => {
+                            let result = FileProcessResult {
+                                task,
+                                changed: false,
+                                removed: 0,
+                                kept: 0,
+                                content: None,
+                                skipped: true,
+                                message: format!("error: {e}"),
+                            };
+                            results.lock().unwrap().push(result);
+                        }
+                    }
+                }
+
+                println!(
+                    "[{}] Removed {} asserts from {} unlabeled asserts across {} fns",
+                    worker_id, thread_removed, thread_unlabeled, thread_fns
+                );
+                remove_worker_worktree(&repo_root, &worktree);
+            });
+            handles.push(h);
+        }
+
+        for h in handles {
+            let _ = h.join();
+        }
+
+        if !errors.lock().unwrap().is_empty() {
+            let msgs = errors.lock().unwrap().clone();
+            return Err(format!("worker setup/runtime errors:\n{}", msgs.join("\n")));
+        }
+
+        let mut wave_results = results.lock().unwrap().clone();
+        wave_results.sort_by_key(|r| r.task.rel_from_repo.clone());
+
+        for r in &wave_results {
+            if r.skipped {
+                println!(
+                    "[skip] {}: {}",
+                    r.task.rel_from_workdir.display(),
+                    r.message
+                );
+                continue;
+            }
+            println!(
+                "[done] {}: {}",
+                r.task.rel_from_workdir.display(),
+                r.message
+            );
+        }
+
+        for r in &wave_results {
+            if !r.changed {
+                continue;
+            }
+            let Some(content) = &r.content else {
+                return Err(format!(
+                    "missing worker content for changed file {}",
+                    r.task.rel_from_repo.display()
+                ));
+            };
+            let main_path = repo_root.join(&r.task.rel_from_repo);
+            fs::write(&main_path, content)
+                .map_err(|e| format!("failed to merge {}: {e}", main_path.display()))?;
+            total_removed += r.removed;
+            total_kept += r.kept;
+        }
+
+        println!("[wave {}] merged changes; running global verify...", wave_num);
+        let ok = run_shell(&global_verify_cmd, &cfg.workdir)?;
+        if !ok {
+            return Err(format!(
+                "global verify failed after wave {}. command: {}",
+                wave_num, global_verify_cmd
+            ));
+        }
+
+        if let Some(cmd) = &cfg.snapshot_cmd {
+            println!("[wave {}] running snapshot command", wave_num);
+            let ok = run_shell(cmd, &repo_root)?;
+            if !ok {
+                return Err(format!("snapshot command failed after wave {}: {}", wave_num, cmd));
+            }
+        }
+
+        println!("[wave {}] complete", wave_num);
+    }
+
+    println!(
+        "\\nall waves complete: removed {}, kept+labelled {}",
+        total_removed, total_kept
+    );
+    Ok(())
+}
+
+fn main() {
+    let cfg = match parse_args() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(2);
+        }
+    };
+
+    let result = match cfg.mode {
+        Mode::Single { .. } => run_single(&cfg),
+        Mode::AllFiles => run_batch(&cfg),
+    };
+
+    if let Err(e) = result {
+        eprintln!("error: {e}");
         std::process::exit(1);
     }
-
-    println!("done: removed {total_removed}, kept+labelled {total_kept}");
 }

@@ -1,14 +1,11 @@
 # proof_prune
 
-`proof_prune` is a conservative helper for cleaning up proof-diagnosis asserts.
+`proof_prune` removes spurious proof-diagnosis `assert(...)` lines by repeatedly re-verifying.
 
-It scans one Rust/Verus source file, works function-by-function, and for each unlabeled single-line
-`assert(...)` candidate it:
+It supports two modes:
 
-1. Removes the line.
-2. Re-runs Verus on that function (`--verify-only-module + --verify-function`).
-3. If verification still passes, keeps the line removed.
-4. If verification fails, restores the line and appends `// trigger` (or custom label).
+1. Single-file mode (`--file` + `--module`)
+2. Batch mode across all `.rs` files under a directory (`--all-files`), queued by file.
 
 ## Build
 
@@ -17,7 +14,7 @@ cd Splinter/tools/proof_prune
 cargo build
 ```
 
-## Usage
+## Single-file mode
 
 ```bash
 cargo run -- \
@@ -29,28 +26,54 @@ cargo run -- \
   -- --triggers-mode silent --multiple-errors 2
 ```
 
-### Arguments
+## Batch mode (file-queued waves)
 
-- `--file`: source file to edit
-- `--module`: module path for `--verify-only-module`
-- `--verus`: Verus binary path
-- `--entry`: Verus entry file (default `main.rs`)
-- `--workdir`: command working directory for Verus (default current directory)
-- `--label`: label added to required asserts (default `trigger`)
-- `--function`: optional function-name substring filter (repeatable)
-- `--`: remaining args are passed through to Verus
+```bash
+cargo run -- \
+  --all-files \
+  --verus ~/work/verus/source/target-verus/release/verus \
+  --workdir ../../src \
+  --entry main.rs \
+  --jobs 4 \
+  --wave-size 8 \
+  --global-verify-cmd "~/work/verus/source/target-verus/release/verus --triggers-mode silent main.rs"
+```
 
-## Label heuristic (v1)
+Optional wave snapshot command:
 
-Asserts are skipped if they are already labeled by:
+```bash
+--snapshot-cmd "git commit -am 'proof_prune wave checkpoint'"
+```
 
-- an inline comment containing `trigger`, `witness`, or `keep`, or
-- the nearest preceding non-empty comment line containing `trigger`, `witness`, or `keep`.
+## What it considers as candidate asserts (v1)
 
-## Current limitations
+- Single-line `assert(...)` statements
+- Not already labeled
 
-- Only handles **single-line** `assert(...)` statements.
-- Skips `assert forall ...` and `assert exists ...` forms.
-- Uses wildcard verify-function matching (`*fn_name*`), which may verify more than one function if names overlap.
-- Parses with conservative text scanning (not a full Rust AST).
-- Runs sequentially (no worktree-based parallelism yet).
+It skips:
+
+- `assert forall ...`
+- `assert exists ...`
+- asserts already labeled via inline or preceding comment containing `trigger`, `witness`, or `keep`
+
+## Batch safety model
+
+- Queue is by **file** (not function)
+- Workers use isolated `git worktree` directories under `/tmp`
+- After each wave:
+  1. workers drain
+  2. changes merge into main worktree
+  3. global verify command runs
+  4. optional snapshot command runs
+
+## Useful knobs
+
+- `--function <substr>`: limit pruning to function names containing substring (repeatable)
+- `--label <text>`: default `trigger`
+- `--stream-verus`: stream verifier output live for every function check
+
+## Limitations
+
+- Text-scanning parser (not full Rust AST)
+- Wildcard verify selection (`*fn_name*`), so highly-colliding function names may verify more than expected
+- Sequential per-file processing by design (parallelism is file-level)
