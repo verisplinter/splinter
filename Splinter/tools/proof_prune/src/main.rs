@@ -6,8 +6,10 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
 enum Mode {
@@ -48,12 +50,17 @@ struct FileTask {
 #[derive(Debug, Clone)]
 struct FileProcessResult {
     task: FileTask,
-    changed: bool,
-    removed: usize,
-    kept: usize,
-    content: Option<String>,
     skipped: bool,
     message: String,
+}
+
+#[derive(Debug, Default, Clone)]
+struct RunStats {
+    total_files: usize,
+    completed_files: usize,
+    durable_files: usize,
+    removed: usize,
+    kept: usize,
 }
 
 fn usage() -> String {
@@ -990,6 +997,28 @@ fn run_batch(cfg: &Config) -> Result<(), String> {
         .clone()
         .unwrap_or_else(|| default_global_verify_cmd(cfg));
 
+    let stats = Arc::new(Mutex::new(RunStats {
+        total_files: tasks.len(),
+        ..RunStats::default()
+    }));
+    let heartbeat_stop = Arc::new(AtomicBool::new(false));
+    let hb_stats = Arc::clone(&stats);
+    let hb_stop = Arc::clone(&heartbeat_stop);
+    let heartbeat = thread::spawn(move || {
+        while !hb_stop.load(Ordering::Relaxed) {
+            thread::sleep(Duration::from_secs(30));
+            if hb_stop.load(Ordering::Relaxed) {
+                break;
+            }
+            let s = hb_stats.lock().unwrap().clone();
+            let remaining = s.total_files.saturating_sub(s.completed_files);
+            println!(
+                "[heartbeat] completed {}/{} files, {} to go; durable files={}, removed={}, kept+labelled={}",
+                s.completed_files, s.total_files, remaining, s.durable_files, s.removed, s.kept
+            );
+        }
+    });
+
     let mut wave_num = 0usize;
     let mut total_removed = 0usize;
     let mut total_kept = 0usize;
@@ -999,6 +1028,7 @@ fn run_batch(cfg: &Config) -> Result<(), String> {
         wave_num += 1;
         let end = (cursor + cfg.wave_size).min(tasks.len());
         let wave_tasks = tasks[cursor..end].to_vec();
+        let expected_wave_claims = wave_tasks.len();
         cursor = end;
 
         println!(
@@ -1011,12 +1041,17 @@ fn run_batch(cfg: &Config) -> Result<(), String> {
         let queue = Arc::new(Mutex::new(VecDeque::from(wave_tasks)));
         let results: Arc<Mutex<Vec<FileProcessResult>>> = Arc::new(Mutex::new(Vec::new()));
         let errors: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let merge_lock: Arc<Mutex<()>> = Arc::new(Mutex::new(()));
+        let wave_claimed = Arc::new(AtomicUsize::new(0));
 
         let mut handles = Vec::new();
         for worker_id in 0..cfg.jobs {
             let queue = Arc::clone(&queue);
             let results = Arc::clone(&results);
             let errors = Arc::clone(&errors);
+            let stats = Arc::clone(&stats);
+            let merge_lock = Arc::clone(&merge_lock);
+            let wave_claimed = Arc::clone(&wave_claimed);
             let repo_root = repo_root.clone();
             let cfg = cfg.clone();
             let workdir_rel_from_repo = workdir_rel_from_repo.clone();
@@ -1035,14 +1070,19 @@ fn run_batch(cfg: &Config) -> Result<(), String> {
                 let mut thread_removed = 0usize;
                 let mut thread_unlabeled = 0usize;
                 let mut thread_fns = 0usize;
+                let mut thread_claimed = 0usize;
 
                 loop {
-                    let task = {
+                    let (task, remaining) = {
                         let mut q = queue.lock().unwrap();
-                        q.pop_front()
+                        let t = q.pop_front();
+                        let rem = q.len();
+                        (t, rem)
                     };
 
                     let Some(task) = task else { break; };
+                    thread_claimed += 1;
+                    let global_claim = wave_claimed.fetch_add(1, Ordering::Relaxed) + 1;
 
                     let worker_file = worktree.join(&task.rel_from_repo);
                     println!(
@@ -1051,6 +1091,10 @@ fn run_batch(cfg: &Config) -> Result<(), String> {
                         worker_id,
                         task.rel_from_workdir.display(),
                         task.module
+                    );
+                    println!(
+                        "[{}] claimed file {} in wave; queue remaining {}",
+                        worker_id, global_claim, remaining
                     );
 
                     let processed = process_one_file(
@@ -1087,24 +1131,50 @@ fn run_batch(cfg: &Config) -> Result<(), String> {
                                 None
                             };
 
+                            if changed {
+                                if let Some(c) = &content {
+                                    let _g = merge_lock.lock().unwrap();
+                                    let main_path = repo_root.join(&task.rel_from_repo);
+                                    if let Err(e) = fs::write(&main_path, c) {
+                                        errors.lock().unwrap().push(format!(
+                                            "failed to durable-merge {}: {e}",
+                                            main_path.display()
+                                        ));
+                                    } else {
+                                        let mut s = stats.lock().unwrap();
+                                        s.durable_files += 1;
+                                        s.removed += removed;
+                                        s.kept += kept;
+                                        println!(
+                                            "[{}] durable merge complete for {} (removed {}, kept {})",
+                                            worker_id,
+                                            task.rel_from_workdir.display(),
+                                            removed,
+                                            kept
+                                        );
+                                    }
+                                }
+                            }
+
+                            {
+                                let mut s = stats.lock().unwrap();
+                                s.completed_files += 1;
+                            }
+
                             let result = FileProcessResult {
                                 task,
-                                changed,
-                                removed,
-                                kept,
-                                content,
                                 skipped: false,
                                 message: msg,
                             };
                             results.lock().unwrap().push(result);
                         }
                         Err(e) => {
+                            {
+                                let mut s = stats.lock().unwrap();
+                                s.completed_files += 1;
+                            }
                             let result = FileProcessResult {
                                 task,
-                                changed: false,
-                                removed: 0,
-                                kept: 0,
-                                content: None,
                                 skipped: true,
                                 message: format!("error: {e}"),
                             };
@@ -1114,8 +1184,8 @@ fn run_batch(cfg: &Config) -> Result<(), String> {
                 }
 
                 println!(
-                    "[{}] Removed {} asserts from {} unlabeled asserts across {} fns",
-                    worker_id, thread_removed, thread_unlabeled, thread_fns
+                    "[{}] claimed {} files; removed {} asserts from {} unlabeled asserts across {} fns",
+                    worker_id, thread_claimed, thread_removed, thread_unlabeled, thread_fns
                 );
                 remove_worker_worktree(&repo_root, &worktree);
             });
@@ -1126,8 +1196,24 @@ fn run_batch(cfg: &Config) -> Result<(), String> {
             let _ = h.join();
         }
 
+        let observed_claims = wave_claimed.load(Ordering::Relaxed);
+        println!(
+            "[wave {}] claim accounting: observed={}, expected={}",
+            wave_num, observed_claims, expected_wave_claims
+        );
+        if observed_claims != expected_wave_claims {
+            heartbeat_stop.store(true, Ordering::Relaxed);
+            let _ = heartbeat.join();
+            return Err(format!(
+                "wave {} claim mismatch: observed {} != expected {}",
+                wave_num, observed_claims, expected_wave_claims
+            ));
+        }
+
         if !errors.lock().unwrap().is_empty() {
             let msgs = errors.lock().unwrap().clone();
+            heartbeat_stop.store(true, Ordering::Relaxed);
+            let _ = heartbeat.join();
             return Err(format!("worker setup/runtime errors:\n{}", msgs.join("\n")));
         }
 
@@ -1150,26 +1236,20 @@ fn run_batch(cfg: &Config) -> Result<(), String> {
             );
         }
 
-        for r in &wave_results {
-            if !r.changed {
-                continue;
-            }
-            let Some(content) = &r.content else {
-                return Err(format!(
-                    "missing worker content for changed file {}",
-                    r.task.rel_from_repo.display()
-                ));
-            };
-            let main_path = repo_root.join(&r.task.rel_from_repo);
-            fs::write(&main_path, content)
-                .map_err(|e| format!("failed to merge {}: {e}", main_path.display()))?;
-            total_removed += r.removed;
-            total_kept += r.kept;
+        {
+            let s = stats.lock().unwrap().clone();
+            total_removed = s.removed;
+            total_kept = s.kept;
         }
 
-        println!("[wave {}] merged changes; running global verify...", wave_num);
+        println!(
+            "[wave {}] drained; durable merges already applied, running global verify...",
+            wave_num
+        );
         let ok = run_shell(&global_verify_cmd, &cfg.workdir)?;
         if !ok {
+            heartbeat_stop.store(true, Ordering::Relaxed);
+            let _ = heartbeat.join();
             return Err(format!(
                 "global verify failed after wave {}. command: {}",
                 wave_num, global_verify_cmd
@@ -1180,6 +1260,8 @@ fn run_batch(cfg: &Config) -> Result<(), String> {
             println!("[wave {}] running snapshot command", wave_num);
             let ok = run_shell(cmd, &repo_root)?;
             if !ok {
+                heartbeat_stop.store(true, Ordering::Relaxed);
+                let _ = heartbeat.join();
                 return Err(format!("snapshot command failed after wave {}: {}", wave_num, cmd));
             }
         }
@@ -1191,8 +1273,11 @@ fn run_batch(cfg: &Config) -> Result<(), String> {
         "\\nall waves complete: removed {}, kept+labelled {}",
         total_removed, total_kept
     );
+    heartbeat_stop.store(true, Ordering::Relaxed);
+    let _ = heartbeat.join();
     Ok(())
 }
+
 
 fn main() {
     let cfg = match parse_args() {
