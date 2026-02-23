@@ -118,10 +118,6 @@ impl SystemModelTwo::State {
                         sm2_post.sync_req_map)));
             },
             SystemModel::Step::program_internal(new_program) => {
-                assert(sm2_lbl is ProgramInternal);
-                assert(ConcreteProgramModel::valid_internal_transition(pre.program, post.program));
-                assert(pre.disk == post.disk);
-                assert(sm2_pre.concrete_journal.disk == sm2_post.concrete_journal.disk);
                 assert(SystemModelTwo::State::next_by(sm2_pre, sm2_post, sm2_lbl,
                     SystemModelTwo::Step::program_internal(
                         sm2_post.concrete_journal,
@@ -130,8 +126,6 @@ impl SystemModelTwo::State {
                         sm2_post.store)));
             },
             SystemModel::Step::disk_internal(new_disk) => {
-                assert(sm2_lbl is DiskInternal);
-                assert(sm2_post.concrete_journal.disk == post.disk);
                 assert(SystemModelTwo::State::next_by(sm2_pre, sm2_post, sm2_lbl,
                     SystemModelTwo::Step::disk_internal(post.disk)));
             },

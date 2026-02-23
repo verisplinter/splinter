@@ -23,7 +23,6 @@ pub proof fn lemma_union_set_of_sets_contains<A>(sets: Set<Set<A>>, a: A) -> (s:
     ensures sets.contains(s) && s.contains(a)
     decreases sets.len()
 {
-    assert(sets.len() > 0);
     let random = sets.choose();
     if random.contains(a) {
         random
@@ -44,14 +43,9 @@ pub broadcast proof fn lemma_union_set_of_sets_subset<A>(sets: Set<Set<A>>, s: S
         let random = sets.choose();
         if random != s {
             lemma_union_set_of_sets_subset(sets.remove(random), s);
-            assert(union_set_of_sets(sets.remove(random)) == union_set_of_sets(sets.remove(random).remove(s)) + s);
             lemma_union_set_of_sets_subset(sets.remove(s), random);
-            assert(union_set_of_sets(sets.remove(s).remove(random)) + random == union_set_of_sets(sets.remove(s)));
             assert(sets.remove(s).remove(random) == sets.remove(random).remove(s)); // trigger 
-            assert(union_set_of_sets(sets) == union_set_of_sets(sets.remove(random).remove(s)) + random + s);
-            assert(union_set_of_sets(sets) == union_set_of_sets(sets.remove(s)) + s);
         } else {
-            assert(union_set_of_sets(sets) == union_set_of_sets(sets.remove(s)) + s);
         }
     }
 }
@@ -76,8 +70,6 @@ pub proof fn lemma_subset_union_seq_of_sets<A>(sets: Seq<Set<A>>, i: int)
     ensures sets[i] <= union_seq_of_sets(sets)
     decreases sets.len()
 {
-    assert(sets.len() > 0);
-    assert(union_seq_of_sets(sets) == union_seq_of_sets(sets.drop_last()).union(sets.last()));
     if i < sets.len() - 1 {
         lemma_subset_union_seq_of_sets(sets.drop_last(), i);
     }
@@ -96,8 +88,6 @@ pub proof fn lemma_union_seq_of_sets_contains<A>(sets: Seq<Set<A>>, a: A)
     ensures exists |i| 0 <= i < sets.len() && (#[trigger] sets[i]).contains(a)
     decreases sets.len()
 {
-    assert(sets.len() > 0);
-    assert(union_seq_of_sets(sets) == union_seq_of_sets(sets.drop_last()).union(sets.last()));
     if sets.last().contains(a) {
     } else {
         lemma_union_seq_of_sets_contains(sets.drop_last(), a);
@@ -110,20 +100,14 @@ pub proof fn lemma_to_set_distributes_over_plus<A>(a: Seq<A>, b: Seq<A>)
 {
     assert forall |x| a.to_set().union(b.to_set()).contains(x)
     implies #[trigger] (a + b).to_set().contains(x) by {
-        assert(a.to_set().contains(x) || b.to_set().contains(x));
         if (a.to_set().contains(x)) {
-            assert(a.contains(x));
             let i = a.index_of(x);
-            assert((a + b)[i] == x);
+            assert((a + b)[i] == x); // trigger
         } else {
-            assert(b.to_set().contains(x));
-            assert(b.contains(x));
             let i = b.index_of(x);
-            assert((a + b)[a.len() + i] == x);
+            assert((a + b)[a.len() + i] == x); // trigger
         }
-        assert((a + b).contains(x));
     }
-    assert((a + b).to_set() == a.to_set().union(b.to_set()));
 }
 
 pub proof fn lemma_subset_finite<A>(a: Set<A>, b: Set<A>)
@@ -133,7 +117,6 @@ pub proof fn lemma_subset_finite<A>(a: Set<A>, b: Set<A>)
     ensures
         b.finite(),
 {
-    assert(b == a.intersect(b));
 }
 
 }

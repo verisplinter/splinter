@@ -162,8 +162,7 @@ impl BetreeNode {
         assert(empty.wf_children()); // trigger
         empty.i_children_lemma();
 
-        assert(empty.i()->children.map =~= empty_child_map.map);
-        assert(empty.i() == PagedBetree_v::BetreeNode::empty_root());
+        assert(empty.i()->children.map =~= empty_child_map.map); // trigger
     }
 
     pub open spec(checked) fn split_element(self, request: SplitRequest) -> Element
@@ -180,8 +179,8 @@ impl BetreeNode {
         requires self.can_split_leaf(split_key)
         ensures self.split_leaf(split_key).0.wf(), self.split_leaf(split_key).1.wf()
     {
-        assert(self.split_leaf(split_key).0.wf_children());
-        assert(self.split_leaf(split_key).1.wf_children());
+        assert(self.split_leaf(split_key).0.wf_children()); // trigger
+        assert(self.split_leaf(split_key).1.wf_children()); // trigger
     }
     
     proof fn split_index_wf(self, pivot_idx: nat)
@@ -191,8 +190,6 @@ impl BetreeNode {
         let (new_left, new_right) = self.split_index(pivot_idx);
         assert forall |i| new_left.valid_child_index(i) implies self.valid_child_index(i) by {}
         assert forall |i| new_right.valid_child_index(i) implies self.valid_child_index(i+pivot_idx) by {}
-        assert(new_left.wf_children());
-        assert(new_right.wf_children());
     }
     
     pub proof fn split_parent_wf(self, request: SplitRequest) 
@@ -215,8 +212,6 @@ impl BetreeNode {
             SplitRequest::SplitLeaf{child_idx, split_key} => old_child.split_leaf_wf(split_key),
             SplitRequest::SplitIndex{child_idx, child_pivot_idx} => old_child.split_index_wf(child_pivot_idx),
         }
-        assert(new_parent.wf_children());
-        assert(new_parent.linked_children());
     }
 
     pub open spec(checked) fn split_keys(self, request: SplitRequest) -> (Set<Key>, Set<Key>)
@@ -302,7 +297,7 @@ impl BetreeNode {
             self.child(key).split_leaf_wf(split_key);
 
             assert forall |k| #[trigger] a->children.map[k] == b.i()->children.map[k] by {}
-            assert(a->children.map =~= b.i()->children.map);
+            assert(a->children.map =~= b.i()->children.map); // trigger
         } else {
             let child_pivot_idx = request->child_pivot_idx;
             let b = self.child(key).split_index(child_pivot_idx).0;
@@ -311,7 +306,7 @@ impl BetreeNode {
 
             b.i_children_lemma();
             self.child(key).i_children_lemma();
-            assert(a->children.map =~= b.i()->children.map);
+            assert(a->children.map =~= b.i()->children.map); // trigger
         }
     }
 
@@ -340,7 +335,7 @@ impl BetreeNode {
             self.child(key).split_leaf_wf(split_key);
 
             assert forall |k| #[trigger] a->children.map[k] == b.i()->children.map[k] by {}
-            assert(a->children.map =~= b.i()->children.map);
+            assert(a->children.map =~= b.i()->children.map); // trigger
         } else {
             let child_pivot_idx = request->child_pivot_idx;
             let b = self.child(key).split_index(child_pivot_idx).1;
@@ -356,7 +351,7 @@ impl BetreeNode {
                     let r = b->pivots.route(k);
                 }
             }
-            assert(a->children.map =~= b.i()->children.map);
+            assert(a->children.map =~= b.i()->children.map); // trigger
         }
     }
 
@@ -468,9 +463,7 @@ impl BetreeNode {
         ensures self.promote(domain).merge_buffer(buffer).wf()
     {
         let result = self.promote(domain).merge_buffer(buffer);
-        assert(self.promote(domain).wf());
         assert forall |i| #[trigger] result.valid_child_index(i) implies self.promote(domain).valid_child_index(i) by {}
-        assert(result.wf());
     }
 
     proof fn flush_wf(self, child_idx: nat)
@@ -503,7 +496,7 @@ impl BetreeNode {
             a.i_children_lemma();
             
         }
-        assert(a.i()->children.map =~= b->children.map);
+        assert(a.i()->children.map =~= b->children.map); // trigger
     }
 
     proof fn flush_commutes_with_i(self, child_idx: nat)
@@ -520,7 +513,7 @@ impl BetreeNode {
         self.i_children_lemma();
         self.flush(child_idx).i_children_lemma();
 
-        assert(self.flush(child_idx).i()->children.map =~= self.i().flush(child_domain.key_set())->children.map);
+        assert(self.flush(child_idx).i()->children.map =~= self.i().flush(child_domain.key_set())->children.map); // trigger
     }
 } // end impl BetreeNode
 
@@ -561,13 +554,13 @@ impl QueryReceipt{
 
         assert forall |i:int| 0 <= i < i_receipt.lines.len()-1
         implies #[trigger] i_receipt.child_linked_at(i) by {
-            assert(self.child_linked_at(i));
+            assert(self.child_linked_at(i)); // trigger
             self.lines[i].node.i_children_lemma();
         }
 
         assert forall |i:int| 0 <= i < i_receipt.lines.len()-1
         implies #[trigger] i_receipt.result_linked_at(i) by {
-            assert(self.result_linked_at(i));
+            assert(self.result_linked_at(i)); // trigger
         }
     }
 }
@@ -611,7 +604,7 @@ impl Path{
         self.node.i_children_lemma();
 
         self.routing_lemma();
-        assert(self.subpath().i().routing =~= self.i().subpath().routing);
+        assert(self.subpath().i().routing =~= self.i().subpath().routing); // trigger
     }
 
     proof fn i_valid(self)
@@ -659,9 +652,8 @@ impl Path{
             let result = self.substitute(replacement);
             if result is Node {
                 self.replaced_children_matching_domains(replacement);
-                assert(self.node.wf_children());
+                assert(self.node.wf_children()); // trigger
                 assert forall |i| #[trigger] result.valid_child_index(i) implies self.node.valid_child_index(i) by {}
-                assert(result.wf_children());
             }
         }
     }
@@ -698,10 +690,8 @@ impl Path{
 
         if 0 < self.depth {
             self.substitute(replacement).i_children_lemma();
-            assert(self.substitute(replacement).i_children().wf());
 
             self.i().substitute_preserves_wf(replacement.i());
-            assert(self.i().replaced_children(replacement.i()).wf());
             self.subpath().substitute_commutes_with_i(replacement);
 
             self.subpath_commutes_with_i();
@@ -751,7 +741,7 @@ impl PivotBetree::State {
         reveal(PagedBetree::State::next_by);
 
         receipt.i_valid();
-        assert(PagedBetree::State::next_by(self.i(), post.i(), lbl.i(), PagedBetree::Step::query(receipt.i())));
+        assert(PagedBetree::State::next_by(self.i(), post.i(), lbl.i(), PagedBetree::Step::query(receipt.i()))); // trigger
     }
 
     proof fn put_refines(self, post: Self, lbl: PivotBetree::Label)
@@ -761,7 +751,7 @@ impl PivotBetree::State {
         reveal(PagedBetree::State::next);
         reveal(PagedBetree::State::next_by);
 
-        assert(PagedBetree::State::next_by(self.i(), post.i(), lbl.i(), PagedBetree::Step::put()));
+        assert(PagedBetree::State::next_by(self.i(), post.i(), lbl.i(), PagedBetree::Step::put())); // trigger
     }
 
     proof fn freeze_as_refines(self, post: Self, lbl: PivotBetree::Label)
@@ -772,7 +762,7 @@ impl PivotBetree::State {
         reveal(PagedBetree::State::next_by);
 
         self.root.i_wf();
-        assert(PagedBetree::State::next_by(self.i(), post.i(), lbl.i(), PagedBetree::Step::freeze_as()));
+        assert(PagedBetree::State::next_by(self.i(), post.i(), lbl.i(), PagedBetree::Step::freeze_as())); // trigger
     }
 
     proof fn internal_flush_memtable_refines(self, post: Self, lbl: PivotBetree::Label)
@@ -792,10 +782,9 @@ impl PivotBetree::State {
         let equiv_children_node = if self.root is Node { self.root } else { BetreeNode::empty_root(total_domain()) };
         equiv_children_node.i_children_seq_same(self.root.push_memtable(self.memtable), 0);
 
-        assert(a->buffer =~= b->buffer);
-        assert(a->children.map =~= b->children.map);
+        assert(a->children.map =~= b->children.map); // trigger
 
-        assert(PagedBetree::State::next_by(self.i(), post.i(), lbl.i(), PagedBetree::Step::internal_flush_memtable()));
+        assert(PagedBetree::State::next_by(self.i(), post.i(), lbl.i(), PagedBetree::Step::internal_flush_memtable())); // trigger
     }
 
     proof fn internal_grow_refines(self, post: Self, lbl: PivotBetree::Label)
@@ -809,8 +798,8 @@ impl PivotBetree::State {
         post.root.i_wf();
         
         post.root.i_children_lemma();
-        assert(post.i().root->children.map =~= PagedBetree_v::constant_child_map(self.root.i()).map);
-        assert(PagedBetree::State::next_by(self.i(), post.i(), lbl.i(), PagedBetree::Step::internal_grow()));
+        assert(post.i().root->children.map =~= PagedBetree_v::constant_child_map(self.root.i()).map); // trigger
+        assert(PagedBetree::State::next_by(self.i(), post.i(), lbl.i(), PagedBetree::Step::internal_grow())); // trigger
     }
 
     proof fn internal_split_refines(self, post: Self, lbl: PivotBetree::Label, path: Path, request: SplitRequest)
@@ -831,7 +820,7 @@ impl PivotBetree::State {
         path.target().split_commutes_with_i(request);
 
         let (left_keys, right_keys) = path.target().split_keys(request);
-        assert(PagedBetree::State::next_by(self.i(), post.i(), lbl.i(), PagedBetree::Step::internal_split(path.i(), left_keys, right_keys)));
+        assert(PagedBetree::State::next_by(self.i(), post.i(), lbl.i(), PagedBetree::Step::internal_split(path.i(), left_keys, right_keys))); // trigger
     }
 
     proof fn internal_flush_refines(self, post: Self, lbl: PivotBetree::Label, path: Path, child_idx: nat)
@@ -852,7 +841,7 @@ impl PivotBetree::State {
         path.target().flush_commutes_with_i(child_idx);
 
         let flushed_keys = path.target().child_domain(child_idx).key_set();
-        assert(PagedBetree::State::next_by(self.i(), post.i(), lbl.i(), PagedBetree::Step::internal_flush(path.i(), flushed_keys)));
+        assert(PagedBetree::State::next_by(self.i(), post.i(), lbl.i(), PagedBetree::Step::internal_flush(path.i(), flushed_keys))); // trigger
     }
 
     proof fn internal_noop_noop(self, post: Self, lbl: PivotBetree::Label)
@@ -864,7 +853,7 @@ impl PivotBetree::State {
 
         self.root.i_wf();
         post.root.i_wf();
-        assert(PagedBetree::State::next_by(self.i(), post.i(), lbl.i(), PagedBetree::Step::internal_noop()));
+        assert(PagedBetree::State::next_by(self.i(), post.i(), lbl.i(), PagedBetree::Step::internal_noop())); // trigger
     }
 
     proof fn next_refines(self, post: Self, lbl: PivotBetree::Label)

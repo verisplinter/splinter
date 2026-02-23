@@ -80,7 +80,6 @@ impl BetreeNode {
     {
         let map_a = map_apply(memtable, self.i());
         let map_b = self.push_memtable(memtable).value.i();
-        assert(map_a =~= map_b);
     }
 
     proof fn push_empty_memtable_refines(self, memtable: Memtable)
@@ -103,7 +102,7 @@ impl BetreeNode {
         ensures self.filter_buffer_and_children(filter).wf()
     {
         if self is Node {
-            assert(self.filter_buffer_and_children(filter)->children.wf());
+            assert(self.filter_buffer_and_children(filter)->children.wf()); // trigger
         }
     }
 
@@ -124,8 +123,6 @@ impl BetreeNode {
             }
         }
 
-        assert(total_keys(child_map.map.dom()));
-        assert(child_map.wf());
     }
     
     proof fn apply_filter_equivalence(self, filter: Set<Key>, key: Key)
@@ -141,7 +138,7 @@ impl BetreeNode {
         ensures self.flush(down_keys).wf()
     {
         let child_map = self.flush(down_keys)->children;
-        assert(self->children.wf());
+        assert(self->children.wf()); // trigger
         assert forall |k: Key| (#[trigger] child_map.map[k]).wf() by { }
     }
 } // end impl BetreeNode
@@ -175,7 +172,7 @@ impl QueryReceipt{
         ensures self.drop_first().valid()
     {
         let out = self.drop_first();
-        assert(self.child_linked_at(0));
+        assert(self.child_linked_at(0)); // trigger
         assert forall |i: int| 0 <= i < out.lines.len()-1
         implies ({
             &&& out.child_linked_at(i)
@@ -194,8 +191,8 @@ impl QueryReceipt{
         decreases self.lines.len()
     {
         if 1 < self.lines.len() {
-            assert(self.result_linked_at(0));
-            assert(other.result_linked_at(0));
+            assert(self.result_linked_at(0)); // trigger
+            assert(other.result_linked_at(0)); // trigger
 
             self.drop_first_valid();
             other.drop_first_valid();
@@ -241,7 +238,6 @@ impl Path{
                 self.node.build_query_receipt_valid(key);
                 
                 receipt.drop_first_valid();
-                assert(receipt.drop_first().root == self.subpath().node);
 
                 self.subpath().node.build_query_receipt_valid(key);
                 self.subpath().node.build_query_receipt(key).equal_receipts(receipt.drop_first());
@@ -256,7 +252,6 @@ impl Path{
 
                 self.subpath().substitute_receipt_equivalence(replacement, key);
             } else {
-                assert(self.node.i_at(key) == self.substitute(replacement).i_at(key));
             }
         }
     }
@@ -275,7 +270,6 @@ impl Path{
             self.substitute_receipt_equivalence(replacement, k);
         }
 
-        assert(self.node.i() =~= self.substitute(replacement).i());
     }
 }
 
@@ -300,7 +294,6 @@ proof fn composite_single_put(puts1: MsgHistory, puts2: MsgHistory, stamped_map:
 {
     let last_lsn = (puts2.seq_end - 1) as nat;
     assert_maps_equal!(puts1.msgs, puts1.concat(puts2).discard_recent(last_lsn).msgs);
-    assert(puts1 == puts1.concat(puts2).discard_recent(last_lsn));
     assert(puts2.discard_recent(last_lsn).apply_to_stamped_map(puts1.apply_to_stamped_map(stamped_map))
         == puts1.apply_to_stamped_map(stamped_map));
 
@@ -337,7 +330,7 @@ impl PagedBetree::State {
         self.root.build_query_receipt_valid(lbl->key);
         receipt.equal_receipts(built_receipt);
 
-        assert(AbstractMap::State::next_by(self.i(), post.i(), lbl.i(), AbstractMap::Step::query()));
+        assert(AbstractMap::State::next_by(self.i(), post.i(), lbl.i(), AbstractMap::Step::query())); // trigger
     }
 
     proof fn apply_single_put_is_map_plus_history(self, post: Self, puts: MsgHistory)
@@ -350,17 +343,14 @@ impl PagedBetree::State {
         let KeyedMessage{key, message} = puts.msgs[puts.seq_start];
         let map_a = post.root.push_memtable(post.memtable).value.i();
         self.memtable.apply_puts_end(puts);
-        assert(self.memtable.apply_puts(puts.discard_recent(puts.seq_start)) == self.memtable);
+        assert(self.memtable.apply_puts(puts.discard_recent(puts.seq_start)) == self.memtable); // trigger
 
         let map_b = puts.apply_to_stamped_map(self.i().stamped_map).value;
         MsgHistory::map_plus_history_lemma(self.i().stamped_map, puts);
 
         let sub_map_b = puts.discard_recent(puts.seq_start).apply_to_stamped_map(self.i().stamped_map).value;
-        assert(map_b == sub_map_b.insert(key, sub_map_b[key].merge(message)));
     
-        assert(map_a.0 =~= map_b.0);
-        assert(post.i().stamped_map.value == map_a);
-        assert(MsgHistory::map_plus_history(self.i().stamped_map, puts).value == map_b);
+        assert(map_a.0 =~= map_b.0); // trigger
     }
 
     proof fn apply_put_is_map_plus_history(self, post: Self, puts: MsgHistory)
@@ -379,11 +369,9 @@ impl PagedBetree::State {
 
             self.apply_put_is_map_plus_history(intermediate_post, short_puts);
             self.memtable.apply_puts_end(short_puts);
-            assert(last_put.can_follow(intermediate_post.memtable.seq_end));
 
             self.memtable.apply_puts_additive(short_puts, last_put);
-            assert(short_puts.concat(last_put).msgs =~= puts.msgs);
-            assert(post.memtable == intermediate_post.memtable.apply_puts(last_put));
+            assert(short_puts.concat(last_put).msgs =~= puts.msgs); // trigger
 
             intermediate_post.apply_single_put_is_map_plus_history(post, last_put);
             composite_single_put(short_puts, last_put, self.i().stamped_map);
@@ -398,7 +386,7 @@ impl PagedBetree::State {
         reveal(AbstractMap::State::next_by);
 
         self.apply_put_is_map_plus_history(post, lbl->puts);
-        assert(AbstractMap::State::next_by(self.i(), post.i(), lbl.i(), AbstractMap::Step::put()));
+        assert(AbstractMap::State::next_by(self.i(), post.i(), lbl.i(), AbstractMap::Step::put())); // trigger
     }
 
     proof fn freeze_as_refines(self, post: Self, lbl: PagedBetree::Label)
@@ -409,7 +397,7 @@ impl PagedBetree::State {
         reveal(AbstractMap::State::next_by);
 
         self.root.push_empty_memtable_refines(self.memtable);
-        assert(AbstractMap::State::next_by(self.i(), post.i(), lbl.i(), AbstractMap::Step::freeze_as()));
+        assert(AbstractMap::State::next_by(self.i(), post.i(), lbl.i(), AbstractMap::Step::freeze_as())); // trigger
     }
 
     proof fn internal_flush_memtable_noop(self, post: Self, lbl: PagedBetree::Label)
@@ -420,7 +408,7 @@ impl PagedBetree::State {
         reveal(AbstractMap::State::next_by);
 
         post.root.push_empty_memtable_refines(post.memtable);
-        assert(AbstractMap::State::next_by(self.i(), post.i(), lbl.i(), AbstractMap::Step::internal()));
+        assert(AbstractMap::State::next_by(self.i(), post.i(), lbl.i(), AbstractMap::Step::internal())); // trigger
     }
 
     proof fn equivalent_roots(self, post: Self)
@@ -440,9 +428,9 @@ impl PagedBetree::State {
         reveal(AbstractMap::State::next);
         reveal(AbstractMap::State::next_by);
 
-        assert(post.root.i() =~= self.root.i());
+        assert(post.root.i() =~= self.root.i()); // trigger
         self.equivalent_roots(post);
-        assert(AbstractMap::State::next_by(self.i(), post.i(), lbl.i(), AbstractMap::Step::internal()));
+        assert(AbstractMap::State::next_by(self.i(), post.i(), lbl.i(), AbstractMap::Step::internal())); // trigger
     }
 
     proof fn internal_split_noop(self, post: Self, lbl: PagedBetree::Label, path: Path, left_keys: Set<Key>, right_keys: Set<Key>)
@@ -467,10 +455,10 @@ impl PagedBetree::State {
             }
         }
 
-        assert(target.i() =~= top.i());
+        assert(target.i() =~= top.i()); // trigger
         path.substitute_equivalence(top);
         self.equivalent_roots(post);
-        assert(AbstractMap::State::next_by(self.i(), post.i(), lbl.i(), AbstractMap::Step::internal()));
+        assert(AbstractMap::State::next_by(self.i(), post.i(), lbl.i(), AbstractMap::Step::internal())); // trigger
     }
 
     proof fn internal_flush_noop(self, post: Self, lbl: PagedBetree::Label, path: Path, down_keys: Set<Key>)
@@ -497,10 +485,10 @@ impl PagedBetree::State {
             }
         }
         
-        assert(target.i() =~= top.i());
+        assert(target.i() =~= top.i()); // trigger
         path.substitute_equivalence(top);
         self.equivalent_roots(post);
-        assert(AbstractMap::State::next_by(self.i(), post.i(), lbl.i(), AbstractMap::Step::internal()));
+        assert(AbstractMap::State::next_by(self.i(), post.i(), lbl.i(), AbstractMap::Step::internal())); // trigger
     }
 
     proof fn internal_noop_noop(self, post: Self, lbl: PagedBetree::Label)
@@ -509,7 +497,7 @@ impl PagedBetree::State {
     {
         reveal(AbstractMap::State::next);
         reveal(AbstractMap::State::next_by);
-        assert(AbstractMap::State::next_by(self.i(), post.i(), lbl.i(), AbstractMap::Step::internal()));
+        assert(AbstractMap::State::next_by(self.i(), post.i(), lbl.i(), AbstractMap::Step::internal())); // trigger
     }
 
     proof fn next_refines(self, post: Self, lbl: PagedBetree::Label)

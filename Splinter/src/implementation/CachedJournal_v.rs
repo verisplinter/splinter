@@ -173,8 +173,6 @@ decreases rank_of_reads(boundary_lsn, reads, root)
         let next_ptr = reads[root.unwrap()].cropped_prior(boundary_lsn);
         build_lsn_addr_index_from_reads_next_ptr_not_in_reads(reads, boundary_lsn, next_ptr, ptr);
     } else {
-        assert(ptr == root);
-        assert(!reads.contains_key(ptr.unwrap()));
     }
 }
 
@@ -203,13 +201,11 @@ ensures
 decreases rank_of_reads(boundary_lsn, reads, ptr1)
 {
     build_lsn_addr_index_from_reads_next_ptr_not_in_reads(reads, boundary_lsn, ptr1, ptr2);
-    assert(!reads.contains_key(ptr2.unwrap()));
 
     // Unfold the definition once on the updated reads.
     reveal(build_lsn_addr_index_from_reads_next_ptr);
     if reads.contains_key(ptr1.unwrap()) {
         let next_ptr = reads[ptr1.unwrap()].cropped_prior(boundary_lsn);
-        assert(ptr2 == build_lsn_addr_index_from_reads_next_ptr(reads, boundary_lsn, next_ptr));
         build_lsn_addr_index_from_reads_next_ptr_after_insert(
             reads,
             boundary_lsn,
@@ -228,7 +224,6 @@ decreases rank_of_reads(boundary_lsn, reads, ptr1)
         ));
     } else {
         // next_ptr on missing root returns the root itself, and ptr2 == ptr1
-        assert(ptr2 == ptr1);
         assert(build_lsn_addr_index_from_reads_next_ptr(
             reads.insert(ptr2.unwrap(), ptr2_data),
             boundary_lsn,
@@ -427,7 +422,6 @@ ensures
 {
     let curr_msgs = reads[root.unwrap()].message_seq;
     let start_lsn = max(boundary_lsn as int, curr_msgs.seq_start as int) as nat;
-    assert(update == singleton_index(start_lsn, curr_msgs.seq_end, root.unwrap()));
 
     reveal(build_lsn_addr_index_from_reads);
     assert(build_lsn_addr_index_from_reads(reads, boundary_lsn, root)
@@ -459,22 +453,12 @@ decreases rank_of_reads(boundary_lsn, reads, root)
         let next_ptr = reads[root.unwrap()].cropped_prior(boundary_lsn);
         let idx = build_lsn_addr_index_from_reads(reads, boundary_lsn, root);
         let sub_index = build_lsn_addr_index_from_reads(reads, boundary_lsn, next_ptr);
-        assert(idx == sub_index.union_prefer_right(update));
         let lsn = choose |lsn: LSN| #![auto] idx.contains_key(lsn) && idx[lsn] == addr;
         if update.contains_key(lsn) {
-            assert(update[lsn] == root.unwrap());
-            assert(addr == root.unwrap());
-            assert(reads.contains_key(addr));
         } else {
-            assert(sub_index.contains_key(lsn));
-            assert(sub_index[lsn] == idx[lsn]);
-            assert(sub_index[lsn] == addr);
-            assert(sub_index.values().contains(addr));
             build_lsn_addr_index_from_reads_values_in_reads(reads, boundary_lsn, next_ptr, addr);
         }
     } else {
-        assert(build_lsn_addr_index_from_reads(reads, boundary_lsn, root) == Map::<LSN, Address>::empty());
-        assert(false);
     }
 }
 
@@ -786,31 +770,16 @@ impl CachedJournal::State {
         let lsns = addr_to_lsns(index, curr_addr, bdy);
 
         assert(lsns.contains(curr_start)) by {
-            assert(bdy <= curr_start);
-            assert(index.contains_key(curr_start));
-            assert(index[curr_start] == curr_addr);
         }
-        assert(!lsns.is_empty());
 
         min_lsn_ensures(lsns);
-        assert(min_lsn(lsns) <= curr_start);
         assert(curr_start <= min_lsn(lsns)) by {
             let m = min_lsn(lsns);
-            assert(lsns.contains(m));
-            assert(index.contains_key(m));
-            assert(index[m] == curr_addr);
-            assert(curr_start <= m < curr_end);
         }
-        assert(min_lsn(lsns) == curr_start);
 
         if curr_start > bdy {
             let prior_lsn = (curr_start - 1) as nat;
-            assert(bdy <= prior_lsn);
-            assert(index.contains_key(prior_lsn));
-            assert(self.next_index(Some(curr_addr)) == Some(index[prior_lsn]));
         } else {
-            assert(curr_start == bdy);
-            assert(self.next_index(Some(curr_addr)) == None::<Address>);
         }
     }
 
@@ -951,25 +920,16 @@ impl CachedJournal::State {
         let index = self.status.unwrap().lsn_addr_index;
         let bdy = self.snapshot.boundary_lsn;
         let freshest = self.snapshot.freshest_rec.unwrap();
-        assert(index.contains_key((seq_end - 1) as nat));
-        assert(index[(seq_end - 1) as nat] == freshest);
-        assert(index.values().contains(freshest));
+        assert(index.values().contains(freshest)); // trigger
         assert(exists |start_lsn: LSN, end_lsn: LSN|
             complete_lsn_range_for_addr(index, bdy, freshest, start_lsn, end_lsn)) by {
-            assert(all_addrs_have_complete_lsn_ranges(index, bdy));
-            assert(index.values().contains(freshest));
         }
         let target_lsn = (end_lsn - 1) as nat;
 
         let (freshest_start, freshest_end) = choose |start: LSN, end: LSN|
             complete_lsn_range_for_addr(index, bdy, freshest, start, end);
-        assert(complete_lsn_range_for_addr(index, bdy, freshest, freshest_start, freshest_end));
-        assert(freshest_start <= (seq_end - 1) as nat);
-        assert(((seq_end - 1) as nat) < freshest_end);
         assert(target_lsn <= (seq_end - 1) as nat) by {
-            assert(start_lsn < end_lsn <= seq_end);
         }
-        assert(target_lsn < freshest_end);
 
         let depth = self.depth_to_addr_from_cursor(
             seq_end,
@@ -981,11 +941,8 @@ impl CachedJournal::State {
             freshest_start,
             freshest_end,
         );
-        assert(self.snapshot.freshest_rec == Some(freshest));
-        assert(self.can_crop_index(self.snapshot.freshest_rec, depth));
         assert(self.pointer_after_crop_index(self.snapshot.freshest_rec, depth)
             == self.pointer_after_crop_index(Some(freshest), depth));
-        assert(self.pointer_after_crop_index(Some(freshest), depth) == Some(addr));
         depth
     }
 
@@ -1013,48 +970,30 @@ impl CachedJournal::State {
         let addr = index[target_lsn];
 
         assert(bdy <= target_lsn < seq_end) by {
-            assert(lsn_index_domain_exact(index, bdy, seq_end));
-            assert(index.contains_key(target_lsn));
         };
-        assert(index.values().contains(addr));
+        assert(index.values().contains(addr)); // trigger
 
         assert(exists |start_lsn: LSN, end_lsn: LSN|
             complete_lsn_range_for_addr(index, bdy, addr, start_lsn, end_lsn)) by {
-            assert(all_addrs_have_complete_lsn_ranges(index, bdy));
-            assert(index.values().contains(addr));
         }
         let (start_lsn, end_lsn) = choose |start_lsn: LSN, end_lsn: LSN|
             complete_lsn_range_for_addr(index, bdy, addr, start_lsn, end_lsn);
-        assert(complete_lsn_range_for_addr(index, bdy, addr, start_lsn, end_lsn));
 
         assert(start_lsn <= target_lsn < end_lsn) by {
-            assert(bdy <= target_lsn);
-            assert(index.contains_key(target_lsn));
-            assert(index[target_lsn] == addr);
         };
 
         assert(end_lsn <= seq_end) by {
             if end_lsn > seq_end {
                 assert(start_lsn <= seq_end) by {
-                    assert(start_lsn <= target_lsn);
-                    assert(target_lsn < seq_end);
                 };
-                assert(start_lsn <= seq_end < end_lsn);
                 assert(index.contains_key(seq_end) && index[seq_end] == addr) by {
-                    assert(bdy <= seq_end);
-                    assert(start_lsn <= seq_end < end_lsn);
                 };
                 assert(!index.contains_key(seq_end)) by {
-                    assert(lsn_index_domain_exact(index, bdy, seq_end));
-                    assert(!(bdy <= seq_end < seq_end));
                 };
-                assert(false);
             }
         };
 
         let depth = self.depth_for_complete_lsn_range(seq_end, addr, start_lsn, end_lsn);
-        assert(self.pointer_after_crop_index(self.snapshot.freshest_rec, depth) == Some(addr));
-        assert(addr == self.status.unwrap().lsn_addr_index[target_lsn]);
         depth
     }
 }

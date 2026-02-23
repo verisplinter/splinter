@@ -72,24 +72,15 @@ impl ConcreteJournal::State {
         let tail = cj_unmarshalled_tail(pre.journal);
 
         // From CJ invariant: valid_journal_structure gives decodable + seq alignment
-        assert(jcs.valid_journal_structure());
-        assert(tj.decodable()); // = wf() && acyclic()
 
         // tail.wf() from journal_seq_end_inv: tail.can_discard_to(pjse) → seq_start <= seq_end
-        assert(pre.journal_seq_end_inv());
-        assert(tail.can_discard_to(pre.persistent_journal_seq_end));
 
         // LinkedJournal wf: all four conditions met
         let lj = jcs.i().journal;
-        assert(lj.truncated_journal == tj);
-        assert(lj.unmarshalled_tail == tail);
-        assert(lj.wf());
-        assert(lj.truncated_journal.disk_view.acyclic());
 
         // Step 1: iwf(): LinkedJournal wf + acyclic → PagedJournal wf
         lj.iwf();
         let pj = lj.i();
-        assert(pj.wf());
 
         // Step 2: PagedJournal TruncatedJournal.i() wf via JournalRecord::i_lemma_forall
         PagedJournal_v::JournalRecord::i_lemma_forall();
@@ -114,17 +105,10 @@ impl ConcreteJournal::State {
         let jcs = pre.jcs_view();
         let tj = jcs.ephemeral_tj();
         let tail = cj_unmarshalled_tail(pre.journal);
-        assert(jcs.valid_journal_structure());
-        assert(tj.decodable());
 
         // LinkedJournal.i() preserves unmarshalled_tail
         let lj = jcs.i().journal;
-        assert(lj.truncated_journal == tj);
-        assert(lj.unmarshalled_tail == tail);
-        assert(lj.wf());
-        assert(lj.truncated_journal.disk_view.acyclic());
         let pj = lj.i();
-        assert(pj.unmarshalled_tail == tail);
 
         // PagedJournal.i().journal = pj.truncated_journal.i().concat(tail)
         // concat(a, b).seq_end = b.seq_end by definition of MsgHistory::concat
@@ -151,12 +135,8 @@ impl ConcreteJournal::State {
         let aj = pre.i().ephemeral->v;
         let messages = lbl.arrow_ReadForRecovery_messages();
         Self::full_journal_wf(pre);
-        assert(aj.journal.includes_subseq(messages));
         let aj_lbl = AbstractJournal::Label::ReadForRecoveryLabel{messages};
-        assert(AbstractJournal::State::next_by(aj, aj, aj_lbl, AbstractJournal::Step::read_for_recovery()));
-        assert(AbstractJournal::State::next(aj, aj, aj_lbl));
-        assert(pre.i().ephemeral is Known);
-        assert(pre.i() == post.i());
+        assert(AbstractJournal::State::next_by(aj, aj, aj_lbl, AbstractJournal::Step::read_for_recovery())); // trigger
         assert(AbstractCrashAwareJournal::State::next_by(pre.i(), post.i(),
             Self::i_lbl(pre, post, lbl),
             AbstractCrashAwareJournal::Step::read_for_recovery()));
@@ -185,12 +165,8 @@ impl ConcreteJournal::State {
         reveal(CachedJournal::State::next);
         reveal(CachedJournal::State::next_by);
         Self::full_journal_seq_end(pre);
-        assert(aj.can_end_at(end_lsn));
         let aj_lbl = AbstractJournal::Label::QueryEndLsnLabel{end_lsn};
-        assert(AbstractJournal::State::next_by(aj, aj, aj_lbl, AbstractJournal::Step::observe_fresh_journal()));
-        assert(AbstractJournal::State::next(aj, aj, aj_lbl));
-        assert(pre.i().ephemeral is Known);
-        assert(pre.i() == post.i());
+        assert(AbstractJournal::State::next_by(aj, aj, aj_lbl, AbstractJournal::Step::observe_fresh_journal())); // trigger
         assert(AbstractCrashAwareJournal::State::next_by(pre.i(), post.i(),
             Self::i_lbl(pre, post, lbl),
             AbstractCrashAwareJournal::Step::query_end_lsn()));
@@ -218,8 +194,6 @@ impl ConcreteJournal::State {
         Self::full_journal_wf(pre);
         Self::full_journal_seq_end(pre);
         // From CachedJournal put: messages.wf() and messages.seq_start == pre.seq_end()
-        assert(messages.wf());
-        assert(pre_aj.journal.seq_end == messages.seq_start);
 
         // Trace the interpretation chain.
         // CJ put only changes journal.unmarshalled_tail; cache, disk, pjse, in_flight unchanged.
@@ -229,26 +203,16 @@ impl ConcreteJournal::State {
         // ephemeral_disk/ephemeral_tj unchanged (cache, disk, snapshot, lsn_addr_index same)
         let old_tail = cj_unmarshalled_tail(pre.journal);
         let new_tail = cj_unmarshalled_tail(post.journal);
-        assert(new_tail == old_tail.concat(messages));
 
         // Build LinkedJournal interpretation for pre
         let lj_pre = jcs_pre.i().journal;
-        assert(jcs_pre.valid_journal_structure());
-        assert(jcs_pre.ephemeral_tj().decodable());
-        assert(lj_pre.truncated_journal == jcs_pre.ephemeral_tj());
-        assert(lj_pre.unmarshalled_tail == old_tail);
-        assert(lj_pre.wf());
-        assert(lj_pre.truncated_journal.disk_view.acyclic());
 
         // Build LinkedJournal interpretation for post
         let lj_post = jcs_post.i().journal;
-        assert(lj_post.truncated_journal == jcs_pre.ephemeral_tj());
-        assert(lj_post.unmarshalled_tail == new_tail);
 
         // PagedJournal level: truncated_journal.i() is the same for pre and post
         let pj_pre = lj_pre.i();
         let pj_post = lj_post.i();
-        assert(pj_pre.truncated_journal == pj_post.truncated_journal);
         let tj_decoded = pj_pre.truncated_journal.i();
 
         // Concat associativity: TJ.i().concat(old_tail.concat(messages))
@@ -259,7 +223,6 @@ impl ConcreteJournal::State {
             tj_decoded.concat(old_tail).concat(messages).msgs
         );
         // Now: post.full_journal() == pre.full_journal().concat(messages)
-        assert(post.i().ephemeral == Ephemeral::Known{ v: post_aj });
 
         // Persistent stability: discard_recent(pjse) absorbs trailing concat.
         // messages.wf() → msgs keys are in [messages.seq_start, messages.seq_end),
@@ -271,7 +234,6 @@ impl ConcreteJournal::State {
             h.concat(messages).discard_recent(pjse).msgs,
             h.discard_recent(pjse).msgs
         );
-        assert(post.i().persistent == pre.i().persistent);
 
         // In-flight stability: same argument at in_flight LSN
         if pre.in_flight is Some {
@@ -286,12 +248,9 @@ impl ConcreteJournal::State {
                 h.discard_recent(ifl).discard_old(bdy).msgs
             );
         }
-        assert(post.i().in_flight == pre.i().in_flight);
 
         let aj_lbl = AbstractJournal::Label::PutLabel{messages};
-        assert(AbstractJournal::State::next_by(pre_aj, post_aj, aj_lbl, AbstractJournal::Step::put()));
-        assert(AbstractJournal::State::next(pre_aj, post_aj, aj_lbl));
-        assert(pre.i().ephemeral is Known);
+        assert(AbstractJournal::State::next_by(pre_aj, post_aj, aj_lbl, AbstractJournal::Step::put())); // trigger
         assert(AbstractCrashAwareJournal::State::next_by(pre.i(), post.i(),
             Self::i_lbl(pre, post, lbl),
             AbstractCrashAwareJournal::Step::put(post_aj)));
@@ -316,10 +275,7 @@ impl ConcreteJournal::State {
 
         // Break down: first prove AJ step, then ACAJ step
         let aj_lbl = AbstractJournal::Label::InternalLabel;
-        assert(AbstractJournal::State::next_by(aj, aj, aj_lbl, AbstractJournal::Step::internal()));
-        assert(AbstractJournal::State::next(aj, aj, aj_lbl));
-        assert(pre.i().ephemeral is Known);
-        assert(pre.i() == post.i());
+        assert(AbstractJournal::State::next_by(aj, aj, aj_lbl, AbstractJournal::Step::internal())); // trigger
         assert(AbstractCrashAwareJournal::State::next_by(pre.i(), post.i(),
             Self::i_lbl(pre, post, lbl),
             AbstractCrashAwareJournal::Step::internal(aj)));
@@ -342,7 +298,6 @@ impl ConcreteJournal::State {
         // Note: internal_journal_marshal requires pre.journal.status is Some.
         let aj = pre.i().ephemeral->v;
         reveal(ConcreteJournal::State::internal_journal_marshal);
-        assert(pre.full_journal() == post.full_journal());
         Self::full_journal_wf(pre);
         reveal(CachedJournal::State::next);
         reveal(CachedJournal::State::next_by);
@@ -350,19 +305,12 @@ impl ConcreteJournal::State {
         let journal_step = choose |step| CachedJournal::State::next_by(pre.journal, new_journal, journal_lbl, step);
         match journal_step {
             CachedJournal::Step::internal_journal_marshal(cut, marshalled_addr) => {
-                assert(new_journal.status is Some);
             }
             _ => { assert(false); }
         }
-        assert(post.journal == new_journal);
-        assert(post.journal.status is Some);
         let post_aj = post.i().ephemeral->v;
-        assert(aj == post_aj);
         let aj_lbl = AbstractJournal::Label::InternalLabel;
-        assert(AbstractJournal::State::next_by(aj, post_aj, aj_lbl, AbstractJournal::Step::internal()));
-        assert(AbstractJournal::State::next(aj, post_aj, aj_lbl));
-        assert(pre.i().ephemeral is Known);
-        assert(post.i().ephemeral is Known);
+        assert(AbstractJournal::State::next_by(aj, post_aj, aj_lbl, AbstractJournal::Step::internal())); // trigger
         assert(AbstractCrashAwareJournal::State::next_by(pre.i(), post.i(),
             Self::i_lbl(pre, post, lbl),
             AbstractCrashAwareJournal::Step::internal(post_aj)));
@@ -389,11 +337,8 @@ impl ConcreteJournal::State {
         let aj = pre.i().ephemeral->v;
         Self::full_journal_wf(pre);
         reveal(ConcreteJournal::State::internal_cache_disk_ops);
-        assert(pre.full_journal() == post.full_journal());
         let aj_lbl = AbstractJournal::Label::InternalLabel;
-        assert(AbstractJournal::State::next_by(aj, aj, aj_lbl, AbstractJournal::Step::internal()));
-        assert(AbstractJournal::State::next(aj, aj, aj_lbl));
-        assert(pre.i().ephemeral is Known);
+        assert(AbstractJournal::State::next_by(aj, aj, aj_lbl, AbstractJournal::Step::internal())); // trigger
         assert(AbstractCrashAwareJournal::State::next_by(pre.i(), post.i(),
             Self::i_lbl(pre, post, lbl),
             AbstractCrashAwareJournal::Step::internal(aj)));
@@ -416,11 +361,8 @@ impl ConcreteJournal::State {
         let aj = pre.i().ephemeral->v;
         Self::full_journal_wf(pre);
         reveal(ConcreteJournal::State::internal_cache);
-        assert(pre.full_journal() == post.full_journal());
         let aj_lbl = AbstractJournal::Label::InternalLabel;
-        assert(AbstractJournal::State::next_by(aj, aj, aj_lbl, AbstractJournal::Step::internal()));
-        assert(AbstractJournal::State::next(aj, aj, aj_lbl));
-        assert(pre.i().ephemeral is Known);
+        assert(AbstractJournal::State::next_by(aj, aj, aj_lbl, AbstractJournal::Step::internal())); // trigger
         assert(AbstractCrashAwareJournal::State::next_by(pre.i(), post.i(),
             Self::i_lbl(pre, post, lbl),
             AbstractCrashAwareJournal::Step::internal(aj)));
@@ -442,11 +384,8 @@ impl ConcreteJournal::State {
         let aj = pre.i().ephemeral->v;
         Self::full_journal_wf(pre);
         reveal(ConcreteJournal::State::internal_disk);
-        assert(pre.full_journal() == post.full_journal());
         let aj_lbl = AbstractJournal::Label::InternalLabel;
-        assert(AbstractJournal::State::next_by(aj, aj, aj_lbl, AbstractJournal::Step::internal()));
-        assert(AbstractJournal::State::next(aj, aj, aj_lbl));
-        assert(pre.i().ephemeral is Known);
+        assert(AbstractJournal::State::next_by(aj, aj, aj_lbl, AbstractJournal::Step::internal())); // trigger
         assert(AbstractCrashAwareJournal::State::next_by(pre.i(), post.i(),
             Self::i_lbl(pre, post, lbl),
             AbstractCrashAwareJournal::Step::internal(aj)));
@@ -490,28 +429,11 @@ impl ConcreteJournal::State {
 
         // commit_start keeps concrete journal/cache/disk unchanged, so AJ view is unchanged.
         assert(pre.full_journal() == post.full_journal());
-        assert(pre.i().ephemeral == post.i().ephemeral);
-        assert(pre.i().persistent == post.i().persistent);
-        assert(pre.i().in_flight is None);
 
-        assert(post.in_flight is Some);
         let ifl = post.in_flight.unwrap();
         Self::full_journal_seq_end(pre);
-        assert(ifl.new_boundary_lsn == lbl->new_boundary_lsn);
-        assert(ifl.journal_version == frozen_journal.seq_end);
-        assert(frozen_journal.seq_start == ifl.new_boundary_lsn);
-        assert(ifl.journal_version <= lbl->max_lsn);
-        assert(lbl->max_lsn == pre.full_journal().seq_end);
-        assert(ifl.journal_version <= pre.full_journal().seq_end);
-        assert(pre.full_journal().can_discard_to(ifl.journal_version));
-        assert(pre.full_journal().discard_recent(ifl.journal_version).can_discard_to(ifl.new_boundary_lsn));
         assert(frozen_journal
             == pre.full_journal().discard_recent(ifl.journal_version).discard_old(ifl.new_boundary_lsn));
-        assert(frozen_journal.wf());
-        assert(pre.i().persistent.seq_end == pre.persistent_journal_seq_end);
-        assert(pre.i().persistent.seq_end <= ifl.journal_version);
-        assert(pre.i().persistent.seq_end <= frozen_journal.seq_end);
-        assert(pre_aj.journal.includes_subseq(frozen_journal));
         assert(AbstractJournal::State::next_by(
             pre_aj,
             pre_aj,
@@ -523,9 +445,6 @@ impl ConcreteJournal::State {
             pre_aj,
             AbstractJournal::Label::FreezeForCommitLabel{frozen_journal},
         ));
-        assert(lbl->new_boundary_lsn <= lbl->max_lsn);
-        assert(pre.i().ephemeral is Known);
-        assert(post.i().in_flight is Some);
         assert(AbstractCrashAwareJournal::State::next_by(
             pre.i(),
             post.i(),
@@ -560,20 +479,13 @@ impl ConcreteJournal::State {
         let journal_step = choose |step| CachedJournal::State::next_by(pre.journal, new_journal, journal_lbl, step);
         match journal_step {
             CachedJournal::Step::discard_old() => {
-                assert(new_journal.status is Some);
             }
             _ => { assert(false); }
         }
-        assert(post.journal == new_journal);
-        assert(post.journal.status is Some);
         let post_aj = post.i().ephemeral->v;
 
         // Remaining obligations from relating ConcreteJournal discard to AJ discard_old.
         Self::full_journal_wf(pre);
-        assert(pre_aj.wf());
-        assert(pre_aj.can_end_at(lbl->require_end));
-        assert(pre_aj.journal.can_discard_to(start_lsn));
-        assert(post_aj.journal == pre_aj.journal.discard_old(start_lsn));
         assert(AbstractJournal::State::next_by(
             pre_aj,
             post_aj,
@@ -585,20 +497,12 @@ impl ConcreteJournal::State {
             post_aj,
             AbstractJournal::Label::DiscardOldLabel{start_lsn, require_end: lbl->require_end},
         ));
-        assert(post_aj.journal == pre_aj.journal.discard_old(start_lsn));
-        assert(post.persistent_journal_seq_end == pre.in_flight.unwrap().journal_version);
         let jv = pre.in_flight.unwrap().journal_version;
         let bdy = pre.in_flight.unwrap().new_boundary_lsn;
-        assert(start_lsn == bdy);
         let left = pre_aj.journal.discard_old(start_lsn).discard_recent(jv);
         let right = pre_aj.journal.discard_recent(jv).discard_old(start_lsn);
-        assert(left.ext_equal(right));
+        assert(left.ext_equal(right)); // trigger
         MsgHistory::ext_equal_is_equality();
-        assert(left == right);
-        assert(post.i().persistent == pre.i().in_flight.unwrap());
-        assert(pre.i().ephemeral is Known);
-        assert(post.i().ephemeral is Known);
-        assert(post.i().in_flight is None);
         assert(AbstractCrashAwareJournal::State::next_by(
             pre.i(),
             post.i(),
@@ -616,26 +520,15 @@ impl ConcreteJournal::State {
     {
         reveal(AbstractCrashAwareJournal::State::next);
         reveal(AbstractCrashAwareJournal::State::next_by);
-        assert(post.journal.status is None);
-        assert(post.i().ephemeral is Unknown);
-        assert(post.i().in_flight is None);
         if pre.journal.status is Some {
-            assert(pre.persistent_image == pre.i().persistent);
             if lbl->keep_in_flight && pre.in_flight is Some {
                 assert(post.persistent_image
                     == pre.full_journal()
                         .discard_recent(pre.in_flight.unwrap().journal_version)
                         .discard_old(pre.in_flight.unwrap().new_boundary_lsn));
-                assert(pre.i().in_flight is Some);
-                assert(post.i().persistent == pre.i().in_flight.unwrap());
             } else {
-                assert(post.persistent_image == pre.persistent_image);
-                assert(post.i().persistent == pre.i().persistent);
             }
         } else {
-            assert(pre.i().in_flight is None);
-            assert(post.persistent_image == pre.persistent_image);
-            assert(post.i().persistent == pre.i().persistent);
         }
         assert(AbstractCrashAwareJournal::State::next_by(
             pre.i(),
@@ -656,14 +549,7 @@ impl ConcreteJournal::State {
         reveal(AbstractCrashAwareJournal::State::next);
         reveal(AbstractCrashAwareJournal::State::next_by);
         reveal(AbstractJournal::State::init_by);
-        assert(pre.journal.status is None);
-        assert(pre.in_flight is None);
-        assert(pre.i().ephemeral is Unknown);
-        assert(post.in_flight == pre.in_flight);
-        assert(post.i().in_flight == pre.i().in_flight);
-        assert(post.journal.status is Some);
         let post_aj = post.i().ephemeral->v;
-        assert(post.i().persistent == pre.i().persistent);
         assert(AbstractJournal::State::init_by(
             post_aj,
             AbstractJournal::Config::initialize(pre.i().persistent),

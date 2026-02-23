@@ -114,7 +114,6 @@ pub proof fn to_aus_preserves_lte(addrs: Set<Address>, big_addrs: Set<Address>)
     implies to_aus(big_addrs).contains(au)
     by {
         let addr = choose |addr| #[trigger] addrs.contains(addr) && addr.au == au;
-        assert(big_addrs.contains(addr));
         to_aus_domain(big_addrs);
     }
 }
@@ -124,7 +123,7 @@ pub proof fn to_aus_finite(addrs: Set<Address>)
     ensures to_aus(addrs).finite()
 {
     let m = Map::new(|addr| addrs.contains(addr), |addr: Address| addr.au);
-    assert(m.dom() == addrs);
+    assert(m.dom() == addrs); // trigger
     lemma_values_finite(m);
 }
 
@@ -148,33 +147,26 @@ pub proof fn to_aus_additive(addrs: Set<Address>, other_addrs: Set<Address>)
     let m_addrs = Map::new(|addr| addrs.contains(addr), |addr: Address| addr.au);
     let m_other_addrs = Map::new(|addr| other_addrs.contains(addr), |addr: Address| addr.au);
 
-    assert(m_total.dom() == total);
-    assert(m_addrs.dom() == addrs);
-    assert(m_other_addrs.dom() == other_addrs);
+    assert(m_addrs.dom() == addrs); // trigger
+    assert(m_other_addrs.dom() == other_addrs); // trigger
 
     assert forall |au| #[trigger] m_total.values().contains(au) <==> 
         (m_addrs.values() + m_other_addrs.values()).contains(au)
     by {
         if m_total.values().contains(au) {
             let addr = choose |addr| #[trigger] m_total.contains_key(addr) && m_total[addr] == addr.au;
-            assert(m_addrs.contains_key(addr) || m_other_addrs.contains_key(addr));
-            assert(m_addrs.values().contains(addr.au) || m_other_addrs.values().contains(addr.au));
         }
 
         if (m_addrs.values() + m_other_addrs.values()).contains(au) {
             if m_addrs.values().contains(au) {
                 let addr = choose |addr| #[trigger] m_addrs.contains_key(addr) && m_addrs[addr] == au;
-                assert(m_total.contains_key(addr));
-                assert(m_total[addr] == addr.au);
+                assert(m_total.contains_key(addr)); // trigger
             } else {
-                assert(m_other_addrs.values().contains(au));
                 let addr = choose |addr| #[trigger] m_other_addrs.contains_key(addr) && m_other_addrs[addr] == au;
-                assert(m_total.contains_key(addr));
-                assert(m_total[addr] == addr.au);
+                assert(m_total.contains_key(addr)); // trigger
             }
         }
     }
-    assert(m_total.values() =~= m_addrs.values() + m_other_addrs.values());
 }
 
 pub proof fn to_aus_subtract(addrs: Set<Address>, other_addrs: Set<Address>) 
@@ -189,28 +181,17 @@ pub proof fn to_aus_subtract(addrs: Set<Address>, other_addrs: Set<Address>)
     by {
         if sub.contains_value(au) {
             let addr = choose |addr| #[trigger] sub.contains_key(addr) && addr.au == au;
-            assert(addrs.contains(addr));
-            assert(m.contains_key(addr));
-            assert(m[addr] == au);
-            assert(m.contains_value(au));
+            assert(m.contains_key(addr)); // trigger
         }
         if (m.values() - m_other.values()).contains(au) {
-            assert(m.contains_value(au));
-            assert(!m_other.contains_value(au));
 
             let addr = choose |addr| #[trigger] m.contains_key(addr) && addr.au == au;
-            assert(addrs.contains(addr));
             if other_addrs.contains(addr) {
-                assert(m_other.contains_key(addr));
-                assert(m_other[addr] == au);
-                assert(m_other.contains_value(au));
-                assert(false);
+                assert(m_other.contains_key(addr)); // trigger
             }
-            assert(sub.contains_key(addr));
-            assert(sub.contains_value(au));
+            assert(sub.contains_key(addr)); // trigger
         }
     }
-    assert(to_aus(addrs - other_addrs) =~= to_aus(addrs) - to_aus(other_addrs));
 }
 
 pub open spec(checked) fn addr_range(au: IAU, start: IPage, end_excl: IPage) -> (addrs: Set<Address>) {
