@@ -73,12 +73,11 @@ ensures
             // Go find witnesses.
             if lsn_addr_index.values().contains(a) {
                 let lsn = choose |lsn| #![auto] lsn_addr_index.contains_key(lsn) && lsn_addr_index[lsn] == a;
-                assert( out.contains_key(lsn) );
+                assert( out.contains_key(lsn) ); // trigger
             } else {
-                assert( out.contains_key(start) );
+                assert( out.contains_key(start) ); // trigger
             }
         };
-        assert( out.values() =~= lsn_addr_index.values() + set![addr] );
     }
 }
 
@@ -140,7 +139,6 @@ impl DiskView {
         if depth > 0 {
             self.build_lsn_addr_index_domain_valid(root);
             self.cropped_ptr_build_sub_index(self.next(root), cropped, (depth-1) as nat);
-            assert(self.build_lsn_addr_index(cropped) <= self.build_lsn_addr_index(self.next(root)));
 
             if self.next(root) is Some {
                 self.build_lsn_addr_index_domain_valid(self.next(root));
@@ -150,8 +148,7 @@ impl DiskView {
             let start_lsn = max(self.boundary_lsn as int, curr_msgs.seq_start as int) as nat;
             let update = singleton_index(start_lsn, curr_msgs.seq_end, root.unwrap());
     
-            assert(update.dom().disjoint(self.build_lsn_addr_index(self.next(root)).dom()));
-            assert(self.build_lsn_addr_index(self.next(root)) <= self.build_lsn_addr_index(root));
+            assert(self.build_lsn_addr_index(self.next(root)) <= self.build_lsn_addr_index(root)); // trigger
         }
     }
 
@@ -207,13 +204,11 @@ impl DiskView {
         reveal(DiskView::index_keys_map_to_valid_entries);
 
         if root is None {
-            assert( self.tj_at(root).index_range_valid(self.build_lsn_addr_index(root)) );
         } else if self.next(root) is None {
             // let curr_msgs = self.entries[root.unwrap()].message_seq;
             // let start_lsn = max(self.boundary_lsn as int, curr_msgs.seq_start as int) as nat;
             // let update = singleton_index(start_lsn, curr_msgs.seq_end, root.unwrap());
             // let output = self.build_lsn_addr_index(self.next(root)).union_prefer_right(update);
-            assert( self.tj_at(root).index_range_valid(self.build_lsn_addr_index(root)) );
         } else {
             self.build_lsn_addr_index_domain_valid(self.next(root));
             self.build_lsn_addr_index_range_valid(self.next(root));
@@ -226,10 +221,9 @@ impl DiskView {
             implies tj.every_lsn_at_addr_indexed_to_addr(index, addr)
             by {
                 if addr != root.unwrap() {
-                    assert(sub_index.values().contains(addr));
+                    assert(sub_index.values().contains(addr)); // trigger
                 }
             }
-            assert( self.tj_at(root).index_range_valid(self.build_lsn_addr_index(root)) );
         }
     }
 
@@ -257,7 +251,7 @@ impl DiskView {
             let curr_msgs = self.entries[root.unwrap()].message_seq;
             let begin = max(self.boundary_lsn as int, curr_msgs.seq_start as int) as nat;
             let update = singleton_index(begin, curr_msgs.seq_end, root.unwrap());
-            assert(update.contains_key(begin));
+            assert(update.contains_key(begin)); // trigger
             assert forall |k| #![auto] self.build_lsn_addr_index(root).values().contains(k) 
             implies self.build_tight(root).entries.dom().contains(k) by {
             }
@@ -349,10 +343,7 @@ impl DiskView {
             assert forall |lsn| #![auto] lsn_addr_index.contains_key(lsn)
             implies self.decodable(Some(lsn_addr_index[lsn])) by {
                 if self.build_lsn_addr_index(self.next(root)).contains_key(lsn) {
-                    assert( self.decodable(Some(lsn_addr_index[lsn])) );
                 } else {
-                    assert( lsn_addr_index[lsn] == root.unwrap() );
-                    assert( self.decodable(Some(lsn_addr_index[lsn])) );
                 }
             }
         }
@@ -489,7 +480,6 @@ impl TruncatedJournal {
             assert(index.contains_value(self.freshest_rec.unwrap())) by {
                 let curr_msgs = self.disk_view.entries[self.freshest_rec.unwrap()].message_seq;
                 let start_lsn = max(self.disk_view.boundary_lsn as int, curr_msgs.seq_start as int) as nat;
-                assert(start_lsn < curr_msgs.seq_end);
                 let update = singleton_index(start_lsn, curr_msgs.seq_end, self.freshest_rec.unwrap());
                 assert(update.contains_key(start_lsn)); // trigger
                 assert(index.contains_key(start_lsn)); // trigger
@@ -550,7 +540,6 @@ impl TruncatedJournal {
             post.disk_view.sub_disk_with_newer_lsn_repr_index(self.disk_view, post.freshest_rec);
             lsn_addr_index_discard_up_to_ensures(pre_index, bdy_post);
         }
-        assert(post_index == repr_index);
     }
 }
 

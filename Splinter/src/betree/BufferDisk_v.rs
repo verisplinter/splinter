@@ -140,7 +140,6 @@ impl BufferDisk<SimpleBuffer> {
                 assert(other.entries.contains_key(buffers[i])); // trigger
             }
         }
-        assert(i_this =~= i_other);
     }
 }
 }  // end verus!

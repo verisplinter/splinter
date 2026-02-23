@@ -1138,7 +1138,6 @@ impl BufferDisk<BranchNode> {
     {
         let root_to_au = Map::new(|addr| branch_roots.contains(addr), |addr: Address| addr.au);
         let au_to_root = root_to_au.invert();
-        assert(au_to_root.dom() =~= to_aus(branch_roots));
     }
 
     pub proof fn build_branch_summary_finite(self, branch_roots: Set<Address>) 
@@ -1148,15 +1147,12 @@ impl BufferDisk<BranchNode> {
             self.build_branch_summary(branch_roots).values().finite(),
     {
         let root_to_au = Map::new(|addr| branch_roots.contains(addr), |addr: Address| addr.au);
-        assert(root_to_au.dom() =~= branch_roots);
-        assert(root_to_au.dom().finite());
+        assert(root_to_au.dom() =~= branch_roots); // trigger
         lemma_values_finite(root_to_au);
-        assert(root_to_au.values().finite());
 
         let au_to_root = root_to_au.invert();
-        assert(au_to_root.dom().finite());
         let result = self.build_branch_summary(branch_roots);
-        assert(result.dom() =~= au_to_root.dom());
+        assert(result.dom() =~= au_to_root.dom()); // trigger
         lemma_values_finite(result);
     }
 
@@ -1170,7 +1166,6 @@ impl BufferDisk<BranchNode> {
             == self.get_branch(root).get_summary()
     {
         let root_to_au = Map::new(|addr| branch_roots.contains(addr), |addr: Address| addr.au);
-        assert(root_to_au.dom() =~= branch_roots);
         assert(root_to_au.contains_pair(root, root.au)); // witness
     }
 
@@ -1491,12 +1486,9 @@ impl LinkedBranch<Summary> {
     ensures
         other.valid_sealed_branch()
     {
-        assert(self.valid_sealed_branch());
         Refinement_v::lemma_reachable_addrs_subset(self, self.the_ranking());
-        assert(self.representation() <= self.disk_view.entries.dom());
 
         self.contains_repr_implies_valid_ranking(other);
-        assert(other.acyclic());
 
         if self.disk_view.is_sub_disk(other.disk_view) {
             let delta = other.disk_view.representation() - self.disk_view.representation();
@@ -1510,35 +1502,25 @@ impl LinkedBranch<Summary> {
             Refinement_v::lemma_reachable_unchanged_implies_same_i_internal(self, self.the_ranking(), other, other.the_ranking(), delta);
         }
 
-        assert(other.full_repr() == self.full_repr());
         Refinement_v::i_internal_wf(self, self.the_ranking());
         Refinement_v::lemma_i_wf_implies_inv(other,  other.the_ranking());
-        assert(other.inv());
 
         if self.root() is Index {
             assert(other.disk_view.valid_address(other.root()->aux_ptr.unwrap())); // trigger
         }
-        assert(other.get_summary() == self.get_summary());
 
         let domain = restrict_domain_au(other.disk_view.entries, other.get_summary());
-        assert(other.full_repr() <= domain);
 
         assert forall |addr| #[trigger] domain.contains(addr) 
         implies self.full_repr().contains(addr)
         by {
-            assert(other.disk_view.entries.contains_key(addr));
-            assert(self.get_summary().contains(addr.au));
 
             if self.disk_view.entries.contains_key(addr) {
-                assert(self.full_repr().contains(addr));
             } else {
-                assert((other.disk_view.representation()-self.disk_view.representation()).contains(addr));
-                assert(false);
+                assert((other.disk_view.representation()-self.disk_view.representation()).contains(addr)); // trigger
             }
         }
 
-        assert(domain =~= other.full_repr());
-        assert(other.valid_sealed_branch());
     }
 
     proof fn contains_repr_implies_valid_ranking(self, other: Self) -> (out: Ranking)

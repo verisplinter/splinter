@@ -441,6 +441,9 @@ fn previous_comment_has_label(lines: &[String], fn_start: usize, line_idx: usize
 }
 
 fn is_assert_candidate(lines: &[String], f: &FunctionSpan, idx: usize) -> bool {
+    if idx >= lines.len() {
+        return false;
+    }
     if idx < f.start_line || idx > f.end_line {
         return false;
     }
@@ -467,7 +470,11 @@ fn is_assert_candidate(lines: &[String], f: &FunctionSpan, idx: usize) -> bool {
 
 fn find_candidates(lines: &[String], f: &FunctionSpan) -> Vec<usize> {
     let mut out = Vec::new();
-    for idx in f.start_line..=f.end_line {
+    if lines.is_empty() || f.start_line >= lines.len() {
+        return out;
+    }
+    let end = f.end_line.min(lines.len() - 1);
+    for idx in f.start_line..=end {
         if is_assert_candidate(lines, f, idx) {
             out.push(idx);
         }
@@ -651,7 +658,9 @@ fn process_one_file(
     let mut any_change = false;
     let mut module_for_verify = module.to_string();
 
-    for f in functions {
+    // Process bottom-up so line deletions in one function never invalidate spans
+    // for functions that remain to be processed.
+    for f in functions.into_iter().rev() {
         if !function_filters.is_empty()
             && !function_filters.iter().any(|needle| f.name.contains(needle))
         {
@@ -897,28 +906,43 @@ fn run_single(cfg: &Config) -> Result<(), String> {
 }
 
 fn create_worker_worktree(repo_root: &Path, worker_id: usize) -> Result<PathBuf, String> {
-    let dir = PathBuf::from(format!("/tmp/proof_prune_worker_{}_{}", std::process::id(), worker_id));
+    let mut last_err = String::new();
+    for attempt in 0..5 {
+        let dir = PathBuf::from(format!(
+            "/tmp/proof_prune_worker_{}_{}_{}",
+            std::process::id(),
+            worker_id,
+            attempt
+        ));
 
-    if dir.exists() {
-        fs::remove_dir_all(&dir)
-            .map_err(|e| format!("failed to clean {}: {e}", dir.display()))?;
+        if dir.exists() {
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        let output = Command::new("git")
+            .current_dir(repo_root)
+            .arg("worktree")
+            .arg("add")
+            .arg("--detach")
+            .arg(&dir)
+            .arg("HEAD")
+            .output()
+            .map_err(|e| format!("failed to create worktree {}: {e}", dir.display()))?;
+
+        if output.status.success() {
+            return Ok(dir);
+        }
+
+        last_err = format!(
+            "git worktree add failed for {} (attempt {}): {}",
+            dir.display(),
+            attempt + 1,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+        thread::sleep(Duration::from_millis(200));
     }
 
-    let status = Command::new("git")
-        .current_dir(repo_root)
-        .arg("worktree")
-        .arg("add")
-        .arg("--detach")
-        .arg(&dir)
-        .arg("HEAD")
-        .status()
-        .map_err(|e| format!("failed to create worktree {}: {e}", dir.display()))?;
-
-    if !status.success() {
-        return Err(format!("git worktree add failed for {}", dir.display()));
-    }
-
-    Ok(dir)
+    Err(last_err)
 }
 
 fn remove_worker_worktree(repo_root: &Path, dir: &Path) {

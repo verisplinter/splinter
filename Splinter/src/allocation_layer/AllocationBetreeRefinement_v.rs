@@ -252,7 +252,6 @@ impl AllocationBetree::State {
         pushed.tree_likes_domain(pushed.the_ranking());
         pushed.buffer_likes_domain(pushed_betree_likes);
         restrict_domain_au_ensures(pushed_buffer_likes, pushed.buffer_dv.entries);
-        assert(new_betree.linked.valid_buffer_dv());
     }
 
     proof fn internal_grow_inv_refines(pre: Self, post: Self, lbl: AllocationBetree::Label, 
@@ -295,7 +294,6 @@ impl AllocationBetree::State {
         splitted.tree_likes_domain(splitted.the_ranking());
         splitted.buffer_likes_domain(splitted_betree_likes);
         restrict_domain_au_ensures(splitted_buffer_likes, splitted.buffer_dv.entries);
-        assert(new_betree.linked.valid_buffer_dv());
     }
 
     proof fn internal_flush_inv_refines(pre: Self, post: Self, lbl: AllocationBetree::Label, 
@@ -322,7 +320,6 @@ impl AllocationBetree::State {
         flushed.tree_likes_domain(flushed.the_ranking());
         flushed.buffer_likes_domain(flushed_betree_likes);
         restrict_domain_au_ensures(flushed_buffer_likes, flushed.buffer_dv.entries);
-        assert(new_betree.linked.valid_buffer_dv());
     }
 
     proof fn internal_compact_complete_inv_refines(pre: Self, post: Self, lbl: AllocationBetree::Label, 
@@ -353,7 +350,6 @@ impl AllocationBetree::State {
         compacted.tree_likes_domain(compacted.the_ranking());
         compacted.buffer_likes_domain(compacted_betree_likes);
         restrict_domain_au_ensures(compacted_buffer_likes, compacted.buffer_dv.entries);
-        assert(new_betree.linked.valid_buffer_dv());
     }
 
     proof fn next_refines(pre: Self, post: Self, lbl: AllocationBetree::Label) 
@@ -398,11 +394,10 @@ impl AllocationBetree::State {
                 pre.betree.linked.buffer_likes_domain(betree_likes);
                 restrict_domain_au_ensures(buffer_likes, pre.betree.linked.buffer_dv.entries);
 
-                assert(post.inv());
-                assert(LikesBetree::State::next_by(pre.i(), post.i(), lbl.i(), LikesBetree::Step::internal_buffer_noop(new_betree)));
+                assert(LikesBetree::State::next_by(pre.i(), post.i(), lbl.i(), LikesBetree::Step::internal_buffer_noop(new_betree))); // trigger
             }
             AllocationBetree::Step::internal_noop() => {
-                assert(LikesBetree::State::next_by(pre.i(), post.i(), lbl.i(), LikesBetree::Step::internal_noop()));
+                assert(LikesBetree::State::next_by(pre.i(), post.i(), lbl.i(), LikesBetree::Step::internal_noop())); // trigger
             }
             _ => { assert(false); }
         }
