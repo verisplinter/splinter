@@ -69,7 +69,6 @@ impl Journal {
         ensures self@@.seq_end == out
     {
         let out = self.seq_start + self.msg_history.len() as u64;
-        assert( self@@.seq_end == out );
         out
     }
 
@@ -106,7 +105,6 @@ impl Journal {
         assume(idx < usize::MAX);
         self.msg_history = self.msg_history.split_off(idx as usize);
         self.seq_start = new_seq_start;
-        assert(old(self).seq_start + old(self).msg_history.len() == self.seq_start + self.msg_history.len());
     }
 }
 

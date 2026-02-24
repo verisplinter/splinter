@@ -97,9 +97,6 @@ impl Marshal for KeyFormat {
             // value.parsedv() = *value = Key(value.0)
             // Since value.0.parsedv() = value.0 as int, and self.inner.parse(subr) = value.0 as int,
             // self.inner.parse(subr) as u64 = value.0
-            assert(Parsedview::<int>::parsedv(&value.0) == (value.0 as int));
-            assert(self.inner.parse(subr) == (value.0 as int));
-            assert(self.parse(subr) == Key(self.inner.parse(subr) as u64));
             assert(self.parse(subr) == value.parsedv()); // trigger
         }
         end
@@ -113,12 +110,8 @@ impl Marshal for KeyFormat {
                     let idata = slice@.i(data@);
 
                     // Prove parsability (for postcondition self.parsable(idata) <==> ov is Some)
-                    assert(self.inner.parsable(idata)); // inner was successfully parsed
-                    assert(self.parsable(idata)); // therefore KeyFormat is parsable
 
                     // Prove wf (from inner postcondition)
-                    assert(v.wf()); // inner postcondition guarantees v.wf()
-                    assert(result.wf()); // Key wraps a wf u64
 
                     // inner postcondition: v.parsedv() == self.inner.parse(...) (as int)
                     // we need: result.parsedv() == self.parse(...)
@@ -126,11 +119,6 @@ impl Marshal for KeyFormat {
                     // self.parse(...) = Key(self.inner.parse(...) as u64)
                     // Since v.parsedv() = v as int = self.inner.parse(...),
                     // self.inner.parse(...) as u64 = v
-                    assert(Parsedview::<int>::parsedv(&v) == (v as int));
-                    assert(self.inner.parse(idata) == (v as int));
-                    assert(self.parse(idata) == Key(self.inner.parse(idata) as u64));
-                    assert(result.parsedv() == result); // Key(v)
-                    assert(result.parsedv() == self.parse(idata));
                 }
                 Some(result)
             }

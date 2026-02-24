@@ -93,7 +93,6 @@ where Key: View + Injective + Eq + Structural + Clone
                         let s = v@;
                         let i = x_idx as int;
                         let j = y_idx as int;
-                        assert( 0<=i<s.len() && 0<=j<s.len() && s[i].0@ == s[j].0@ && i != j );
                     }
                     return false;
                 }
@@ -102,25 +101,17 @@ where Key: View + Injective + Eq + Structural + Clone
                 assert forall |yy| #![auto] 0 <= yy < y_idx && v[x_idx as int].0 == v[yy].0 implies x_idx == yy by {
                     if yy < old_y_idx { assert( x_idx == yy ); }
                     else {
-                        assert( yy == old_y_idx );
-                        assert( v[yy].0 == ky );
-                        assert( v[yy].0 != kx );
-                        assert( x_idx == yy );
                     }
                 }
             }
             x_idx += 1;
         }
         proof {
-            assert( forall |xl, xo| #![auto] 0 <= xl < x_idx && 0 <= xo < len && v[xl].0 == v[xo].0 ==> xl == xo );
             let s = v@;
             assert forall |i,j| #![auto] 0<=i<s.len() && 0<=j<s.len() && s[i].0@ == s[j].0@ implies i == j by {
                 let (xl,xo) = if i < j { (i,j) } else { (j,i) };
-                assert( s[xl].0@ == s[xo].0@ );
                 Key::lemma_injective(); // needed to prove unique_keys, since it's over key views
 //                 assert( s[xl].0@ == v[xl].0 ); // need to apply injectiveness
-                assert( 0 <= xl < x_idx && 0 <= xo < len && v[xl].0 == v[xo].0 );
-                assert( xl == xo );
             }
         }
         return true;
@@ -155,43 +146,28 @@ where Key: View + Injective + Eq + Structural + Clone
     {
         // TODO(jonh): ensmallify proof
         if s.len() == 0 {
-            assert( Self::seq_to_map(s) == Map::<Key, Value>::empty() );
-            assert( Self::seq_to_map(s).dom().finite() );
-            assert( Self::seq_to_map(s) == Self::seq_to_map_r(s) );
+            assert( Self::seq_to_map(s) == Map::<Key, Value>::empty() ); // trigger
         } else {
             let rs = s.drop_last();
             Self::seq_to_map_ensures(rs);
             let (kl,vl) = s.last();
             let ms = Self::seq_to_map(s);
             let rm = Self::seq_to_map(rs);
-            assert( rm == Self::seq_to_map(s.drop_last()) );    // from rec call
             let rmi = rm.insert(kl,vl);
             assert forall |k| ms.contains_key(k) implies rmi.contains_key(k) by {
                 if k == kl {
-                    assert(rmi.contains_key(kl));
                 } else {
                     let i = choose |i| #![auto] 0<=i<s.len() && s[i].0 == k;
-                    assert(s[i].0 == k);
-                    assert(rs[i].0 == k);
-                    assert(rm.contains_key(k));
+                    assert(rs[i].0 == k); // trigger
                 }
             }
             assert forall |k| #![auto] rmi.contains_key(k) implies rmi[k] == ms[k] by {
                 let i = choose |i| #![auto] 0<=i<s.len() && s[i].0 == k;
-                assert(ms[k] == s[i].1);
-                assert(rmi[k] == s[i].1);
                 if k == kl {
-                    assert(s[s.len()-1].0 == k);
-                    assert(Self::unique_keys(s));
-                    assert(i == s.len()-1);
                 } else {
-                    assert(rs[i].0 == k);
-                    assert(rmi[k] == rs[i].1);
                 }
             }
-            assert( ms == rmi );
-            assert( Self::seq_to_map(s).dom().finite() );
-            assert( Self::seq_to_map(s) == Self::seq_to_map_r(s) );
+            assert( ms == rmi ); // trigger
         }
     }
 
@@ -278,7 +254,6 @@ where Key: View + Injective + Eq + Structural + Clone
     ensures Self::seq_to_map(Self::map_to_seq(m)) == m
     {
         Self::map_to_seq_contents(m);
-        assert( Self::seq_to_map(Self::map_to_seq(m)) == m ); // verus #1534
     }
 
     pub fn new() -> (out: Self)

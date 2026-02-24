@@ -102,12 +102,6 @@ ensures
         == IJournalRecordWrappable::spec_new_format_pair());
     assert((spec_fmt.pair_fmt.a_fmt, spec_fmt.pair_fmt.b_fmt)
         == IJournalRecordWrappable::spec_new_format_pair());
-    assert(fmt.pair_fmt == spec_fmt.pair_fmt);
-    assert(spec_fmt.parsable(reads[addr]));
-    assert(fmt.parse(reads[addr]) == spec_fmt.parse(reads[addr]));
-    assert(to_journal_reads(reads)[addr] == raw_page_to_record(reads[addr]));
-    assert(raw_page_to_record(reads[addr]) == spec_fmt.parse(reads[addr]).view());
-    assert(value.parsedv().view() == fmt.parse(reads[addr]).view());
 }
 
 #[verifier::external_body]
@@ -1097,7 +1091,6 @@ impl JournalImpl {
             self@.seq_end() == self.seq_end(),
     {
         broadcast use JournalImpl::view_ensures;
-        assert(self@.status is Some);
         reveal(CachedJournal::State::seq_end);
         reveal(JournalImpl::seq_end);
     }

@@ -104,9 +104,6 @@ impl Marshal for MessageFormat {
                     // we need: self.parse(subr) == value.parsedv()
                     // self.parse(subr) = Message::Define { value: Value(self.inner.parse(subr) as u64) }
                     // value.parsedv() = *value = Message::Define { value: Value(v) }
-                    assert(Parsedview::<int>::parsedv(v) == (*v as int));
-                    assert(self.inner.parse(subr) == (*v as int));
-                    assert(self.parse(subr) == Message::Define { value: Value(self.inner.parse(subr) as u64) });
                     assert(self.parse(subr) == value.parsedv()); // trigger
                 }
                 end
@@ -122,11 +119,7 @@ impl Marshal for MessageFormat {
                     // inner postcondition: v.parsedv() == self.inner.parse(...) (as int)
                     // we need: Message::Define{...}.parsedv() == self.parse(...)
                     let idata = slice@.i(data@);
-                    assert(Parsedview::<int>::parsedv(&v) == (v as int));
-                    assert(self.inner.parse(idata) == (v as int));
-                    assert(self.parse(idata) == Message::Define { value: Value(self.inner.parse(idata) as u64) });
                     let result = Message::Define { value: Value(v) };
-                    assert(result.parsedv() == result);
                     assert(result.wf()); // trigger
                 }
                 Some(Message::Define { value: Value(v) })

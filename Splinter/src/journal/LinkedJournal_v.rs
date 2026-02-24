@@ -195,8 +195,7 @@ impl DiskView {
         assert forall |a:Self, b:Self, c: Self| #[trigger] a.is_sub_disk(b) && #[trigger] b.is_sub_disk(c) implies a.is_sub_disk(c) by {
             assert forall|k: Address| #[trigger] a.entries.dom().contains(k) implies
                 #[trigger] c.entries.dom().contains(k) && a.entries[k] == c.entries[k] by {
-                assert( b.entries.dom().contains(k) );
-                assert( c.entries.dom().contains(k) );
+                assert( b.entries.dom().contains(k) ); // trigger
             }
         }
     }
@@ -381,7 +380,7 @@ impl DiskView {
             self.decodable_implies_lsns_have_entries(self.next(root));
             assert forall |lsn| self.seq_start() <= lsn < self.seq_end(root) implies self.lsn_has_entry(lsn) by {
                 if self.entries[root.unwrap()].message_seq.seq_start <= lsn {
-                    assert( self.lsn_has_entry_at(lsn, root.unwrap()) );
+                    assert( self.lsn_has_entry_at(lsn, root.unwrap()) ); // trigger
                 }
             }
         }
@@ -508,7 +507,7 @@ impl TruncatedJournal {
     ensures
         Self::mkfs().decodable(),
     {
-        assert( Self::mkfs().disk_view.valid_ranking(map![]) );
+        assert( Self::mkfs().disk_view.valid_ranking(map![]) ); // trigger
     }
 
     pub open spec fn lsns_have_entries(self) -> bool {

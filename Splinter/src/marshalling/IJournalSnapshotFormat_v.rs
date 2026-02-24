@@ -75,13 +75,9 @@ proof fn journal_snapshot_postcondition_proof(
     let f2_end = f1_end + fmt.field2_fmt.uniform_size() as int;
 
     // Show the parse result matches field by field
-    assert(result.parsedv().boundary_lsn == (field1_value as nat));
-    assert(fmt.parse(idata).boundary_lsn == fmt.field1_fmt.parse(idata.subrange(0, f1_end)));
 
     // For field2: iaddr_view(result.freshest_rec) == Parsedview::parsedv(&field2_value)
     // because both are defined identically (match on Option, apply @ to inner)
-    assert(result.parsedv().freshest_rec == Parsedview::<Option<crate::disk::GenericDisk_v::Address>>::parsedv(&field2_value));
-    assert(fmt.parse(idata).freshest_rec == fmt.field2_fmt.parse(idata.subrange(f1_end, f2_end)));
 }
 
 } // verus!

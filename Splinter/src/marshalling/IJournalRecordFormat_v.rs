@@ -117,7 +117,6 @@ impl Wrappable for IJournalHeaderWrappable {
     exec fn exec_to_pair(value: &Self::U) -> (pair: (Option<IAddress>, ILsn))
     {
         let pair = (value.prior_rec, value.start_lsn);
-        assert( Self::to_pair((*value).parsedv()) == Parsedview::<(Pointer,int)>::parsedv(&pair) );  // verus #1534
         assume( pair.wf() );    // TODO(jonh) need to plumb an obligation through the trait? Maybe a custom pair type?
         pair
     }
@@ -141,9 +140,7 @@ impl Wrappable for IJournalHeaderWrappable {
         let a_fmt = OptionFormat::<IAddressFormat>::new(IAddressFormat::new());
         let b_fmt = IntFormat::<ILsn>::new();
 
-        assert( a_fmt.uniform_size() == 9 );
 //         assert( b_fmt.uniform_size() == 4 );
-        assert( a_fmt.uniform_size() as int + a_fmt.uniform_size() as int <= usize::MAX );
         (a_fmt, b_fmt)
     }
 }
@@ -182,7 +179,7 @@ impl Wrappable for IJournalRecordWrappable {
         let pair = (header_clone, messages_clone);
         assume( header_clone == value.header );
         assume( messages_clone == value.messages );
-        assert( Self::to_pair((*value).parsedv()) == Parsedview::<(JournalHeader, Seq<KeyedMessage>)>::parsedv(&pair) );  // verus #1534
+        assert( Self::to_pair((*value).parsedv()) == Parsedview::<(JournalHeader, Seq<KeyedMessage>)>::parsedv(&pair) );  // verus #1534 // trigger
         assume( pair.wf() );    // TODO(jonh) need to plumb an obligation through the trait? Maybe a custom pair type?
         pair
     }
@@ -207,9 +204,6 @@ impl Wrappable for IJournalRecordWrappable {
         let a_fmt = WrappableFormat::<IJournalHeaderWrappable>::new();
         let b_fmt = Self::BF::new(KeyedMessageFormat::new(), IntFormat::<u8>::new(), 200);
 
-        assert( a_fmt.uniform_size() == 17 );
-        assert( b_fmt.uniform_size() == 200 );
-        assert( a_fmt.uniform_size() as int + a_fmt.uniform_size() as int <= usize::MAX );
         (a_fmt, b_fmt)
     }
 }

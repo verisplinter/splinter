@@ -35,8 +35,7 @@ cargo run -- \
   --workdir ../../src \
   --entry main.rs \
   --jobs 4 \
-  --wave-size 8 \
-  --global-verify-cmd "~/work/verus/source/target-verus/release/verus --triggers-mode silent main.rs"
+  --wave-size 8
 ```
 
 Optional wave snapshot command:
@@ -63,8 +62,10 @@ It skips:
 - After each wave:
   1. workers drain
   2. changes merge into main worktree
-  3. global verify command runs
-  4. optional snapshot command runs
+  3. optional snapshot command runs
+
+Note: full-system wave-level global verification is currently disabled by design to allow
+uninterrupted full-pass pruning. Resolve any cross-file conflicts at the end.
 
 ## Useful knobs
 

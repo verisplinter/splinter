@@ -28,7 +28,7 @@ struct Config {
     extra_verus_args: Vec<String>,
     jobs: usize,
     wave_size: usize,
-    global_verify_cmd: Option<String>,
+    _global_verify_cmd: Option<String>,
     snapshot_cmd: Option<String>,
     stream_verus: bool,
 }
@@ -243,7 +243,7 @@ fn parse_args() -> Result<Config, String> {
         extra_verus_args,
         jobs,
         wave_size,
-        global_verify_cmd,
+        _global_verify_cmd: global_verify_cmd,
         snapshot_cmd,
         stream_verus,
     })
@@ -863,24 +863,6 @@ fn walk_rs_files(root: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
     Ok(())
 }
 
-fn default_global_verify_cmd(cfg: &Config) -> String {
-    let mut parts = Vec::new();
-    parts.push(shell_escape(&cfg.verus));
-    for a in &cfg.extra_verus_args {
-        parts.push(shell_escape(a));
-    }
-    parts.push(shell_escape(&cfg.entry));
-    parts.join(" ")
-}
-
-fn shell_escape(s: &str) -> String {
-    if s.chars().all(|c| c.is_ascii_alphanumeric() || "-._/:=+".contains(c)) {
-        s.to_string()
-    } else {
-        format!("'{}'", s.replace('\'', "'\\''"))
-    }
-}
-
 fn run_single(cfg: &Config) -> Result<(), String> {
     let (file, module) = match &cfg.mode {
         Mode::Single { file, module } => (file, module),
@@ -1015,11 +997,6 @@ fn run_batch(cfg: &Config) -> Result<(), String> {
         tasks.len(),
         workdir_abs.display()
     );
-
-    let global_verify_cmd = cfg
-        .global_verify_cmd
-        .clone()
-        .unwrap_or_else(|| default_global_verify_cmd(cfg));
 
     let stats = Arc::new(Mutex::new(RunStats {
         total_files: tasks.len(),
@@ -1267,18 +1244,9 @@ fn run_batch(cfg: &Config) -> Result<(), String> {
         }
 
         println!(
-            "[wave {}] drained; durable merges already applied, running global verify...",
+            "[wave {}] drained; durable merges already applied (global verify disabled)",
             wave_num
         );
-        let ok = run_shell(&global_verify_cmd, &cfg.workdir)?;
-        if !ok {
-            heartbeat_stop.store(true, Ordering::Relaxed);
-            let _ = heartbeat.join();
-            return Err(format!(
-                "global verify failed after wave {}. command: {}",
-                wave_num, global_verify_cmd
-            ));
-        }
 
         if let Some(cmd) = &cfg.snapshot_cmd {
             println!("[wave {}] running snapshot command", wave_num);

@@ -154,8 +154,6 @@ impl RefinementObligation<ConcreteProgramModel> for RefinementProof {
 
     proof fn i_lbl_valid(pre: SystemModel::State<ConcreteProgramModel>, post: SystemModel::State<ConcreteProgramModel>, lbl: SystemModel::Label, ctam_lbl: CrashTolerantAsyncMap::Label)
     {
-        assert( ctam_lbl == Self::i_lbl(pre, post, lbl) );
-        assert( lbl.label_correspondence(ctam_lbl) );
     }
 
     proof fn init_refines(pre: SystemModel::State<ConcreteProgramModel>)

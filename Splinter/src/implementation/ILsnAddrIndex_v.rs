@@ -110,7 +110,6 @@ impl ILsnAddrIndex {
                 let out = self.i(idx);
                 let prev_index = self.i(idx-1);
                 reveal(lsn_addr_index_append_record);
-                assert(out == prev_index.union_prefer_right(update));
 
                 // -> direction
                 if out.contains_key(lsn) {
@@ -121,9 +120,7 @@ impl ILsnAddrIndex {
                 if lb <= lsn < curr {
                     self.ascending_bounds_monotone(idx-1);
                     if lsn < prev {
-                        assert(prev_index.contains_key(lsn));
                     } else {
-                        assert(update.contains_key(lsn));
                     }
                 }
             }
@@ -140,8 +137,7 @@ impl ILsnAddrIndex {
     {
         if i < j {
             self.bounds_monotone(i, j - 1);
-            assert(self.sorted_entry(j - 1));
-            assert(self.bounds[j - 1] < self.bounds[j]);
+            assert(self.sorted_entry(j - 1)); // trigger
         }
     }
 
@@ -158,21 +154,11 @@ impl ILsnAddrIndex {
         if j == idx + 1 {
             let update = singleton_index(self.bounds[idx] as nat, self.bounds[idx + 1] as nat, self.addrs[idx]@);
             reveal(lsn_addr_index_append_record);
-            assert(self.i(j) == self.i(j - 1).union_prefer_right(update));
-            assert(update.contains_key(lsn));
-            assert(self.i(j).contains_key(lsn));
-            assert(self.i(j)[lsn] == update[lsn]);
         } else {
             self.i_segment_maps_to_addr(j - 1, idx, lsn);
             let update = singleton_index(self.bounds[j - 1] as nat, self.bounds[j] as nat, self.addrs[j - 1]@);
             self.bounds_monotone(idx + 1, j - 1);
-            assert(self.bounds[idx + 1] <= self.bounds[j - 1]);
-            assert(lsn < self.bounds[j - 1]);
-            assert(!update.contains_key(lsn));
             reveal(lsn_addr_index_append_record);
-            assert(self.i(j) == self.i(j - 1).union_prefer_right(update));
-            assert(self.i(j).contains_key(lsn));
-            assert(self.i(j)[lsn] == self.i(j - 1)[lsn]);
         }
     }
 
@@ -186,7 +172,6 @@ impl ILsnAddrIndex {
             self@[lsn] == self.addrs[idx]@,
     {
         let j = (self.bounds.len() - 1) as int;
-        assert(idx < j);
         self.i_segment_maps_to_addr(j, idx, lsn);
     }
 
@@ -197,12 +182,9 @@ impl ILsnAddrIndex {
         ensures
             self@.values().contains(self.addrs[idx]@),
     {
-        assert(self.sorted_entry(idx));
+        assert(self.sorted_entry(idx)); // trigger
         let lsn = self.bounds[idx] as nat;
         self.lsn_maps_to_addr(idx, lsn);
-        assert(self@[lsn] == self.addrs[idx]@);
-        assert(self@.contains_key(lsn));
-        assert(self@.values().contains(self.addrs[idx]@));
     }
 
     proof fn find_segment_up_to(&self, lsn: LSN, j: int) -> (idx: int)
@@ -233,7 +215,6 @@ impl ILsnAddrIndex {
             self.bounds[idx] <= lsn < self.bounds[idx + 1],
     {
         let j = (self.bounds.len() - 1) as int;
-        assert(j == self.addrs.len());
         let idx = self.find_segment_up_to(lsn, j);
         idx
     }
@@ -255,9 +236,8 @@ impl ILsnAddrIndex {
         let end_lsn = self.bounds[idx + 1] as nat;
         self.view_domain();
         self.bounds_monotone(0, idx);
-        assert(self.seq_start() as nat <= start_lsn);
         assert(start_lsn < end_lsn) by {
-            assert(self.sorted_entry(idx));
+            assert(self.sorted_entry(idx)); // trigger
         }
         assert(complete_lsn_range_for_addr(
             self@,
@@ -275,28 +255,14 @@ impl ILsnAddrIndex {
                 } by {
                 if start_lsn <= lsn < end_lsn {
                     self.lsn_maps_to_addr(idx, lsn);
-                    assert(self@[lsn] == self.addrs[idx]@);
                 } else if self@.contains_key(lsn) && self@[lsn] == self.addrs[idx]@ {
-                    assert(self.seq_start() <= lsn < self.seq_end());
                     let idx2 = self.find_segment(lsn);
                     self.lsn_maps_to_addr(idx2, lsn);
                     self.lsn_maps_to_addr(idx, start_lsn);
-                    assert(self@[lsn] == self.addrs[idx2]@);
-                    assert(self@[start_lsn] == self.addrs[idx]@);
-                    assert(self@[start_lsn] == self.addrs[idx]@);
-                    assert(self@[lsn] == self@[start_lsn]);
-                    assert(self.addrs[idx2]@ == self.addrs[idx]@);
                     if idx2 < idx {
-                        assert(self.addrs[idx2]@ != self.addrs[idx]@);
-                        assert(false);
                     }
                     if idx < idx2 {
-                        assert(self.addrs[idx]@ != self.addrs[idx2]@);
-                        assert(false);
                     }
-                    assert(idx2 == idx);
-                    assert(self.bounds[idx2] <= lsn < self.bounds[idx2 + 1]);
-                    assert(start_lsn <= lsn < end_lsn);
                 }
             };
         };
@@ -314,14 +280,11 @@ impl ILsnAddrIndex {
                 complete_lsn_range_for_addr(self@, self.seq_start() as nat, addr, start_lsn, end_lsn)
         by {
             let lsn0 = choose |lsn: LSN| #![auto] self@.contains_key(lsn) && self@[lsn] == addr;
-            assert(self.seq_start() <= lsn0 < self.seq_end());
             let idx = self.find_segment(lsn0);
             let start_lsn = self.bounds[idx] as nat;
             let end_lsn = self.bounds[idx + 1] as nat;
 
             self.bounds_monotone(0, idx);
-            assert(self.seq_start() as nat <= start_lsn);
-            assert(start_lsn < end_lsn);
             assert(complete_lsn_range_for_addr(self@, self.seq_start() as nat, addr, start_lsn, end_lsn)) by {
                 assert forall |lsn: LSN|
                     #![trigger self@.contains_key(lsn)]
@@ -333,36 +296,19 @@ impl ILsnAddrIndex {
                     if start_lsn <= lsn < end_lsn {
                         self.lsn_maps_to_addr(idx, lsn);
                         self.lsn_maps_to_addr(idx, lsn0);
-                        assert(self@[lsn] == self.addrs[idx]@);
-                        assert(self@[lsn0] == self.addrs[idx]@);
-                        assert(self@[lsn0] == addr);
-                        assert(self@[lsn] == addr);
                     } else if self@.contains_key(lsn) && self@[lsn] == addr {
-                        assert(self.seq_start() <= lsn < self.seq_end());
                         let idx2 = self.find_segment(lsn);
                         self.lsn_maps_to_addr(idx2, lsn);
                         self.lsn_maps_to_addr(idx, lsn0);
-                        assert(self@[lsn] == self.addrs[idx2]@);
-                        assert(self@[lsn0] == self.addrs[idx]@);
-                        assert(self@[lsn] == addr);
-                        assert(self@[lsn0] == addr);
-                        assert(self.addrs[idx2]@ == self.addrs[idx]@);
                         if idx2 < idx {
-                            assert(self.addrs[idx2]@ != self.addrs[idx]@);
-                            assert(false);
                         }
                         if idx < idx2 {
-                            assert(self.addrs[idx]@ != self.addrs[idx2]@);
-                            assert(false);
                         }
-                        assert(idx2 == idx);
-                        assert(start_lsn <= lsn < end_lsn);
                     }
                 };
             };
         };
 
-        assert(all_addrs_have_complete_lsn_ranges(self@, self.seq_start() as nat));
     }
 
     pub proof fn derive_lsn_index_domain_exact(&self)
@@ -374,11 +320,8 @@ impl ILsnAddrIndex {
         self.view_domain();
         assert forall |lsn: LSN| #[trigger] self@.contains_key(lsn)
             <==> (self.seq_start() as nat <= lsn < self.seq_end() as nat) by {
-            assert(self@.dom().contains(lsn) <==> (self.seq_start() as nat <= lsn < self.seq_end() as nat));
             if self@.contains_key(lsn) {
-                assert(self@.dom().contains(lsn));
             } else if self@.dom().contains(lsn) {
-                assert(false);
             }
         };
     }
@@ -400,23 +343,14 @@ impl ILsnAddrIndex {
             assert forall |lsn: LSN| #[trigger] nat_range.contains(lsn)
                 implies mapped.contains(lsn) by {
                 let i = lsn as int;
-                assert(start_lsn as int <= i < end_lsn as int);
-                assert(int_range.contains(i));
-                assert((i as nat) == lsn);
-                assert(mapped.contains(lsn));
+                assert(int_range.contains(i)); // trigger
             };
 
             assert forall |lsn: LSN| #[trigger] mapped.contains(lsn)
                 implies nat_range.contains(lsn) by {
                 let i = choose |i: int| int_range.contains(i) && (i as nat) == lsn;
-                assert(start_lsn as int <= i < end_lsn as int);
-                assert(0 <= i);
-                assert((i as nat) as int == i);
                 assert(lsn as int == i) by {
-                    assert(i as nat == lsn);
                 };
-                assert(start_lsn <= lsn);
-                assert(lsn < end_lsn);
             };
         };
     }
@@ -434,43 +368,28 @@ impl ILsnAddrIndex {
             implies addr_to_lsns(self@, addr, bdy).finite() by {
             assert(exists |start_lsn: LSN, end_lsn: LSN|
                 complete_lsn_range_for_addr(self@, bdy, addr, start_lsn, end_lsn)) by {
-                assert(all_addrs_have_complete_lsn_ranges(self@, bdy));
-                assert(self@.values().contains(addr));
             }
             let (start_lsn, end_lsn) = choose |start_lsn: LSN, end_lsn: LSN|
                 complete_lsn_range_for_addr(self@, bdy, addr, start_lsn, end_lsn);
-            assert(complete_lsn_range_for_addr(self@, bdy, addr, start_lsn, end_lsn));
 
             let lsns = addr_to_lsns(self@, addr, bdy);
             let interval = Set::<LSN>::new(|lsn: LSN| start_lsn <= lsn < end_lsn);
             assert(lsns =~= interval) by {
                 assert forall |lsn: LSN| #[trigger] lsns.contains(lsn)
                     implies interval.contains(lsn) by {
-                    assert(bdy <= lsn);
-                    assert(self@.contains_key(lsn));
-                    assert(self@[lsn] == addr);
                     assert(start_lsn <= lsn < end_lsn) by {
-                        assert(complete_lsn_range_for_addr(self@, bdy, addr, start_lsn, end_lsn));
                     }
                 };
                 assert forall |lsn: LSN| #[trigger] interval.contains(lsn)
                     implies lsns.contains(lsn) by {
-                    assert(start_lsn <= lsn < end_lsn);
-                    assert(bdy <= start_lsn);
-                    assert(bdy <= lsn);
                     assert(self@.contains_key(lsn) && self@[lsn] == addr) by {
-                        assert(complete_lsn_range_for_addr(self@, bdy, addr, start_lsn, end_lsn));
                     }
-                    assert(lsns.contains(lsn));
                 };
             };
 
             Self::nat_lsn_range_finite(start_lsn, end_lsn);
-            assert(interval.finite());
-            assert(lsns.finite());
         };
 
-        assert(all_addrs_have_finite_lsn_sets(self@, bdy));
     }
 
     pub proof fn derive_recovery_index_properties(&self)
@@ -520,27 +439,17 @@ impl ILsnAddrIndex {
         {
             if self.bounds[i] <= lsn && lsn < self.bounds[i + 1] {
                 proof {
-                    assert(self.bounds.len() == self.addrs.len() + 1);
-                    assert(i + 1 < self.bounds.len());
-                    assert(i < self.addrs.len());
                     self.lsn_maps_to_addr(i as int, lsn as nat);
                 }
                 return self.addrs[i];
             }
             proof {
-                assert(!(self.bounds[i as int] <= lsn < self.bounds[i as int + 1]));
             }
             i = i + 1;
         }
 
         proof {
             let idx = self.find_segment(lsn as nat);
-            assert(0 <= idx < self.addrs.len());
-            assert(i == self.addrs.len());
-            assert(0 <= idx < i as int);
-            assert(!(self.bounds[idx] <= lsn < self.bounds[idx + 1]));
-            assert(self.bounds[idx] <= lsn < self.bounds[idx + 1]);
-            assert(false);
         }
         unreached()
     }
@@ -571,8 +480,7 @@ impl ILsnAddrIndex {
             // Base: new_self.i(1) = lar(new_self.i(0), ...) = lar({}, ...)
             //       old_self.i(0) = {}
             // So both sides are lar({}, new_lb, old_lb, addr).
-            assert(old_self.i(0) =~= map!{});
-            assert(new_self.i(0) =~= map!{});
+            assert(new_self.i(0) =~= map!{}); // trigger
         } else {
             Self::prepend_i_shift(new_self, old_self, k - 1);
 
@@ -584,18 +492,11 @@ impl ILsnAddrIndex {
             let A = old_self.i(k - 2);
 
             // Align bounds/addrs between new_self and old_self
-            assert(new_self.bounds[k-1] == old_self.bounds[k-2]);
-            assert(new_self.bounds[k] == old_self.bounds[k-1]);
-            assert(new_self.addrs[k-1] == old_self.addrs[k-2]);
 
             // Chain: new_self.i(k) =~= (A ∪_r front) ∪_r step
-            assert(new_self.i(k - 1) =~= A.union_prefer_right(front));  // IH
-            assert(new_self.i(k) =~= new_self.i(k-1).union_prefer_right(step));
             let lhs = A.union_prefer_right(front).union_prefer_right(step);
-            assert(new_self.i(k) =~= lhs);
 
             // Chain: target =~= (A ∪_r step) ∪_r front
-            assert(old_self.i(k - 1) =~= A.union_prefer_right(step));
             let rhs = A.union_prefer_right(step).union_prefer_right(front);
 
             // Commutativity: front ∩ step = ∅ (front < old_lb <= step)
@@ -604,7 +505,6 @@ impl ILsnAddrIndex {
                 (lhs.contains_key(lsn) ==> lhs[lsn] == rhs[lsn])
             by {}
 
-            assert(new_self.i(k) =~= rhs);
             assert(new_self.i(k) =~= lsn_addr_index_append_record(
                 old_self.i(k - 1),
                 new_self.bounds[0] as nat,
@@ -644,18 +544,10 @@ impl ILsnAddrIndex {
             assert forall |i: int, j: int| #![auto] 0 <= i < j < self.addrs.len()
                 implies self.addrs[i]@ != self.addrs[j]@ by {
                 if i == 0 {
-                    assert(self.addrs[i]@ == addr@);
-                    assert(self.addrs[j]@ == old_snap.addrs[j - 1]@);
                     old_snap.addr_at_idx_in_values(j - 1);
                     if self.addrs[i]@ == self.addrs[j]@ {
-                        assert(old_snap@.values().contains(addr@));
-                        assert(!old_snap@.values().contains(addr@));
-                        assert(false);
                     }
                 } else {
-                    assert(self.addrs[i]@ == old_snap.addrs[i - 1]@);
-                    assert(self.addrs[j]@ == old_snap.addrs[j - 1]@);
-                    assert(old_snap.addrs[i - 1]@ != old_snap.addrs[j - 1]@);
                 }
             }
 

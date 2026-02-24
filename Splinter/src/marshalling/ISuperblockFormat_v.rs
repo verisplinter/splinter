@@ -77,18 +77,11 @@ proof fn isuperblock_postcondition_proof(
     // For field1 (journal_snapshot):
     // JournalSnapshot::parsedv() = JournalSnapshot@
     // From requires: field1_value.parsedv() == fmt.field1_fmt.parse(...)
-    assert(field1_value@ == Parsedview::<crate::implementation::CachedJournal_v::JournalSnapshot>::parsedv(&field1_value));
-    assert(result.parsedv().journal == field1_value@);
-    assert(result.parsedv().journal == fmt.field1_fmt.parse(idata.subrange(0, f1_end)));
-    assert(fmt.parse(idata).journal == fmt.field1_fmt.parse(idata.subrange(0, f1_end)));
 
     // For field2 (store):
     // Vec<(K,V)>::@ and Vec<(K,V)>::parsedv() should be equal for identity-like Parsedview
     // Since (Key,Value)::parsedv() = identity, Vec::parsedv() = Vec::@
-    assert(field2_value@ =~= Parsedview::<Seq<(crate::spec::KeyType_t::Key, crate::spec::Messages_t::Value)>>::parsedv(&field2_value));
-    assert(result.parsedv().store == field2_value@);
-    assert(result.parsedv().store =~= fmt.field2_fmt.parse(idata.subrange(f1_end, f2_end)));
-    assert(fmt.parse(idata).store == fmt.field2_fmt.parse(idata.subrange(f1_end, f2_end)));
+    assert(field2_value@ =~= Parsedview::<Seq<(crate::spec::KeyType_t::Key, crate::spec::Messages_t::Value)>>::parsedv(&field2_value)); // trigger
 }
 
 } // verus!

@@ -70,14 +70,8 @@ proof fn iaddress_postcondition_proof(
     let f2_end = f1_end + fmt.field2_fmt.uniform_size() as int;
 
     // Show the parse result matches field by field
-    assert(result.parsedv().au == (field1_value as nat));
-    assert(result.parsedv().page == (field2_value as nat));
-    assert(fmt.parse(idata).au == fmt.field1_fmt.parse(idata.subrange(0, f1_end)));
-    assert(fmt.parse(idata).page == fmt.field2_fmt.parse(idata.subrange(f1_end, f2_end)));
 
     // Connect via the requires
-    assert(result.parsedv().au == fmt.parse(idata).au);
-    assert(result.parsedv().page == fmt.parse(idata).page);
 }
 
 } // verus!

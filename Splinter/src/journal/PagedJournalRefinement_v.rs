@@ -158,7 +158,6 @@ impl JournalRecord {
             assert(!self_pre.message_seq.can_discard_to(bdy)) by {
                 if self_pre.message_seq.can_discard_to(bdy) {
                     self.cant_crop(bdy, depth);
-                    assert(false);  // contradiction
                 }
             }
             self.crop_head_records_chaining(bdy, depth);

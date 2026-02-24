@@ -602,7 +602,7 @@ impl Implementation {
                 let map_reply = reply.mapspec_reply();
                 let puts = MsgHistory::singleton_at(old(self).journal.seq_end(), keyed_msg);
 
-                assert(view_as_kmmap(self.store) =~= view_as_kmmap(old(self).store).insert(key, Message::Define{value})); //extn
+                assert(view_as_kmmap(self.store) =~= view_as_kmmap(old(self).store).insert(key, Message::Define{value})); //extn // trigger
 
                 // Need to unwind two instances of the recursive definition: one for the empty base
                 // case and one for the single message we stuck in the history.
@@ -1049,8 +1049,8 @@ impl Implementation {
                 let lbl = Cache::Label::Access{reads: reads, writes: Map::empty()};
                 let updated_entries = pre.cache.write_updated_entries(lbl->writes);
                 let updated_status_map = pre.cache.write_updated_status(lbl->writes);
-                assert( pre.cache.entries.union_prefer_right(updated_entries) =~= pre.cache.entries );  // extn
-                assert( pre.cache.status_map.union_prefer_right(updated_status_map) =~= pre.cache.status_map );  // extn
+                assert( pre.cache.entries.union_prefer_right(updated_entries) =~= pre.cache.entries );  // extn // trigger
+                assert( pre.cache.status_map.union_prefer_right(updated_status_map) =~= pre.cache.status_map );  // extn // trigger
                 assert( Cache::State::next_by(pre.cache, post.cache, lbl, Cache::Step::access()) ); // witness
             }
 
@@ -1072,7 +1072,6 @@ impl Implementation {
                 CachedJournal::Step::freeze_for_commit(0nat)) );
             
             assert( disk_reqs == Multiset::singleton((disk_req_id, disk_request@)) ) by {
-                assert( disk_reqs == multiset_map_singleton(disk_req_id, disk_request@) );
             }; // trigger
 
             // Witness the existential in valid_disk_transition
@@ -1120,7 +1119,6 @@ impl Implementation {
         self.inv_api(api),
         self.ready_for_user_operation(),
     {
-        assert( ready_reqs@.take(ready_reqs@.len() as int) == ready_reqs@ ); // extn
         loop
         invariant
             self.inv_api(api),
@@ -1139,7 +1137,6 @@ impl Implementation {
             match ready_reqs.pop()
             {
                 Some(req) => {
-                    assert( ready_reqs@ == old(ready_reqs)@.take(ready_reqs@.len() as int) );   // extn
                     self.send_sync_response(req, api)
                 },
                 None => break,
@@ -1255,19 +1252,14 @@ impl Implementation {
             self.model, disk_response_token, disk_req_id, i_disk_response@);
         let state = model.program.state;
 
-        assert(model.outstanding_reqs_consistent());
-        assert(model.disk.responses.dom().contains(disk_req_id));
 
         // From outstanding_reqs_consistent domain equation:
         // disk.requests.dom() + disk.responses.dom() == outstanding_cache_reqs.dom() + in_flight_sb_id
         let in_flight_sb_id = if state.in_flight is Some { set!{state.in_flight.unwrap().req_id} } else { set!{} };
-        assert(model.disk.requests.dom() + model.disk.responses.dom() == state.outstanding_cache_reqs.dom() + in_flight_sb_id);
 
         // disk_req_id is in the union, and NOT in outstanding_cache_reqs, so it must be in in_flight_sb_id
-        assert((state.outstanding_cache_reqs.dom() + in_flight_sb_id).contains(disk_req_id));
-        assert(!state.outstanding_cache_reqs.dom().contains(disk_req_id));
+        assert((state.outstanding_cache_reqs.dom() + in_flight_sb_id).contains(disk_req_id)); // trigger
         // Therefore in_flight is Some and in_flight.req_id == disk_req_id
-        assert(in_flight_sb_id.contains(disk_req_id));
     }
 
     proof fn system_inv_implies_atomic_state_wf(self)
@@ -1603,10 +1595,7 @@ impl Implementation {
         let model = open_system_invariant_disk_response_singleton::<ConcreteProgramModel, RefinementProof>(
             self.model, disk_response_token, disk_req_id, i_disk_response@);
         // awaiting_sb_response_is_disk_content: response data == disk content at sb addr
-        assert(model.awaiting_sb_response_is_disk_content());
-        assert(model.disk.responses[disk_req_id]->data == model.disk.content[spec_superblock_addr()]);
         // persistent_sb_disk_inv: ASuperblock parsed from disk content has wf() (unique_keys)
-        assert(model.persistent_sb_disk_inv());
     }
 
     // A9 + cache coherence + journal structure: All non-superblock disk pages are parsable
@@ -1775,7 +1764,7 @@ impl Implementation {
                     pre_state.state.journal.status.unwrap().lsn_addr_index.values() - new_lsn_addr_index.values();
                 let disk_event = DiskEvent::ExecuteSyncEnd{ discard_addrs };
 
-                assert( response_shard@.multiset() == Multiset::singleton((pre_state.state.in_flight->Some_0.req_id, DiskResponse::WriteResp{})) );    // extn
+                assert( response_shard@.multiset() == Multiset::singleton((pre_state.state.in_flight->Some_0.req_id, DiskResponse::WriteResp{})) );    // extn // trigger
 
                 // Access inv_running conjuncts from old(self).inv() precondition
                 reveal(Implementation::inv);
@@ -1812,7 +1801,6 @@ impl Implementation {
                 crate::allocation_layer::LikesJournal_v::lsn_addr_index_discard_up_to_ensures(
                     pre_state.state.journal.status.unwrap().lsn_addr_index,
                     new_boundary_lsn as LSN);
-                assert( discard_addrs =~= Set::empty() ); // extn
 
                 reveal(Cache::State::next_by);
                 reveal(Cache::State::next);
@@ -1875,7 +1863,6 @@ impl Implementation {
             self.maybe_launch_superblock(api);
         } else {
             api.log("handle_disk_superblock_write_response: received non superblock related disk response");
-            assert(false);
         }
     }
 
@@ -1914,7 +1901,6 @@ impl Implementation {
         let data = match disk_response {
             IDiskResponse::ReadResp{data} => data,
             IDiskResponse::WriteResp{} => {
-                assert(false); // proved unreachable by system_inv_cache_load_is_read_resp
                 unreached()
             }
         };
@@ -1996,7 +1982,6 @@ impl Implementation {
                 // get returning None. Branch is provably unreachable.
                 proof {
                     self.system_inv_response_in_outstanding(id, disk_response, response_shard);
-                    assert(false);
                 }
                 unreached()
             }
@@ -2120,7 +2105,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
 
             // TODO: why do we need to clone here? Try removing.
             self.store = self.persistent_store.clone();
-            assert(self.store.wf());
             // Disk invariant: store must have agreed with journal start
             // (before we begin advancing it during recovery).
             self.store_lsn = self.journal.exec_seq_start();
@@ -2179,7 +2163,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
         proof {
             reveal(Implementation::inv);
             reveal(Implementation::inv_recover);
-            assert(pre_outstanding == Map::<ID, OutstandingReqInfo>::empty());
             broadcast use vstd::map::axiom_map_empty;
         }
     }
@@ -2276,40 +2259,27 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                 self.outstanding_requests.insert(id, OutstandingReqInfo::CacheLoadReq{read_addr: addr, load_handle: slot_handle});
                 proof {
                     let ghost new_info = OutstandingReqInfo::CacheLoadReq{read_addr: addr, load_handle: slot_handle};
-                    assert(self.cache.entry_fetched(&addr));
-                    assert(self.cache.valid_load_handle(&addr, slot_handle));
-                    assert(self.outstanding_requests@ == old_outstanding.insert(id, new_info));
                     assert(self.outstanding_requests_match_cache_reqs()) by {
                         let ghost new_outstanding = self.outstanding_requests@;
                         let ghost new_cache_reqs = post_state.state.outstanding_cache_reqs;
                         let ghost old_cache_reqs = pre_state.state.outstanding_cache_reqs;
-                        assert(new_outstanding == old_outstanding.insert(id, new_info));
-                        assert(new_cache_reqs == old_cache_reqs.insert(id, addr@));
 
                         assert(new_cache_reqs.is_injective()) by {
                             reveal(Implementation::outstanding_requests_match_cache_reqs);
-                            assert(old_cache_reqs.is_injective());
 
                             assert(!old_cache_reqs.contains_value(addr@)) by {
                                 if old_cache_reqs.contains_value(addr@) {
-                                    assert(pre_state.state.wf());
                                     assert(old_cache_reqs.values().contains(addr@)) by {
                                         reveal(Map::values);
-                                        assert(old_cache_reqs.contains_value(addr@));
                                     }
-                                    assert(pre_state.state.outstanding_cache_reqs.values() <= pre_state.state.cache.lookup_map.dom());
                                     assert(pre_state.state.cache.lookup_map.dom().contains(addr@)) by {
-                                        assert(pre_state.state.outstanding_cache_reqs.values().contains(addr@));
                                     }
-                                    assert(pre_state.state.cache == cache_before_index@);
-                                    assert(cache_before_index@.lookup_map.dom().contains(addr@));
                                     assert(cache_before_index.entry_fetched(&addr)) by {
                                         assert(cache_before_index@.lookup_map.contains_key(addr@)) by {
                                             reveal(Map::contains_key);
                                         }
                                         FracCacheImpl::entry_fetched_from_view(&cache_before_index, &addr);
                                     }
-                                    assert(false);
                                 }
                             }
 
@@ -2384,8 +2354,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                     reveal(Implementation::inv);
                 }
                 // inv_applying_journal gives recovery_state is JournalIndexComplete
-                assert(!(self.state().recovery_state is RecoveryComplete));
-                assert(!(self.state().recovery_state is Begin));
             }
             let ghost journal_raw_disk = self.system_inv_journal_pages_parsable();
             let fetch = self.journal.recover_map_step(&mut self.cache, self.store_lsn, Ghost(journal_raw_disk));
@@ -2393,7 +2361,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
             // we need to track some
             match fetch {
                 RecoverMapResult::NotInCache{} => {
-                    assert(self.inv_api(api));
                     return false;
                 }
                 RecoverMapResult::FetchSuccess{reads, addr, record} => {
@@ -2452,7 +2419,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                                     let next_prefix = records.discard_recent((old_store_lsn + 1) as nat);
                                     assert(next_prefix.discard_recent(old_store_lsn) == prefix) by {
                                         MsgHistory::ext_equal_is_equality();
-                                        assert(next_prefix.discard_recent(old_store_lsn).ext_equal(prefix));
                                     }
 
                                     reveal_with_fuel(MsgHistory::apply_to_stamped_map, 2);
@@ -2485,7 +2451,7 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                         let map_lbl = AbstractCrashAwareMap::Label::PutRecordsLabel{records};
                         assert(view_as_kmmap(self.store)
                             == MsgHistory::map_plus_history(pre_state.state.ephemeral_map(), records).value) by {
-                            assert(records.discard_recent(self.store_lsn as nat) == records);
+                            assert(records.discard_recent(self.store_lsn as nat) == records); // trigger
                         }
                         MsgHistory::map_plus_history_seq_end_lemma(pre_state.state.ephemeral_map(), records);
 
@@ -2515,7 +2481,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                                 let ghost journal_reads = to_journal_reads(reads@);
 
                                 assert(Cache::State::next(pre_state.state.cache, post_state.state.cache, cache_lbl)) by {
-                                    assert(Cache::State::next(pre_cache, cache_after_fetch, fetch_lbls.0));
                                     reveal(map_recovery_labels);
                                 }
                                 assert(CachedJournal::State::next(
@@ -2523,7 +2488,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                                     post_state.state.journal,
                                     fetch_lbls.1
                                 )) by {
-                                    assert(CachedJournal::State::next(journal_after_fetch, journal_after_fetch, fetch_lbls.1));
                                 }
                                 self.journal.view_seq_start_ensures();
                                 assert(pre_state.state.journal.snapshot.boundary_lsn
@@ -2735,7 +2699,6 @@ impl KVStoreTrait for Implementation {
             }
             match self.recovery_phase {
                 RecoveryPhase::FetchingSuperblock => {
-                    assert(false);
                 }
                 RecoveryPhase::ReadingJournalIndex => {
                     progress = self.recover_read_journal_index(&mut api);

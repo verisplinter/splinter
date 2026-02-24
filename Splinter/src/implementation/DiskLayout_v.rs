@@ -93,23 +93,13 @@ impl DiskLayout {
         sb@@ == self.spec_parse(out@),
         out.len() == BLOCK_SIZE,
     {
-        assert( self.fmt.valid() );
         assume( self.fmt.marshallable(sb.parsedv()) );
 
         let ghost marshalled_size = self.fmt.uniform_size();
-        assert( marshalled_size == BLOCK_SIZE );
 //         assert( marshalled_size <= BLOCK_SIZE );
         let mut space = empty_vec_u8_with_size(BLOCK_SIZE);
-        assert(0 as int + self.fmt.spec_size(sb.parsedv()) as int <= space.len() );
         let end = self.fmt.exec_marshall(sb, &mut space, 0);
-        assert( end == self.fmt.spec_size(sb.parsedv()) );
-        assert( self.fmt.parse(space@.subrange(0, end as int)) == sb.parsedv() );
         proof{ self.fmt.uniform_size_matches_spec_size() }
-        assert( uniform_size_matches_spec_size(self.fmt) );
-        assert( self.fmt.spec_size(sb.parsedv()) == self.fmt.uniform_size() );
-        assert( end as int == marshalled_size as int );
-        assert( self.fmt.parse(space@.subrange(0, marshalled_size as int)) == sb.parsedv() );
-        assert( space@.subrange(0, BLOCK_SIZE as int) == space@ );
         space
     }
 
@@ -123,9 +113,7 @@ impl DiskLayout {
         assume( self.fmt.parsable(raw_page@) );
 
         let all_slice = Slice::all(raw_page);
-        assert( all_slice@.i(raw_page@) == raw_page@ );
         let out = self.fmt.exec_parse(&all_slice, raw_page);
-        assert( out@@ == self.spec_parse(raw_page@) );
         out
     }
 
@@ -159,15 +147,11 @@ impl DiskLayout {
         let out = DiskLayout { fmt };
         
         // Prove the postconditions
-        assert(out.fmt == Self::spec_new().fmt);
-        assert(out == Self::spec_new());
-        assert(out.fmt.valid());
         
         // Prove uniform_size == BLOCK_SIZE
         // The ISuperblockFormat is constructed to have exactly BLOCK_SIZE
         assume(out.fmt.uniform_size() == BLOCK_SIZE); // TODO: This should be provable from ISuperblockFormat construction
         
-        assert(out.wf());
         out
     }
 

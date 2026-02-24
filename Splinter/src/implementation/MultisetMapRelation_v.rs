@@ -57,7 +57,7 @@ ensures
             } else {
                 // trigger unique_keys(pre)
                 assert( pre.contains(p1) );
-                assert( pre.contains(p2) );
+                assert( pre.contains(p2) ); // trigger
             }
         }
     }
@@ -80,7 +80,7 @@ ensures
         if p1!=p2 && p1.0 == p2.0 { // find contradiction
             // trigger unique_keys(pre)
             assert( pre.contains(p1) );
-            assert( pre.contains(p2) );
+            assert( pre.contains(p2) ); // trigger
         }
     }
 }
@@ -125,7 +125,6 @@ ensures
     assert forall |k0| mpost.contains_key(k0) implies mpre_i.contains_key(k0) by {
         assert( post.contains((k0, mpost[k0])) );   // trigger
     }
-    assert( mpost == mpre_i );  // extn
 }
 
 pub open spec fn multiset_map_singleton<K,V>(k: K, v: V) -> (out: Multiset<(K,V)>)
@@ -138,7 +137,6 @@ ensures
     multiset_to_map(multiset_map_singleton(k,v)) == Map::empty().insert(k,v),
 {
     unique_multiset_map_insert_equiv(Multiset::empty(), k, v);
-    assert( multiset_to_map(Multiset::<(K,V)>::empty()) == Map::<K,V>::empty() );   // extn equality
 }
 
 pub proof fn unique_multiset_map_remove_equiv<K,V>(pre: Multiset<(K,V)>, k: K, v: V)
@@ -156,7 +154,7 @@ ensures
     let mpost = multiset_to_map(post);
     let mpre_r = mpre.remove(k);
     assert forall |k0| mpre_r.contains_key(k0) implies mpost.contains_key(k0) by {
-        assert( post.contains((k0, mpre_r[k0])) );
+        assert( post.contains((k0, mpre_r[k0])) ); // trigger
     }
     assert forall |k0| mpost.contains_key(k0) implies mpre_r.contains_key(k0) by {
         assert( pre.contains((k0, mpost[k0])) );   // trigger
@@ -166,7 +164,6 @@ ensures
         let pr = choose |pr| #![auto] post.contains(pr) && pr.0==k0;
         assert( pre.contains(pr) );  // trigger
     }
-    assert( mpost == mpre_r );  // extn
 }
 
 }//verus!

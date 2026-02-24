@@ -73,11 +73,9 @@ impl NatCastable for u32 {
         let v_as_nat_via_int: nat = v_as_int as nat;
 
         // v is a u32, so v_as_int >= 0
-        assert(v_as_int >= 0);
 
         // For non-negative ints, casting to nat should preserve the value
         // And both paths should yield the same result
-        assert(v_as_nat_via_int == v_as_nat_direct);
     }
 }
 
@@ -154,14 +152,10 @@ impl<T: NatCastable> Marshal for NatFormat<T> {
                 let v_int = Parsedview::<int>::parsedv(&v); // *v as int
                 let v_nat = Parsedview::<nat>::parsedv(&v); // *v as nat
 
-                assert(v_int == self.inner.parse(idata)); // From inner postcondition
-                assert(self.parse(idata) == (self.inner.parse(idata) as nat)); // By definition
 
                 // Prove: v_int as nat == v_nat using the NatCastable trait lemma
                 T::nat_cast_lemma(v);
-                assert(v_int as nat == v_nat);
 
-                assert(v_nat == self.parse(idata));
             }
         }
         result
@@ -193,14 +187,10 @@ impl<T: NatCastable> Marshal for NatFormat<T> {
             let val_int = Parsedview::<int>::parsedv(val); // *val as int
             let val_nat = Parsedview::<nat>::parsedv(val); // *val as nat
 
-            assert(self.inner.parse(subr) == val_int); // From inner postcondition
-            assert(self.parse(subr) == (self.inner.parse(subr) as nat)); // By definition
 
             // Prove: For T, (*val as int) as nat == *val as nat
             T::nat_cast_lemma(*val);
-            assert(val_int as nat == val_nat);
 
-            assert(self.parse(subr) == val_nat);
         }
         end
     }

@@ -158,7 +158,6 @@ impl IntFormattable for u8 {
             s.len() == Self::uniform_size() implies
               #[trigger] Self::spec_to_le_bytes(Self::spec_from_le_bytes(s)) == s
         by {
-            assert( seq![s[0]] == s );  // extensional equality
         }
     }
 
@@ -452,7 +451,6 @@ impl<T: IntFormattable> IntFormat<T>
             data.set(start + k, source[k]);
             k += 1;
         }
-        assert( data@.subrange(start as int, end as int) =~= source@ );  // extensionality: it's what's for ~.
         end
     }
 
@@ -486,17 +484,11 @@ impl<T: IntFormattable> Marshal for IntFormat<T>
     {
         let l = slice.len();
         let p = T::exec_uniform_size() <= l;
-        assert( slice@.valid(data@) ); // decoy trait recommends
         proof {
-            assert( l == slice@.i(data@).len() );
             if p {
-                assert( T::uniform_size() <= data@.len() );
-                assert( self.parsable(slice@.i(data@)) );
             } else {
-                assert( !self.parsable(slice@.i(data@)) );
             }
         }
-        assert( p == self.parsable(slice@.i(data@)) );
         p
     }
 
@@ -532,7 +524,6 @@ impl<T: IntFormattable> Marshal for IntFormat<T>
             }
             Some(parsed)
         } else {
-            assert( !self.parsable(slice@.i(data@)) );
             None
         }
     }

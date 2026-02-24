@@ -74,10 +74,6 @@ proof fn keyed_message_postcondition_proof(
     let f2_end = f1_end + fmt.field2_fmt.uniform_size() as int;
 
     // Key and Message also have parsedv = *self
-    assert(result.parsedv().key == field1_value);
-    assert(result.parsedv().message == field2_value);
-    assert(fmt.parse(idata).key == fmt.field1_fmt.parse(idata.subrange(0, f1_end)));
-    assert(fmt.parse(idata).message == fmt.field2_fmt.parse(idata.subrange(f1_end, f2_end)));
 }
 
 } // verus!

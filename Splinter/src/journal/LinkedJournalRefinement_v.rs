@@ -69,11 +69,10 @@ impl DiskView {
     decreases big.the_rank_of(ptr)
     {
         // TODO(verus,chris): map.le should broadcast-ensures dom.subset_of(dom)
-        assert( self.entries.dom().subset_of(big.entries.dom()) );
+        assert( self.entries.dom().subset_of(big.entries.dom()) ); // trigger
 
         assert( self.valid_ranking(big.the_ranking()) ); // witness to acyclic
         if ptr is Some {
-            assert( big.the_rank_of(self.next(ptr)) < big.the_rank_of(ptr) );
             self.iptr_ignores_extra_blocks(self.next(ptr), big);
         }
     }
@@ -121,44 +120,31 @@ impl DiskView {
                     // any other tighter disk implies an "other_inner" disk tighter than inner, but inner.IsTight(next).
                     let other_inner = DiskView{ entries: other.entries.remove(root.unwrap()), ..other };
 
-                    assert( other_inner.entries_wf() );
+                    assert( other_inner.entries_wf() ); // trigger
 
                     Self::sub_disk_transitive_auto();
 
                     assert forall |addr| #[trigger] other_inner.entries.contains_key(addr)
                         implies other_inner.is_nondangling_pointer(other_inner.entries[addr].cropped_prior(other_inner.boundary_lsn)) by {
                         let aprior = self.entries[addr].cropped_prior(self.boundary_lsn);
-                        assert( self.entries.contains_key(addr) );
-                        assert( self.is_nondangling_pointer(aprior) );
-                        assert( other.wf() );
+                        assert( self.entries.contains_key(addr) ); // trigger
+                        assert( self.is_nondangling_pointer(aprior) ); // trigger
                         if aprior == root {
                             if tight.entries[addr].cropped_prior(tight.boundary_lsn) == root {
-                                assert( tight.entries.contains_key(addr) );  // dayyum
-                                assert( tight.the_ranking()[tight.entries[addr].cropped_prior(tight.boundary_lsn).unwrap()] > tight.the_ranking()[root.unwrap()] ); // from valid_ranking
-                                assert( tight.the_ranking()[tight.entries[addr].cropped_prior(tight.boundary_lsn).unwrap()] < tight.the_ranking()[root.unwrap()] ); // from build_tight_ranks
+                                assert( tight.entries.contains_key(addr) );  // dayyum // trigger
                             }
-                            assert( tight.entries[addr].cropped_prior(tight.boundary_lsn) != root );
-                            assert( other_inner.is_sub_disk(tight) );
                         }
                         // frustrating, considering this is the just a repitition of the assert-forall-by
                         // conclusion
-                        assert( other_inner.is_nondangling_pointer(aprior) );
                     }
                 
-                    assert( other_inner.is_nondangling_pointer(next) );    //new
                     assert(other_inner.wf());   // wait, we needed this as a trigger?
-                    assert(other_inner.is_sub_disk(inner)); // new
                     // we know by here Dafny knowns other_inner.wf()
                     other_inner.iptr_ignores_extra_blocks(next, inner);
                     // every line below here is both new and necessary
                     assert( inner.is_tight(next) ); // new trigger holy crap how did we not get this
                                                     // calling tight_sub_disk!!!??
-                    assert( forall |a| inner.entries.contains_key(a) ==> #[trigger] other_inner.entries.contains_key(a) && other_inner.entries[a] == inner.entries[a] );
-                    assert( other_inner =~= inner );
-                    assert( other.entries =~= tight.entries );
-                    assert( other =~= tight );
                 }
-                assert( tight.decodable(root) );
                 assert( tight.acyclic() );  // new trigger
             }
         } else {
@@ -177,7 +163,6 @@ impl DiskView {
         let tight = self.build_tight(None);
 
         //XXX need a callout to build_tight_is_awesome?
-        assert( tight.wf() );
 
         assert( tight.valid_ranking(map![]) ); // new witness; not needed in Dafny
         assert forall |other: Self|
@@ -189,8 +174,6 @@ impl DiskView {
         }) implies other =~= tight by {
             //assert( tight.wf() );   // new trigger when we perturb DiskView::can_crop
             //assert( forall |addr| !tight.entries.dom().contains(addr) );    // added to fight the flake
-            assert( tight.entries.dom() =~~= other.entries.dom() );
-            assert( other.entries =~~= tight.entries );  // flaky
         }
     }
 
@@ -241,7 +224,7 @@ impl DiskView {
     // TODO(andrea): jon tried writing a contains_key == dom.contains broadcast_forall, but it
     // didn't solve this problem.
     // TODO(jonh): explain this to andrea
-        assert( forall |addr| #[trigger] self.entries.contains_key(addr) ==> big.entries.dom().contains(addr) );
+        assert( forall |addr| #[trigger] self.entries.contains_key(addr) ==> big.entries.dom().contains(addr) ); // trigger
         assert( self.valid_ranking(big.the_ranking()) ); // witness
     }
 
@@ -297,7 +280,6 @@ impl DiskView {
             // Dafny didn't need this trigger
             let pojr = self.iptr(ptr).unwrap().cropped_prior(bdy);
             if !PagedJournal_v::JournalRecord::opt_rec_can_crop_head_records(pojr, bdy, 0) {
-                 assert( false );
             }
         } else {
             self.pointer_after_crop_commutes_with_interpretation(self.entries[ptr.unwrap()].cropped_prior(bdy), bdy, (depth - 1) as nat);
@@ -338,7 +320,7 @@ impl DiskView {
     decreases self.the_rank_of(ptr)
     {
         self.iptr_output_valid(ptr);
-        assert( self.discard_old(new_bdy).valid_ranking(self.the_ranking()) );
+        assert( self.discard_old(new_bdy).valid_ranking(self.the_ranking()) ); // trigger
         if ptr is Some {
             let next_ptr = self.entries[ptr.unwrap()].cropped_prior(new_bdy);
             self.iptr(ptr).unwrap().discard_valid(self.boundary_lsn, new_bdy);
@@ -395,9 +377,7 @@ impl DiskView {
         if root is Some {
             self.build_tight_maintains_interpretation(self.next(root));
             self.build_tight(root).iptr_framing(self, self.next(root));
-            assert( self.iptr(root) =~~= self.build_tight(root).iptr(root) );
         } else {
-            assert( self.iptr(root) =~~= self.build_tight(root).iptr(root) );
         }
     }
 }
@@ -436,7 +416,7 @@ impl TruncatedJournal {
         Self::mkfs().disk_view.acyclic(),
         Self::mkfs().i() =~= PagedJournal_v::mkfs(),
     {
-        assert( Self::mkfs().disk_view.valid_ranking(map![]) );
+        assert( Self::mkfs().disk_view.valid_ranking(map![]) ); // trigger
     }
 
     pub proof fn discard_old_decodable(self, new_bdy: LSN)
@@ -446,7 +426,7 @@ impl TruncatedJournal {
     ensures
         self.discard_old(new_bdy).decodable(),
     {
-        assert( self.disk_view.discard_old(new_bdy).valid_ranking(self.disk_view.the_ranking()) );
+        assert( self.disk_view.discard_old(new_bdy).valid_ranking(self.disk_view.the_ranking()) ); // trigger
     }
 
     pub proof fn discard_interp(self, lsn: LSN, post: Self)
@@ -459,7 +439,6 @@ impl TruncatedJournal {
         post.disk_view.acyclic(),
         self.i().discard_old_defn(lsn) == post.i(),
     {
-        assert( post.disk_view.valid_ranking(self.disk_view.the_ranking()) );
         self.disk_view.discard_interp(lsn, post.disk_view, post.freshest_rec);
     }
 
@@ -684,7 +663,6 @@ impl LinkedJournal::State {
         self.i().wf(),
     {
         self.truncated_journal.iwf();
-        assert( self.i().truncated_journal.wf() );
     }
 
     pub proof fn freeze_for_commit_refines(self, post: Self, lbl: LinkedJournal::Label, step: LinkedJournal::Step)
@@ -790,16 +768,16 @@ impl LinkedJournal::State {
                     tj.freshest_rec, tjd.boundary_lsn, depth);
                 tjd.pointer_after_crop_ensures(tj.freshest_rec, depth); // GAAAAH weeks looking for this awful thing
 
-                assert( PagedJournal::State::next_by(self.i(), post.i(), lbl.i(), PagedJournal::Step::read_for_recovery(depth)) );
+                assert( PagedJournal::State::next_by(self.i(), post.i(), lbl.i(), PagedJournal::Step::read_for_recovery(depth)) ); // trigger
             }
             LinkedJournal::Step::freeze_for_commit(depth) =>  {
                 self.freeze_for_commit_refines(post, lbl, step);
             }
             LinkedJournal::Step::query_end_lsn() =>  {
-                assert( PagedJournal::State::next_by(self.i(), post.i(), lbl.i(), PagedJournal::Step::query_end_lsn()) );
+                assert( PagedJournal::State::next_by(self.i(), post.i(), lbl.i(), PagedJournal::Step::query_end_lsn()) ); // trigger
             }
             LinkedJournal::Step::put() =>  {
-                assert( PagedJournal::State::next_by(self.i(), post.i(), lbl.i(), PagedJournal::Step::put()) );
+                assert( PagedJournal::State::next_by(self.i(), post.i(), lbl.i(), PagedJournal::Step::put()) ); // trigger
             }
             LinkedJournal::Step::discard_old(_) =>  {
                 self.discard_old_refines(post, lbl, step);
@@ -809,7 +787,7 @@ impl LinkedJournal::State {
                 assert( PagedJournal::State::next_by(self.i(), post.i(), lbl.i(), PagedJournal::Step::internal_journal_marshal(cut)) ); // trigger
             }
             LinkedJournal::Step::internal_no_op() =>  {
-                assert( PagedJournal::State::next_by(self.i(), post.i(), lbl.i(), PagedJournal::Step::internal_no_op()) );
+                assert( PagedJournal::State::next_by(self.i(), post.i(), lbl.i(), PagedJournal::Step::internal_no_op()) ); // trigger
             }
             _ => { assert(false); }
         }

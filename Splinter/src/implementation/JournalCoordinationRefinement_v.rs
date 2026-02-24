@@ -203,16 +203,12 @@ impl JournalCoordinationSystem::State {
         let depth = journal_step.arrow_read_for_recovery_0();
 
         let tj = self.ephemeral_tj();
-        assert(tj.decodable());
 
         self.can_crop_ptr_after_index_refines(tj.freshest_rec, depth);
         tj.disk_view.pointer_after_crop_ensures(tj.freshest_rec, depth);
         let ptr = tj.disk_view.pointer_after_crop(tj.freshest_rec, depth);
 
-        assert(ptr is Some && tj.disk_view.entries.contains_key(ptr.unwrap()));
         self.journal_cache_reads_ensures(post, reads);
-        assert(messages == tj.disk_view.entries[ptr.unwrap()].message_seq.maybe_discard_old(tj.disk_view.boundary_lsn));
-        assert(messages.wf());
 
         // read for recovery is the same
         let linked_lbl = LikesJournal::State::lbl_i(lbl.i(self));
@@ -223,7 +219,6 @@ impl JournalCoordinationSystem::State {
         // reveal(LinkedJournal::State::next);
         reveal(LikesJournal::State::next_by);
         reveal(LikesJournal::State::next);
-        assert(LikesJournal::State::next_by(self.i(), post.i(), lbl.i(self), LikesJournal::Step::read_for_recovery(depth)));
     }
 
     proof fn freeze_for_commit_refines(self, post: Self, lbl: JournalCoordinationSystem::Label, frozen_domain: Set<Address>, reads: Map<Address, RawPage>)
@@ -246,30 +241,21 @@ impl JournalCoordinationSystem::State {
         let new_bdy = i_frozen.seq_start();
 
         self.can_crop_ptr_after_index_refines(cj_freshest_rec(self.journal), depth);
-        assert(self.ephemeral_disk().can_crop(cj_freshest_rec(self.journal), depth));
-        assert(cj_boundary_lsn(self.journal) <= new_bdy);
 
         let cropped_tj = self.ephemeral_tj().crop(depth);
         let ptr = self.journal.pointer_after_crop_index(cj_freshest_rec(self.journal), depth);
         self.ephemeral_tj().crop_ensures(depth);
-        assert(cropped_tj.freshest_rec == ptr);
 
         assert(i_frozen.decodable()) by {
-            assert(i_frozen.disk_view.entries == self.ephemeral_disk().entries);
-            assert(i_frozen.disk_view.wf());
-            assert(i_frozen.disk_view.is_nondangling_pointer(ptr));
             if ptr is Some {
                 self.journal_cache_reads_ensures(post, reads);
-                assert(i_frozen.disk_view.valid_ranking(self.ephemeral_disk().the_ranking()));
             }
         }
-        assert(cropped_tj.can_discard_to(new_bdy)); 
 
         let post_discard = cropped_tj.discard_old(new_bdy);
         let frozen_lsns = Set::new(|lsn: LSN| new_bdy <= lsn && lsn < post_discard.seq_end());
         let frozen_index = cj_lsn_addr_index(self.journal).restrict(frozen_lsns);
 
-        assert(cropped_tj.discard_old_cond(new_bdy, frozen_index.values(), i_frozen));
 
         reveal(LikesJournal::State::next);
         reveal(LikesJournal::State::next_by);

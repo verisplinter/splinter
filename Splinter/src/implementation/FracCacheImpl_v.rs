@@ -405,17 +405,11 @@ impl FracCacheImpl {
             implies new.entry_fetched(&addr) && new.valid_load_handle(&addr, handle)
         by {
             assert(new.entry_fetched(&addr)) by {
-                assert(new.lookup_map@.contains_key(addr@));
             }
             assert(new.valid_handle(handle)) by {
-                assert(old.valid_handle(handle));
-                assert(new.entry_token_unchanged(old));
-                assert(new.entry_token_id(handle.idx) == old.entry_token_id(handle.idx));
             }
             assert(new.lookup_addr_slot(&addr) == old.lookup_addr_slot(&addr)) by {
-                assert(new.lookup_map@ == old.lookup_map@);
             }
-            assert(new.slot_entry(handle.idx) == old.slot_entry(handle.idx));
         }
     }
 
@@ -431,8 +425,6 @@ impl FracCacheImpl {
             old.entry_fetched(&addr) && old.valid_load_handle(&addr, handle)
             implies new.entry_fetched(&addr) && new.valid_load_handle(&addr, handle)
         by {
-            assert(mid.entry_fetched(&addr) && mid.valid_load_handle(&addr, handle));
-            assert(new.entry_fetched(&addr) && new.valid_load_handle(&addr, handle));
         }
     }
 
@@ -453,7 +445,6 @@ impl FracCacheImpl {
             &&& new.internal_slots[i] == old.internal_slots[i]
             &&& new.metadata[i] == old.metadata[i]
         }) by {
-            assert(new.entries_same_except(old, except_idx));
         }
     }
 
@@ -480,30 +471,16 @@ impl FracCacheImpl {
             implies new.entry_fetched(&addr2) && new.valid_load_handle(&addr2, handle2)
         by {
             assert(new.entry_fetched(&addr2)) by {
-                assert(new.entry_fetched_same_except(old, &except));
             }
             assert(new.lookup_addr_slot(&addr2) == old.lookup_addr_slot(&addr2)) by {
-                assert(new.entry_fetched_same_except(old, &except));
-                assert(new.entry_fetched(&addr2));
             }
-            assert(handle2.idx != except_idx);
-            assert(handle2.idx < new.total_slots());
-            assert(old.valid_handle(handle2));
             assert(!(new@.status_map[handle2.idx] is Writeback)) by {
                 let i = handle2.idx as int;
-                assert(0 <= i < new.total_slots());
-                assert(i != except_idx as int);
                 assert(new.perms@[i] == old.perms@[i]) by {
-                    assert(new.entries_same_except(old, except_idx));
                 }
-                assert(new.internal_slots[i] == old.internal_slots[i]);
-                assert(new.metadata[i] == old.metadata[i]);
-                assert(new.metadata[i] == old.metadata[i]);
-                assert(!(old@.status_map[handle2.idx] is Writeback));
                 reveal(FracCacheImpl::view_state);
             }
             assert(new.valid_handle(handle2)) by {
-                assert(new.entry_token_id(handle2.idx) == old.entry_token_id(handle2.idx));
             }
             Self::slot_entry_same_except(old, new, except_idx, handle2.idx);
         }
@@ -523,10 +500,8 @@ impl FracCacheImpl {
             implies new.entry_fetched(&addr2) && new.valid_load_handle(&addr2, handle2)
         by {
             if addr2 == except {
-                assert(false);
             }
             assert(new.entry_fetched(&addr2) && new.valid_load_handle(&addr2, handle2)) by {
-                assert(new.valid_load_handles_preserved_except(old, except));
             }
         }
     }

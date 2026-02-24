@@ -116,13 +116,13 @@ impl<F: UniformSizedMarshal> Marshal for OptionFormat<F>
         match data[slice.start] {
             0 => {
                 let ov = Some(None);
-                assert( ov.unwrap().parsedv() == self.parse(slice@.i(data@)) ); // trait ensures 🙄
+                assert( ov.unwrap().parsedv() == self.parse(slice@.i(data@)) ); // trait ensures 🙄 // trigger
                 assert( ov.unwrap().wf() ); // what does this trigger!?
                 ov
             }
             1 => {
                 let ss = slice.subslice(1, 1 + self.f.exec_uniform_size());
-                assert( ss@.i(data@) == slice@.i(data@).subrange(1, 1 + self.f.uniform_size() as int) );    // extn
+                assert( ss@.i(data@) == slice@.i(data@).subrange(1, 1 + self.f.uniform_size() as int) );    // extn // trigger
                 match self.f.try_parse(&ss, data)
                 {
                     Some(v) => { Some(Some(v)) }
@@ -171,9 +171,6 @@ impl<F: UniformSizedMarshal> Marshal for OptionFormat<F>
                 // only looks at the tag byte when it's 0
                 proof {
                     let subr = data@.subrange(start as int, end as int);
-                    assert(subr[0] == 0);
-                    assert(self.parsable(subr));
-                    assert(self.parse(subr) == value.parsedv());
                 }
             }
             Some(v) => {
@@ -186,13 +183,9 @@ impl<F: UniformSizedMarshal> Marshal for OptionFormat<F>
                     // Tag byte preserved
                     assert( mid_data.subrange(start as int, start + 1 as int) ==
                         data@.subrange(start as int, start + 1 as int) );
-                    assert(subr[0] == 1);
                     // Inner value marshalled correctly
                     assert( data@.subrange(start + 1 as int, f_end as int ) ==
                         subr.subrange(1, 1 + self.f.uniform_size() as int) ); // extn
-                    assert(self.f.parsable(subr.subrange(1, 1 + self.f.uniform_size() as int)));
-                    assert(self.parsable(subr));
-                    assert(self.parse(subr) == value.parsedv());
                 }
             }
         }
