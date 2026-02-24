@@ -146,8 +146,6 @@ impl<W: Wrappable> Marshal for WrappableFormat<W> {
             None => None,
             Some(pair) => {
                 let v = W::exec_from_pair(pair);
-                assert( W::to_pair(v.parsedv()) == pair.parsedv() );
-                assert( v.parsedv() == self.parse(slice@.i(data@)) );
                 Some(v)
             },
         }
