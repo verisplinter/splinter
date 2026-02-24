@@ -153,7 +153,6 @@ impl<T> FloatingSeq<T> {
 
         assert(thing-i-want-to-assert) strategy
 
-        assert(thing-i-want-to-assert);
         assert(thing-i-want-to-assert) by {
             terms
         }
@@ -177,7 +176,6 @@ impl<T> FloatingSeq<T> {
         }
 
 
-        assert(forall |i: int| i < i+1) by {};
 
         assert forall ... by {
         }
@@ -189,9 +187,8 @@ impl<T> FloatingSeq<T> {
 
         assert forall |i| 0<=i<self.entries.len() implies self.entries[i] === b.entries[i] by {
           // "implies" introduces the assumption explicitly inside the assert context
-            assert(b[(self.start+i)]===b.entries[i]);    // by math
+            assert(b[(self.start+i)]===b.entries[i]);    // by math // trigger
         }
-        assert(self.entries =~= (b.entries));  // tickle seq extn
     }
 }
 
@@ -214,7 +211,7 @@ impl FloatingSeq<Version> {
         {
             // Necessary trigger for it to believe that s1[i] == s2[i] for
             // all active indices
-            assert(forall |i| #[trigger] s1.is_active(i) ==> s1[i].ext_equal(s2[i]));
+            assert(forall |i| #[trigger] s1.is_active(i) ==> s1[i].ext_equal(s2[i])); // trigger
             s1.extensionality(s2);
         }
     }

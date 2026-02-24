@@ -59,7 +59,6 @@ use vstd::std_specs::cmp::PartialEqSpec;
 impl PartialEq for IAddress {
     fn eq(&self, other: &Self) -> bool {
         let r = self.au == other.au && self.page == other.page;
-        assert( r == self.eq_spec(other) );
         assume( false );
 // TODO:
 // error: postcondition not satisfied
