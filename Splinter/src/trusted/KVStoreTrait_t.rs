@@ -77,7 +77,7 @@ ensures
     model.disk.responses.dom().contains(id),
     model.disk.responses[id] == disk_response,
 {
-    assert( disk_responses_token@.multiset().contains((id, disk_response)) );
+    assert( disk_responses_token@.multiset().contains((id, disk_response)) ); // trigger
     open_system_invariant_disk_response::<ProgramModel, Proof>(model_token, disk_responses_token)
 }
 

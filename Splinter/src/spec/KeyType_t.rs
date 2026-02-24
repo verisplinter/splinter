@@ -143,7 +143,7 @@ impl Key {
     {
         assert forall|i: int, j: int| 0 <= i <= j < run.len() implies Key::lte(run[i], run[j]) by {
             if i < j {
-                assert(Key::lt(run[i], run[j]));
+                assert(Key::lt(run[i], run[j])); // trigger
             }
         }
     }
@@ -154,9 +154,8 @@ impl Key {
     {
         assert forall |i, j| 0 <= i <= j < run.len() && run[i] == run[j] implies i == j by {
             if i < j {
-                assert(Key::lt(run[i], run[j]));
+                assert(Key::lt(run[i], run[j])); // trigger
             } else if i > j {
-                assert(Key::lt(run[j], run[i]));
             }
         }
     }
@@ -221,21 +220,14 @@ impl Key {
         Key::largest_lte_ensures(run, key, out);
         if out < a {
             if run.len() > 0 && run.subrange(a, b).len() > 0 {
-                assert(Key::lt(key, run[a]));
-                assert(run[a] == run.subrange(a, b)[0]);
             }
             Key::largest_lte_is_lemma(run.subrange(a, b), key, -1);
         } else if a <= out < b {
-            assert(Key::lte(run[out], key));
             if out + 1 < run.subrange(a, b).len() {
-                assert(Key::lt(key, run[out + 1]));
-                assert(run[out + 1] == run.subrange(a, b)[out + 1 - a]);
             }
             Key::largest_lte_is_lemma(run.subrange(a, b), key, out - a);
         } else if b <= out {
             if b - a - 1 > -1 {
-                assert(Key::lte(run[b - 1], key));
-                assert(run[b - 1] == run.subrange(a, b)[b - 1 - a]);
                 Key::largest_lte_is_lemma(run.subrange(a, b), key, b - a - 1);
             }
         }
@@ -336,7 +328,7 @@ impl Element {
             run[j],
         ) by {
             if i < j {
-                assert(Element::lt(run[i], run[j]));
+                assert(Element::lt(run[i], run[j])); // trigger
             }
         }
     }
@@ -366,30 +358,24 @@ impl Element {
         if run.len() == 0 {
         } else if Element::lt(needle, run[0]) {
             if run.contains(needle) {
-                assert(Element::lte(run[0], run[run.index_of(needle)]));
-                assert(false);
+                assert(Element::lte(run[0], run[run.index_of(needle)])); // trigger
             }
         } else {
             let sub_run = run.subrange(1, run.len() as int);
             Self::largest_lte_lemma(sub_run, needle, out - 1);
             assert forall|i: int| out < i < run.len() implies #[trigger]
             Self::lt(needle, run[i]) by {
-                assert(run[i] == sub_run[i - 1]);
+                assert(run[i] == sub_run[i - 1]); // trigger
             }
             if run.contains(needle) && !sub_run.contains(needle) {
                 let idx = run.index_of(needle);
                 if idx != 0 {
-                    assert(sub_run[idx - 1] == run[idx]);
-                    assert(false);
+                    assert(sub_run[idx - 1] == run[idx]); // trigger
                 }
-                assert(idx == 0);
-                assert(run[0] == needle);
                 if run.len() == 1 {
-                    assert(out == 0);
                 } else {
                     assert(Element::lte(run[0], run[1]));  // We want ::lt, but it's ::lte that triggers is_sorted.
-                    assert(sub_run[0] == run[1]);
-                    assert(out == 0);
+                    assert(sub_run[0] == run[1]); // trigger
                 }
             }
         }
