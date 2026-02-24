@@ -340,11 +340,8 @@ impl <
 //         == self.elements_start(data) - self.size_of_table(self.length(data))
 
         assume( false ); // TODO(jonh): left off
-        assert( self.bdyf.length(data) < self.bdyf.spec_max_length() as nat );
-        assert( self.bdyf.length(data) + 1 <= LenType::max() );
 
         // Discuss with Rob why these proofs weren't needed in Dafny?
-        assert( self.bdyf.appendable(data, self.append_offset(data, value)) );
     }
 
     // If the old data table is a prefix of the new, both data agree on all the elements in the old
@@ -415,7 +412,7 @@ impl <
 
         // trigger to satisify bdyf.parsable_to_len and hence tableable
         assert forall |i: int| 0<=i && i<len implies self.bdyf.gettable(newdata, i) by {
-            assert( self.bdyf.gettable(data, i) );
+            assert( self.bdyf.gettable(data, i) ); // trigger
         }
 
         assert forall |i: int| 0<=i<len implies {
@@ -427,7 +424,7 @@ impl <
 
             let a = self.bdyf.size_of_length_field();
             let b = self.bdyf.eltf.uniform_size();
-            assert( a + i * b + b == a + (i + 1) * b ) by(nonlinear_arith);
+            assert( a + i * b + b == a + (i + 1) * b ) by(nonlinear_arith); // trigger
 
             let ns = self.bdyf.size_of_length_field() + i * self.bdyf.eltf.uniform_size();
             let ne = self.bdyf.size_of_length_field() + i * self.bdyf.eltf.uniform_size() + self.bdyf.eltf.uniform_size();
@@ -468,7 +465,7 @@ impl <
     exec fn try_length(&self, dslice: &Slice, data: &Vec<u8>) -> (out: Option<usize>)
     {
         let out = self.bdyf.try_length(dslice, data);
-        assert( out is Some ==> out.unwrap() as int == self.length(dslice@.i(data@)) );    // TODO remove; issue #1150
+        assert( out is Some ==> out.unwrap() as int == self.length(dslice@.i(data@)) );    // TODO remove; issue #1150 // trigger
         out
     }
 
@@ -724,7 +721,7 @@ impl <
         let ghost middle_data = dslice@.i(data@);
         proof {
             // we didn't break the table
-            assert( middle_data.take(start as int) == idata.take(start as int) );   // verus #1257
+            assert( middle_data.take(start as int) == idata.take(start as int) );   // verus #1257 // trigger
             subrange_of_matching_take(middle_data, idata, 0, self.size_of_table(self.length(idata)) as int, start as int);
             self.table_identity(idata, middle_data);
 
@@ -794,7 +791,7 @@ impl <
                     // The first element starts beyond the end of the table itself.
                     let size_of_boundary_entry = BdyType::uniform_size();
                     let otl = tbl_middle.len() as int;
-                    assert( (otl + 1) * size_of_boundary_entry == otl * size_of_boundary_entry + size_of_boundary_entry ) by(nonlinear_arith);
+                    assert( (otl + 1) * size_of_boundary_entry == otl * size_of_boundary_entry + size_of_boundary_entry ) by(nonlinear_arith); // trigger
                 }
             }
 
@@ -807,7 +804,7 @@ impl <
                 assert( tbl_middle == tbl_new.take(len) );  // trigger extn
             }
 
-            assert( newdata.skip(self.elements_start(middle_data)) =~= middle_data.skip(self.elements_start(middle_data)) );
+            assert( newdata.skip(self.elements_start(middle_data)) =~= middle_data.skip(self.elements_start(middle_data)) ); // trigger
 
             self.elements_identity(middle_data, newdata);
 
@@ -846,14 +843,12 @@ impl <
                     if j < newslot {
                         // trigger preserves_entry
                         assert( self.bdyf.preserves_entry(middle_data, i, newdata) );
-                        assert( self.bdyf.preserves_entry(middle_data, j, newdata) );
                         // trigger old valid_table
                         assert( tbl_orig[j] <= tbl_orig[i] );
                     } else if i < j {
                         let k = newslot - 1;
                         // trigger preserves_entry
                         assert( self.bdyf.preserves_entry(middle_data, k, newdata) );
-                        assert( self.bdyf.preserves_entry(middle_data, i, newdata) );
                         // trigger old valid_table
                         assert( tbl_orig[k] <= tbl_orig[i] );
                     }

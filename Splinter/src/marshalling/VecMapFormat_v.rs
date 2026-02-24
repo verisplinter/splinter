@@ -63,7 +63,7 @@ impl Marshal for VecMapFormat {
             None => None,
             Some(v) => {
                 let ghost idata = slice@.i(data@);
-                assert( self.seq_fmt.parse(idata) == v@ );  // extn
+                assert( self.seq_fmt.parse(idata) == v@ );  // extn // trigger
                 if !VecMap::exec_unique_keys(&v) { None }
                 else {
                     let v = VecMap::from_vec(v);
@@ -118,21 +118,10 @@ impl Marshal for VecMapFormat {
         // Ah, but we have lost the fact that seq_to_map preserves the count and vice versa
         let ghost mv = VecMap::seq_to_map(pv);
         proof {
-            assert( pv == value.as_seq() );
-            assert( VecMap::unique_keys(value.as_seq()) );
-            assert( VecMap::unique_keys(pv) );
             VecMap::seq_to_map_ensures(pv);
-            assert( pv == rv@ );
-            assert( pv.len() == rv@.len() );
-            assert(pv.len() == VecMap::seq_to_map(rv@).len() );
             VecMap::map_to_seq_contents(mv);
-            assert( VecMap::map_to_seq(mv).len() == mv.len() );
-            assert( mv.len() == pv.len() );
         };
         let ghost qv = VecMap::map_to_seq(VecMap::seq_to_map(rv@));
-        assert( qv == VecMap::map_to_seq(mv) );
-        assert( qv.len() == pv.len() );
-        assert( self.seq_fmt.marshallable(rv.parsedv()) );
         self.seq_fmt.exec_size(rv)
     }
 
@@ -141,7 +130,7 @@ impl Marshal for VecMapFormat {
         let bv = value.borrow_vec();
         let end = self.seq_fmt.exec_marshall(bv, data, start);
         proof {
-            assert( bv@ == bv.parsedv() );  // extn
+            assert( bv@ == bv.parsedv() );  // extn // trigger
             value.view_ensures();
         }
         end

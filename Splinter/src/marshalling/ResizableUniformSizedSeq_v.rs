@@ -165,7 +165,6 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
     exec fn try_length(&self, dslice: &Slice, data: &Vec<u8>) -> (out: Option<usize>)
     {
         if (dslice.len() as usize) < self.total_size {
-            assert( !self.lengthable(dslice@.i(data@)) );
             return None;    // lengthable first conjunct is false
         }
 
@@ -318,7 +317,6 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
             &&& idx < self.max_length
             &&& sz == self.eltf.exec_uniform_size()
         };
-        assert( s == self.settable(dslice@.i(data@), idx as int, value.parsedv()) );
         s
     }
 
@@ -348,7 +346,6 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
             }
 
             // TODO(verus): #1257
-            assert( self.get_data(dslice@.i(data@), i) == self.get_data(dslice@.i(old(data)@), i) );
         }
             
         // postcondition goal
@@ -409,7 +406,7 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
             } by {
                 self.index_bounds_facts(i);
                 // TODO(verus): #1257
-                assert( self.get_data(sdata_new, i) == self.get_data(sdata_old, i) );
+                assert( self.get_data(sdata_new, i) == self.get_data(sdata_old, i) ); // trigger
             }
 
             // goal
@@ -516,13 +513,13 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
         self.length_ensures(data);
         let len = self.length(data);
         if 0 < len {
-            assert( self.gettable(data, len-1) );
+            assert( self.gettable(data, len-1) ); // trigger
             self.index_bounds_facts(len - 1);
         } else {
             // trigger nonnegative ... but I have no idea how! length mentions
             // IntegerMarshalling::parse, which has no ensures and never mentions
             // type T. Weird.
-            assert( len == 0 );
+            assert( len == 0 ); // trigger
         }
     }
 }
@@ -656,9 +653,8 @@ impl<EltFormat: Marshal + UniformSized, LenType: IntFormattable>
             let ghost old_i = i;
             proof {
                 self.eltf.uniform_size_ensures();
-                assert( self.marshallable_at(value.parsedv(), i as int) );
+                assert( self.marshallable_at(value.parsedv(), i as int) ); // trigger
             }
-            assert( value[i as int].wf() );
             self.exec_set(&slice, data, i, &value[i]);
             i += 1;
 

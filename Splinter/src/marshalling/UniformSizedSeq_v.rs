@@ -107,7 +107,6 @@ impl<EltFormat: Marshal + UniformSized>
     proof fn get_ensures(&self, dslice: SpecSlice, data: Seq<u8>, idx: int)
     {
         self.index_bounds_facts(dslice, idx as int);
-        assert( self.get(dslice, data, idx).valid(data) );
     }
 
     open spec fn elt_parsable(&self, data: Seq<u8>, idx: int) -> bool
@@ -257,7 +256,6 @@ impl<EltFormat: Marshal + UniformSized>
             assert forall |i| i!=(idx) implies self.preserves_entry(dslice@.i(old(data)@), i, dslice@.i(data@)) by {}
         }
 
-        assert( self.sets(dslice@.i(olddata), idx as int, value.parsedv(), dslice@.i(data@)) );
     }
 
     /////////////////////////////////////////////////////////////////////////
@@ -341,15 +339,10 @@ impl<EltFormat: Marshal + UniformSized>
             None => {
                 proof {
                     let ghost idata = dslice@.i(data@);
-                    assert( !self.lengthable(idata) );
                 }
-                assert( !self.seq_parsable(dslice@.i(data@)) );
-                assert( !self.parsable(dslice@.i(data@)) );
                 return None;
             },
             Some(len) => {
-                assert( len as int == self.length(dslice@.i(data@)) );
-                assert( len <= usize::MAX );
                 let mut i: usize = 0;
                 let mut result:Self::U = Vec::with_capacity(len);
                 while i < len
@@ -449,7 +442,6 @@ impl<EltFormat: Marshal + UniformSized>
                 let osubv = value.parsedv().subrange(0, oldi as int);
                 let subv = value.parsedv().subrange(0, i as int);
 
-                assert( i == self.length(sdata) ) by { div_plus_one(oldi as int, oldend-start, u); }
 
                 // Prove two inductive steps together because they share most proof text.
                 assert( self.parsable(sdata) && self.parse(sdata) =~= subv ) by {
@@ -465,7 +457,6 @@ impl<EltFormat: Marshal + UniformSized>
                         if j < oldi {
                             // j was from an earlier iteration; appeal to invariants
                             mul_preserves_le(j + 1, oldi as int, u as int);
-                            assert( (j+1)*u == j*u +u ) by(nonlinear_arith);
                             assert( self.get_data(odata, j) == self.get_data(sdata, j) );   // trigger extn equality
 
                             assert( self.elt_parsable(odata, j) ); // trigger old parsable

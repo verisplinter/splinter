@@ -52,7 +52,7 @@ impl<F: Marshal + UniformSized> Marshal for PaddedFormat<F> {
         let subslice = slice.subslice(0, self.format.exec_uniform_size());
         let ov = self.format.try_parse(&subslice, data);
 
-        assert( slice@.i(data@).subrange(0, self.format.uniform_size() as int) == subslice@.i(data@) ); // extn
+        assert( slice@.i(data@).subrange(0, self.format.uniform_size() as int) == subslice@.i(data@) ); // extn // trigger
 
         proof {
             let ghost ov = ov;
@@ -90,8 +90,7 @@ impl<F: Marshal + UniformSized> Marshal for PaddedFormat<F> {
     {
         let format_end = self.format.exec_marshall(value, data, start);
         let end = start + self.pad_size;
-        assert( self.valid() );
-        assert( data@.subrange(start as int, end as int).subrange(0, self.format.uniform_size() as int) == data@.subrange(start as int, format_end as int) );   // extn
+        assert( data@.subrange(start as int, end as int).subrange(0, self.format.uniform_size() as int) == data@.subrange(start as int, format_end as int) );   // extn // trigger
         end
     }
 }
