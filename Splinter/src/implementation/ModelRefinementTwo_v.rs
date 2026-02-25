@@ -527,9 +527,9 @@ proof fn sm2_init_refines(pre: SystemModelTwo::State)
 {
 }
 
-pub proof fn next_refines_ctam(pre: SystemModelTwo::State, post: SystemModelTwo::State, lbl: SystemModelTwo::Label)
+proof fn next_refines_ctam_step(pre: SystemModelTwo::State, post: SystemModelTwo::State, lbl: SystemModelTwo::Label, step: SystemModelTwo::Step)
     requires
-        SystemModelTwo::State::next(pre, post, lbl),
+        SystemModelTwo::State::next_by(pre, post, lbl, step),
         pre.inv(),
     ensures
         CrashTolerantAsyncMap::State::next(sm2_i(pre), sm2_i(post), sm2_i_lbl(pre, post, lbl)),
@@ -550,8 +550,6 @@ pub proof fn next_refines_ctam(pre: SystemModelTwo::State, post: SystemModelTwo:
 
     broadcast use insert_new_preserves_cardinality;
 
-    let step = choose |step| SystemModelTwo::State::next_by(pre, post, lbl, step);
-
     let ipre = sm2_i(pre);
     let ipost = sm2_i(post);
     let ilbl = sm2_i_lbl(pre, post, lbl);
@@ -567,65 +565,80 @@ pub proof fn next_refines_ctam(pre: SystemModelTwo::State, post: SystemModelTwo:
                     by {
                         if req1.id == req2.id {
                             if req1.id == new_id {
-                                assert(pre.requests.contains(req1) || pre.requests.contains(req2)); // trigger
+                                assert(pre.requests.contains(req1) || pre.requests.contains(req2));
                             } else {
+                                assert(pre.requests.contains(req1) && pre.requests.contains(req2));
                             }
+                            assert(false);
                         }
                     }
                 }
                 assert( all_elems_single(post.requests) ) by {
                     assert forall |req| #[trigger] post.requests.contains(req) implies post.requests.count(req) == 1 by {
                         if pre.requests.contains(req) {
+                            assert( post.requests.count(req) == 1 );
                         }
                     }
                 }
                 assert forall |req, reply| post.requests.contains(req) && post.replies.contains(reply)
                     implies #[trigger] req.id != #[trigger] reply.id
                 by {
+                    assert( pre.replies.contains(reply) );
                     if req == lbl->req {
+                        assert( pre.fresh_id(lbl->req.id) );
+                        assert( req.id != reply.id );
                     } else {
+                        assert( pre.requests.contains(req) );
                     }
                 }
                 assert( post.request_ids_in_history() ) by {
                     assert forall |req| #![auto] post.requests.contains(req) implies post.id_history.contains(req.id) by {
                         if req != lbl->req {
-                            assert( pre.requests.contains(req) ); // trigger
+                            assert( pre.requests.contains(req) );
                         }
                     }
                 }
                 // prove program_sync_req_ids_in_history()
-                assert( forall |id| pre.id_history.contains(id) ==> post.id_history.contains(id) ); // trigger
+                assert( forall |id| pre.id_history.contains(id) ==> post.id_history.contains(id) );
             }
 
+            assert(CrashTolerantAsyncMap::State::optionally_append_version(ipre.versions, ipost.versions));
+            assert(ipre.versions == ipost.versions);
 
             assert(!ipre.async_ephemeral.requests.contains(lbl->req)) by {
                 if ipre.async_ephemeral.requests.contains(lbl->req) {
                     assert(pre.requests.contains(lbl->req)); // trigger
                 }
             }
-            assert(ipre.async_ephemeral.requests.insert(lbl->req) =~= ipost.async_ephemeral.requests); // trigger
+            assert(ipre.async_ephemeral.requests.insert(lbl->req) =~= ipost.async_ephemeral.requests);
 
             let iasync_pre = AsyncMap::State { persistent: ipre.versions.last(), ephemeral: ipre.async_ephemeral };
             let iasync_post = AsyncMap::State { persistent: ipost.versions.last(), ephemeral: ipost.async_ephemeral };
-            assert(AsyncMap::State::next_by(iasync_pre, iasync_post, ilbl->base_op, AsyncMap::Step::request())); // trigger
+            assert(AsyncMap::State::next_by(iasync_pre, iasync_post, ilbl->base_op, AsyncMap::Step::request()));
             assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl,
                 CrashTolerantAsyncMap::Step::operate(ipost.versions, ipost.async_ephemeral)));
+            assert( post.inv() );
         },
         SystemModelTwo::Step::deliver_reply() => {
             assert(post.inv()) by {
-                assert(forall |r| #[trigger] post.replies.contains(r) ==> pre.replies.contains(r)); // trigger
+                assert(forall |r| #[trigger] post.replies.contains(r) ==> pre.replies.contains(r));
             }
+            assert(ipre.async_ephemeral.replies.contains(lbl->reply));
             assert(!post.replies.contains(lbl->reply)) by {
                 if (post.replies.contains(lbl->reply)) {
+                    assert(pre.replies.contains(lbl->reply));
+                    assert(pre.replies.count(lbl->reply) > 1);
+                    assert(false);
                 }
             }
-            assert(ipost.async_ephemeral.replies =~= ipre.async_ephemeral.replies.remove(lbl->reply)); // trigger
+            assert(ipost.async_ephemeral.replies =~= ipre.async_ephemeral.replies.remove(lbl->reply));
 
             let iasync_pre = AsyncMap::State { persistent: ipre.versions.last(), ephemeral: ipre.async_ephemeral };
             let iasync_post = AsyncMap::State { persistent: ipost.versions.last(), ephemeral: ipost.async_ephemeral };
-            assert(AsyncMap::State::next_by(iasync_pre, iasync_post, ilbl->base_op, AsyncMap::Step::reply())); // trigger
+            assert(AsyncMap::State::next_by(iasync_pre, iasync_post, ilbl->base_op, AsyncMap::Step::reply()));
             assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl,
                 CrashTolerantAsyncMap::Step::operate(ipost.versions, ipost.async_ephemeral)));
+            assert( post.inv() );
         },
         SystemModelTwo::Step::program_execute(new_concrete_journal, new_store) => {
             let req = lbl->op->req;
@@ -644,6 +657,7 @@ pub proof fn next_refines_ctam(pre: SystemModelTwo::State, post: SystemModelTwo:
             match pe {
                 ProgramEvent::NoOp{} | ProgramEvent::Query{..} => {
                     // NoOp/Query: post == pre for AtomicState, so concrete_journal preserved
+                    assert(pre.concrete_journal == post.concrete_journal);
 
                     // NoOp/Query: program state effectively unchanged, versions preserved
                     if pe is Query {
@@ -658,6 +672,7 @@ pub proof fn next_refines_ctam(pre: SystemModelTwo::State, post: SystemModelTwo:
                         assume(MapSpec::State::query(ipre.versions.last().appv, ipost.versions.last().appv, map_label));
                         MapSpec::show::query(ipre.versions.last().appv, ipost.versions.last().appv, map_label);
                     } else {
+                        assert(false);
                     }
                 },
                 ProgramEvent::Put{puts} => {
@@ -666,14 +681,17 @@ pub proof fn next_refines_ctam(pre: SystemModelTwo::State, post: SystemModelTwo:
                         ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::operate(ipost.versions, ipost.async_ephemeral)));
                 },
             }
+            assert(CrashTolerantAsyncMap::State::optionally_append_version(ipre.versions, ipost.versions));
 
             // Request was in the system → in the abstract requests
-            assert(ipost.async_ephemeral.requests =~= ipre.async_ephemeral.requests.remove(req)); // trigger
-            assert(ipost.async_ephemeral.replies =~= ipre.async_ephemeral.replies.insert(reply)); // trigger
+            assert(ipost.async_ephemeral.requests =~= ipre.async_ephemeral.requests.remove(req));
+            assert(ipost.async_ephemeral.replies =~= ipre.async_ephemeral.replies.insert(reply));
+            assert(ilbl is OperateOp);
+            assert(ilbl->base_op == AsyncMap::Label::ExecuteOp{req, reply});
 
             let iasync_pre = AsyncMap::State { persistent: ipre.versions.last(), ephemeral: ipre.async_ephemeral };
             let iasync_post = AsyncMap::State { persistent: ipost.versions.last(), ephemeral: ipost.async_ephemeral };
-            assert(AsyncMap::State::next_by(iasync_pre, iasync_post, ilbl->base_op, AsyncMap::Step::execute(map_label, iasync_post.persistent))); // trigger
+            assert(AsyncMap::State::next_by(iasync_pre, iasync_post, ilbl->base_op, AsyncMap::Step::execute(map_label, iasync_post.persistent)));
             assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl,
                 CrashTolerantAsyncMap::Step::operate(ipost.versions, ipost.async_ephemeral)));
 
@@ -683,23 +701,24 @@ pub proof fn next_refines_ctam(pre: SystemModelTwo::State, post: SystemModelTwo:
                     assert forall |r| #[trigger] post.requests.contains(r)
                         implies post.requests.count(r) == 1
                     by {
-                        assert( pre.requests.contains(r) ); // trigger
+                        assert( pre.requests.contains(r) );
                     }
                 }
                 assert( post.request_ids_in_history() ) by {
                     assert forall |r| #![auto] post.requests.contains(r)
                         implies post.id_history.contains(r.id)
                     by {
-                        assert( pre.requests.contains(r) ); // trigger
+                        assert( pre.requests.contains(r) );
                     }
                 }
-                assert( post.reply_ids_in_history() ); // trigger
+                assert( post.reply_ids_in_history() );
             }
         },
         SystemModelTwo::Step::program_accept_sync_request(new_sync_req_map) => {
             assert( all_elems_single(post.sync_requests) ) by {
                 assert forall |req| #[trigger] post.sync_requests.contains(req) implies post.sync_requests.count(req) == 1 by {
                     if pre.sync_requests.contains(req) {
+                        assert( post.sync_requests.count(req) == 1 );
                     }
                 }
             }
@@ -713,6 +732,7 @@ pub proof fn next_refines_ctam(pre: SystemModelTwo::State, post: SystemModelTwo:
                 }
             }
             // Bridge: concrete sync_req_map records ephemeral_map().seq_end, abstract expects versions.len()-1.
+            assert(pre.client_ready());
             let tail = pre.concrete_journal.journal.status.unwrap().unmarshalled_tail;
             let journal = pre.i_journal();
             let mapadt = pre.store;
@@ -729,41 +749,59 @@ pub proof fn next_refines_ctam(pre: SystemModelTwo::State, post: SystemModelTwo:
                 let stable_lsn = journal.persistent.seq_end;
                 floating_versions(mapadt.persistent, journal.i(), stable_lsn)
             };
+            assert(ipre.versions == versions);
             // Prove full_journal properties from JCS invariant chain
             let jcs = pre.jcs();
+            assert(jcs.valid_journal_structure()); // from inv()
             let etj = jcs.ephemeral_tj();
+            assert(etj.decodable());
+            assert(etj.wf());
+            assert(etj.disk_view.acyclic());
+            assert(etj.seq_end() == tail.seq_start);
             let lj = jcs.i().journal;
+            assert(tail.wf());
+            assert(lj.wf());
             let full_j = journal.i();
             if inflight_on_disk {
                 let in_flight_map2 = mapadt.in_flight.unwrap();
                 let remaining_journal = full_j.discard_old(in_flight_map2.seq_end);
                 let stable_lsn = journal.in_flight.unwrap().seq_end;
+                assert(remaining_journal.seq_end == tail.seq_end);
+                assert(tail.can_discard_to(pre.concrete_journal.in_flight.unwrap().journal_version));
+                assert(stable_lsn <= remaining_journal.seq_end + 1);
                 floating_versions_len(in_flight_map2, remaining_journal, stable_lsn);
             } else {
                 let stable_lsn = journal.persistent.seq_end;
+                assert(tail.can_discard_to(pre.concrete_journal.persistent_journal_seq_end));
+                assert(stable_lsn <= full_j.seq_end + 1);
                 floating_versions_len(mapadt.persistent, full_j, stable_lsn);
             }
-            assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::req_sync())); // trigger
+            assert(ipre.versions.len() == tail.seq_end + 1);
+            assert(pre.to_atomic().journal.seq_end() == pre.to_atomic().ephemeral_map().seq_end);
+            assert((ipre.versions.len() - 1) as nat == pre.to_atomic().ephemeral_map().seq_end as nat);
+            assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::req_sync()));
             assert( post.sync_req_reply_ids_disjoint() ) by {
                 assert forall |req_id, reply_id| #![auto] post.sync_requests.contains(req_id) && post.sync_replies.contains(reply_id)
                 implies req_id != reply_id by {
                     if req_id != sync_req_id {
-                        assert( pre.sync_requests.contains(req_id) ); // trigger
+                        assert( pre.sync_requests.contains(req_id) );
                     }
                 }
             }
+            assert( post.inv() );
         },
         SystemModelTwo::Step::program_deliver_sync_reply(new_sync_req_map) => {
-            assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::reply_sync())); // trigger
+            assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::reply_sync()));
             let sync_req_id = lbl.arrow_ProgramUIOp_op().arrow_DeliverSyncReply_sync_req_id();
             assert( post.sync_req_reply_ids_disjoint() ) by {
                 assert forall |req_id, reply_id| #![auto] post.sync_requests.contains(req_id) && post.sync_replies.contains(reply_id)
                 implies req_id != reply_id by {
                     if reply_id != sync_req_id {
-                        assert( pre.sync_replies.contains(reply_id) ); // trigger
+                        assert( pre.sync_replies.contains(reply_id) );
                     }
                 }
             }
+            assert( post.inv() );
         },
         SystemModelTwo::Step::program_disk(new_concrete_journal, new_outstanding_cache_reqs, new_recovery_state, new_store, new_sync_req_map) => {
             // Extract the disk event witness
@@ -776,11 +814,24 @@ pub proof fn next_refines_ctam(pre: SystemModelTwo::State, post: SystemModelTwo:
             match de {
                 DiskEvent::InitiateRecovery{..} | DiskEvent::SuperblockRecovery{..} => {
                     reveal(SystemModelTwo::State::i_persistent);
+                    assert(!pre.client_ready());
+                    assert(!post.client_ready());
                 },
                 DiskEvent::CacheIOBegin{..} => {
                     if pre.client_ready() {
                         reveal(SystemModelTwo::State::i_ephemeral);
+                        assert(pre.requests == post.requests);
+                        assert(pre.replies == post.replies);
+                        assert(pre.sync_req_map == post.sync_req_map);
+                        assert(ipre.async_ephemeral == ipost.async_ephemeral);
+                        assert(ipre.sync_requests == ipost.sync_requests);
                         assume(pre.i_journal() == post.i_journal()); // TODO: prove cache I/O preserves interpreted journal
+                        assert(pre.recovery_state == post.recovery_state);
+                        assert(pre.concrete_journal.journal == post.concrete_journal.journal);
+                        assert(post.client_ready());
+                        assert(pre.concrete_journal.in_flight == post.concrete_journal.in_flight);
+                        assert(ipre.versions == ipost.versions);
+                        assert(ipre == ipost);
                     } else {
                         reveal(SystemModelTwo::State::i_persistent);
                     }
@@ -788,19 +839,35 @@ pub proof fn next_refines_ctam(pre: SystemModelTwo::State, post: SystemModelTwo:
                 DiskEvent::CacheIOEnd{..} => {
                     if pre.client_ready() {
                         reveal(SystemModelTwo::State::i_ephemeral);
+                        assert(pre.requests == post.requests);
+                        assert(pre.replies == post.replies);
+                        assert(pre.sync_req_map == post.sync_req_map);
+                        assert(ipre.async_ephemeral == ipost.async_ephemeral);
+                        assert(ipre.sync_requests == ipost.sync_requests);
                         assume(pre.i_journal() == post.i_journal()); // TODO: prove cache I/O preserves interpreted journal
                         if pre.concrete_journal.in_flight is Some {
                             let sb_req_id = pre.concrete_journal.in_flight.unwrap().req_id;
+                            assert(pre.concrete_journal.in_flight == post.concrete_journal.in_flight);
                             assume(
                                 pre.concrete_journal.disk.responses.contains_key(sb_req_id)
                                 == post.concrete_journal.disk.responses.contains_key(sb_req_id)
                             ); // TODO: show cache I/O end does not toggle SB response presence
                         }
+                        assert(pre.recovery_state == post.recovery_state);
+                        assert(pre.concrete_journal.journal == post.concrete_journal.journal);
+                        assert(post.client_ready());
+                        assert(ipre.versions == ipost.versions);
+                        assert(ipre == ipost);
                     } else {
                         reveal(SystemModelTwo::State::i_persistent);
                     }
                 },
                 DiskEvent::ExecuteSyncBegin{req_id, req, frozen_journal, frozen_seq_end} => {
+                    assert(pre.requests == post.requests);
+                    assert(pre.replies == post.replies);
+                    assert(pre.sync_req_map == post.sync_req_map);
+                    assert(pre.client_ready());
+                    assert(pre.recovery_state == post.recovery_state);
 
                     assert(AtomicState::execute_sync_begin(
                         pre.to_atomic(),
@@ -815,32 +882,52 @@ pub proof fn next_refines_ctam(pre: SystemModelTwo::State, post: SystemModelTwo:
                     };
                     reveal(CachedJournal::State::next);
                     reveal(CachedJournal::State::next_by);
+                    assert(CachedJournal::State::next(pre.concrete_journal.journal, post.concrete_journal.journal, cj_lbl));
                     let cj_step = choose |cj_step|
                         CachedJournal::State::next_by(pre.concrete_journal.journal, post.concrete_journal.journal, cj_lbl, cj_step);
                     match cj_step {
                         CachedJournal::Step::freeze_for_commit(depth) => {
+                            assert(pre.concrete_journal.journal == post.concrete_journal.journal);
                         },
                         _ => {
+                            assert(false);
                         },
                     }
+                    assert(post.concrete_journal.journal.status is Some);
+                    assert(post.client_ready());
+                    assert(ipre.async_ephemeral == ipost.async_ephemeral);
+                    assert(ipre.sync_requests == ipost.sync_requests);
 
                     let map_lbl = AbstractCrashAwareMap::Label::CommitStartLabel{
                         new_boundary_lsn: frozen_journal.boundary_lsn,
                     };
                     reveal(AbstractCrashAwareMap::State::next);
                     reveal(AbstractCrashAwareMap::State::next_by);
+                    assert(AbstractCrashAwareMap::State::next(pre.store, post.store, map_lbl));
                     let map_step = choose |map_step|
                         AbstractCrashAwareMap::State::next_by(pre.store, post.store, map_lbl, map_step);
                     match map_step {
                         AbstractCrashAwareMap::Step::commit_start() => {
+                            assert(pre.store == post.store);
                         },
                         _ => {
+                            assert(false);
                         },
                     }
+                    assert(pre.store == post.store);
+                    assert(pre.concrete_journal.in_flight is None);
+                    assert(post.concrete_journal.in_flight is Some);
+                    assert(post.concrete_journal.in_flight.unwrap().req_id == req_id);
                     assume(!post.concrete_journal.disk.responses.contains_key(req_id));
+                    assert(ipre.versions == ipost.versions);
+                    assert(ipre == ipost);
                 },
                 DiskEvent::ExecuteSyncEnd{discard_addrs} => {
-                    assert(pre.requests == post.requests); // trigger
+                    assert(pre.requests == post.requests);
+                    assert(pre.replies == post.replies);
+                    assert(pre.sync_req_map == post.sync_req_map);
+                    assert(pre.client_ready());
+                    assert(pre.recovery_state == post.recovery_state);
 
                     assert(AtomicState::execute_sync_end(
                         pre.to_atomic(),
@@ -856,11 +943,19 @@ pub proof fn next_refines_ctam(pre: SystemModelTwo::State, post: SystemModelTwo:
                     };
                     reveal(CachedJournal::State::next);
                     reveal(CachedJournal::State::next_by);
+                    assert(CachedJournal::State::next(pre.concrete_journal.journal, post.concrete_journal.journal, cj_lbl));
+                    assert(post.concrete_journal.journal.status is Some);
+                    assert(post.client_ready());
+                    assert(ipre.async_ephemeral == ipost.async_ephemeral);
+                    assert(ipre.sync_requests == ipost.sync_requests);
                     assume(ipre.versions == ipost.versions); // TODO: use inflight-landed versions relation for commit_complete
+                    assert(ipre == ipost);
                 },
             }
             assume(post.inv());
-            assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::noop())); // trigger
+            assert(ipre == ipost);
+            assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::noop()));
+            assert( post.inv() );
         },
         SystemModelTwo::Step::program_internal(new_concrete_journal, new_outstanding_cache_reqs, new_recovery_state, new_store) => {
             // Extract internal event witness
@@ -880,12 +975,21 @@ pub proof fn next_refines_ctam(pre: SystemModelTwo::State, post: SystemModelTwo:
                     // all preserve ephemeral->v.stamped_map via AbstractMap freeze_as/internal
                     reveal(AbstractMap::State::next);
                     reveal(AbstractMap::State::next_by);
+                    assert(pre.concrete_journal == post.concrete_journal);
+                    assert(post.store.ephemeral == pre.store.ephemeral);
+                    assert(post.to_atomic().wf());
                 },
                 InternalEvent::AckJournalFlush{..} => {
                     assume(post.inv());
                     reveal(SystemModelTwo::State::i_ephemeral);
                     assume(pre.i_journal() == post.i_journal()); // TODO: prove JournalFlush leaves interpreted journal unchanged
-                    assert(pre.concrete_journal.persistent_journal_seq_end == post.concrete_journal.persistent_journal_seq_end); // trigger
+                    assert(pre.store == post.store);
+                    assert(pre.sync_req_map == post.sync_req_map);
+                    assert(pre.requests == post.requests);
+                    assert(pre.replies == post.replies);
+                    assert(pre.concrete_journal.in_flight == post.concrete_journal.in_flight);
+                    assert(pre.concrete_journal.persistent_journal_seq_end == post.concrete_journal.persistent_journal_seq_end);
+                    assert(ipre == ipost);
                 },
                 InternalEvent::JournalRecovery{..} | InternalEvent::MapRecovery{..} => {
                     // During recovery: !client_ready for both pre and post.
@@ -894,13 +998,14 @@ pub proof fn next_refines_ctam(pre: SystemModelTwo::State, post: SystemModelTwo:
                     // unchanged by internal transitions.
                     reveal(SystemModelTwo::State::i_persistent);
                     assume(post.inv());
-                    assert(ipre == ipost); // trigger
+                    assert(ipre == ipost);
                 },
                 InternalEvent::RecoveryComplete{} => {
                     assume(post.inv() && ipre == ipost); // TODO: bridge i_persistent(pre) == i_ephemeral(post)
                 },
             }
-            assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::noop())); // trigger
+            assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::noop()));
+            assert( post.inv() );
         },
         SystemModelTwo::Step::disk_internal(new_disk) => {
             if pre.sb_landed(post) {
@@ -910,6 +1015,7 @@ pub proof fn next_refines_ctam(pre: SystemModelTwo::State, post: SystemModelTwo:
                     && CrashTolerantAsyncMap::State::next_by(
                         ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::sync(info.journal_version as int))
                 ); // TODO: derive from sb_landed + i_ephemeral/i_persistent relation
+                assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::sync(info.journal_version as int)));
             } else {
                 reveal(sm2_i);
                 if pre.client_ready() {
@@ -920,30 +1026,38 @@ pub proof fn next_refines_ctam(pre: SystemModelTwo::State, post: SystemModelTwo:
                     reveal(AsyncDisk::State::next);
                     reveal(AsyncDisk::State::next_by);
                     if !(pre.recovery_state is RecoveryComplete) {
+                        assert(ipre == ipost);
                     } else {
                         assume(ipre == ipost);
                     }
                 }
                 assume(post.inv());
-                assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::noop())); // trigger
+                assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::noop()));
             }
+            assert( post.inv() );
         },
         SystemModelTwo::Step::crash(new_concrete_journal, new_disk, new_store) => {
             assume(post.inv());
             assume(ipre.versions.get_prefix(ipre.stable_index()+1) == ipost.versions);
-            assert(ipost.async_ephemeral == AsyncMap::State::init_ephemeral_state()); // trigger
-            assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::crash())); // trigger
+            assert(ipost.async_ephemeral == AsyncMap::State::init_ephemeral_state());
+            assert( post.inv() );
+            assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::crash()));
         },
         SystemModelTwo::Step::noop() => {
-            assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::noop())); // trigger
+            assert(ipre == ipost);
+            assert( post.inv() );
+            assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::noop()));
         },
         SystemModelTwo::Step::accept_sync_request() => {
             let sync_req_id = lbl.arrow_AcceptSyncRequest_sync_req_id();
+            assert( pre.fresh_id(sync_req_id) );
+            assert( !pre.sync_requests.contains(sync_req_id) );
+            assert( all_elems_single(post.sync_requests) );
             assert( post.sync_req_ids_in_history() ) by {
                 assert forall |req_id| #![auto] post.sync_requests.contains(req_id)
                     implies post.id_history.contains(req_id) by {
                     if req_id != sync_req_id {
-                        assert( pre.id_history.contains(req_id) ); // trigger
+                        assert( pre.id_history.contains(req_id) );
                     }
                 }
             }
@@ -952,6 +1066,7 @@ pub proof fn next_refines_ctam(pre: SystemModelTwo::State, post: SystemModelTwo:
                     assert forall |id| #![auto] post.sync_req_map.dom().contains(id)
                         implies !post.sync_requests.dom().contains(id) by {
                         if id != sync_req_id {
+                            assert( pre.sync_req_map.dom().contains(id) );
                         }
                     }
                 }
@@ -960,18 +1075,21 @@ pub proof fn next_refines_ctam(pre: SystemModelTwo::State, post: SystemModelTwo:
                 assert forall |req_id, reply_id| #![auto] post.sync_requests.contains(req_id) && post.sync_replies.contains(reply_id)
                 implies req_id != reply_id by {
                     if req_id == sync_req_id {
-                        assert( !pre.id_history.contains(sync_req_id) ); // trigger
+                        assert( !pre.id_history.contains(sync_req_id) );
+                        assert( pre.sync_replies.contains(reply_id) );
+                        assert( pre.id_history.contains(reply_id) );
+                        assert( req_id != reply_id );
                     } else {
-                        assert( pre.sync_requests.contains(req_id) ); // trigger
+                        assert( pre.sync_requests.contains(req_id) );
                     }
                 }
             }
             // prove program_sync_req_ids_in_history
             if post.client_ready() {
-                assert( forall |id| pre.id_history.contains(id) ==> post.id_history.contains(id) ); // trigger
+                assert( forall |id| pre.id_history.contains(id) ==> post.id_history.contains(id) );
             }
-            assert(post.inv()); // trigger
-            assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::noop())); // trigger
+            assert(post.inv());
+            assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::noop()));
         },
         SystemModelTwo::Step::deliver_sync_reply() => {
             let sync_req_id = lbl.arrow_DeliverSyncReply_sync_req_id();
@@ -979,13 +1097,212 @@ pub proof fn next_refines_ctam(pre: SystemModelTwo::State, post: SystemModelTwo:
                 assert forall |req_id, reply_id| #![auto] post.sync_requests.contains(req_id) && post.sync_replies.contains(reply_id)
                 implies req_id != reply_id by {
                     if req_id != sync_req_id {
-                        assert( pre.sync_replies.contains(reply_id) ); // trigger
+                        assert( pre.sync_requests.contains(req_id) );
+                        assert( pre.sync_replies.contains(reply_id) );
                     }
                 }
             }
-            assert(post.inv()); // trigger
+            assert(post.inv());
+            assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::noop()));
         },
         _ => { assert(false); }
+    }
+    assert( CrashTolerantAsyncMap::State::next(ipre, ipost, ilbl) );
+}
+
+proof fn next_refines_ctam_accept_request(pre: SystemModelTwo::State, post: SystemModelTwo::State, lbl: SystemModelTwo::Label, step: SystemModelTwo::Step)
+    requires
+        step is accept_request,
+        SystemModelTwo::State::next_by(pre, post, lbl, step),
+        pre.inv(),
+    ensures
+        CrashTolerantAsyncMap::State::next(sm2_i(pre), sm2_i(post), sm2_i_lbl(pre, post, lbl)),
+        post.inv(),
+{
+    next_refines_ctam_step(pre, post, lbl, step);
+}
+
+proof fn next_refines_ctam_deliver_reply(pre: SystemModelTwo::State, post: SystemModelTwo::State, lbl: SystemModelTwo::Label, step: SystemModelTwo::Step)
+    requires
+        step is deliver_reply,
+        SystemModelTwo::State::next_by(pre, post, lbl, step),
+        pre.inv(),
+    ensures
+        CrashTolerantAsyncMap::State::next(sm2_i(pre), sm2_i(post), sm2_i_lbl(pre, post, lbl)),
+        post.inv(),
+{
+    next_refines_ctam_step(pre, post, lbl, step);
+}
+
+proof fn next_refines_ctam_program_execute(pre: SystemModelTwo::State, post: SystemModelTwo::State, lbl: SystemModelTwo::Label, step: SystemModelTwo::Step)
+    requires
+        step is program_execute,
+        SystemModelTwo::State::next_by(pre, post, lbl, step),
+        pre.inv(),
+    ensures
+        CrashTolerantAsyncMap::State::next(sm2_i(pre), sm2_i(post), sm2_i_lbl(pre, post, lbl)),
+        post.inv(),
+{
+    next_refines_ctam_step(pre, post, lbl, step);
+}
+
+proof fn next_refines_ctam_program_accept_sync_request(pre: SystemModelTwo::State, post: SystemModelTwo::State, lbl: SystemModelTwo::Label, step: SystemModelTwo::Step)
+    requires
+        step is program_accept_sync_request,
+        SystemModelTwo::State::next_by(pre, post, lbl, step),
+        pre.inv(),
+    ensures
+        CrashTolerantAsyncMap::State::next(sm2_i(pre), sm2_i(post), sm2_i_lbl(pre, post, lbl)),
+        post.inv(),
+{
+    next_refines_ctam_step(pre, post, lbl, step);
+}
+
+proof fn next_refines_ctam_program_deliver_sync_reply(pre: SystemModelTwo::State, post: SystemModelTwo::State, lbl: SystemModelTwo::Label, step: SystemModelTwo::Step)
+    requires
+        step is program_deliver_sync_reply,
+        SystemModelTwo::State::next_by(pre, post, lbl, step),
+        pre.inv(),
+    ensures
+        CrashTolerantAsyncMap::State::next(sm2_i(pre), sm2_i(post), sm2_i_lbl(pre, post, lbl)),
+        post.inv(),
+{
+    next_refines_ctam_step(pre, post, lbl, step);
+}
+
+proof fn next_refines_ctam_program_disk(pre: SystemModelTwo::State, post: SystemModelTwo::State, lbl: SystemModelTwo::Label, step: SystemModelTwo::Step)
+    requires
+        step is program_disk,
+        SystemModelTwo::State::next_by(pre, post, lbl, step),
+        pre.inv(),
+    ensures
+        CrashTolerantAsyncMap::State::next(sm2_i(pre), sm2_i(post), sm2_i_lbl(pre, post, lbl)),
+        post.inv(),
+{
+    next_refines_ctam_step(pre, post, lbl, step);
+}
+
+proof fn next_refines_ctam_program_internal(pre: SystemModelTwo::State, post: SystemModelTwo::State, lbl: SystemModelTwo::Label, step: SystemModelTwo::Step)
+    requires
+        step is program_internal,
+        SystemModelTwo::State::next_by(pre, post, lbl, step),
+        pre.inv(),
+    ensures
+        CrashTolerantAsyncMap::State::next(sm2_i(pre), sm2_i(post), sm2_i_lbl(pre, post, lbl)),
+        post.inv(),
+{
+    next_refines_ctam_step(pre, post, lbl, step);
+}
+
+proof fn next_refines_ctam_disk_internal(pre: SystemModelTwo::State, post: SystemModelTwo::State, lbl: SystemModelTwo::Label, step: SystemModelTwo::Step)
+    requires
+        step is disk_internal,
+        SystemModelTwo::State::next_by(pre, post, lbl, step),
+        pre.inv(),
+    ensures
+        CrashTolerantAsyncMap::State::next(sm2_i(pre), sm2_i(post), sm2_i_lbl(pre, post, lbl)),
+        post.inv(),
+{
+    next_refines_ctam_step(pre, post, lbl, step);
+}
+
+proof fn next_refines_ctam_crash(pre: SystemModelTwo::State, post: SystemModelTwo::State, lbl: SystemModelTwo::Label, step: SystemModelTwo::Step)
+    requires
+        step is crash,
+        SystemModelTwo::State::next_by(pre, post, lbl, step),
+        pre.inv(),
+    ensures
+        CrashTolerantAsyncMap::State::next(sm2_i(pre), sm2_i(post), sm2_i_lbl(pre, post, lbl)),
+        post.inv(),
+{
+    next_refines_ctam_step(pre, post, lbl, step);
+}
+
+proof fn next_refines_ctam_noop(pre: SystemModelTwo::State, post: SystemModelTwo::State, lbl: SystemModelTwo::Label, step: SystemModelTwo::Step)
+    requires
+        step is noop,
+        SystemModelTwo::State::next_by(pre, post, lbl, step),
+        pre.inv(),
+    ensures
+        CrashTolerantAsyncMap::State::next(sm2_i(pre), sm2_i(post), sm2_i_lbl(pre, post, lbl)),
+        post.inv(),
+{
+    next_refines_ctam_step(pre, post, lbl, step);
+}
+
+proof fn next_refines_ctam_accept_sync_request(pre: SystemModelTwo::State, post: SystemModelTwo::State, lbl: SystemModelTwo::Label, step: SystemModelTwo::Step)
+    requires
+        step is accept_sync_request,
+        SystemModelTwo::State::next_by(pre, post, lbl, step),
+        pre.inv(),
+    ensures
+        CrashTolerantAsyncMap::State::next(sm2_i(pre), sm2_i(post), sm2_i_lbl(pre, post, lbl)),
+        post.inv(),
+{
+    next_refines_ctam_step(pre, post, lbl, step);
+}
+
+proof fn next_refines_ctam_deliver_sync_reply(pre: SystemModelTwo::State, post: SystemModelTwo::State, lbl: SystemModelTwo::Label, step: SystemModelTwo::Step)
+    requires
+        step is deliver_sync_reply,
+        SystemModelTwo::State::next_by(pre, post, lbl, step),
+        pre.inv(),
+    ensures
+        CrashTolerantAsyncMap::State::next(sm2_i(pre), sm2_i(post), sm2_i_lbl(pre, post, lbl)),
+        post.inv(),
+{
+    next_refines_ctam_step(pre, post, lbl, step);
+}
+
+pub proof fn next_refines_ctam(pre: SystemModelTwo::State, post: SystemModelTwo::State, lbl: SystemModelTwo::Label)
+    requires
+        SystemModelTwo::State::next(pre, post, lbl),
+        pre.inv(),
+    ensures
+        CrashTolerantAsyncMap::State::next(sm2_i(pre), sm2_i(post), sm2_i_lbl(pre, post, lbl)),
+        post.inv(),
+{
+    reveal(SystemModelTwo::State::next);
+    reveal(SystemModelTwo::State::next_by);
+    let step = choose |step| SystemModelTwo::State::next_by(pre, post, lbl, step);
+    match step {
+        SystemModelTwo::Step::accept_request() => {
+            next_refines_ctam_accept_request(pre, post, lbl, step);
+        },
+        SystemModelTwo::Step::deliver_reply() => {
+            next_refines_ctam_deliver_reply(pre, post, lbl, step);
+        },
+        SystemModelTwo::Step::program_execute(_, _) => {
+            next_refines_ctam_program_execute(pre, post, lbl, step);
+        },
+        SystemModelTwo::Step::program_accept_sync_request(_) => {
+            next_refines_ctam_program_accept_sync_request(pre, post, lbl, step);
+        },
+        SystemModelTwo::Step::program_deliver_sync_reply(_) => {
+            next_refines_ctam_program_deliver_sync_reply(pre, post, lbl, step);
+        },
+        SystemModelTwo::Step::program_disk(_, _, _, _, _) => {
+            next_refines_ctam_program_disk(pre, post, lbl, step);
+        },
+        SystemModelTwo::Step::program_internal(_, _, _, _) => {
+            next_refines_ctam_program_internal(pre, post, lbl, step);
+        },
+        SystemModelTwo::Step::disk_internal(_) => {
+            next_refines_ctam_disk_internal(pre, post, lbl, step);
+        },
+        SystemModelTwo::Step::crash(_, _, _) => {
+            next_refines_ctam_crash(pre, post, lbl, step);
+        },
+        SystemModelTwo::Step::noop() => {
+            next_refines_ctam_noop(pre, post, lbl, step);
+        },
+        SystemModelTwo::Step::accept_sync_request() => {
+            next_refines_ctam_accept_sync_request(pre, post, lbl, step);
+        },
+        SystemModelTwo::Step::deliver_sync_reply() => {
+            next_refines_ctam_deliver_sync_reply(pre, post, lbl, step);
+        },
+        _ => { assert(false); },
     }
 }
 
