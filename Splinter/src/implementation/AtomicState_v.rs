@@ -250,11 +250,25 @@ impl AtomicState {
         }
     }
 
+    pub open spec fn cache_background_step(pre_cache: Cache::State, post_cache: Cache::State) -> bool
+    {
+        ||| pre_cache == post_cache
+        ||| exists |mid_cache: Cache::State, lbl1: Cache::Label, lbl2: Cache::Label| {
+            &&& Cache::State::next(pre_cache, mid_cache, lbl1)
+            &&& Cache::State::next(mid_cache, post_cache, lbl2)
+        }
+    }
+
     // Background journal maintenance step: journal/cache may change, higher-level
     // store/sync state is unchanged.
+    // TODO(codex): this is underspecified: We're gonna have a tough time
+    // refining this step. Journal maybe is okay if it preserves its inv/wf
+    // and i()==old(i()). (Maybe that's a Journal Internal transition.)
+    // But cache needs to take a cache internal step.
     pub open spec fn journal_background_work(pre: Self, post: Self) -> bool
     {
         &&& pre.client_ready()
+        &&& Self::cache_background_step(pre.cache, post.cache)
         &&& post == Self{
             cache: post.cache,
             journal: post.journal,

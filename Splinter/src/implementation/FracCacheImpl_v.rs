@@ -733,6 +733,18 @@ impl FracCacheImpl {
             return FetchErrorCode::Success{slot_handle};
         }
 
+        // TODO(codex): there's no way to get out of fetch(false) with a page
+        // absent from the cache (the bypass write). We want to support this path!
+        // It will need to refine Cache_v::reserve.
+
+        // TODO(codex): discuss: Maybe we actually want two modes:
+        // - bypass write: give me write on the page but don't load
+        // - try-fetch: give me the page if it's in cache, if not, don't
+        //   even bother reserving a cache slot.
+        // How do we expose these variants? Yet another parameter mode? Or
+        // should we split this into multiple entry points? What would that
+        // look like?
+
         if !load {
             proof {
                 Self::valid_load_handles_preserved_if_maps_same(*old(self), *self);

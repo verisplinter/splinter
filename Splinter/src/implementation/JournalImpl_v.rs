@@ -7,7 +7,7 @@ use crate::marshalling::Marshalling_v::Parsedview;
 use crate::spec::KeyType_t::Key;
 use crate::spec::Messages_t::{Message, Value};
 use crate::spec::AsyncDisk_t::RawPage;
-use crate::implementation::AtomicState_v::{to_journal_reads, raw_page_to_record};
+use crate::implementation::AtomicState_v::{AtomicState, to_journal_reads, raw_page_to_record};
 use crate::implementation::OverflowFiction_v::convert_overflow_into_liveness_failure;
 use crate::implementation::CachedJournal_v::{CachedJournal, JournalSnapshot, JournalStatus, acyclic_reads, all_addrs_have_complete_lsn_ranges, all_addrs_have_finite_lsn_sets, build_lsn_addr_index_from_reads, build_lsn_addr_index_from_reads_extend_next_ptr, build_lsn_addr_index_from_reads_next_ptr, build_lsn_addr_index_from_reads_next_ptr_after_insert, build_lsn_addr_index_from_reads_next_ptr_not_in_reads, build_lsn_addr_index_from_reads_values_in_reads, lsn_index_domain_exact};
 use crate::disk::GenericDisk_v::{Address, IAddress, Pointer, Ranking};
@@ -1111,6 +1111,7 @@ impl JournalImpl {
             cache.wf(),
             cache@.inv(),
             cache.valid_load_handles_preserved(*old(cache)),
+            AtomicState::cache_background_step(old(cache)@, cache@),
     {
         let ghost fmt0 = self.fmt;
         let ghost cache0 = *cache;
@@ -1119,6 +1120,7 @@ impl JournalImpl {
         let mut status = match status_opt {
             Some(s) => s,
             None => {
+                proof { assert(false); }
                 return false;
             },
         };
@@ -1126,6 +1128,8 @@ impl JournalImpl {
         if status.unmarshalled_tail.len() == 0 {
             self.status = Some(status);
             proof {
+                assert(cache@ == cache0@);
+                assert(AtomicState::cache_background_step(cache0@, cache@));
             }
             return false;
         }
@@ -1171,6 +1175,8 @@ impl JournalImpl {
         if !self.record_fits_in_page(&record) {
             self.status = Some(status);
             proof {
+                assert(cache@ == cache0@);
+                assert(AtomicState::cache_background_step(cache0@, cache@));
             }
             return false;
         }
@@ -1185,6 +1191,8 @@ impl JournalImpl {
         if end > PAGE_SIZE_BYTES {
             self.status = Some(status);
             proof {
+                assert(cache@ == cache0@);
+                assert(AtomicState::cache_background_step(cache0@, cache@));
             }
             return false;
         }
@@ -1196,6 +1204,8 @@ impl JournalImpl {
             assume(!status.lsn_addr_index@.values().contains(addr@));
         }
 
+        // TODO(codex): don't we want to fetch(, false) here to avoid wasting
+        // a load?
         match cache.fetch(&addr, true) {
             FetchErrorCode::LoadInitiate{mut slot_handle} => {
                 let ghost cache_pre_release = *cache;
@@ -1213,6 +1223,13 @@ impl JournalImpl {
                         cache_post_release,
                         addr,
                     );
+                    assert(AtomicState::cache_background_step(cache0@, cache@)) by {
+                        let mid_cache = cache_pre_release@;
+                        let lbl1 = cache_load_label(&addr);
+                        let lbl2 = cache_lbl;
+                        assert(Cache::State::next(cache0@, mid_cache, lbl1));
+                        assert(Cache::State::next(mid_cache, cache@, lbl2));
+                    }
                 }
             },
             FetchErrorCode::Success{slot_handle} => {
@@ -1227,12 +1244,18 @@ impl JournalImpl {
                     );
                 }
                 self.status = Some(status);
+                proof {
+                    assert(cache@ == cache0@);
+                    assert(AtomicState::cache_background_step(cache0@, cache@));
+                }
                 return false;
             },
             _ => {
                 self.status = Some(status);
                 proof {
                     reveal(JournalImpl::wf);
+                    assert(cache@ == cache0@);
+                    assert(AtomicState::cache_background_step(cache0@, cache@));
                 }
                 return false;
             },

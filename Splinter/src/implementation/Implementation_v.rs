@@ -2630,10 +2630,10 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
             }
             return false;
         }
+        let ghost pre_state = self.model@.value();
         let did_work = self.journal.internal_journal_marshal_one_page(&mut self.cache);
 
         let tracked mut model = KVStoreTokenized::model::arbitrary();
-        let ghost pre_state = self.model@.value();
         proof { tracked_swap(self.model.borrow_mut(), &mut model); }
 
         let ghost post_state = ConcreteProgramModel{
@@ -2653,6 +2653,11 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                     reveal(Implementation::inv);
                     reveal(Implementation::ready_for_user_operation);
                     reveal(Implementation::inv_running);
+                    assert(pre_state.state.client_ready());
+                    assert(AtomicState::cache_background_step(
+                        pre_state.state.cache,
+                        post_state.state.cache,
+                    ));
                 };
             }
         }
