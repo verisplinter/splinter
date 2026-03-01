@@ -865,7 +865,14 @@ proof fn next_refines_ctam_crash_case(
     assume(post.inv());
     assume(ipre.versions.get_prefix(ipre.stable_index()+1) == ipost.versions);
     assert(ipost.async_ephemeral == AsyncMap::State::init_ephemeral_state());
-    assume(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::crash()));
+    assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::crash())) by {
+        reveal(sm2_i_lbl);
+        reveal(CrashTolerantAsyncMap::State::next);
+        reveal(CrashTolerantAsyncMap::State::next_by);
+        reveal(CrashTolerantAsyncMap::State::stable_index);
+        assert(ilbl is CrashOp);
+        assert(ipost.sync_requests == Map::<SyncReqId, nat>::empty());
+    }
 }
 
 proof fn next_refines_ctam_noop_case(

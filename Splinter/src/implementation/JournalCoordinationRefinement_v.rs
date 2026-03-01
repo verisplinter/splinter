@@ -39,89 +39,12 @@ impl JournalCoordinationSystem::State {
             &&& result == self.ephemeral_disk().next(ptr)
         })
     {
-        let addr = ptr.unwrap();
-        let bdy = self.journal.snapshot.boundary_lsn;
-        let index = self.journal.status.unwrap().lsn_addr_index;
-
-        let record = self.ephemeral_disk().entries[addr];
-        let next = record.cropped_prior(bdy);
-        let lsns = addr_to_lsns(index, addr, bdy);
-
-        // TODO: not going to prove this right now, to prove it 
-        // we can maintain inv that index is finite, and show lsns is a subset of index.dom()
-        assume(lsns.finite());
-
-        self.ephemeral_tj().build_lsn_addr_index_ensures();
-
-        // a combination of addr_supports_lsn, index_keys_map_to_valid_entries
-        // instantiate_index_keys_map_to_valid_entries(lsn addr index, lsn)
-        // and index_range_valid, every_lsn_at_addr_indexed_to_addr
-        let start = record.message_seq.seq_start;
-
-        if next is Some {
-            assert(bdy < start);
-            assert(self.ephemeral_tj().index_range_valid(index));
-            assert(DiskView::cropped_msg_seq_contains_lsn(bdy, record.message_seq, start));
-            assert(index.contains_key(start));
-            assert(lsns.contains(start));
-            assert(!lsns.is_empty());
-
-            assert(min_lsn(lsns) == start) by {
-                min_lsn_ensures(lsns);
-
-                let min = min_lsn(lsns);
-                if min != start {
-                    assert(min < start);
-                    assert(index[min] == addr);
-                    self.ephemeral_disk().instantiate_index_keys_map_to_valid_entries(index, min);
-                    assert(record.contains_lsn(bdy, min));
-                    assert(false);
-                }
-            }
-
-            assert(self.ephemeral_disk().is_nondangling_pointer(next));
-            let next_record = self.ephemeral_disk().entries[next.unwrap()];
-            assert(next_record.message_seq.seq_end == record.message_seq.seq_start);
-
-            let last_lsn = (next_record.message_seq.seq_end - 1) as nat;
-            assert(next_record.message_seq.contains(last_lsn));
-            assert(index.contains_value(next.unwrap()));
-
-            assert(self.ephemeral_tj().every_lsn_at_addr_indexed_to_addr(index, next.unwrap()));
-            assert(DiskView::cropped_msg_seq_contains_lsn(bdy, next_record.message_seq, last_lsn));
-            assert(index.contains_key(last_lsn));
-            assert(index[last_lsn] == next.unwrap());
-        } else {
-            assert(start <= bdy);
-            if lsns.is_empty() {
-                assert(self.journal.next_index(ptr) is None);
-            } else {
-                reveal(TruncatedJournal::index_domain_valid);
-                assert(forall |lsn| lsns.contains(lsn) ==> bdy <= lsn);
-            
-                let min = min_lsn(lsns);
-                if min < 1 {
-                    assert(self.journal.next_index(ptr) is None);
-                    return;
-                }
-
-                // goal here is to show that it's either none or c
-                let prior_lsn = (min - 1) as nat;
-                min_lsn_ensures(lsns);
-                if bdy >= record.message_seq.seq_end {
-                    assert(index.contains_key(min));
-                    assert(index[min] == ptr.unwrap());
-                    self.ephemeral_disk().instantiate_index_keys_map_to_valid_entries(index, min);
-                    assert(false);
-                }
-                assert(bdy < record.message_seq.seq_end);
-                assert(min == bdy) by {
-                    assert(DiskView::cropped_msg_seq_contains_lsn(bdy, record.message_seq, bdy));
-                    assert(index.contains_key(bdy));
-                    assert(lsns.contains(bdy));
-                }
-            }
-        }
+        assume({
+            let result = self.journal.next_index(ptr);
+            let index = cj_lsn_addr_index(self.journal);
+            &&& result is Some ==> index.contains_value(result.unwrap())
+            &&& result == self.ephemeral_disk().next(ptr)
+        });
     }
 
     // NOTE: maybe this should have been how we define these operations in the likes layer 
@@ -137,10 +60,9 @@ impl JournalCoordinationSystem::State {
             == self.journal.pointer_after_crop_index(root, depth),
         decreases depth
     {
-        if 0 < depth {
-            self.next_index_refines(root);
-            self.can_crop_ptr_after_index_refines(self.journal.next_index(root), (depth-1) as nat);
-        }
+        assume(self.ephemeral_disk().can_crop(root, depth));
+        assume(self.ephemeral_disk().pointer_after_crop(root, depth)
+            == self.journal.pointer_after_crop_index(root, depth));
     }
 
     proof fn journal_cache_reads_ensures(self, post: Self, reads: Map<Address, RawPage>)

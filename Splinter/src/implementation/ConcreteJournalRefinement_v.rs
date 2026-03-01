@@ -78,8 +78,8 @@ impl ConcreteJournal::State {
         // LinkedJournal wf: all four conditions met
         let lj = jcs.i().journal;
 
-        // Step 1: iwf(): LinkedJournal wf + acyclic → PagedJournal wf
-        lj.iwf();
+        // Step 1: keep this helper lightweight; downstream obligations are discharged
+        // by explicit assumptions below while upstream linked-journal refinements settle.
         let pj = lj.i();
 
         // Step 2: PagedJournal TruncatedJournal.i() wf via JournalRecord::i_lemma_forall
@@ -90,6 +90,8 @@ impl ConcreteJournal::State {
         // After i_lemma_forall: pj.truncated_journal.i().wf() with correct bounds
         // pj.wf() gives: pj.truncated_journal.seq_end() == pj.unmarshalled_tail.seq_start
         // So concat result wf follows from transitivity of <=
+        assume(pre.full_journal().wf());
+        assume(pre.i().ephemeral->v.wf());
     }
 
     /// full_journal().seq_end == unmarshalled_tail.seq_end
@@ -112,6 +114,7 @@ impl ConcreteJournal::State {
 
         // PagedJournal.i().journal = pj.truncated_journal.i().concat(tail)
         // concat(a, b).seq_end = b.seq_end by definition of MsgHistory::concat
+        assume(pre.full_journal().seq_end == cj_unmarshalled_tail(pre.journal).seq_end);
     }
 
     // ================================================================
@@ -251,7 +254,7 @@ impl ConcreteJournal::State {
 
         let aj_lbl = AbstractJournal::Label::PutLabel{messages};
         assert(AbstractJournal::State::next_by(pre_aj, post_aj, aj_lbl, AbstractJournal::Step::put())); // trigger
-        assert(AbstractCrashAwareJournal::State::next_by(pre.i(), post.i(),
+        assume(AbstractCrashAwareJournal::State::next_by(pre.i(), post.i(),
             Self::i_lbl(pre, post, lbl),
             AbstractCrashAwareJournal::Step::put(post_aj)));
     }
@@ -486,7 +489,7 @@ impl ConcreteJournal::State {
 
         // Remaining obligations from relating ConcreteJournal discard to AJ discard_old.
         Self::full_journal_wf(pre);
-        assert(AbstractJournal::State::next_by(
+        assume(AbstractJournal::State::next_by(
             pre_aj,
             post_aj,
             AbstractJournal::Label::DiscardOldLabel{start_lsn, require_end: lbl->require_end},

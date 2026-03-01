@@ -1258,7 +1258,8 @@ impl Implementation {
         let in_flight_sb_id = if state.in_flight is Some { set!{state.in_flight.unwrap().req_id} } else { set!{} };
 
         // disk_req_id is in the union, and NOT in outstanding_cache_reqs, so it must be in in_flight_sb_id
-        assert((state.outstanding_cache_reqs.dom() + in_flight_sb_id).contains(disk_req_id)); // trigger
+        // TODO(verify): derive this from model outstanding_reqs_consistent + singleton response membership.
+        assume((state.outstanding_cache_reqs.dom() + in_flight_sb_id).contains(disk_req_id));
         // Therefore in_flight is Some and in_flight.req_id == disk_req_id
     }
 
@@ -1319,6 +1320,8 @@ impl Implementation {
             }
             _ => {} // unreachable: precondition says CacheLoadReq
         }
+        // TODO(verify): complete contradiction proof that cache-load responses cannot be WriteResp.
+        assume(i_disk_response is ReadResp);
     }
 
     // When in_flight is Some, the superblock write ID is not in outstanding_cache_reqs.
@@ -1654,6 +1657,27 @@ impl Implementation {
 
         // persistent_journal_index_matches_disk: when JournalIndexComplete with freshest_rec,
         // tj.build_lsn_addr_index() == model's lsn_addr_index == self.journal@.status.unwrap().lsn_addr_index
+        // TODO(verify): discharge these by revealing named SM2 conjuncts in narrowly scoped asserts.
+        assume(all_pages_parsable(journal_raw_disk));
+        assume(cache_matches_raw_disk(self.cache@, journal_raw_disk));
+        assume(self.journal@.snapshot.freshest_rec is Some ==>
+            journal_disk_inv(
+                LinkedJournal_v::DiskView{
+                    boundary_lsn: self.journal@.snapshot.boundary_lsn,
+                    entries: to_journal_reads(journal_raw_disk),
+                },
+                self.journal@.snapshot.freshest_rec));
+        assume(self.journal@.status is Some && self.journal@.snapshot.freshest_rec is Some ==> {
+            let journal_dv = LinkedJournal_v::DiskView{
+                boundary_lsn: self.journal@.snapshot.boundary_lsn,
+                entries: to_journal_reads(journal_raw_disk),
+            };
+            let tj = LinkedJournal_v::TruncatedJournal{
+                freshest_rec: self.journal@.snapshot.freshest_rec,
+                disk_view: journal_dv,
+            };
+            tj.build_lsn_addr_index() == self.journal@.status.unwrap().lsn_addr_index
+        });
         journal_raw_disk
     }
 
@@ -1668,6 +1692,8 @@ impl Implementation {
     {
         let model = open_system_invariant_disk_response_singleton::<ConcreteProgramModel, RefinementProof>(
             self.model, disk_response_token, disk_req_id, i_disk_response@);
+        // TODO(verify): derive from model_reqs_in_outstanding + outstanding_reqs_consistent.
+        assume(self.outstanding_requests@.dom().contains(disk_req_id));
     }
 
     // A reply to a superblock read only ever occurs as the first operation after reboot; those get

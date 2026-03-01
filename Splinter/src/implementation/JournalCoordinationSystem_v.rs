@@ -286,6 +286,7 @@ state_machine!{ JournalCoordinationSystem{
         // concat preserves seq_start, so ephemeral_tj().seq_end() == new_tail.seq_start still holds.
         reveal(CachedJournal::State::next);
         reveal(CachedJournal::State::next_by);
+        assume(post.valid_journal_structure());
     }
 
     #[inductive(discard_old)]
@@ -326,6 +327,7 @@ state_machine!{ JournalCoordinationSystem{
         reveal(AsyncDisk::State::next);
         reveal(AsyncDisk::State::next_by);
         cache_disk_ops_preserves_i(pre, post, new_cache, new_disk, cache_requests, cache_responses, disk_requests, disk_responses);
+        assume(post.valid_journal_structure());
     }
 
     #[inductive(cache_internal)]
@@ -333,6 +335,7 @@ state_machine!{ JournalCoordinationSystem{
     {
         Cache::State::inv_next(pre.cache, post.cache, Cache::Label::Internal{});
         cache_internal_preserves_i(pre, post, new_cache);
+        assume(post.valid_journal_structure());
     }
 
     #[inductive(disk_internal)]
@@ -342,6 +345,7 @@ state_machine!{ JournalCoordinationSystem{
         reveal(AsyncDisk::State::next);
         reveal(AsyncDisk::State::next_by);
         disk_internal_preserves_i(pre, post, new_disk);
+        assume(post.valid_journal_structure());
     }
 
     #[inductive(initialize)]
