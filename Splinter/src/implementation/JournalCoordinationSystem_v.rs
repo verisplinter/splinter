@@ -252,6 +252,7 @@ state_machine!{ JournalCoordinationSystem{
     }
 
     /// Key structural invariant connecting ephemeral_tj to CachedJournal state
+    #[verifier::opaque]
     pub open spec fn valid_journal_structure(self) -> bool
     {
         &&& self.ephemeral_tj().decodable()
