@@ -1718,7 +1718,7 @@ proof fn next_refines_ctam_program_disk_case(
             assert(!pre.client_ready());
             assert(!post.client_ready());
         },
-        DiskEvent::CacheIOBegin{..} => {
+        DiskEvent::CacheIOBegin{req_map} => {
             if pre.client_ready() {
                 reveal(SystemModelTwo::State::i_ephemeral);
                 assert(pre.requests == post.requests);
@@ -1726,7 +1726,60 @@ proof fn next_refines_ctam_program_disk_case(
                 assert(pre.sync_req_map == post.sync_req_map);
                 assert(ipre.async_ephemeral == ipost.async_ephemeral);
                 assert(ipre.sync_requests == ipost.sync_requests);
-                assume(pre.i_journal() == post.i_journal());
+                reveal(AtomicState::disk_transition);
+                assert(AtomicState::cache_io_begin(
+                    pre.to_atomic(),
+                    post.to_atomic(),
+                    req_map,
+                    lbl->info.reqs,
+                    lbl->info.resps,
+                ));
+                assert(pre.jcs().inv()) by { reveal(SystemModelTwo::State::inv); }
+                assert(Cache::State::next(
+                    pre.concrete_journal.cache,
+                    post.concrete_journal.cache,
+                    Cache::Label::DiskOps{requests: req_map.values(), responses: Map::empty()},
+                ));
+                let disk_lbl = AsyncDisk::Label::DiskOps{
+                    requests: multiset_to_map(lbl->info.reqs),
+                    responses: multiset_to_map(lbl->info.resps),
+                };
+                assert(AsyncDisk::State::next(pre.concrete_journal.disk, post.concrete_journal.disk, disk_lbl));
+                reveal(AsyncDisk::State::next);
+                reveal(AsyncDisk::State::next_by);
+                let disk_step = choose |disk_step|
+                    AsyncDisk::State::next_by(pre.concrete_journal.disk, post.concrete_journal.disk, disk_lbl, disk_step);
+                match disk_step {
+                    AsyncDisk::Step::disk_ops() => {
+                        assert(post.concrete_journal.disk.responses
+                            == pre.concrete_journal.disk.responses.remove_keys(disk_lbl->responses.dom()));
+                    }
+                    _ => { assert(false); }
+                }
+                crate::implementation::JournalCoordinationSystem_v::cache_disk_ops_preserves_i(
+                    pre.jcs(),
+                    post.jcs(),
+                    post.concrete_journal.cache,
+                    post.concrete_journal.disk,
+                    req_map.values(),
+                    Map::empty(),
+                    multiset_to_map(lbl->info.reqs),
+                    multiset_to_map(lbl->info.resps),
+                );
+                assert(pre.i_journal() == post.i_journal()) by {
+                    reveal(ConcreteJournal::State::i);
+                    assert(pre.concrete_journal.persistent_journal_seq_end
+                        == post.concrete_journal.persistent_journal_seq_end);
+                    assert(pre.concrete_journal.in_flight == post.concrete_journal.in_flight);
+                    assert(pre.full_journal() == post.full_journal()) by {
+                        reveal(ConcreteJournal::State::full_journal);
+                        assert(pre.jcs().i() =~= post.jcs().i());
+                        assert(pre.jcs().i().journal.i().i().journal.ext_equal(
+                            post.jcs().i().journal.i().i().journal
+                        ));
+                        MsgHistory::ext_equal_is_equality();
+                    }
+                }
                 assert(pre.recovery_state == post.recovery_state);
                 assert(pre.concrete_journal.journal == post.concrete_journal.journal);
                 assert(post.client_ready());
@@ -1737,7 +1790,7 @@ proof fn next_refines_ctam_program_disk_case(
                 reveal(SystemModelTwo::State::i_persistent);
             }
         },
-        DiskEvent::CacheIOEnd{..} => {
+        DiskEvent::CacheIOEnd{resp_map} => {
             if pre.client_ready() {
                 reveal(SystemModelTwo::State::i_ephemeral);
                 assert(pre.requests == post.requests);
@@ -1745,14 +1798,65 @@ proof fn next_refines_ctam_program_disk_case(
                 assert(pre.sync_req_map == post.sync_req_map);
                 assert(ipre.async_ephemeral == ipost.async_ephemeral);
                 assert(ipre.sync_requests == ipost.sync_requests);
-                assume(pre.i_journal() == post.i_journal());
+                reveal(AtomicState::disk_transition);
+                assert(AtomicState::cache_io_end(
+                    pre.to_atomic(),
+                    post.to_atomic(),
+                    resp_map,
+                    lbl->info.reqs,
+                    lbl->info.resps,
+                ));
+                let finished_cache_reqs = pre.outstanding_cache_reqs.restrict(resp_map.dom()).invert();
+                let cache_resps = Map::new(
+                    |addr| finished_cache_reqs.contains_key(addr),
+                    |addr| resp_map[finished_cache_reqs[addr]],
+                );
+                assert(pre.jcs().inv()) by { reveal(SystemModelTwo::State::inv); }
+                assert(Cache::State::next(
+                    pre.concrete_journal.cache,
+                    post.concrete_journal.cache,
+                    Cache::Label::DiskOps{requests: set![], responses: cache_resps},
+                ));
+                let disk_lbl = AsyncDisk::Label::DiskOps{
+                    requests: multiset_to_map(lbl->info.reqs),
+                    responses: multiset_to_map(lbl->info.resps),
+                };
+                assert(AsyncDisk::State::next(pre.concrete_journal.disk, post.concrete_journal.disk, disk_lbl));
+                crate::implementation::JournalCoordinationSystem_v::cache_disk_ops_preserves_i(
+                    pre.jcs(),
+                    post.jcs(),
+                    post.concrete_journal.cache,
+                    post.concrete_journal.disk,
+                    set![],
+                    cache_resps,
+                    multiset_to_map(lbl->info.reqs),
+                    multiset_to_map(lbl->info.resps),
+                );
+                assert(pre.i_journal() == post.i_journal()) by {
+                    reveal(ConcreteJournal::State::i);
+                    assert(pre.concrete_journal.persistent_journal_seq_end
+                        == post.concrete_journal.persistent_journal_seq_end);
+                    assert(pre.concrete_journal.in_flight == post.concrete_journal.in_flight);
+                    assert(pre.full_journal() == post.full_journal()) by {
+                        reveal(ConcreteJournal::State::full_journal);
+                        assert(pre.jcs().i() =~= post.jcs().i());
+                        assert(pre.jcs().i().journal.i().i().journal.ext_equal(
+                            post.jcs().i().journal.i().i().journal
+                        ));
+                        MsgHistory::ext_equal_is_equality();
+                    }
+                }
                 if pre.concrete_journal.in_flight is Some {
                     let sb_req_id = pre.concrete_journal.in_flight.unwrap().req_id;
                     assert(pre.concrete_journal.in_flight == post.concrete_journal.in_flight);
-                    assume(
-                        pre.concrete_journal.disk.responses.contains_key(sb_req_id)
-                        == post.concrete_journal.disk.responses.contains_key(sb_req_id)
-                    );
+                    assert(post.concrete_journal.disk.responses.contains_key(sb_req_id)
+                        ==> pre.concrete_journal.disk.responses.contains_key(sb_req_id)) by {
+                        if post.concrete_journal.disk.responses.contains_key(sb_req_id) {
+                            assert(pre.concrete_journal.disk.responses.remove_keys(disk_lbl->responses.dom()).contains_key(sb_req_id));
+                        }
+                    }
+                    assume(pre.concrete_journal.disk.responses.contains_key(sb_req_id)
+                        ==> post.concrete_journal.disk.responses.contains_key(sb_req_id));
                 }
                 assert(pre.recovery_state == post.recovery_state);
                 assert(pre.concrete_journal.journal == post.concrete_journal.journal);
