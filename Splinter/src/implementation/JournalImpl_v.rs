@@ -1119,7 +1119,6 @@ impl JournalImpl {
         let mut status = match status_opt {
             Some(s) => s,
             None => {
-                assert(false);
                 return false;
             },
         };
@@ -1127,11 +1126,6 @@ impl JournalImpl {
         if status.unmarshalled_tail.len() == 0 {
             self.status = Some(status);
             proof {
-                assert(*cache == cache0);
-                assert(cache@ == cache0@);
-                assert(cache0@.inv());
-                assert(cache@.inv());
-                assert(cache.valid_load_handles_preserved(cache0));
             }
             return false;
         }
@@ -1177,28 +1171,20 @@ impl JournalImpl {
         if !self.record_fits_in_page(&record) {
             self.status = Some(status);
             proof {
-                assert(*cache == cache0);
-                assert(cache.valid_load_handles_preserved(cache0));
             }
             return false;
         }
 
         let mut page = vec![0u8; PAGE_SIZE_BYTES];
         proof {
-            assert(record.messages.len() <= self.fmt.field2_fmt.max_length);
             assert forall |i: int| 0 <= i < record.messages.len()
                 implies self.fmt.field2_fmt.marshallable_at(record.messages@, i) by {
-                assert(record.messages[i].message is Define);
             }
-            assert(self.fmt.field2_fmt.marshallable(record.messages@));
-            assert(self.fmt.marshallable(record.parsedv()));
         }
         let end = self.fmt.exec_marshall(&record, &mut page, 0);
         if end > PAGE_SIZE_BYTES {
             self.status = Some(status);
             proof {
-                assert(*cache == cache0);
-                assert(cache.valid_load_handles_preserved(cache0));
             }
             return false;
         }
@@ -1217,26 +1203,16 @@ impl JournalImpl {
                 cache.load_release(&addr, slot_handle);
                 let ghost cache_post_release = *cache;
                 proof {
-                    assert(cache_pre_release.wf());
-                    assert(cache_post_release.wf());
-                    assert(cache0@.inv());
-                    assert(Cache::State::next(cache0@, cache_pre_release@, cache_load_label(&addr)));
                     Cache::State::inv_next(cache0@, cache_pre_release@, cache_load_label(&addr));
-                    assert(cache_pre_release@.inv());
                     let resp = crate::spec::AsyncDisk_t::DiskResponse::ReadResp{data: page@};
                     let cache_lbl = Cache::Label::DiskOps{requests: set!{}, responses: map!{addr@ => resp}};
-                    assert(Cache::State::next(cache_pre_release@, cache_post_release@, cache_lbl));
                     Cache::State::inv_next(cache_pre_release@, cache_post_release@, cache_lbl);
-                    assert(cache_post_release@.inv());
-                    assert(cache@.inv());
-                    assert(!cache0.entry_fetched(&addr));
                     FracCacheImpl::valid_load_handles_preserved_transitive_except_if_missing(
                         cache0,
                         cache_pre_release,
                         cache_post_release,
                         addr,
                     );
-                    assert(cache.valid_load_handles_preserved(cache0));
                 }
             },
             FetchErrorCode::Success{slot_handle} => {
@@ -1244,19 +1220,11 @@ impl JournalImpl {
                 cache.handle_release(&addr, slot_handle);
                 let ghost cache_post_release = *cache;
                 proof {
-                    assert(cache_pre_release.wf());
-                    assert(cache_post_release.wf());
-                    assert(cache_pre_release@.lookup_map == cache0@.lookup_map);
-                    assert(cache_post_release@.lookup_map == cache_pre_release@.lookup_map);
-                    assert(cache.valid_load_handles_preserved(cache_pre_release));
                     FracCacheImpl::valid_load_handles_preserved_transitive(
                         cache0,
                         cache_pre_release,
                         cache_post_release,
                     );
-                    assert(cache.valid_load_handles_preserved(cache0));
-                    assert(cache0@.inv());
-                    assert(cache@.inv());
                 }
                 self.status = Some(status);
                 return false;
@@ -1264,20 +1232,7 @@ impl JournalImpl {
             _ => {
                 self.status = Some(status);
                 proof {
-                    assert(self.snapshot == old(self).snapshot);
-                    assert(self.status == old(self).status);
-                    assert(self.fmt == fmt0);
-                    assert(fmt0 == IJournalRecordFormat::spec_new());
-                    assert(self.fmt.valid());
                     reveal(JournalImpl::wf);
-                    assert(self.wf());
-                    assert(self.seq_start() == old(self).seq_start());
-                    assert(self.seq_end() == old(self).seq_end());
-                    assert(cache.wf());
-                    assert(cache@ == cache0@);
-                    assert(cache0@.inv());
-                    assert(cache@.inv());
-                    assert(cache.valid_load_handles_preserved(cache0));
                 }
                 return false;
             },
@@ -1296,10 +1251,7 @@ impl JournalImpl {
                 new_tail_start as nat,
                 addr@,
             ));
-            assert(1 <= cut_count);
-            assert(tail_start < new_tail_start);
             reveal(lsn_addr_index_append_record);
-            assert(status.lsn_addr_index@[(new_tail_start - 1) as nat] == addr@);
         }
 
         let old_tail_len = status.unmarshalled_tail.len();
@@ -1319,24 +1271,13 @@ impl JournalImpl {
         self.snapshot.freshest_rec = Some(addr);
         self.status = Some(status);
         proof {
-            assert(self.fmt == fmt0);
-            assert(fmt0 == IJournalRecordFormat::spec_new());
-            assert(self.fmt.valid());
             reveal(JournalImpl::wf);
-            assert(self.status is Some);
-            assert(self.status.unwrap().wf());
-            assert(self.snapshot.boundary_lsn == self.status.unwrap().lsn_addr_index.seq_start());
-            assert(self.snapshot.boundary_lsn <= self.status.unwrap().clean_watermark_lsn);
-            assert(self.status.unwrap().clean_watermark_lsn <= self.status.unwrap().lsn_addr_index.seq_end());
-            assert(self.snapshot.boundary_lsn < self.status.unwrap().lsn_addr_index.seq_end());
-            assert(self.snapshot.freshest_rec == Some(addr));
             assert(self.status.unwrap().lsn_addr_index@[
                 (self.status.unwrap().lsn_addr_index.seq_end() - 1) as nat
             ] == addr@);
             assert(self.status.unwrap().lsn_addr_index@[
                 (self.status.unwrap().lsn_addr_index.seq_end() - 1) as nat
             ] == self.snapshot.freshest_rec.unwrap()@);
-            assert(self.wf());
         }
         true
     }

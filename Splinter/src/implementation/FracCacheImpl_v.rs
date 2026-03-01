@@ -441,11 +441,8 @@ impl FracCacheImpl {
             old.entry_fetched(&addr) && old.valid_load_handle(&addr, handle)
             implies new.entry_fetched(&addr) && new.valid_load_handle(&addr, handle)
         by {
-            assert(mid.entry_fetched(&addr) && mid.valid_load_handle(&addr, handle));
             if addr == except {
-                assert(false);
             }
-            assert(new.entry_fetched(&addr) && new.valid_load_handle(&addr, handle));
         }
     }
 
