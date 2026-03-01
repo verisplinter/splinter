@@ -1129,6 +1129,7 @@ impl JournalImpl {
             self.status = Some(status);
             proof {
                 assert(cache@ == cache0@);
+                AtomicState::cache_background_step_noop(cache0@);
                 assert(AtomicState::cache_background_step(cache0@, cache@));
             }
             return false;
@@ -1176,6 +1177,7 @@ impl JournalImpl {
             self.status = Some(status);
             proof {
                 assert(cache@ == cache0@);
+                AtomicState::cache_background_step_noop(cache0@);
                 assert(AtomicState::cache_background_step(cache0@, cache@));
             }
             return false;
@@ -1192,6 +1194,7 @@ impl JournalImpl {
             self.status = Some(status);
             proof {
                 assert(cache@ == cache0@);
+                AtomicState::cache_background_step_noop(cache0@);
                 assert(AtomicState::cache_background_step(cache0@, cache@));
             }
             return false;
@@ -1229,6 +1232,13 @@ impl JournalImpl {
                         let lbl2 = cache_lbl;
                         assert(Cache::State::next(cache0@, mid_cache, lbl1));
                         assert(Cache::State::next(mid_cache, cache@, lbl2));
+                        AtomicState::cache_background_step_two_step(
+                            cache0@,
+                            mid_cache,
+                            cache@,
+                            lbl1,
+                            lbl2,
+                        );
                     }
                 }
             },
@@ -1246,6 +1256,7 @@ impl JournalImpl {
                 self.status = Some(status);
                 proof {
                     assert(cache@ == cache0@);
+                    AtomicState::cache_background_step_noop(cache0@);
                     assert(AtomicState::cache_background_step(cache0@, cache@));
                 }
                 return false;
@@ -1255,6 +1266,7 @@ impl JournalImpl {
                 proof {
                     reveal(JournalImpl::wf);
                     assert(cache@ == cache0@);
+                    AtomicState::cache_background_step_noop(cache0@);
                     assert(AtomicState::cache_background_step(cache0@, cache@));
                 }
                 return false;

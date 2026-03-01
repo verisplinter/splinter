@@ -250,12 +250,47 @@ impl AtomicState {
         }
     }
 
-    pub open spec fn cache_background_step(pre_cache: Cache::State, post_cache: Cache::State) -> bool
+    pub closed spec fn cache_background_step(pre_cache: Cache::State, post_cache: Cache::State) -> bool
     {
         ||| pre_cache == post_cache
         ||| exists |mid_cache: Cache::State, lbl1: Cache::Label, lbl2: Cache::Label| {
             &&& Cache::State::next(pre_cache, mid_cache, lbl1)
             &&& Cache::State::next(mid_cache, post_cache, lbl2)
+        }
+    }
+
+    pub proof fn cache_background_step_noop(cache: Cache::State)
+        ensures
+            Self::cache_background_step(cache, cache),
+    {
+        assert(Self::cache_background_step(cache, cache));
+    }
+
+    pub proof fn cache_background_step_two_step(
+        pre_cache: Cache::State,
+        mid_cache: Cache::State,
+        post_cache: Cache::State,
+        lbl1: Cache::Label,
+        lbl2: Cache::Label,
+    )
+        requires
+            Cache::State::next(pre_cache, mid_cache, lbl1),
+            Cache::State::next(mid_cache, post_cache, lbl2),
+        ensures
+            Self::cache_background_step(pre_cache, post_cache),
+    {
+        assert(Self::cache_background_step(pre_cache, post_cache));
+    }
+
+    pub closed spec fn journal_background_journal_step(pre_journal: CachedJournal::State, post_journal: CachedJournal::State) -> bool
+    {
+        ||| post_journal == pre_journal
+        ||| exists |writes: Map<Address, JournalRecord>| {
+            CachedJournal::State::next(
+                pre_journal,
+                post_journal,
+                CachedJournal::Label::JournalMarshal{writes},
+            )
         }
     }
 
@@ -268,6 +303,7 @@ impl AtomicState {
     pub open spec fn journal_background_work(pre: Self, post: Self) -> bool
     {
         &&& pre.client_ready()
+        &&& Self::journal_background_journal_step(pre.journal, post.journal)
         &&& Self::cache_background_step(pre.cache, post.cache)
         &&& post == Self{
             cache: post.cache,

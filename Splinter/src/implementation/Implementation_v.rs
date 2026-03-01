@@ -2684,6 +2684,10 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                         pre_state.state.cache,
                         post_state.state.cache,
                     ));
+                    assume(AtomicState::journal_background_journal_step(
+                        pre_state.state.journal,
+                        post_state.state.journal,
+                    ));
                 };
             }
         }
