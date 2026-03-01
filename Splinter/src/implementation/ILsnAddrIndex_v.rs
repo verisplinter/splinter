@@ -78,6 +78,24 @@ impl ILsnAddrIndex {
         }
     }
 
+    proof fn i_prefix_unchanged_after_append(old: Self, new: Self, idx: int)
+        requires
+            old.wf(),
+            new.wf(),
+            new.bounds.len() == old.bounds.len() + 1,
+            new.addrs.len() == old.addrs.len() + 1,
+            forall |i: int| 0 <= i < old.bounds.len() ==> new.bounds[i] == old.bounds[i],
+            forall |i: int| 0 <= i < old.addrs.len() ==> new.addrs[i] == old.addrs[i],
+            0 <= idx < old.bounds.len(),
+        ensures
+            new.i(idx) == old.i(idx),
+        decreases idx
+    {
+        if idx > 0 {
+            Self::i_prefix_unchanged_after_append(old, new, idx - 1);
+        }
+    }
+
     proof fn ascending_bounds_monotone(&self, idx: int)
         requires self.wf(), 0 <= idx < self.bounds.len()
         ensures self.bounds[0] <= self.bounds[idx]
@@ -553,6 +571,73 @@ impl ILsnAddrIndex {
 
             // view equality via the shift lemma
             Self::prepend_i_shift(*self, old_snap, (self.bounds.len() - 1) as int);
+        }
+    }
+
+    // Record the fact that every lsn in [old_upper_bound, new_upper_bound) maps to addr
+    pub exec fn index_append_record(&mut self, old_upper_bound: ILsn, new_upper_bound: ILsn, addr: IAddress)
+        requires
+            old(self).wf(),
+            old(self).seq_end() == old_upper_bound,
+            old(self).seq_start() <= old_upper_bound,
+            old_upper_bound < new_upper_bound,
+            !old(self)@.values().contains(addr@),
+        ensures
+            self.wf(),
+            self.seq_start() == old(self).seq_start(),
+            self.seq_end() == new_upper_bound,
+            self@ == lsn_addr_index_append_record(old(self)@, old_upper_bound as nat, new_upper_bound as nat, addr@),
+    {
+        self.bounds.push(new_upper_bound);
+        self.addrs.push(addr);
+
+        proof {
+            // sortedness at the new boundary edge
+            assert forall |i: int| 0 <= i < self.bounds.len() - 1 implies self.sorted_entry(i) by {
+                if i < old(self).bounds.len() - 1 {
+                    assert(old(self).sorted_entry(i));
+                } else {
+                    assert(i == old(self).bounds.len() - 1);
+                    assert(self.bounds[i] == old_upper_bound);
+                    assert(self.bounds[i + 1] == new_upper_bound);
+                }
+            }
+            // addrs remain distinct, using caller-provided freshness
+            assert forall |i: int, j: int| #![auto] 0 <= i < j < self.addrs.len()
+                implies self.addrs[i]@ != self.addrs[j]@ by {
+                if j < old(self).addrs.len() {
+                } else {
+                    assert(j == old(self).addrs.len());
+                    if i < old(self).addrs.len() {
+                        old(self).addr_at_idx_in_values(i);
+                        if self.addrs[i]@ == self.addrs[j]@ {
+                        }
+                    }
+                }
+            }
+
+            assert forall |i: int| 0 <= i < old(self).bounds.len()
+                implies self.bounds[i] == old(self).bounds[i] by {
+            }
+            assert forall |i: int| 0 <= i < old(self).addrs.len()
+                implies self.addrs[i] == old(self).addrs[i] by {
+            }
+
+            // New top-level view is one append step over the old top-level view.
+            let new_last = (self.bounds.len() - 1) as int;
+            assert(new_last == old(self).bounds.len());
+            assert(self.i(new_last) =~= lsn_addr_index_append_record(
+                self.i(new_last - 1),
+                self.bounds[new_last - 1] as nat,
+                self.bounds[new_last] as nat,
+                self.addrs[new_last - 1]@,
+            ));
+            Self::i_prefix_unchanged_after_append(*old(self), *self, new_last - 1);
+            assert(self.i(new_last - 1) == old(self).i(new_last - 1));
+            assert(old(self).i(new_last - 1) == old(self)@);
+            assert(self.bounds[new_last - 1] == old_upper_bound);
+            assert(self.bounds[new_last] == new_upper_bound);
+            assert(self.addrs[new_last - 1] == addr);
         }
     }
 

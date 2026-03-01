@@ -2,20 +2,22 @@
 // SPDX-License-Identifier: BSD-2-Clause
 use vstd::{prelude::*};
 use crate::abstract_system::MsgHistory_v::{MsgHistory, KeyedMessage};
-use crate::marshalling::Marshalling_v::Marshal;
 use crate::marshalling::Marshalling_v::Parsedview;
-use crate::marshalling::IntegerMarshalling_v::{IntFormat, IntFormattable};
+use crate::marshalling::IntegerMarshalling_v::IntFormat;
 use crate::marshalling::ResizableUniformSizedSeq_v::ResizableUniformSizedElementSeqFormat;
 use crate::marshalling::KeyedMessageFormat_v::KeyedMessageFormat;
-use crate::marshalling::Wrappable_v::{Wrappable, WrappableFormat};
 use crate::marshalling::UniformSized_v::UniformSized;
-use crate::implementation::JournalTypes_v::ILsn;
+use crate::marshalling::UniformSizedMarshal_v::UniformSizedMarshal;
 use crate::marshalling::WF_v::WF;
+use crate::implementation::JournalTypes_v::ILsn;
+use crate::marshalling::NatFormat_v::NatFormat;
 use crate::disk::GenericDisk_v::Pointer;
 use crate::abstract_system::StampedMap_v::LSN;
 use crate::disk::GenericDisk_v::IAddress;
 use crate::marshalling::OptionFormat_v::OptionFormat;
 use crate::marshalling::IAddressFormat_v::IAddressFormat;
+use crate::marshalling::Slice_v::Slice;
+use crate::marshalling::Marshalling_v::Marshal;
 use crate::journal::LinkedJournal_v::JournalRecord;
 
 verus! {
@@ -64,7 +66,7 @@ impl View for AJournalRecord {
         JournalRecord{
             message_seq: MsgHistory{
                 msgs: Map::new(|lsn: nat| bdy <= lsn < seq_end, |lsn: nat| self.messages[lsn-bdy]),
-                seq_start: bdy, 
+                seq_start: bdy,
                 seq_end: seq_end,
             },
             prior_rec: self.header.prior_rec,
@@ -88,126 +90,142 @@ impl Parsedview<AJournalRecord> for IJournalRecord {
     }
 }
 
-pub struct IJournalHeaderWrappable {}
-impl Wrappable for IJournalHeaderWrappable {
-    type AF = OptionFormat<IAddressFormat>;
-    type BF = IntFormat<ILsn>;
-    type DV = JournalHeader;
-    type U = IJournalHeader;
-
-    open spec fn value_marshallable(value: Self::DV) -> bool
-    {
-        true
-    }
-
-    open spec fn to_pair(value: Self::DV) -> (Pointer, int)
-    {
-        (value.prior_rec, value.start_lsn as int)
-    }
-
-    open spec fn from_pair(pair: (Pointer, int)) -> (value: Self::DV)
-    {
-        Self::DV{ prior_rec: pair.0, start_lsn: pair.1 as nat }
-    }
-
-    proof fn to_from_bijective()
-    {
-    }
-
-    exec fn exec_to_pair(value: &Self::U) -> (pair: (Option<IAddress>, ILsn))
-    {
-        let pair = (value.prior_rec, value.start_lsn);
-        assume( pair.wf() );    // TODO(jonh) need to plumb an obligation through the trait? Maybe a custom pair type?
-        pair
-    }
-
-    exec fn exec_from_pair(pair: (Option<IAddress>, ILsn)) -> (u: Self::U)
-    {
-        let u = Self::U{ prior_rec: pair.0, start_lsn: pair.1 };
-//         assert( u.parsedv() == Self::from_pair(pair.parsedv()) );
-        u
-    }
-
-    open spec fn spec_new_format_pair() -> (Self::AF, Self::BF)
-    {
-        (
-            OptionFormat::<IAddressFormat>::spec_new(IAddressFormat::spec_new()),
-            IntFormat::<ILsn>::spec_new())
-    }
-
-    exec fn new_format_pair() -> (Self::AF, Self::BF)
-    {
-        let a_fmt = OptionFormat::<IAddressFormat>::new(IAddressFormat::new());
-        let b_fmt = IntFormat::<ILsn>::new();
-
-//         assert( b_fmt.uniform_size() == 4 );
-        (a_fmt, b_fmt)
-    }
+proof fn i_journal_header_wf_proof(
+    prior_rec: Option<IAddress>,
+    start_lsn: ILsn,
+    hdr: IJournalHeader,
+)
+    requires
+        prior_rec.wf(),
+        start_lsn.wf(),
+        hdr.prior_rec == prior_rec,
+        hdr.start_lsn == start_lsn,
+    ensures
+        hdr.wf(),
+{
 }
 
-pub struct IJournalRecordWrappable {}
-impl Wrappable for IJournalRecordWrappable {
-    type AF = WrappableFormat<IJournalHeaderWrappable>;
-    type BF = ResizableUniformSizedElementSeqFormat<KeyedMessageFormat, u8>;
-    type DV = AJournalRecord;
-    type U = IJournalRecord;
-
-    open spec fn value_marshallable(value: Self::DV) -> bool
-    {
-        true
-    }
-
-    open spec fn to_pair(value: Self::DV) -> (JournalHeader, Seq<KeyedMessage>)
-    {
-        (value.header, value.messages)
-    }
-
-    open spec fn from_pair(pair: (JournalHeader, Seq<KeyedMessage>)) -> (value: Self::DV)
-    {
-        Self::DV{ header: pair.0, messages: pair.1 }
-    }
-
-    proof fn to_from_bijective()
-    {
-    }
-
-    exec fn exec_to_pair(value: &Self::U) -> (pair: (IJournalHeader, Vec<KeyedMessage>))
-    {
-        // TODO(jonh) clonity clone clone
-        let header_clone = value.header.clone();
-        let messages_clone = value.messages.clone();
-        let pair = (header_clone, messages_clone);
-        assume( header_clone == value.header );
-        assume( messages_clone == value.messages );
-        assert( Self::to_pair((*value).parsedv()) == Parsedview::<(JournalHeader, Seq<KeyedMessage>)>::parsedv(&pair) );  // verus #1534 // trigger
-        assume( pair.wf() );    // TODO(jonh) need to plumb an obligation through the trait? Maybe a custom pair type?
-        pair
-    }
-
-    exec fn exec_from_pair(pair: (IJournalHeader, Vec<KeyedMessage>)) -> (u: Self::U)
-    {
-        let u = Self::U{ header: pair.0, messages: pair.1 };
-        assert( u.parsedv() == Self::from_pair(pair.parsedv()) );   // manually  trigger trait ensures extn
-        assert(u.wf()); // trigger
-        u
-    }
-
-    open spec fn spec_new_format_pair() -> (Self::AF, Self::BF)
-    {
-        (
-            WrappableFormat::<IJournalHeaderWrappable>::spec_new(),
-            Self::BF::spec_new(KeyedMessageFormat::spec_new(), IntFormat::<u8>::spec_new(), 200))
-    }
-
-    exec fn new_format_pair() -> (Self::AF, Self::BF)
-    {
-        let a_fmt = WrappableFormat::<IJournalHeaderWrappable>::new();
-        let b_fmt = Self::BF::new(KeyedMessageFormat::new(), IntFormat::<u8>::new(), 200);
-
-        (a_fmt, b_fmt)
-    }
+proof fn i_journal_header_postcondition_proof(
+    fmt: &IJournalHeaderFormat,
+    slice: &Slice,
+    data: &Vec<u8>,
+    field1_slice: &Slice,
+    field1_value: Option<IAddress>,
+    field2_slice: &Slice,
+    field2_value: ILsn,
+    result: IJournalHeader,
+)
+    requires
+        fmt.valid(),
+        slice@.valid(data@),
+        result.prior_rec == field1_value,
+        result.start_lsn == field2_value,
+        field1_value.wf(),
+        field2_value.wf(),
+        fmt.parsable(slice@.i(data@)),
+        Parsedview::<Pointer>::parsedv(&field1_value) == fmt.field1_fmt.parse(field1_slice@.i(data@)),
+        Parsedview::<nat>::parsedv(&field2_value) == fmt.field2_fmt.parse(field2_slice@.i(data@)),
+        field1_slice@.i(data@) == slice@.i(data@).subrange(0, fmt.field1_fmt.uniform_size() as int),
+        field2_slice@.i(data@) == slice@.i(data@).subrange(
+            fmt.field1_fmt.uniform_size() as int,
+            fmt.field1_fmt.uniform_size() as int + fmt.field2_fmt.uniform_size() as int),
+    ensures
+        result.parsedv() == fmt.parse(slice@.i(data@)),
+        result.wf(),
+{
 }
 
-pub type IJournalRecordFormat = WrappableFormat<IJournalRecordWrappable>;
+proof fn i_journal_record_wf_proof(
+    header: IJournalHeader,
+    messages: Vec<KeyedMessage>,
+    rec: IJournalRecord,
+)
+    requires
+        header.wf(),
+        messages.wf(),
+        rec.header == header,
+        rec.messages == messages,
+    ensures
+        rec.wf(),
+{
+}
+
+proof fn i_journal_record_postcondition_proof(
+    fmt: &IJournalRecordFormat,
+    slice: &Slice,
+    data: &Vec<u8>,
+    field1_slice: &Slice,
+    field1_value: IJournalHeader,
+    field2_slice: &Slice,
+    field2_value: Vec<KeyedMessage>,
+    result: IJournalRecord,
+)
+    requires
+        fmt.valid(),
+        slice@.valid(data@),
+        result.header == field1_value,
+        result.messages == field2_value,
+        field1_value.wf(),
+        field2_value.wf(),
+        fmt.parsable(slice@.i(data@)),
+        Parsedview::<JournalHeader>::parsedv(&field1_value) == fmt.field1_fmt.parse(field1_slice@.i(data@)),
+        Parsedview::<Seq<KeyedMessage>>::parsedv(&field2_value) == fmt.field2_fmt.parse(field2_slice@.i(data@)),
+        field1_slice@.i(data@) == slice@.i(data@).subrange(0, fmt.field1_fmt.uniform_size() as int),
+        field2_slice@.i(data@) == slice@.i(data@).subrange(
+            fmt.field1_fmt.uniform_size() as int,
+            fmt.field1_fmt.uniform_size() as int + fmt.field2_fmt.uniform_size() as int),
+    ensures
+        result.parsedv() == fmt.parse(slice@.i(data@)),
+        result.wf(),
+{
+    assert(field2_value@ =~= Parsedview::<Seq<KeyedMessage>>::parsedv(&field2_value)); // trigger
+}
 
 } //verus!
+
+struct_marshaller_2! {
+    format_name: IJournalHeaderFormat,
+    impl_type: IJournalHeader,
+    spec_type: JournalHeader,
+    wf_proof: i_journal_header_wf_proof,
+    postcondition_proof: i_journal_header_postcondition_proof,
+    field1: {
+        impl_field: prior_rec,
+        spec_field: prior_rec,
+        formatter_type: OptionFormat<IAddressFormat>,
+        formatter_spec_new: OptionFormat::spec_new(IAddressFormat::spec_new()),
+        formatter_new: OptionFormat::new(IAddressFormat::new()),
+    },
+    field2: {
+        impl_field: start_lsn,
+        spec_field: start_lsn,
+        formatter_type: NatFormat<u64>,
+        formatter_spec_new: NatFormat::spec_new(),
+        formatter_new: NatFormat::new(),
+    }
+}
+
+struct_marshaller_2! {
+    format_name: IJournalRecordFormat,
+    impl_type: IJournalRecord,
+    spec_type: AJournalRecord,
+    wf_proof: i_journal_record_wf_proof,
+    postcondition_proof: i_journal_record_postcondition_proof,
+    field1: {
+        impl_field: header,
+        spec_field: header,
+        formatter_type: IJournalHeaderFormat,
+        formatter_spec_new: IJournalHeaderFormat::spec_new(),
+        formatter_new: IJournalHeaderFormat::new(),
+    },
+    field2: {
+        impl_field: messages,
+        spec_field: messages,
+        formatter_type: ResizableUniformSizedElementSeqFormat<KeyedMessageFormat, u8>,
+        formatter_spec_new: ResizableUniformSizedElementSeqFormat::spec_new(KeyedMessageFormat::spec_new(), IntFormat::<u8>::spec_new(), 200),
+        formatter_new: ResizableUniformSizedElementSeqFormat::new(KeyedMessageFormat::new(), IntFormat::<u8>::new(), 200),
+    }
+}
+
+pub type JournalHeaderFmt = IJournalHeaderFormat;
+pub type JournalPageFmt = IJournalRecordFormat;

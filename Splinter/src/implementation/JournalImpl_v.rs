@@ -5,7 +5,7 @@ use crate::abstract_system::MsgHistory_v::{MsgHistory, KeyedMessage};
 use crate::abstract_system::StampedMap_v::LSN;
 use crate::marshalling::Marshalling_v::Parsedview;
 use crate::spec::KeyType_t::Key;
-use crate::spec::Messages_t::Value;
+use crate::spec::Messages_t::{Message, Value};
 use crate::spec::AsyncDisk_t::RawPage;
 use crate::implementation::AtomicState_v::{to_journal_reads, raw_page_to_record};
 use crate::implementation::OverflowFiction_v::convert_overflow_into_liveness_failure;
@@ -15,12 +15,11 @@ use crate::implementation::JournalTypes_v::AJournal;
 use crate::implementation::JournalTypes_v::ILsn;
 use crate::allocation_layer::LikesJournal_v::{LsnAddrIndex, lsn_addr_index_append_record, singleton_index, lsn_disjoint};
 use crate::implementation::Cache_v::{Cache, Entry};
-use crate::implementation::FracCacheImpl_v::{FetchErrorCode, FracCacheImpl, MutHandle, cache_load_label};
+use crate::implementation::FracCacheImpl_v::{FetchErrorCode, FracCacheImpl, MutHandle, cache_load_label, PAGE_SIZE_BYTES};
 use crate::implementation::ILsnAddrIndex_v::ILsnAddrIndex;
 use crate::marshalling::Slice_v::Slice;
-use crate::marshalling::IJournalRecordFormat_v::{IJournalRecord, IJournalRecordFormat, IJournalRecordWrappable};
+use crate::marshalling::IJournalRecordFormat_v::{IJournalHeader, IJournalRecord, IJournalRecordFormat};
 use crate::marshalling::Marshalling_v::Marshal;
-use crate::marshalling::Wrappable_v::Wrappable;
 use crate::journal::LinkedJournal_v;
 use crate::journal::LinkedJournal_v::JournalRecord;
 
@@ -90,6 +89,7 @@ pub proof fn to_journal_reads_entry_from_exec_parse(
     value: IJournalRecord,
 )
 requires
+    fmt == IJournalRecordFormat::spec_new(),
     fmt.valid(),
     reads.contains_key(addr),
     fmt.parsable(reads[addr]),
@@ -97,11 +97,6 @@ requires
 ensures
     to_journal_reads(reads)[addr] == value.parsedv().view(),
 {
-    let ghost spec_fmt = IJournalRecordFormat::spec_new();
-    assert((fmt.pair_fmt.a_fmt, fmt.pair_fmt.b_fmt)
-        == IJournalRecordWrappable::spec_new_format_pair());
-    assert((spec_fmt.pair_fmt.a_fmt, spec_fmt.pair_fmt.b_fmt)
-        == IJournalRecordWrappable::spec_new_format_pair());
 }
 
 #[verifier::external_body]
@@ -217,6 +212,7 @@ pub struct JournalImpl {
     index_builder: Option<IndexBuilder>,
     status: Option<IJournalStatus>,
     fmt: IJournalRecordFormat,
+    next_alloc_page: u32,
 }
 
 pub open spec fn load_index_labels(reads: Map<Address, RawPage>) -> (Cache::Label, CachedJournal::Label)
@@ -280,25 +276,23 @@ impl IJournalRecord {
 
 impl JournalImpl {
     pub closed spec fn wf(&self) -> bool {
+        &&& self.fmt == IJournalRecordFormat::spec_new()
         &&& self.fmt.valid()
         &&& match self.status {
             None => { self.index_builder is Some },
             Some(status) => {
                 &&& status.wf()
                 &&& self.snapshot.boundary_lsn == status.lsn_addr_index.seq_start()
-                &&& status.clean_watermark_lsn == status.lsn_addr_index.seq_end()
-                &&& forall |lsn: LSN| #![auto]
-                    status.lsn_addr_index@.contains_key(lsn) ==> lsn < status.clean_watermark_lsn as nat
-                &&& self.snapshot.boundary_lsn < status.clean_watermark_lsn
-                    ==> status.lsn_addr_index@.contains_key((status.clean_watermark_lsn - 1) as nat)
+                &&& self.snapshot.boundary_lsn <= status.clean_watermark_lsn
+                &&& status.clean_watermark_lsn <= status.lsn_addr_index.seq_end()
                 &&& self.snapshot.boundary_lsn < status.lsn_addr_index.seq_end()
                     ==> self.snapshot.freshest_rec is Some
                 &&& self.snapshot.boundary_lsn < status.lsn_addr_index.seq_end()
                     ==> status.lsn_addr_index@[
                         (status.lsn_addr_index.seq_end() - 1) as nat
                     ] == self.snapshot.freshest_rec.unwrap()@
-                &&& (self.snapshot.freshest_rec is None ==> status.clean_watermark_lsn == self.snapshot.boundary_lsn)
-                &&& (self.snapshot.freshest_rec is Some ==> self.snapshot.boundary_lsn < status.clean_watermark_lsn)
+                &&& (self.snapshot.freshest_rec is None ==> status.lsn_addr_index.seq_end() == self.snapshot.boundary_lsn)
+                &&& (self.snapshot.freshest_rec is Some ==> self.snapshot.boundary_lsn < status.lsn_addr_index.seq_end())
             }
         }
     }
@@ -380,6 +374,7 @@ impl JournalImpl {
             }),
             status: None,
             fmt: IJournalRecordFormat::new(),
+            next_alloc_page: 0,
         }
     }
 
@@ -1079,6 +1074,273 @@ impl JournalImpl {
         }
     }
 
+    fn temp_alloc_addr(&mut self) -> (out: IAddress)
+        ensures
+            self.fmt == old(self).fmt,
+            self.snapshot == old(self).snapshot,
+            self.status == old(self).status,
+            self.seq_start() == old(self).seq_start(),
+            self.seq_end() == old(self).seq_end(),
+    {
+        let out = IAddress{au: 1, page: self.next_alloc_page};
+        if self.next_alloc_page == u32::MAX {
+            convert_overflow_into_liveness_failure();
+        }
+        self.next_alloc_page = self.next_alloc_page + 1;
+        out
+    }
+
+    fn record_fits_in_page(&self, record: &IJournalRecord) -> (fits: bool)
+        ensures
+            fits <==> record.messages.len() <= self.fmt.field2_fmt.max_length,
+    {
+        record.messages.len() <= self.fmt.field2_fmt.max_length
+    }
+
+    pub exec fn internal_journal_marshal_one_page(&mut self, cache: &mut FracCacheImpl) -> (progress: bool)
+        requires
+            old(self).wf(),
+            old(self).index_ready(),
+            old(cache).wf(),
+            old(cache)@.inv(),
+        ensures
+            self.wf(),
+            self.index_ready(),
+            self.seq_start() == old(self).seq_start(),
+            self.seq_end() == old(self).seq_end(),
+            cache.wf(),
+            cache@.inv(),
+            cache.valid_load_handles_preserved(*old(cache)),
+    {
+        let ghost fmt0 = self.fmt;
+        let ghost cache0 = *cache;
+        let mut status_opt = None;
+        core::mem::swap(&mut self.status, &mut status_opt);
+        let mut status = match status_opt {
+            Some(s) => s,
+            None => {
+                assert(false);
+                return false;
+            },
+        };
+
+        if status.unmarshalled_tail.len() == 0 {
+            self.status = Some(status);
+            proof {
+                assert(*cache == cache0);
+                assert(cache@ == cache0@);
+                assert(cache0@.inv());
+                assert(cache@.inv());
+                assert(cache.valid_load_handles_preserved(cache0));
+            }
+            return false;
+        }
+
+        let tail_start = status.lsn_addr_index.exec_seq_end();
+        let (k0, v0) = status.unmarshalled_tail[0];
+        let mut msgs: Vec<KeyedMessage> = vec![KeyedMessage{key: k0, message: Message::Define{value: v0}}];
+        let mut cut_count: usize = 1;
+
+        while cut_count < status.unmarshalled_tail.len()
+            invariant
+                1 <= cut_count <= status.unmarshalled_tail.len(),
+                msgs.len() == cut_count,
+                forall |j: int| 0 <= j < msgs.len() ==> #[trigger] msgs[j].message is Define,
+            decreases status.unmarshalled_tail.len() - cut_count,
+        {
+            let (k, v) = status.unmarshalled_tail[cut_count];
+            let mut candidate_msgs = msgs.clone();
+            candidate_msgs.push(KeyedMessage{key: k, message: Message::Define{value: v}});
+            let candidate = IJournalRecord{
+                header: IJournalHeader{
+                    prior_rec: self.snapshot.freshest_rec,
+                    start_lsn: tail_start,
+                },
+                messages: candidate_msgs.clone(),
+            };
+            if self.record_fits_in_page(&candidate) {
+                msgs = candidate_msgs;
+                cut_count = cut_count + 1;
+            } else {
+                break;
+            }
+        }
+
+        let record = IJournalRecord{
+            header: IJournalHeader{
+                prior_rec: self.snapshot.freshest_rec,
+                start_lsn: tail_start,
+            },
+            messages: msgs,
+        };
+
+        if !self.record_fits_in_page(&record) {
+            self.status = Some(status);
+            proof {
+                assert(*cache == cache0);
+                assert(cache.valid_load_handles_preserved(cache0));
+            }
+            return false;
+        }
+
+        let mut page = vec![0u8; PAGE_SIZE_BYTES];
+        proof {
+            assert(record.messages.len() <= self.fmt.field2_fmt.max_length);
+            assert forall |i: int| 0 <= i < record.messages.len()
+                implies self.fmt.field2_fmt.marshallable_at(record.messages@, i) by {
+                assert(record.messages[i].message is Define);
+            }
+            assert(self.fmt.field2_fmt.marshallable(record.messages@));
+            assert(self.fmt.marshallable(record.parsedv()));
+        }
+        let end = self.fmt.exec_marshall(&record, &mut page, 0);
+        if end > PAGE_SIZE_BYTES {
+            self.status = Some(status);
+            proof {
+                assert(*cache == cache0);
+                assert(cache.valid_load_handles_preserved(cache0));
+            }
+            return false;
+        }
+
+        let addr = self.temp_alloc_addr();
+        proof {
+            // Temporary allocator assumption: this ephemeral allocator is intentionally
+            // discardable and will be replaced by the real global allocator.
+            assume(!status.lsn_addr_index@.values().contains(addr@));
+        }
+
+        match cache.fetch(&addr, true) {
+            FetchErrorCode::LoadInitiate{mut slot_handle} => {
+                let ghost cache_pre_release = *cache;
+                slot_handle.rec = page.clone();
+                cache.load_release(&addr, slot_handle);
+                let ghost cache_post_release = *cache;
+                proof {
+                    assert(cache_pre_release.wf());
+                    assert(cache_post_release.wf());
+                    assert(cache0@.inv());
+                    assert(Cache::State::next(cache0@, cache_pre_release@, cache_load_label(&addr)));
+                    Cache::State::inv_next(cache0@, cache_pre_release@, cache_load_label(&addr));
+                    assert(cache_pre_release@.inv());
+                    let resp = crate::spec::AsyncDisk_t::DiskResponse::ReadResp{data: page@};
+                    let cache_lbl = Cache::Label::DiskOps{requests: set!{}, responses: map!{addr@ => resp}};
+                    assert(Cache::State::next(cache_pre_release@, cache_post_release@, cache_lbl));
+                    Cache::State::inv_next(cache_pre_release@, cache_post_release@, cache_lbl);
+                    assert(cache_post_release@.inv());
+                    assert(cache@.inv());
+                    assert(!cache0.entry_fetched(&addr));
+                    FracCacheImpl::valid_load_handles_preserved_transitive_except_if_missing(
+                        cache0,
+                        cache_pre_release,
+                        cache_post_release,
+                        addr,
+                    );
+                    assert(cache.valid_load_handles_preserved(cache0));
+                }
+            },
+            FetchErrorCode::Success{slot_handle} => {
+                let ghost cache_pre_release = *cache;
+                cache.handle_release(&addr, slot_handle);
+                let ghost cache_post_release = *cache;
+                proof {
+                    assert(cache_pre_release.wf());
+                    assert(cache_post_release.wf());
+                    assert(cache_pre_release@.lookup_map == cache0@.lookup_map);
+                    assert(cache_post_release@.lookup_map == cache_pre_release@.lookup_map);
+                    assert(cache.valid_load_handles_preserved(cache_pre_release));
+                    FracCacheImpl::valid_load_handles_preserved_transitive(
+                        cache0,
+                        cache_pre_release,
+                        cache_post_release,
+                    );
+                    assert(cache.valid_load_handles_preserved(cache0));
+                    assert(cache0@.inv());
+                    assert(cache@.inv());
+                }
+                self.status = Some(status);
+                return false;
+            },
+            _ => {
+                self.status = Some(status);
+                proof {
+                    assert(self.snapshot == old(self).snapshot);
+                    assert(self.status == old(self).status);
+                    assert(self.fmt == fmt0);
+                    assert(fmt0 == IJournalRecordFormat::spec_new());
+                    assert(self.fmt.valid());
+                    reveal(JournalImpl::wf);
+                    assert(self.wf());
+                    assert(self.seq_start() == old(self).seq_start());
+                    assert(self.seq_end() == old(self).seq_end());
+                    assert(cache.wf());
+                    assert(cache@ == cache0@);
+                    assert(cache0@.inv());
+                    assert(cache@.inv());
+                    assert(cache.valid_load_handles_preserved(cache0));
+                }
+                return false;
+            },
+        }
+
+        if u64::MAX - tail_start < cut_count as u64 {
+            convert_overflow_into_liveness_failure();
+        }
+        let ghost old_index = status.lsn_addr_index@;
+        let new_tail_start = tail_start + cut_count as u64;
+        status.lsn_addr_index.index_append_record(tail_start, new_tail_start, addr);
+        proof {
+            assert(status.lsn_addr_index@ == lsn_addr_index_append_record(
+                old_index,
+                tail_start as nat,
+                new_tail_start as nat,
+                addr@,
+            ));
+            assert(1 <= cut_count);
+            assert(tail_start < new_tail_start);
+            reveal(lsn_addr_index_append_record);
+            assert(status.lsn_addr_index@[(new_tail_start - 1) as nat] == addr@);
+        }
+
+        let old_tail_len = status.unmarshalled_tail.len();
+        let mut new_tail: Vec<(Key, Value)> = vec![];
+        let mut i = cut_count;
+        while i < old_tail_len
+            invariant
+                cut_count <= i <= old_tail_len,
+                new_tail.len() == i - cut_count,
+            decreases old_tail_len - i,
+        {
+            new_tail.push(status.unmarshalled_tail[i]);
+            i = i + 1;
+        }
+        status.unmarshalled_tail = new_tail;
+
+        self.snapshot.freshest_rec = Some(addr);
+        self.status = Some(status);
+        proof {
+            assert(self.fmt == fmt0);
+            assert(fmt0 == IJournalRecordFormat::spec_new());
+            assert(self.fmt.valid());
+            reveal(JournalImpl::wf);
+            assert(self.status is Some);
+            assert(self.status.unwrap().wf());
+            assert(self.snapshot.boundary_lsn == self.status.unwrap().lsn_addr_index.seq_start());
+            assert(self.snapshot.boundary_lsn <= self.status.unwrap().clean_watermark_lsn);
+            assert(self.status.unwrap().clean_watermark_lsn <= self.status.unwrap().lsn_addr_index.seq_end());
+            assert(self.snapshot.boundary_lsn < self.status.unwrap().lsn_addr_index.seq_end());
+            assert(self.snapshot.freshest_rec == Some(addr));
+            assert(self.status.unwrap().lsn_addr_index@[
+                (self.status.unwrap().lsn_addr_index.seq_end() - 1) as nat
+            ] == addr@);
+            assert(self.status.unwrap().lsn_addr_index@[
+                (self.status.unwrap().lsn_addr_index.seq_end() - 1) as nat
+            ] == self.snapshot.freshest_rec.unwrap()@);
+            assert(self.wf());
+        }
+        true
+    }
+
     pub broadcast proof fn view_ensures(self)
         ensures self.index_ready() <==> (#[trigger] self@).status is Some
     {
@@ -1172,19 +1434,26 @@ impl JournalImpl {
         self.index_ready(),
     ensures
         out.wf(),
-        out.snapshot@ == self@.snapshot,
         out.snapshot.boundary_lsn == self.seq_start(),
+        out.seq_start() == self.seq_start(),
         out.seq_end as nat == self.clean_watermark(),
+        self.clean_watermark() == self.seq_start() ==> out.snapshot.freshest_rec is None,
+        self.clean_watermark() != self.seq_start() ==> out.snapshot@.freshest_rec == self.freshest_rec(),
         self.lsns_are_clean(cache@, out),
         out.freshest_rec_page_agrees(cache@),
     {
+        let clean_watermark_lsn = self.status.as_ref().unwrap().clean_watermark_lsn;
+        let mut frozen_snapshot = self.snapshot.clone();
+        if clean_watermark_lsn == self.snapshot.boundary_lsn {
+            frozen_snapshot.freshest_rec = None;
+        }
         let out = FrozenJournal{
-            snapshot: self.snapshot.clone(),
-            seq_end: self.status.as_ref().unwrap().clean_watermark_lsn,
+            snapshot: frozen_snapshot,
+            seq_end: clean_watermark_lsn,
         };
         proof {
             reveal(Cache::State::next_by);
-            if self.snapshot.freshest_rec is Some {
+            if out.snapshot.freshest_rec is Some {
                 // Non-empty journal: requires cache-cleanliness invariants not yet established.
                 // The only initialization path for freshest_rec is Some has assume(false),
                 // so this branch is unreachable in practice.

@@ -79,6 +79,7 @@ pub enum DiskEvent{
 
 pub enum InternalEvent{
     StoreInternal{},
+    JournalBackgroundWork{},
     AckJournalFlush{flushed_domain: Set<Address>},
     JournalRecovery{reads: Map<Address, RawPage>},
     MapRecovery{records: MsgHistory, reads: Map<Address, RawPage>, addr: Address},
@@ -245,6 +246,18 @@ impl AtomicState {
         &&& AbstractCrashAwareMap::State::next(pre.store, post.store, AbstractCrashAwareMap::Label::InternalLabel{})
         &&& post == Self{
             store: post.store,
+            ..pre
+        }
+    }
+
+    // Background journal maintenance step: journal/cache may change, higher-level
+    // store/sync state is unchanged.
+    pub open spec fn journal_background_work(pre: Self, post: Self) -> bool
+    {
+        &&& pre.client_ready()
+        &&& post == Self{
+            cache: post.cache,
+            journal: post.journal,
             ..pre
         }
     }
@@ -534,6 +547,7 @@ impl AtomicState {
     {
         match internal_event {
             InternalEvent::StoreInternal{} => Self::store_internal(pre, post),
+            InternalEvent::JournalBackgroundWork{} => Self::journal_background_work(pre, post),
             InternalEvent::AckJournalFlush{flushed_domain} =>
                 Self::acknowledge_flushed_journal_pages(pre, post, flushed_domain),
             InternalEvent::JournalRecovery{reads} => Self::journal_recovery(pre, post, reads),

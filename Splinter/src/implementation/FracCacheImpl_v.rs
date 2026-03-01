@@ -428,6 +428,27 @@ impl FracCacheImpl {
         }
     }
 
+    pub proof fn valid_load_handles_preserved_transitive_except_if_missing(old: Self, mid: Self, new: Self, except: IAddress)
+        requires
+            old.wf(), mid.wf(), new.wf(),
+            mid.valid_load_handles_preserved(old),
+            new.valid_load_handles_preserved_except(mid, except),
+            !old.entry_fetched(&except),
+        ensures
+            new.valid_load_handles_preserved(old),
+    {
+        assert forall |addr: IAddress, handle: MutHandle|
+            old.entry_fetched(&addr) && old.valid_load_handle(&addr, handle)
+            implies new.entry_fetched(&addr) && new.valid_load_handle(&addr, handle)
+        by {
+            assert(mid.entry_fetched(&addr) && mid.valid_load_handle(&addr, handle));
+            if addr == except {
+                assert(false);
+            }
+            assert(new.entry_fetched(&addr) && new.valid_load_handle(&addr, handle));
+        }
+    }
+
     proof fn slot_entry_same_except(old: Self, new: Self, except_idx: usize, idx: usize)
         requires
             old.wf(),

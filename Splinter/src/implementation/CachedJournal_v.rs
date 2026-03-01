@@ -637,7 +637,8 @@ state_machine!{ CachedJournal {
             lsn_addr_index: lsn_addr_index_append_record(pre.status.unwrap().lsn_addr_index, 
                 marshalled_msgs.seq_start, marshalled_msgs.seq_end, addr), 
             unmarshalled_tail:  pre.status.unwrap().unmarshalled_tail.discard_old(cut),
-            clean_watermark_lsn: cut,
+            // Marshal only dirties cache pages; cleaning/flush advances watermark later.
+            clean_watermark_lsn: pre.status.unwrap().clean_watermark_lsn,
         });
     }}
 

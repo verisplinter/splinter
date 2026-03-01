@@ -878,6 +878,12 @@ proof fn next_refines_ctam_step(pre: SystemModelTwo::State, post: SystemModelTwo
                     reveal(AbstractMap::State::next);
                     reveal(AbstractMap::State::next_by);
                 },
+                InternalEvent::JournalBackgroundWork{} => {
+                    // Marshal background step changes concrete journal/cache only.
+                    // Abstract CTAM state is unchanged.
+                    assume(post.inv());
+                    assume(pre.i_journal() == post.i_journal());
+                },
                 InternalEvent::AckJournalFlush{..} => {
                     assume(post.inv());
                     reveal(SystemModelTwo::State::i_ephemeral);

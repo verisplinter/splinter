@@ -2611,6 +2611,126 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
     {
         println!("{:?}", t);
     }
+
+    fn should_do_background_marshal(&self) -> (out: bool)
+    {
+        self.outstanding_requests.len() == 0
+    }
+
+    fn do_background_work(&mut self, api: &mut ClientAPI<ConcreteProgramModel>) -> (progress: bool)
+        requires
+            old(self).inv_api(old(api)),
+            old(self).ready_for_user_operation(),
+        ensures
+            self.inv_api(api),
+            self.ready_for_user_operation(),
+    {
+        if !self.should_do_background_marshal() {
+            proof {
+                assert(*self == *old(self));
+            }
+            return false;
+        }
+        let did_work = self.journal.internal_journal_marshal_one_page(&mut self.cache);
+
+        let tracked mut model = KVStoreTokenized::model::arbitrary();
+        let ghost pre_state = self.model@.value();
+        proof { tracked_swap(self.model.borrow_mut(), &mut model); }
+
+        let ghost post_state = ConcreteProgramModel{
+            state: AtomicState{
+                cache: self.cache@,
+                journal: self.journal@,
+                ..pre_state.state
+            }
+        };
+        proof {
+            assert(ConcreteProgramModel::valid_internal_transition(pre_state, post_state)) by {
+                assert(AtomicState::internal_transitions(
+                    pre_state.state,
+                    post_state.state,
+                    InternalEvent::JournalBackgroundWork{}
+                )) by {
+                    reveal(Implementation::inv);
+                    reveal(Implementation::ready_for_user_operation);
+                    reveal(Implementation::inv_running);
+                    assert(pre_state.state.client_ready());
+                };
+            }
+        }
+        let tracked _new_reply_token = self.instance.borrow().internal(
+            KVStoreTokenized::Label::InternalOp{},
+            post_state,
+            &mut model,
+        );
+        self.model = Tracked(model);
+        proof {
+            reveal(Implementation::inv);
+            reveal(Implementation::ready_for_user_operation);
+            reveal(Implementation::inv_running);
+            assert(self.cache.wf());
+            assert(self.state().cache == self.cache@);
+            assert(self.outstanding_requests_wf());
+            assert(self.outstanding_requests_match_cache_reqs());
+            if self.recovery_phase is ReadyForUserOperation {
+                let state = self.state();
+                assert(self.journal.wf());
+                assert(self.journal.index_ready());
+                assert(state.recovery_state is RecoveryComplete);
+                assert(self.journal.seq_end() == self.store_lsn);
+                self.system_inv_implies_atomic_state_wf();
+                assert(state.wf());
+                assert(state.in_flight is Some <==> self.sync_requests.in_flight());
+                assert(state.in_flight is Some <==> self.in_flight is Some);
+                assert(state.in_flight is Some ==> {
+                    self.in_flight.unwrap().new_boundary_lsn
+                        <= state.journal.status.unwrap().unmarshalled_tail.seq_start
+                });
+                assert(state.in_flight is Some ==> {
+                    let sync_version = state.in_flight.unwrap().journal_version;
+                    let new_persistent_map_version = self.in_flight.unwrap().new_boundary_lsn as nat;
+                    &&& self.journal.seq_start() <= new_persistent_map_version
+                    &&& new_persistent_map_version <= sync_version
+                    &&& self.sync_reqs_in_version(self.sync_requests.superblocking_reqs@, sync_version)
+                });
+                assert(state.in_flight is Some ==> {
+                    &&& self.in_flight.unwrap().new_boundary_lsn as nat == self.journal.seq_start()
+                    &&& self.in_flight.unwrap().new_boundary_lsn as nat == state.store.in_flight.unwrap().seq_end
+                    &&& self.in_flight.unwrap().new_persistent_lsn as nat == state.in_flight.unwrap().journal_version
+                    &&& self.in_flight.unwrap().new_store@ == self.persistent_store@
+                });
+                assert(self.sync_requests.wf(self.instance@.id()));
+                assert(self.sync_reqs_in_version(self.sync_requests.buffered_reqs@, self.version()));
+                assert(self.sync_requests.journal_cleaning_target_lsn <= self.version());
+                assert(self.sync_reqs_in_version(
+                    self.sync_requests.journal_cleaning_reqs@,
+                    self.sync_requests.journal_cleaning_target_lsn as nat,
+                ));
+                assert(Self::three_sync_req_lists_mutually_unique(
+                    self.sync_requests.superblocking_reqs@,
+                    self.sync_requests.journal_cleaning_reqs@,
+                    self.sync_requests.buffered_reqs@,
+                ));
+            }
+            assert(self.in_flight is Some ==> self.recovery_phase is ReadyForUserOperation);
+            assert forall |id| #![auto] self.outstanding_requests@.dom().contains(id)
+                && self.outstanding_requests@[id] is SuperBlockReq
+                ==> self.in_flight is Some
+                    && !self.state().outstanding_cache_reqs.dom().contains(id)
+                    && self.state().in_flight is Some
+                    && id == self.state().in_flight.unwrap().req_id by {
+            }
+            assert(self.model_reqs_in_outstanding());
+            assert(self.model@.instance_id() == self.instance@.id());
+            assert(self.inv());
+            assert(api.instance_id() == old(api).instance_id());
+            assert(old(self).instance_id() == old(api).instance_id());
+            assert(self.instance_id() == old(self).instance_id());
+            assert(self.inv_api(api));
+        }
+
+        did_work
+    }
 }
 
 impl KVStoreTrait for Implementation {
@@ -2723,9 +2843,10 @@ impl KVStoreTrait for Implementation {
                             }
                         }
                     }
+                    // Internal/background maintenance work for the ready state.
+                    progress = progress || self.do_background_work(&mut api);
                 }
             }
-            // TODO: add control flow to background/internal job
 
             if !progress {
                 api.log("sleeping");
