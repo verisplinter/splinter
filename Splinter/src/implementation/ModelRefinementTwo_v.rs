@@ -2007,6 +2007,12 @@ proof fn next_refines_ctam_program_internal_case(
             assert(pre.concrete_journal.persistent_journal_seq_end == post.concrete_journal.persistent_journal_seq_end);
             assert(ipre == ipost);
         },
+        InternalEvent::JournalBackgroundWork{} => {
+            // Background journal marshal work is abstract-noop at this layer.
+            assume(post.inv());
+            assume(pre.i_journal() == post.i_journal());
+            assert(ipre == ipost);
+        },
         InternalEvent::JournalRecovery{..} | InternalEvent::MapRecovery{..} => {
             reveal(SystemModelTwo::State::i_persistent);
             assume(post.inv());
