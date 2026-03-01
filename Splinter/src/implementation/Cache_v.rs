@@ -86,10 +86,11 @@ state_machine!{ Cache {
     pub open spec fn valid_write(self, addr: Address) -> bool 
     {
         &&& self.lookup_map.contains_key(addr) 
-        &&& { 
-            let slot = self.lookup_map[addr];
-            ||| self.entries[slot] is Reserved
-            ||| (self.entries[slot] is Filled && !(self.status_map[slot] is Writeback))
+        &&& match self.entries[self.lookup_map[addr]] {
+            Entry::Reserved{addr: entry_addr} => entry_addr == addr,
+            Entry::Filled{addr: entry_addr, ..} =>
+                entry_addr == addr && !(self.status_map[self.lookup_map[addr]] is Writeback),
+            _ => false,
         }
     }
 

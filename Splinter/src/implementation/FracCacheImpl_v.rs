@@ -97,6 +97,12 @@ pub enum FetchErrorCode {
     Awaiting,   // IO request has been sent, haven't heard back yet.
 }
 
+pub enum WriteAcquireResult {
+    Acquired{slot_handle: MutHandle},
+    CacheFull,
+    Awaiting,
+}
+
 pub enum WritebackAcquireResult {
     NotPresent,
     NotDirty,
@@ -107,6 +113,11 @@ pub enum WritebackAcquireResult {
 pub open spec fn cache_load_label(addr: &IAddress) -> Cache::Label
 {
     Cache::Label::DiskOps{requests: set!{DiskRequest::ReadReq{from: addr@}}, responses: map!{}}
+}
+
+pub open spec fn cache_write_label(addr: &IAddress, data: RawPage) -> Cache::Label
+{
+    Cache::Label::Access{reads: map!{}, writes: map!{addr@ => data}}
 }
 
 impl FracCacheImpl {
@@ -355,6 +366,14 @@ impl FracCacheImpl {
         &&& self.valid_handle(handle)
         &&& self.lookup_addr_slot(addr) == handle.idx
         &&& self.slot_entry(handle.idx) == IEntry::Loading{addr: *addr}
+    }
+
+    pub open spec fn valid_write_handle(self, addr: &IAddress, handle: MutHandle) -> bool
+    {
+        &&& self.valid_handle(handle)
+        &&& self.lookup_addr_slot(addr) == handle.idx
+        &&& !(self.slot_entry(handle.idx) is Empty)
+        &&& !(self.slot_entry(handle.idx) is Loading)
     }
 
     pub closed spec fn valid_writeback_handle(self, addr: &IAddress, handle: WritebackHandle) -> bool
@@ -895,6 +914,236 @@ impl FracCacheImpl {
         return FetchErrorCode::CacheFull;
     }
 
+    pub exec fn acquire_for_write(&mut self, addr: &IAddress) -> (result: WriteAcquireResult)
+        requires
+            old(self).wf(),
+        ensures
+            self.wf(),
+            self.wf() ==> self.valid_load_handles_preserved(*old(self)),
+            match result {
+                WriteAcquireResult::Awaiting => old(self)@ =~= self@,
+                WriteAcquireResult::CacheFull => *old(self) == *self,
+                WriteAcquireResult::Acquired{slot_handle} => {
+                    &&& self.entry_fetched(addr)
+                    &&& self.valid_write_handle(addr, slot_handle)
+                    &&& self@.valid_write(addr@)
+                    &&& !old(self).entry_fetched(addr) ==> (exists |lbl: Cache::Label| Cache::State::next(old(self)@, self@, lbl))
+                },
+            },
+    {
+        if self.lookup_map.contains_key(addr) {
+            let slot = *self.lookup_map.get(addr).unwrap();
+            assert(self.lookup_map@.contains_value(slot));
+            match self.metadata[slot].status {
+                Status::Writeback => {
+                    proof {
+                        Self::valid_load_handles_preserved_if_maps_same(*old(self), *self);
+                    }
+                    return WriteAcquireResult::Awaiting;
+                },
+                _ => {},
+            }
+            let entry = self.metadata[slot].entry;
+            match entry {
+                IEntry::Loading{..} => {
+                    proof {
+                        Self::valid_load_handles_preserved_if_maps_same(*old(self), *self);
+                    }
+                    return WriteAcquireResult::Awaiting;
+                },
+                IEntry::Filled{..} => {
+                },
+                _ => {
+                    proof {
+                        Self::valid_load_handles_preserved_if_maps_same(*old(self), *self);
+                    }
+                    return WriteAcquireResult::Awaiting;
+                },
+            }
+
+            self.internal_slots.push(None);
+            let taken = self.internal_slots.swap_remove(slot);
+            let slot_handle = match taken {
+                None => {
+                    proof {
+                        Self::valid_load_handles_preserved_if_maps_same(*old(self), *self);
+                    }
+                    return WriteAcquireResult::Awaiting;
+                },
+                Some(rec) => {
+                    let tracked perm = self.perms.borrow_mut().tracked_remove(slot as int);
+                    let tracked handle_perm = perm.split(1);
+                    proof {
+                        self.perms.borrow_mut().tracked_insert(slot as int, perm);
+                    }
+                    MutHandle{
+                        token: Tracked(handle_perm),
+                        idx: slot,
+                        rec,
+                    }
+                }
+            };
+
+            proof {
+                Self::valid_load_handles_preserved_if_maps_same(*old(self), *self);
+                assert(self.entry_fetched(addr));
+                assert(self.valid_write_handle(addr, slot_handle));
+                reveal(FracCacheImpl::view_state);
+                reveal(FracCacheImpl::view_entries);
+                assert(self@.lookup_map.contains_key(addr@));
+                assert(self@.lookup_map[addr@] == slot);
+                match entry {
+                    IEntry::Filled{addr: entry_addr} => {
+                        assert(self@.entries[slot] is Filled);
+                        assert(match self@.entries[slot] {
+                            Entry::Filled{addr: a, ..} => a == entry_addr@,
+                            _ => false,
+                        });
+                        assert(self.lookup_map_bijection());
+                        assert(self.lookup_map_injective());
+                        assert(self@.entries.contains_key(slot));
+                        assert(self@.lookup_map.contains_key(entry_addr@) && self@.lookup_map[entry_addr@] == slot);
+                        assert(entry_addr@ == addr@);
+                        assert(!(self.metadata[slot as int].status is Writeback));
+                        assert(!(self@.status_map[slot] is Writeback));
+                    },
+                    _ => {
+                        assert(false);
+                    }
+                }
+                assert(self@.valid_write(addr@));
+            }
+            return WriteAcquireResult::Acquired{slot_handle};
+        }
+
+        let mut slot = 0;
+        while slot < CACHE_SIZE_RECS
+            invariant
+                old(self).wf(),
+                *self == *old(self),
+                slot <= self.total_slots(),
+            decreases
+                self.total_slots() - slot,
+        {
+            if let IEntry::Empty = self.metadata[slot].entry {
+                let status = self.metadata[slot].status;
+                match status {
+                    Status::Writeback => {
+                        slot = slot + 1;
+                        continue;
+                    },
+                    _ => {},
+                }
+                self.lookup_map.insert(*addr, slot);
+                self.metadata[slot] = Metadata{
+                    status,
+                    entry: IEntry::Reserved{addr: *addr},
+                };
+
+                self.internal_slots.push(None);
+                let taken = self.internal_slots.swap_remove(slot);
+                let slot_handle =
+                    match taken {
+                        None => { unreached() },
+                        Some(rec) => {
+                            let tracked perm = self.perms.borrow_mut().tracked_remove(slot as int);
+                            let tracked handle_perm = perm.split(1);
+                            proof {
+                                self.perms.borrow_mut().tracked_insert(slot as int, perm);
+                            }
+                            MutHandle{
+                                token: Tracked(handle_perm),
+                                idx: slot,
+                                rec,
+                            }
+                        }
+                    };
+
+                assert(self.lookup_map_inv()) by {
+                    assert forall |i| #[trigger] self.lookup_map@.contains_value(i)
+                    implies i < self.total_slots() by {
+                        if i != slot {
+                            assert(old(self).lookup_map@.contains_value(i));
+                        }
+                    }
+                }
+
+                assert(self.lookup_map_consistent_with_slots()) by {
+                    assert forall |i: Slot| #![auto] i < self.total_slots()
+                    implies self.lookup_map@.contains_value(i) <==> !(self.metadata[i as int].entry is Empty)
+                    by {
+                        if self.lookup_map@.contains_value(i) && i != slot {
+                            assert(old(self).lookup_map@.contains_value(i));
+                        }
+
+                        if !(self.metadata[i as int].entry is Empty) {
+                            if i == slot {
+                                assert(self.lookup_map@.contains_pair(addr@, slot));
+                            } else {
+                                assert(old(self).lookup_map@.contains_value(i));
+                                let other_addr = choose |other_addr| #[trigger] old(self).lookup_map@.contains_key(other_addr)
+                                    && old(self).lookup_map@[other_addr] == i;
+                                assert(self.lookup_map@.contains_pair(other_addr, i));
+                            }
+                        }
+                    }
+                }
+                assert(self.lookup_map_injective()) by {
+                    assert forall |addr1: Address, addr2: Address| #![auto]
+                        self.lookup_map@.contains_key(addr1)
+                        && self.lookup_map@.contains_key(addr2)
+                        && self.lookup_map@[addr1] == self.lookup_map@[addr2]
+                        implies addr1 == addr2
+                    by {
+                        if addr1 == addr@ {
+                            if addr2 == addr@ {
+                            } else {
+                                assert(old(self).lookup_map@.contains_value(slot));
+                            }
+                        } else if addr2 == addr@ {
+                            assert(old(self).lookup_map@.contains_value(slot));
+                        } else {
+                        }
+                    }
+                }
+
+                proof {
+                    let new_slots_mapping = map!{slot => addr@};
+                    let lbl = Cache::Label::Internal;
+                    assert(new_slots_mapping.invert() =~= map!{addr@ => slot}) by {
+                        assert(new_slots_mapping.contains_pair(slot, addr@));
+                    }
+                    let updated_entries = Map::new(
+                        |s| new_slots_mapping.contains_key(s),
+                        |s| Entry::Reserved{addr: new_slots_mapping[s]}
+                    );
+                    assert(self@.entries =~= old(self)@.entries.union_prefer_right(updated_entries));
+                    assert(self@.lookup_map =~= old(self)@.lookup_map.union_prefer_right(new_slots_mapping.invert()));
+                    assert(self@.status_map =~= old(self)@.status_map);
+                    reveal(Cache::State::next_by);
+                    assert(Cache::State::next_by(old(self)@, self@, lbl, Cache::Step::reserve(new_slots_mapping)));
+                    reveal(Cache::State::next);
+                    assert(exists |lbl2: Cache::Label| #[trigger] Cache::State::next(old(self)@, self@, lbl2)) by {
+                        assert(Cache::State::next(old(self)@, self@, lbl));
+                    }
+                    assert(self.entry_fetched(addr));
+                    assert(self.valid_write_handle(addr, slot_handle));
+                    assert(self@.valid_write(addr@));
+
+                    Self::valid_load_handles_preserved_except_from_same(*old(self), *self, *addr, slot_handle.idx);
+                    Self::valid_load_handles_preserved_from_except_if_missing(*old(self), *self, *addr);
+                }
+                return WriteAcquireResult::Acquired{slot_handle};
+            }
+            slot = slot + 1;
+        }
+
+        proof {
+            Self::valid_load_handles_preserved_if_maps_same(*old(self), *self);
+        }
+        WriteAcquireResult::CacheFull
+    }
+
     pub exec fn load_release(&mut self, addr: &IAddress, handle: MutHandle)
         requires 
             old(self).wf(),
@@ -957,6 +1206,79 @@ impl FracCacheImpl {
         }
     }
 
+    // Commits a write through the cache state machine:
+    // releasing this handle emits an Access{writes} transition and marks the slot Dirty.
+    // Use this when caller intent is "I modified page contents and want that modeled as a write."
+    pub exec fn write_release(&mut self, addr: &IAddress, handle: MutHandle)
+        requires
+            old(self).wf(),
+            old(self).entry_fetched(addr),
+            old(self).valid_write_handle(addr, handle),
+            old(self)@.valid_write(addr@),
+        ensures ({
+            let cache_lbl = cache_write_label(addr, handle.rec@);
+            &&& self.release_common_post(*old(self), addr)
+            &&& self.valid_load_handles_preserved(*old(self))
+            &&& Cache::State::next(old(self)@, self@, cache_lbl)
+        })
+    {
+        let ghost recv = handle.rec@;
+        let MutHandle{token, idx, rec} = handle;
+        proof {
+            let tracked(handle_perm) = token.get();
+            let tracked mut perm = self.perms.borrow_mut().tracked_remove(idx as int);
+            perm.agree(&handle_perm);
+            perm.combine(handle_perm);
+            perm.bounded();
+            self.perms.borrow_mut().tracked_insert(idx as int, perm);
+        }
+        match self.metadata[idx].status {
+            Status::Writeback => {
+                unreached::<()>();
+            },
+            _ => {},
+        }
+
+        self.internal_slots[idx] = Some(rec);
+        self.metadata[idx] = Metadata{
+            status: Status::Dirty,
+            entry: IEntry::Filled{addr: *addr},
+        };
+
+        proof {
+            let cache_lbl = cache_write_label(addr, recv);
+            let updated_entries = old(self)@.write_updated_entries(cache_lbl->writes);
+            let updated_status_map = old(self)@.write_updated_status(cache_lbl->writes);
+            let slot_addr_map = old(self)@.lookup_map.restrict(cache_lbl->writes.dom()).invert();
+            assert(slot_addr_map =~= map!{idx => addr@}) by {
+                assert(old(self)@.lookup_map.restrict(cache_lbl->writes.dom()).contains_pair(addr@, idx));
+                reveal(Map::invert);
+            }
+            let updated_entries2 = Map::new(
+                |slot| slot_addr_map.contains_key(slot),
+                |slot| Entry::Filled{
+                    addr: slot_addr_map[slot],
+                    data: cache_lbl->writes[slot_addr_map[slot]],
+                }
+            );
+            let updated_status_map2 = Map::new(
+                |slot| slot_addr_map.contains_key(slot),
+                |slot| Status::Dirty
+            );
+            assert(updated_entries =~= updated_entries2);
+            assert(updated_status_map =~= updated_status_map2);
+            assert(self@.entries =~= old(self)@.entries.union_prefer_right(updated_entries));
+            assert(self@.status_map =~= old(self)@.status_map.union_prefer_right(updated_status_map));
+            assert(self@.lookup_map =~= old(self)@.lookup_map);
+            reveal(Cache::State::next_by);
+            assert(Cache::State::next_by(old(self)@, self@, cache_lbl, Cache::Step::access()));
+            reveal(Cache::State::next);
+        }
+    }
+
+    // Returns a borrowed filled-page handle without modeling a cache write transition.
+    // This is the borrow/restore path used by read-style flows that may mutate bytes in exec code
+    // but are not intended to count as an abstract cache Access{writes} step.
     pub exec fn handle_release(&mut self, addr: &IAddress, handle: MutHandle)
         requires 
             old(self).wf(),

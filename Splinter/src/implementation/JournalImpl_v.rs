@@ -15,7 +15,7 @@ use crate::implementation::JournalTypes_v::AJournal;
 use crate::implementation::JournalTypes_v::ILsn;
 use crate::allocation_layer::LikesJournal_v::{LsnAddrIndex, lsn_addr_index_append_record, singleton_index, lsn_disjoint};
 use crate::implementation::Cache_v::{Cache, Entry};
-use crate::implementation::FracCacheImpl_v::{FetchErrorCode, FracCacheImpl, MutHandle, cache_load_label, PAGE_SIZE_BYTES};
+use crate::implementation::FracCacheImpl_v::{FetchErrorCode, FracCacheImpl, MutHandle, WriteAcquireResult, cache_load_label, cache_write_label, PAGE_SIZE_BYTES};
 use crate::implementation::ILsnAddrIndex_v::ILsnAddrIndex;
 use crate::marshalling::Slice_v::Slice;
 use crate::marshalling::IJournalRecordFormat_v::{IJournalHeader, IJournalRecord, IJournalRecordFormat};
@@ -1205,30 +1205,29 @@ impl JournalImpl {
             // Temporary allocator assumption: this ephemeral allocator is intentionally
             // discardable and will be replaced by the real global allocator.
             assume(!status.lsn_addr_index@.values().contains(addr@));
+            // Temporary allocator assumption: newly allocated pages are not already cached.
+            assume(!cache0.entry_fetched(&addr));
         }
 
-        // TODO(codex): don't we want to fetch(, false) here to avoid wasting
-        // a load?
-        match cache.fetch(&addr, true) {
-            FetchErrorCode::LoadInitiate{mut slot_handle} => {
+        match cache.acquire_for_write(&addr) {
+            WriteAcquireResult::Acquired{mut slot_handle} => {
                 let ghost cache_pre_release = *cache;
                 slot_handle.rec = page.clone();
-                cache.load_release(&addr, slot_handle);
+                cache.write_release(&addr, slot_handle);
                 let ghost cache_post_release = *cache;
                 proof {
-                    Cache::State::inv_next(cache0@, cache_pre_release@, cache_load_label(&addr));
-                    let resp = crate::spec::AsyncDisk_t::DiskResponse::ReadResp{data: page@};
-                    let cache_lbl = Cache::Label::DiskOps{requests: set!{}, responses: map!{addr@ => resp}};
+                    assert(exists |lbl1: Cache::Label| #[trigger] Cache::State::next(cache0@, cache_pre_release@, lbl1));
+                    let lbl1 = choose |lbl1: Cache::Label| #[trigger] Cache::State::next(cache0@, cache_pre_release@, lbl1);
+                    let cache_lbl = cache_write_label(&addr, page@);
+                    Cache::State::inv_next(cache0@, cache_pre_release@, lbl1);
                     Cache::State::inv_next(cache_pre_release@, cache_post_release@, cache_lbl);
-                    FracCacheImpl::valid_load_handles_preserved_transitive_except_if_missing(
+                    FracCacheImpl::valid_load_handles_preserved_transitive(
                         cache0,
                         cache_pre_release,
                         cache_post_release,
-                        addr,
                     );
                     assert(AtomicState::cache_background_step(cache0@, cache@)) by {
                         let mid_cache = cache_pre_release@;
-                        let lbl1 = cache_load_label(&addr);
                         let lbl2 = cache_lbl;
                         assert(Cache::State::next(cache0@, mid_cache, lbl1));
                         assert(Cache::State::next(mid_cache, cache@, lbl2));
@@ -1241,25 +1240,6 @@ impl JournalImpl {
                         );
                     }
                 }
-            },
-            FetchErrorCode::Success{slot_handle} => {
-                let ghost cache_pre_release = *cache;
-                cache.handle_release(&addr, slot_handle);
-                let ghost cache_post_release = *cache;
-                proof {
-                    FracCacheImpl::valid_load_handles_preserved_transitive(
-                        cache0,
-                        cache_pre_release,
-                        cache_post_release,
-                    );
-                }
-                self.status = Some(status);
-                proof {
-                    assert(cache@ == cache0@);
-                    AtomicState::cache_background_step_noop(cache0@);
-                    assert(AtomicState::cache_background_step(cache0@, cache@));
-                }
-                return false;
             },
             _ => {
                 self.status = Some(status);
