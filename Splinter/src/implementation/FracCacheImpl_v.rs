@@ -66,6 +66,7 @@ impl WritebackHandle {
     pub open spec fn inv(&self) -> bool
     {
         &&& self.token@.resource() == self.idx
+        &&& self.rec.len() == PAGE_SIZE_BYTES
     }
 }
 
@@ -333,6 +334,26 @@ impl FracCacheImpl {
         reveal(FracCacheImpl::wf);
     }
 
+    pub proof fn valid_writeback_handle_model_entry(cache: &FracCacheImpl, addr: &IAddress, handle: WritebackHandle)
+    requires
+        cache.wf(),
+        cache.valid_writeback_handle(addr, handle),
+    ensures
+        cache@.entries.contains_key(handle.idx),
+        cache@.entries[handle.idx] == (Entry::Filled{addr: addr@, data: handle.rec@}),
+        cache@.lookup_map.contains_key(addr@),
+        cache@.lookup_map[addr@] == handle.idx,
+        cache@.status_map[handle.idx] is Writeback,
+    {
+        reveal(FracCacheImpl::valid_writeback_handle);
+        reveal(FracCacheImpl::entry_fetched);
+        reveal(FracCacheImpl::lookup_addr_slot);
+        reveal(FracCacheImpl::slot_entry);
+        reveal(FracCacheImpl::view_state);
+        reveal(FracCacheImpl::view_entries);
+        reveal(FracCacheImpl::wf);
+    }
+
     pub closed spec fn lookup_addr_slot(self, addr: &IAddress) -> Slot
         recommends self.entry_fetched(addr)
     {
@@ -391,6 +412,25 @@ impl FracCacheImpl {
         &&& self.writeback_loans@[handle.idx] == handle.rec@
     }
 
+    pub open spec fn valid_writeback_handles_preserved(self, old: Self) -> bool
+        recommends self.wf(), old.wf()
+    {
+        forall |addr: IAddress, handle: WritebackHandle|
+            #![trigger old.valid_writeback_handle(&addr, handle)]
+            old.valid_writeback_handle(&addr, handle)
+            ==> self.valid_writeback_handle(&addr, handle)
+    }
+
+    pub open spec fn valid_writeback_handles_preserved_except(self, old: Self, except: IAddress) -> bool
+        recommends self.wf(), old.wf()
+    {
+        forall |addr: IAddress, handle: WritebackHandle|
+            #![trigger old.valid_writeback_handle(&addr, handle)]
+            addr != except
+            && old.valid_writeback_handle(&addr, handle)
+            ==> self.valid_writeback_handle(&addr, handle)
+    }
+
     pub open spec fn valid_load_handles_preserved(self, old: Self) -> bool
         recommends self.wf(), old.wf()
     {
@@ -433,10 +473,10 @@ impl FracCacheImpl {
     }
 
     pub proof fn valid_load_handles_preserved_transitive(old: Self, mid: Self, new: Self)
-        requires
-            old.wf(), mid.wf(), new.wf(),
-            mid.valid_load_handles_preserved(old),
-            new.valid_load_handles_preserved(mid),
+    requires
+        old.wf(), mid.wf(), new.wf(),
+        mid.valid_load_handles_preserved(old),
+        new.valid_load_handles_preserved(mid),
         ensures
             new.valid_load_handles_preserved(old),
     {
@@ -447,21 +487,45 @@ impl FracCacheImpl {
         }
     }
 
-    pub proof fn valid_load_handles_preserved_transitive_except_if_missing(old: Self, mid: Self, new: Self, except: IAddress)
-        requires
-            old.wf(), mid.wf(), new.wf(),
-            mid.valid_load_handles_preserved(old),
-            new.valid_load_handles_preserved_except(mid, except),
-            !old.entry_fetched(&except),
-        ensures
-            new.valid_load_handles_preserved(old),
+    pub proof fn valid_writeback_handles_preserved_transitive(old: Self, mid: Self, new: Self)
+    requires
+        old.wf(), mid.wf(), new.wf(),
+        mid.valid_writeback_handles_preserved(old),
+        new.valid_writeback_handles_preserved(mid),
+    ensures
+        new.valid_writeback_handles_preserved(old),
     {
-        assert forall |addr: IAddress, handle: MutHandle|
-            old.entry_fetched(&addr) && old.valid_load_handle(&addr, handle)
-            implies new.entry_fetched(&addr) && new.valid_load_handle(&addr, handle)
+        assert forall |addr: IAddress, handle: WritebackHandle|
+            old.valid_writeback_handle(&addr, handle)
+            implies new.valid_writeback_handle(&addr, handle)
         by {
-            if addr == except {
-            }
+        }
+    }
+
+    pub proof fn valid_writeback_handles_preserved_if_same(old: Self, new: Self)
+    requires
+        old == new,
+    ensures
+        new.valid_writeback_handles_preserved(old),
+    {
+        assert forall |addr: IAddress, handle: WritebackHandle|
+            old.valid_writeback_handle(&addr, handle)
+            implies new.valid_writeback_handle(&addr, handle)
+        by {
+        }
+    }
+
+    pub proof fn valid_writeback_handles_preserved_except_if_same(old: Self, new: Self, except: IAddress)
+    requires
+        old == new,
+    ensures
+        new.valid_writeback_handles_preserved_except(old, except),
+    {
+        assert forall |addr: IAddress, handle: WritebackHandle|
+            addr != except
+            && old.valid_writeback_handle(&addr, handle)
+            implies new.valid_writeback_handle(&addr, handle)
+        by {
         }
     }
 
@@ -1154,6 +1218,7 @@ impl FracCacheImpl {
             let cache_lbl = Cache::Label::DiskOps{requests: set!{}, responses: map!{addr@ => resp}};
             &&& self.release_common_post(*old(self), addr)
             &&& self.valid_load_handles_preserved_except(*old(self), *addr)
+            &&& self.valid_writeback_handles_preserved(*old(self))
             &&& Cache::State::next(old(self)@, self@, cache_lbl)
         })
     {
@@ -1203,6 +1268,29 @@ impl FracCacheImpl {
             reveal(Cache::State::next_by);
             assert(Cache::State::next_by(old(self)@, self@, cache_lbl, Cache::Step::load_complete()));
             reveal(Cache::State::next);
+            assert(self.valid_writeback_handles_preserved(*old(self))) by {
+                assert forall |addr2: IAddress, handle2: WritebackHandle|
+                    old(self).valid_writeback_handle(&addr2, handle2)
+                    implies self.valid_writeback_handle(&addr2, handle2)
+                by {
+                    reveal(FracCacheImpl::valid_writeback_handle);
+                    reveal(FracCacheImpl::valid_load_handle);
+                    assert(old(self).lookup_addr_slot(addr) == idx);
+                    assert(old(self).slot_entry(idx) == IEntry::Loading{addr: *addr});
+                    assert(old(self).lookup_addr_slot(&addr2) == handle2.idx);
+                    if handle2.idx == idx {
+                        assert(old(self).slot_entry(handle2.idx) == IEntry::Filled{addr: addr2});
+                        assert(old(self).slot_entry(idx) == IEntry::Filled{addr: addr2});
+                        assert(false);
+                    }
+                    let i = handle2.idx as int;
+                    assert(self.metadata[i] == old(self).metadata[i]);
+                    assert(self.internal_slots[i] == old(self).internal_slots[i]);
+                    assert(self.perms@[i] == old(self).perms@[i]);
+                    assert(self.lookup_map@ == old(self)@.lookup_map);
+                    assert(self.writeback_loans@ == old(self).writeback_loans@);
+                }
+            }
         }
     }
 
@@ -1322,16 +1410,49 @@ impl FracCacheImpl {
             old(self).wf(),
         ensures ({
             &&& self.wf()
+            &&& self.valid_load_handles_preserved(*old(self))
+            &&& self.valid_writeback_handles_preserved(*old(self))
             &&& match result {
                 WritebackAcquireResult::Acquired{handle} => {
                     &&& self.entry_fetched(addr)
                     &&& self.valid_writeback_handle(addr, handle)
+                    &&& Cache::State::next(
+                        old(self)@,
+                        self@,
+                        Cache::Label::DiskOps{
+                            requests: set![DiskRequest::WriteReq{to: addr@, data: handle.rec@}],
+                            responses: map!{},
+                        },
+                    )
+                    &&& old(self).entry_fetched(addr)
+                    &&& old(self)@.lookup_map == self@.lookup_map
+                    &&& old(self)@.entries == self@.entries
+                    &&& old(self)@.status_map[handle.idx] is Dirty
+                    &&& self@.status_map == old(self)@.status_map.insert(handle.idx, Status::Writeback)
                 },
-                _ => true
+                WritebackAcquireResult::NotPresent => {
+                    &&& *old(self) == *self
+                    &&& Cache::State::next(self@, self@, Cache::Label::EvictableCheck{addrs: set![addr@]})
+                },
+                WritebackAcquireResult::NotDirty => {
+                    &&& *old(self) == *self
+                    &&& Cache::State::next(self@, self@, Cache::Label::EvictableCheck{addrs: set![addr@]})
+                },
+                WritebackAcquireResult::Busy => {
+                    &&& *old(self) == *self
+                }
             }
         }),
     {
         if !self.lookup_map.contains_key(addr) {
+            proof {
+                reveal(Cache::State::next_by);
+                reveal(Cache::State::next);
+                let lbl = Cache::Label::EvictableCheck{addrs: set![addr@]};
+                assert(!self.lookup_map@.contains_key(addr@));
+                assert(Cache::State::next_by(self@, self@, lbl, Cache::Step::evictable()));
+                Self::valid_writeback_handles_preserved_if_same(*old(self), *self);
+            }
             return WritebackAcquireResult::NotPresent;
         }
 
@@ -1343,8 +1464,46 @@ impl FracCacheImpl {
 
         match status {
             Status::Dirty => {},
-            _ => {
-                return WritebackAcquireResult::NotDirty;
+            Status::Clean => {
+                match self.metadata[slot].entry {
+                    IEntry::Filled{addr: entry_addr} => {
+                        proof {
+                            reveal(FracCacheImpl::view_entries);
+                            let entries = self.view_entries();
+                            assert(entries.contains_key(slot)) by {
+                                assert(slot < self.total_slots());
+                            }
+                            assert(entries[slot] is Filled);
+                            assert(entries[slot].get_addr() == entry_addr@);
+                            assert(self.lookup_map_bijection());
+                            assert(self.lookup_map@.contains_key(entry_addr@) && self.lookup_map@[entry_addr@] == slot);
+                            assert(self.lookup_map@.contains_key(addr@));
+                            assert(self.lookup_map@[addr@] == slot);
+                            assert(self.lookup_map_injective());
+                            assert(addr@ == entry_addr@);
+                            assert(entry_addr == *addr);
+
+                            reveal(Cache::State::next_by);
+                            reveal(Cache::State::next);
+                            let lbl = Cache::Label::EvictableCheck{addrs: set![addr@]};
+                            assert(Cache::State::next_by(self@, self@, lbl, Cache::Step::evictable()));
+                            Self::valid_writeback_handles_preserved_if_same(*old(self), *self);
+                        }
+                        return WritebackAcquireResult::NotDirty;
+                    },
+                    _ => {
+                        proof {
+                            Self::valid_writeback_handles_preserved_if_same(*old(self), *self);
+                        }
+                        return WritebackAcquireResult::Busy;
+                    }
+                }
+            },
+            Status::Writeback | Status::NotFilled => {
+                proof {
+                    Self::valid_writeback_handles_preserved_if_same(*old(self), *self);
+                }
+                return WritebackAcquireResult::Busy;
             }
         }
         match self.metadata[slot].entry {
@@ -1367,12 +1526,18 @@ impl FracCacheImpl {
                 }
             },
             _ => {
-                return WritebackAcquireResult::NotDirty;
+                proof {
+                    Self::valid_writeback_handles_preserved_if_same(*old(self), *self);
+                }
+                return WritebackAcquireResult::Busy;
             }
         }
 
         match &self.internal_slots[slot] {
             None => {
+                proof {
+                    Self::valid_writeback_handles_preserved_if_same(*old(self), *self);
+                }
                 return WritebackAcquireResult::Busy;
             },
             Some(_) => {},
@@ -1390,8 +1555,7 @@ impl FracCacheImpl {
             }
         };
         if rec.len() != PAGE_SIZE_BYTES {
-            self.internal_slots[slot] = Some(Self::new_empty_page());
-            return WritebackAcquireResult::NotDirty;
+            return unreached::<WritebackAcquireResult>();
         }
 
         let tracked perm = self.perms.borrow_mut().tracked_remove(slot as int);
@@ -1407,7 +1571,104 @@ impl FracCacheImpl {
             entry: IEntry::Filled{addr: *addr},
             status: Status::Writeback
         };
-           
+        proof {
+            reveal(Cache::State::next_by);
+            reveal(Cache::State::next);
+            let req = DiskRequest::WriteReq{to: addr@, data: rec@};
+            let lbl = Cache::Label::DiskOps{requests: set![req], responses: map!{}};
+            assert(handle.idx == slot);
+            assert(lbl->requests.contains(req));
+            assert(!lbl->requests.is_empty());
+            assert(lbl->responses.is_empty());
+
+            // Facts established by this acquired branch.
+            assert(old(self)@.lookup_map == self@.lookup_map);
+            assert(old(self)@.entries == self@.entries);
+            assert(old(self)@.status_map[handle.idx] is Dirty);
+            assert(self@.status_map == old(self)@.status_map.insert(handle.idx, Status::Writeback));
+            FracCacheImpl::valid_writeback_handle_model_entry(self, addr, handle);
+            assert(old(self)@.lookup_map.contains_key(addr@));
+            assert(old(self)@.lookup_map[addr@] == handle.idx);
+            assert(old(self)@.entries[old(self)@.lookup_map[addr@]] == Entry::Filled{addr: addr@, data: rec@});
+
+            assert(old(self)@.valid_writeback_requests(lbl->requests)) by {
+                assert forall |r: DiskRequest| #[trigger] lbl->requests.contains(r) implies {
+                    &&& r is WriteReq
+                    &&& old(self)@.lookup_map.contains_key(r->to)
+                    &&& old(self)@.entries[old(self)@.lookup_map[r->to]] == Entry::Filled{addr: r->to, data: r->data}
+                    &&& old(self)@.status_map[old(self)@.lookup_map[r->to]] is Dirty
+                } by {
+                    assert(r == req);
+                };
+            }
+            let req_slot_map = Map::new(
+                |r: DiskRequest| lbl->requests.contains(r),
+                |r: DiskRequest| old(self)@.lookup_map[r->to]
+            );
+            let writeback_slots = req_slot_map.values();
+            assert(writeback_slots =~= set![slot]) by {
+                assert forall |s: Slot| #[trigger] writeback_slots.contains(s) <==> set![slot].contains(s) by {
+                    if writeback_slots.contains(s) {
+                        let r = choose |r: DiskRequest|
+                            #[trigger] lbl->requests.contains(r)
+                            && old(self)@.lookup_map[r->to] == s;
+                        assert(lbl->requests.contains(r));
+                        assert(r == req);
+                        assert(old(self)@.lookup_map[addr@] == slot);
+                        assert(s == slot);
+                    }
+                    if s == slot {
+                        assert(req_slot_map.contains_key(req));
+                        assert(req_slot_map[req] == slot);
+                        assert(req_slot_map.values().contains(slot)) by {
+                            reveal(Map::values);
+                        }
+                        assert(writeback_slots.contains(s));
+                        reveal(Map::values);
+                    }
+                };
+            };
+            let updated_status_map = Map::new(
+                |s: Slot| writeback_slots.contains(s),
+                |s: Slot| Status::Writeback,
+            );
+            let singleton_update = Map::<Slot, Status>::empty().insert(slot, Status::Writeback);
+            assert(updated_status_map =~= singleton_update) by {
+                assert forall |s: Slot| #[trigger] updated_status_map.contains_key(s) <==> singleton_update.contains_key(s) by {
+                    assert(updated_status_map.contains_key(s) <==> writeback_slots.contains(s));
+                    assert(singleton_update.contains_key(s) <==> s == slot);
+                };
+                assert forall |s: Slot| #[trigger] updated_status_map.contains_key(s) implies updated_status_map[s] == singleton_update[s] by {
+                    assert(updated_status_map[s] == Status::Writeback);
+                    assert(singleton_update[s] == Status::Writeback);
+                };
+            };
+            vstd::map_lib::lemma_union_insert_right(old(self)@.status_map, Map::<Slot, Status>::empty(), slot, Status::Writeback);
+            assert(old(self)@.status_map.union_prefer_right(updated_status_map)
+                =~= old(self)@.status_map.insert(slot, Status::Writeback));
+            assert(Cache::State::next_by(old(self)@, self@, lbl, Cache::Step::writeback_initiate())) by {
+            }
+            assert(self.valid_writeback_handles_preserved(*old(self))) by {
+                assert forall |addr2: IAddress, handle2: WritebackHandle|
+                    old(self).valid_writeback_handle(&addr2, handle2)
+                    implies self.valid_writeback_handle(&addr2, handle2)
+                by {
+                    reveal(FracCacheImpl::valid_writeback_handle);
+                    assert(old(self)@.status_map[handle2.idx] is Writeback);
+                    assert(!(old(self)@.status_map[slot] is Writeback));
+                    assert(handle2.idx != slot);
+                    let i = handle2.idx as int;
+                    assert(self.metadata[i] == old(self).metadata[i]);
+                    assert(self.internal_slots[i] == old(self).internal_slots[i]);
+                    assert(self.perms@[i] == old(self).perms@[i]);
+                    assert(self.lookup_map@ == old(self)@.lookup_map);
+                    assert(self.writeback_loans@.contains_key(handle2.idx) == old(self).writeback_loans@.contains_key(handle2.idx));
+                    if old(self).writeback_loans@.contains_key(handle2.idx) {
+                        assert(self.writeback_loans@[handle2.idx] == old(self).writeback_loans@[handle2.idx]);
+                    }
+                }
+            }
+        }
         WritebackAcquireResult::Acquired{handle}
     }
 
@@ -1420,6 +1681,8 @@ impl FracCacheImpl {
             let resp = DiskResponse::WriteResp{};
             let cache_lbl = Cache::Label::DiskOps{requests: set!{}, responses: map!{addr@ => resp}};
             &&& self.wf()
+            &&& self.valid_load_handles_preserved(*old(self))
+            &&& self.valid_writeback_handles_preserved_except(*old(self), *addr)
             &&& Cache::State::next(old(self)@, self@, cache_lbl)
         })
     {
@@ -1455,11 +1718,49 @@ impl FracCacheImpl {
                 |slot| Status::Clean
             );
             assert(self@.entries =~= old(self)@.entries);
-            assert(self@.lookup_map =~= old(self)@.lookup_map);
             assert(self@.status_map =~= old(self)@.status_map.union_prefer_right(updated_status_map));
             reveal(Cache::State::next_by);
             assert(Cache::State::next_by(old(self)@, self@, cache_lbl, Cache::Step::writeback_complete()));
             reveal(Cache::State::next);
+            assert(self.valid_load_handles_preserved(*old(self))) by {
+                assert forall |addr2: IAddress, handle2: MutHandle|
+                    old(self).entry_fetched(&addr2) && old(self).valid_load_handle(&addr2, handle2)
+                    implies self.entry_fetched(&addr2) && self.valid_load_handle(&addr2, handle2)
+                by {
+                    reveal(FracCacheImpl::valid_load_handle);
+                    reveal(FracCacheImpl::valid_handle);
+                    assert(!(old(self)@.status_map[handle2.idx] is Writeback));
+                    assert(old(self)@.status_map[idx] is Writeback);
+                    assert(handle2.idx != idx);
+                    let i = handle2.idx as int;
+                    assert(self.metadata[i] == old(self).metadata[i]);
+                    assert(self.internal_slots[i] == old(self).internal_slots[i]);
+                    assert(self.perms@[i] == old(self).perms@[i]);
+                    assert(self.lookup_map@ == old(self)@.lookup_map);
+                }
+            }
+            assert(self.valid_writeback_handles_preserved_except(*old(self), *addr)) by {
+                assert forall |addr2: IAddress, handle2: WritebackHandle|
+                    addr2 != *addr
+                    && old(self).valid_writeback_handle(&addr2, handle2)
+                    implies self.valid_writeback_handle(&addr2, handle2)
+                by {
+                    reveal(FracCacheImpl::valid_writeback_handle);
+                    assert(old(self).lookup_addr_slot(addr) == idx);
+                    assert(old(self).lookup_addr_slot(&addr2) == handle2.idx);
+                    assert(old(self).lookup_map_injective());
+                    assert(handle2.idx != idx);
+                    let i = handle2.idx as int;
+                    assert(self.metadata[i] == old(self).metadata[i]);
+                    assert(self.internal_slots[i] == old(self).internal_slots[i]);
+                    assert(self.perms@[i] == old(self).perms@[i]);
+                    assert(self.lookup_map@ == old(self)@.lookup_map);
+                    assert(self.writeback_loans@.contains_key(handle2.idx) == old(self).writeback_loans@.contains_key(handle2.idx));
+                    if old(self).writeback_loans@.contains_key(handle2.idx) {
+                        assert(self.writeback_loans@[handle2.idx] == old(self).writeback_loans@[handle2.idx]);
+                    }
+                }
+            }
         }
     }
 }

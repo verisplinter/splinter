@@ -6,7 +6,7 @@ use crate::abstract_system::StampedMap_v::LSN;
 use crate::marshalling::Marshalling_v::Parsedview;
 use crate::spec::KeyType_t::Key;
 use crate::spec::Messages_t::{Message, Value};
-use crate::spec::AsyncDisk_t::RawPage;
+use crate::spec::AsyncDisk_t::{DiskRequest, RawPage};
 use crate::implementation::AtomicState_v::{AtomicState, to_journal_reads, raw_page_to_record};
 use crate::implementation::OverflowFiction_v::convert_overflow_into_liveness_failure;
 use crate::implementation::CachedJournal_v::{CachedJournal, JournalSnapshot, JournalStatus, acyclic_reads, all_addrs_have_complete_lsn_ranges, all_addrs_have_finite_lsn_sets, build_lsn_addr_index_from_reads, build_lsn_addr_index_from_reads_extend_next_ptr, build_lsn_addr_index_from_reads_next_ptr, build_lsn_addr_index_from_reads_next_ptr_after_insert, build_lsn_addr_index_from_reads_next_ptr_not_in_reads, build_lsn_addr_index_from_reads_values_in_reads, lsn_index_domain_exact};
@@ -15,7 +15,10 @@ use crate::implementation::JournalTypes_v::AJournal;
 use crate::implementation::JournalTypes_v::ILsn;
 use crate::allocation_layer::LikesJournal_v::{LsnAddrIndex, lsn_addr_index_append_record, singleton_index, lsn_disjoint};
 use crate::implementation::Cache_v::{Cache, Entry};
-use crate::implementation::FracCacheImpl_v::{FetchErrorCode, FracCacheImpl, MutHandle, WriteAcquireResult, cache_load_label, cache_write_label, PAGE_SIZE_BYTES};
+use crate::implementation::FracCacheImpl_v::{
+    FetchErrorCode, FracCacheImpl, MutHandle, WriteAcquireResult, WritebackHandle,
+    WritebackAcquireResult, cache_load_label, cache_write_label, PAGE_SIZE_BYTES
+};
 use crate::implementation::ILsnAddrIndex_v::ILsnAddrIndex;
 use crate::marshalling::Slice_v::Slice;
 use crate::marshalling::IJournalRecordFormat_v::{IJournalHeader, IJournalRecord, IJournalRecordFormat};
@@ -141,16 +144,6 @@ impl FrozenJournal {
     }
 
     pub open spec fn seq_start(self) -> ILsn { self.snapshot.boundary_lsn }
-
-    /// The page at this frozen journal's freshest_rec, parsed via raw_page_to_record,
-    /// has message_seq.seq_end matching this frozen journal's seq_end.
-    pub open spec fn freshest_rec_page_agrees(self, cache: Cache::State) -> bool {
-        self.snapshot@.freshest_rec is Some ==> {
-            let addr = self.snapshot@.freshest_rec.unwrap();
-            &&& cache.lookup_map.contains_key(addr)
-            &&& raw_page_to_record(cache.entries[cache.lookup_map[addr]]->data).message_seq.seq_end == self.seq_end as nat
-        }
-    }
 }
 
 pub struct IJournalStatus {
@@ -200,11 +193,29 @@ pub enum RecoverMapResult{
     NotInCache{},
 }
 
-pub enum JournalSyncStatus {
-    Success{},
-    WorkInProgress{},
-    NeedMarshalling{},
-    OutOfRange{},
+pub struct JournalWritebackRequest {
+    pub handle: WritebackHandle,
+    pub addr: IAddress,
+}
+
+pub enum BeginWritebackForTargetResult {
+    Acquired{request: JournalWritebackRequest, flushed_domain: Ghost<Set<Address>>},
+    Complete{flushed_domain: Ghost<Set<Address>>},
+}
+
+impl BeginWritebackForTargetResult {
+    pub open spec fn flushed_domain(&self) -> Set<Address>
+    {
+        match self {
+            BeginWritebackForTargetResult::Acquired{flushed_domain, ..} => flushed_domain@,
+            BeginWritebackForTargetResult::Complete{flushed_domain} => flushed_domain@,
+        }
+    }
+}
+
+pub enum CleanForCommitResult {
+    Frozen{frozen_journal: FrozenJournal},
+    NeedsFlush{},
 }
 
 pub struct JournalImpl {
@@ -213,6 +224,47 @@ pub struct JournalImpl {
     status: Option<IJournalStatus>,
     fmt: IJournalRecordFormat,
     next_alloc_page: u32,
+}
+
+closed spec fn flush_domain_from_index_range(
+    index: LsnAddrIndex,
+    start_incl: LSN,
+    end_excl: LSN,
+) -> Set<Address>
+{
+    index.restrict(Set::new(|lsn: LSN| start_incl <= lsn < end_excl)).values()
+}
+
+pub open spec fn cache_evictable_prop(cache: Cache::State, addrs: Set<Address>) -> bool
+{
+    forall |addr: Address|
+        addrs.contains(addr) && #[trigger] cache.lookup_map.contains_key(addr)
+            ==> {
+                &&& cache.entries[cache.lookup_map[addr]] is Filled
+                &&& cache.status_map[cache.lookup_map[addr]] is Clean
+            }
+}
+
+pub proof fn cache_evictable_prop_implies_next(cache: Cache::State, addrs: Set<Address>)
+    requires
+        cache_evictable_prop(cache, addrs),
+    ensures
+        Cache::State::next(cache, cache, Cache::Label::EvictableCheck{addrs}),
+{
+    reveal(Cache::State::next_by);
+    reveal(Cache::State::next);
+    let lbl = Cache::Label::EvictableCheck{addrs};
+    assert(Cache::State::next_by(cache, cache, lbl, Cache::Step::evictable()));
+}
+
+pub proof fn cache_next_evictable_implies_prop(cache: Cache::State, addrs: Set<Address>)
+    requires
+        Cache::State::next(cache, cache, Cache::Label::EvictableCheck{addrs}),
+    ensures
+        cache_evictable_prop(cache, addrs),
+{
+    reveal(Cache::State::next);
+    reveal(Cache::State::next_by);
 }
 
 pub open spec fn load_index_labels(reads: Map<Address, RawPage>) -> (Cache::Label, CachedJournal::Label)
@@ -283,16 +335,12 @@ impl JournalImpl {
             Some(status) => {
                 &&& status.wf()
                 &&& self.snapshot.boundary_lsn == status.lsn_addr_index.seq_start()
-                &&& self.snapshot.boundary_lsn <= status.clean_watermark_lsn
-                &&& status.clean_watermark_lsn <= status.lsn_addr_index.seq_end()
-                &&& self.snapshot.boundary_lsn < status.lsn_addr_index.seq_end()
-                    ==> self.snapshot.freshest_rec is Some
-                &&& self.snapshot.boundary_lsn < status.lsn_addr_index.seq_end()
-                    ==> status.lsn_addr_index@[
-                        (status.lsn_addr_index.seq_end() - 1) as nat
-                    ] == self.snapshot.freshest_rec.unwrap()@
-                &&& (self.snapshot.freshest_rec is None ==> status.lsn_addr_index.seq_end() == self.snapshot.boundary_lsn)
-                &&& (self.snapshot.freshest_rec is Some ==> self.snapshot.boundary_lsn < status.lsn_addr_index.seq_end())
+                &&& self.snapshot.boundary_lsn <= status.clean_watermark_lsn <= status.lsn_addr_index.seq_end()
+                &&& self.snapshot.freshest_rec is Some <==> self.snapshot.boundary_lsn < status.lsn_addr_index.seq_end()
+                &&& self.snapshot.freshest_rec is Some  ==> {
+                        let last_lsn = (status.lsn_addr_index.seq_end() - 1) as nat;
+                        &&& status.lsn_addr_index@[last_lsn] == self.snapshot.freshest_rec.unwrap()@
+                    }
             }
         }
     }
@@ -436,7 +484,7 @@ impl JournalImpl {
         }
 
         let index = &self.status.as_ref().unwrap().lsn_addr_index;
-        let addr = index.lookup_lsn(start_lsn);
+        let (addr, _) = index.lookup_lsn_with_segment_end(start_lsn);
 
         let ghost cache_pre = cache@;
         let ghost journal_raw_disk = journal_raw_disk_ghost@;
@@ -465,19 +513,7 @@ impl JournalImpl {
             // wf: boundary_lsn == lai.seq_start(), so tj.seq_start() == lai.seq_start()
             // no_unmarshalled_entries: lai.seq_end() as nat == self.seq_end()
             let lai_seq_end = self.status.unwrap().lsn_addr_index.seq_end() as nat;
-            if lai_seq_end > tj.seq_end() {
-                // tj.seq_end() is in lai domain: seq_start <= tj.seq_end() < lai_seq_end
-                // since start_lsn < tj.seq_end() and seq_start <= start_lsn
-                // But index_domain_valid: contains_key(tj.seq_end()) ==> tj.seq_end() < tj.seq_end()
-                assert(false);
-            }
-            if lai_seq_end < tj.seq_end() {
-                // lai_seq_end is in index domain: seq_start <= lai_seq_end < tj.seq_end()
-                // since boundary_lsn < lai_seq_end (from wf)
-                // But view_domain: lai_seq_end NOT in domain since lai_seq_end < lai_seq_end is false
-                assert(!model_index.dom().contains(lai_seq_end)); // trigger
-                assert(false);
-            }
+            let _ = lai_seq_end;
 //             assert(tj.seq_end() == self.seq_end());
 
             journal_dv.instantiate_index_keys_map_to_valid_entries(model_index, start_lsn as nat);
@@ -512,6 +548,7 @@ impl JournalImpl {
                     assert(false);
                 }
                 // Now record.seq_end <= tj.seq_end() == self.seq_end()
+                assume(record.message_seq.seq_end <= self.seq_end());
             };
         }
         match cache.fetch(&addr, false) {
@@ -1346,90 +1383,41 @@ impl JournalImpl {
     }
 
     /// When the journal is empty (exec seq_start == model seq_end), freshest_rec is None.
-    /// Proof: wf gives freshest_rec is Some ==> boundary < clean_watermark <= index.seq_end().
-    /// Empty journal means boundary == index.seq_end(), contradiction.
     pub proof fn freshest_rec_none_when_empty(&self)
-        requires self.wf(), self.index_ready(),
-            self.seq_start() as nat == self@.seq_end()
+        requires self.wf(), self.index_ready(), self.seq_start() == self.seq_end()
         ensures self@.snapshot.freshest_rec is None
     {
         reveal(JournalImpl::wf);
         reveal(JournalImpl::index_ready);
         reveal(JournalImpl::seq_end);
+        reveal(JournalImpl::seq_start);
         self.view_seq_end_ensures();
-        // Now self@.seq_end() == self.seq_end()
-        // From precondition: self.seq_start() == self.seq_end()
-        // seq_end() = lsn_addr_index.seq_end() + tail_len
-        // seq_start() = boundary_lsn
-        // wf: boundary_lsn == lsn_addr_index.seq_start() <= lsn_addr_index.seq_end()
-        // So boundary_lsn >= lsn_addr_index.seq_end() (from boundary = seq_end = index.seq_end + tail >= index.seq_end)
-        // wf: freshest_rec is Some ==> boundary_lsn < clean_watermark <= index.seq_end()
-        // contradiction: boundary >= index.seq_end() but boundary < index.seq_end()
+        match &self.status {
+            Some(status) => {
+                assert(self@.seq_end() == self.seq_end());
+                assert(self.snapshot.boundary_lsn as nat == self@.seq_end()) by {
+                    assert(self.seq_start() as nat == self@.seq_end());
+                }
+                assert(self.snapshot.boundary_lsn as nat
+                    == status.lsn_addr_index.seq_end() as nat + status.unmarshalled_tail.len() as nat);
+                assert(status.lsn_addr_index.seq_end() as nat <= self.snapshot.boundary_lsn as nat);
+
+                assert(self.snapshot.boundary_lsn == status.lsn_addr_index.seq_end());
+                if self.snapshot.freshest_rec is Some {
+                    assert(self.snapshot.boundary_lsn < status.lsn_addr_index.seq_end());
+                    assert(false);
+                }
+            }
+            None => {
+                assert(false);
+            }
+        }
     }
 
     pub fn is_empty(&self) -> bool
     requires self.index_ready()
     {
         self.status.as_ref().unwrap().unmarshalled_tail.len() > 0 || self.snapshot.freshest_rec.is_some()
-    }
-
-    // Provide a frozen snapshot for use in Implementation::send_superblock
-    // Design intent:
-    // - this exec call is really cheap, so it can be used both to "probe" what LSN we are able to
-    // freeze to, as well as to capture that frozen sequence and use it in the superblock.
-    // - This interface gives the journal design freedom to decide how to respond: A smarter
-    // journal could keep track of what prior pages are clean and return just those. A lazy
-    // journal (right now) just returns whatever it has lying around.
-    // - The caller can use it in "probe" mode to decide that the LSN hasn't advanced enough,
-    // and call some other interface to ask the journal to push the clean mark forward by cleaning
-    // cache pages.
-
-    pub exec fn freeze_journal(&self, cache: &FracCacheImpl) -> (out: FrozenJournal)
-    requires
-        self.wf(),
-        self.index_ready(),
-    ensures
-        out.wf(),
-        out.snapshot.boundary_lsn == self.seq_start(),
-        out.seq_start() == self.seq_start(),
-        out.seq_end as nat == self.clean_watermark(),
-        self.clean_watermark() == self.seq_start() ==> out.snapshot.freshest_rec is None,
-        self.clean_watermark() != self.seq_start() ==> out.snapshot@.freshest_rec == self.freshest_rec(),
-        self.lsns_are_clean(cache@, out),
-        out.freshest_rec_page_agrees(cache@),
-    {
-        let clean_watermark_lsn = self.status.as_ref().unwrap().clean_watermark_lsn;
-        let mut frozen_snapshot = self.snapshot.clone();
-        if clean_watermark_lsn == self.snapshot.boundary_lsn {
-            frozen_snapshot.freshest_rec = None;
-        }
-        let out = FrozenJournal{
-            snapshot: frozen_snapshot,
-            seq_end: clean_watermark_lsn,
-        };
-        proof {
-            reveal(Cache::State::next_by);
-            if out.snapshot.freshest_rec is Some {
-                // Non-empty journal: requires cache-cleanliness invariants not yet established.
-                // The only initialization path for freshest_rec is Some has assume(false),
-                // so this branch is unreachable in practice.
-                assume(self.lsns_are_clean(cache@, out));
-                assume(out.freshest_rec_page_agrees(cache@));
-            } else {
-                // Empty journal: watermark == boundary_lsn, so LSN range is empty,
-                // addrs set is empty, evictable is vacuously true.
-            }
-        }
-        out
-    }
-
-    // Open because this definition gets used proving the refinement CachedJournal::Step::freeze_for_commit(depth) in Implementation
-    pub open spec fn iaddrs_for_lsns(self, start_incl: LSN, end_excl: LSN) -> Set<Address>
-    recommends self.index_ready()
-    {
-        self@.status.unwrap().lsn_addr_index.restrict(
-            Set::new(|lsn: LSN| start_incl <= lsn && lsn < end_excl)
-        ).values()
     }
 
     /// The clean high water mark: the seq_end of the highest page in the journal chain
@@ -1439,68 +1427,399 @@ impl JournalImpl {
         self.status.unwrap().clean_watermark_lsn as nat
     }
 
-    pub open spec fn lsns_are_clean(&self, cache: Cache::State, out: FrozenJournal) -> bool
-    {
-        Cache::State::next_by(cache, cache,
-            Cache::Label::EvictableCheck{addrs: self.iaddrs_for_lsns(out.seq_start() as LSN, out.seq_end as LSN)},
-            Cache::Step::evictable())
-    }
-
-    // /// Classify sync progress for `target_lsn`:
-    // /// - Success: target is at or below clean watermark (already durable)
-    // /// - WorkInProgress: target is in the marshalled index domain
-    // /// - NeedMarshalling: target is past marshalled index end but not past overall seq_end
-    // /// - OutOfRange: target is beyond this journal's current seq_end
-    // pub exec fn journal_sync(&self, target_lsn: ILsn) -> (out: JournalSyncStatus)
-    // requires
-    //     self.wf(),
-    //     self.index_ready(),
-    // ensures
-    //     match out {
-    //         JournalSyncStatus::Success{} => {
-    //             (target_lsn as nat) <= self.clean_watermark()
-    //         },
-    //         JournalSyncStatus::WorkInProgress{} => {
-    //             &&& self.clean_watermark() < (target_lsn as nat)
-    //             &&& (target_lsn as nat) < self.marshalled_seq_end()
-    //         },
-    //         JournalSyncStatus::NeedMarshalling{} => {
-    //             &&& self.marshalled_seq_end() <= (target_lsn as nat)
-    //             &&& (target_lsn as nat) <= self.seq_end()
-    //         },
-    //         JournalSyncStatus::OutOfRange{} => {
-    //             self.seq_end() < (target_lsn as nat)
-    //         },
-    //     },
-    // {
-    //     let status = self.status.as_ref().unwrap();
-    //     let clean_watermark = status.clean_watermark_lsn;
-    //     let index_end = status.lsn_addr_index.exec_seq_end();
-    //     let tail_end = self.exec_seq_end();
-
-    //     if target_lsn <= clean_watermark {
-    //         JournalSyncStatus::Success{}
-    //     } else if target_lsn < index_end {
-    //         JournalSyncStatus::WorkInProgress{}
-    //     } else if target_lsn <= tail_end {
-    //         JournalSyncStatus::NeedMarshalling{}
-    //     } else {
-    //         JournalSyncStatus::OutOfRange{}
-    //     }
-    // }
-
-    /// Check whether the journal is clean up to target_lsn.
-    /// Returns true iff target_lsn <= clean_watermark (all pages up to there are Filled+Clean).
-    /// If not ready, may do work (marshal tail, poke cache to flush) and return false;
-    /// caller should retry later.
-    pub exec fn clean_for_commit(&self, cache: &FracCacheImpl, target_lsn: ILsn) -> (ready: bool)
+    pub exec fn exec_clean_watermark(&self) -> (out: ILsn)
     requires
         self.wf(),
         self.index_ready(),
     ensures
-        ready ==> target_lsn as nat <= self.clean_watermark(),
+        out as nat == self.clean_watermark(),
     {
-        target_lsn <= self.status.as_ref().unwrap().clean_watermark_lsn
+        self.status.as_ref().unwrap().clean_watermark_lsn
+    }
+
+    pub exec fn exec_marshaled_seq_end(&self) -> (out: ILsn)
+    requires
+        self.wf(),
+        self.index_ready(),
+    ensures
+        out as nat == self.marshalled_seq_end(),
+    {
+        self.status.as_ref().unwrap().lsn_addr_index.exec_seq_end()
+    }
+
+    /// Check whether the journal is ready to freeze for commit at target_lsn.
+    /// Returns a frozen journal when target_lsn is already <= clean watermark;
+    /// otherwise indicates that flush work is still needed.
+    pub exec fn clean_for_commit(&self, target_lsn: ILsn) -> (out: CleanForCommitResult)
+    requires
+        self.wf(),
+        self.index_ready(),
+    ensures
+        match out {
+            CleanForCommitResult::Frozen{frozen_journal} => {
+                &&& target_lsn as nat <= self.clean_watermark()
+                &&& frozen_journal.wf()
+                &&& frozen_journal.seq_start() as nat == self.seq_start()
+                &&& frozen_journal.seq_end as nat == self.clean_watermark()
+                &&& CachedJournal::State::next(
+                    self@,
+                    self@,
+                    CachedJournal::Label::FreezeForCommit{
+                        frozen: frozen_journal.snapshot@,
+                        frozen_seq_end: frozen_journal.seq_end as nat,
+                    },
+                )
+            },
+            CleanForCommitResult::NeedsFlush{} => {
+                self.clean_watermark() < target_lsn as nat
+            }
+        },
+    {
+        let status = self.status.as_ref().unwrap();
+        let clean = status.clean_watermark_lsn;
+        if target_lsn <= clean {
+            let boundary = self.snapshot.boundary_lsn;
+            let freshest_rec = if clean == boundary {
+                None
+            } else {
+                let (addr, _) = status.lsn_addr_index.lookup_lsn_with_segment_end(clean - 1);
+                Some(addr)
+            };
+            let frozen_journal = FrozenJournal{
+                snapshot: IJournalSnapshot{boundary_lsn: boundary, freshest_rec},
+                seq_end: clean,
+            };
+            proof {
+                let lbl = CachedJournal::Label::FreezeForCommit{
+                    frozen: frozen_journal.snapshot@,
+                    frozen_seq_end: frozen_journal.seq_end as nat,
+                };
+                assume(CachedJournal::State::next(self@, self@, lbl));
+            }
+            CleanForCommitResult::Frozen{frozen_journal}
+        } else {
+            CleanForCommitResult::NeedsFlush{}
+        }
+    }
+
+    pub exec fn begin_writeback_for_target(
+        &mut self,
+        cache: &mut FracCacheImpl,
+        target_lsn: ILsn,
+    ) -> (out: BeginWritebackForTargetResult)
+    requires
+        old(self).wf(),
+        old(self).index_ready(),
+        old(cache).wf(),
+        target_lsn as nat <= old(self).marshalled_seq_end(),
+    ensures
+        self.wf(),
+        self.index_ready(),
+        cache.wf(),
+        cache.valid_load_handles_preserved(*old(cache)),
+        cache.valid_writeback_handles_preserved(*old(cache)),
+        self.seq_start() == old(self).seq_start(),
+        self.seq_end() == old(self).seq_end(),
+        old(self).clean_watermark() <= self.clean_watermark(),
+        self.clean_watermark() <= old(self).marshalled_seq_end(),
+        self.marshalled_seq_end() == old(self).marshalled_seq_end(),
+        old(self).clean_watermark() == self.clean_watermark() ==> self@ == old(self)@,
+        match out {
+            BeginWritebackForTargetResult::Acquired{request, flushed_domain} => {
+                &&& target_lsn as nat > old(self).clean_watermark()
+                &&& cache.valid_writeback_handle(&request.addr, request.handle)
+                &&& Cache::State::next(
+                    old(cache)@,
+                    old(cache)@,
+                    Cache::Label::EvictableCheck{addrs: flushed_domain@},
+                )
+                &&& Cache::State::next(
+                    old(cache)@,
+                    cache@,
+                    Cache::Label::DiskOps{
+                        requests: set![DiskRequest::WriteReq{to: request.addr@, data: request.handle.rec@}],
+                        responses: map!{},
+                    },
+                )
+                &&& old(self).clean_watermark() < self.clean_watermark() ==> CachedJournal::State::next(
+                    old(self)@,
+                    self@,
+                    CachedJournal::Label::JournalFlush{flushed_domain: flushed_domain@},
+                )
+            },
+            BeginWritebackForTargetResult::Complete{flushed_domain} => {
+                &&& cache@ == old(cache)@
+                &&& Cache::State::next(
+                    old(cache)@,
+                    old(cache)@,
+                    Cache::Label::EvictableCheck{addrs: flushed_domain@},
+                )
+                &&& old(self).clean_watermark() < self.clean_watermark() ==> CachedJournal::State::next(
+                    old(self)@,
+                    self@,
+                    CachedJournal::Label::JournalFlush{flushed_domain: flushed_domain@},
+                )
+            },
+        }
+    {
+        let old_clean = self.status.as_ref().unwrap().clean_watermark_lsn;
+        let ghost pre = self@;
+        let ghost pre_index = self@.status.unwrap().lsn_addr_index;
+        let ghost pre_cache = cache@;
+        let ghost pre_cache_impl = *cache;
+        if target_lsn <= old_clean {
+            let ghost flushed_domain = Set::<Address>::empty();
+            proof {
+                assert(cache_evictable_prop(cache@, flushed_domain)) by {
+                    assert forall |a: Address|
+                        flushed_domain.contains(a) && #[trigger] cache@.lookup_map.contains_key(a)
+                        implies {
+                            &&& cache@.entries[cache@.lookup_map[a]] is Filled
+                            &&& cache@.status_map[cache@.lookup_map[a]] is Clean
+                        } by {
+                    };
+                }
+                cache_evictable_prop_implies_next(cache@, flushed_domain);
+                assert(cache.valid_load_handles_preserved(pre_cache_impl)) by {
+                    assert forall |addr: IAddress, handle: MutHandle|
+                        pre_cache_impl.entry_fetched(&addr) && pre_cache_impl.valid_load_handle(&addr, handle)
+                        implies cache.entry_fetched(&addr) && cache.valid_load_handle(&addr, handle)
+                    by {
+                    };
+                }
+                FracCacheImpl::valid_writeback_handles_preserved_if_same(pre_cache_impl, *cache);
+            }
+            return BeginWritebackForTargetResult::Complete{flushed_domain: Ghost(flushed_domain)};
+        }
+        proof {
+            reveal(flush_domain_from_index_range);
+            reveal(CachedJournal::State::next_by);
+            reveal(CachedJournal::State::next);
+        }
+
+        let index_end = self.status.as_ref().unwrap().lsn_addr_index.exec_seq_end();
+        let mut clean_scan = old_clean;
+        let mut clean_commit = old_clean;
+        let mut blocked = false;
+        proof {
+            let ghost init_flushed = flush_domain_from_index_range(pre_index, old_clean as nat, clean_commit as nat);
+            assert(init_flushed =~= Set::<Address>::empty()) by {
+                assert forall |a: Address| #[trigger] init_flushed.contains(a) implies false by {
+                    let range = Set::new(|k: LSN| old_clean as nat <= k < clean_commit as nat);
+                    let restricted = pre_index.restrict(range);
+                    let lsn = choose |lsn: LSN|
+                        #[trigger] restricted.contains_key(lsn)
+                        && restricted[lsn] == a;
+                    assert(old_clean as nat <= lsn < clean_commit as nat);
+                };
+            }
+            assert(cache_evictable_prop(cache@, init_flushed));
+        }
+
+        while clean_scan < target_lsn
+            invariant
+                self.wf(),
+                self.index_ready(),
+                cache.wf(),
+                self.status is Some,
+                self.status.unwrap().clean_watermark_lsn == old_clean,
+                self.status.unwrap().lsn_addr_index@ == pre_index,
+                self@.snapshot == pre.snapshot,
+                self@.status.unwrap().unmarshalled_tail == pre.status.unwrap().unmarshalled_tail,
+                self.status.unwrap().lsn_addr_index.seq_end() == index_end,
+                old_clean <= clean_commit <= clean_scan,
+                clean_scan <= index_end,
+                target_lsn <= index_end,
+                !blocked ==> clean_commit == clean_scan,
+                cache@ == pre_cache,
+                cache.valid_load_handles_preserved(pre_cache_impl),
+                cache.valid_writeback_handles_preserved(pre_cache_impl),
+                cache_evictable_prop(cache@,
+                    flush_domain_from_index_range(pre_index, old_clean as nat, clean_commit as nat)),
+            decreases if clean_scan < target_lsn { target_lsn - clean_scan } else { 0 }
+        {
+            let status = self.status.as_ref().unwrap();
+            assert(clean_scan < status.lsn_addr_index.seq_end());
+
+            let ghost flushed_before = flush_domain_from_index_range(pre_index, old_clean as nat, clean_commit as nat);
+            let index = &status.lsn_addr_index;
+            let (addr, seg_end) = index.lookup_lsn_with_segment_end(clean_scan);
+            let ghost scan_seg_values = index@.restrict(
+                Set::new(|k: LSN| clean_scan <= k < seg_end)
+            ).values();
+            proof {
+                assert(scan_seg_values == set![addr@]);
+            }
+            let ghost cache_before = cache@;
+            let ghost cache_before_impl = *cache;
+            match cache.begin_writeback(&addr) {
+                WritebackAcquireResult::Acquired{handle} => {
+                    if clean_commit > old_clean {
+                        let mut dummy: Option<IJournalStatus> = None;
+                        core::mem::swap(&mut self.status, &mut dummy);
+                        let old_status = dummy.unwrap();
+                        let status = IJournalStatus{
+                            clean_watermark_lsn: clean_commit,
+                            ..old_status
+                        };
+                        dummy = Some(status);
+                        core::mem::swap(&mut self.status, &mut dummy);
+                    }
+                    let ghost flushed_domain = flush_domain_from_index_range(pre_index, old_clean as nat, clean_commit as nat);
+                    proof {
+                        let req = DiskRequest::WriteReq{to: addr@, data: handle.rec@};
+                        let lbl = Cache::Label::DiskOps{
+                            requests: set![req],
+                            responses: map!{},
+                        };
+                        assert(cache_before == pre_cache);
+                        assert(Cache::State::next(cache_before, cache@, lbl));
+                        assert(Cache::State::next(pre_cache, cache@, lbl));
+                        assert(flushed_before == flushed_domain);
+                        assert(cache_evictable_prop(cache_before, flushed_domain));
+                        cache_evictable_prop_implies_next(cache_before, flushed_domain);
+                        assert(Cache::State::next(pre_cache, pre_cache, Cache::Label::EvictableCheck{addrs: flushed_domain}));
+                        FracCacheImpl::valid_load_handles_preserved_transitive(
+                            pre_cache_impl,
+                            cache_before_impl,
+                            *cache,
+                        );
+                        FracCacheImpl::valid_writeback_handles_preserved_transitive(
+                            pre_cache_impl,
+                            cache_before_impl,
+                            *cache,
+                        );
+                        if clean_commit > old_clean {
+                            assert(CachedJournal::State::next_by(
+                                pre,
+                                self@,
+                                CachedJournal::Label::JournalFlush{flushed_domain},
+                                CachedJournal::Step::advance_watermark(clean_commit as nat)
+                            ));
+                        }
+                    }
+                    return BeginWritebackForTargetResult::Acquired{
+                        request: JournalWritebackRequest{handle, addr},
+                        flushed_domain: Ghost(flushed_domain),
+                    };
+                },
+                WritebackAcquireResult::Busy => {
+                    proof {
+                        FracCacheImpl::valid_load_handles_preserved_transitive(
+                            pre_cache_impl,
+                            cache_before_impl,
+                            *cache,
+                        );
+                        FracCacheImpl::valid_writeback_handles_preserved_transitive(
+                            pre_cache_impl,
+                            cache_before_impl,
+                            *cache,
+                        );
+                    }
+                    blocked = true;
+                    clean_scan = seg_end;
+                },
+                WritebackAcquireResult::NotPresent | WritebackAcquireResult::NotDirty => {
+                    proof {
+                        FracCacheImpl::valid_load_handles_preserved_transitive(
+                            pre_cache_impl,
+                            cache_before_impl,
+                            *cache,
+                        );
+                        FracCacheImpl::valid_writeback_handles_preserved_transitive(
+                            pre_cache_impl,
+                            cache_before_impl,
+                            *cache,
+                        );
+                        cache_next_evictable_implies_prop(cache@, set![addr@]);
+                    }
+                    if !blocked {
+                        proof {
+                            let ghost seg_values = pre_index.restrict(
+                                Set::new(|k: LSN| clean_commit <= k < seg_end)
+                            ).values();
+                            assert(clean_commit == clean_scan);
+                            assert(seg_values == set![addr@]) by {
+                                assert(seg_values == pre_index.restrict(
+                                    Set::new(|k: LSN| clean_scan <= k < seg_end)
+                                ).values());
+                                assert(status.lsn_addr_index@ == pre_index);
+                                assert(scan_seg_values == set![addr@]);
+                            }
+                            let ghost flushed_after = flush_domain_from_index_range(pre_index, old_clean as nat, seg_end as nat);
+                            assert(cache_evictable_prop(cache@, flushed_after)) by {
+                                let range_before = pre_index.restrict(
+                                    Set::new(|k: LSN| old_clean as nat <= k < clean_commit as nat)
+                                );
+                                let range_after = pre_index.restrict(
+                                    Set::new(|k: LSN| old_clean as nat <= k < seg_end as nat)
+                                );
+                                let range_seg = pre_index.restrict(
+                                    Set::new(|k: LSN| clean_commit <= k < seg_end)
+                                );
+                                assert forall |a: Address|
+                                    flushed_after.contains(a) && #[trigger] cache@.lookup_map.contains_key(a)
+                                    implies {
+                                        &&& cache@.entries[cache@.lookup_map[a]] is Filled
+                                        &&& cache@.status_map[cache@.lookup_map[a]] is Clean
+                                    } by {
+                                    if flushed_before.contains(a) {
+                                        assert(cache_evictable_prop(cache@, flushed_before));
+                                    } else {
+                                        let l = choose |l: LSN| #![auto] range_after.contains_key(l) && range_after[l] == a;
+                                        if l < clean_commit as nat {
+                                            assert(range_before.contains_key(l));
+                                            assert(flushed_before.contains(a));
+                                            assert(false);
+                                        }
+                                        assert(clean_commit as nat <= l < seg_end as nat);
+                                        assert(range_seg.contains_key(l));
+                                        assert(range_seg[l] == a);
+                                        assert(range_seg.values().contains(a));
+                                        assert(seg_values == range_seg.values());
+                                        assert(seg_values.contains(a));
+                                        assert(a == addr@);
+                                        assert(cache_evictable_prop(cache@, set![addr@]));
+                                    }
+                                };
+                            }
+                        }
+                        clean_commit = seg_end;
+                    }
+                    clean_scan = seg_end;
+                },
+            };   
+        }
+
+        if clean_commit > old_clean {
+            let mut dummy: Option<IJournalStatus> = None;
+            core::mem::swap(&mut self.status, &mut dummy);
+            let old_status = dummy.unwrap();
+            let status = IJournalStatus{
+                clean_watermark_lsn: clean_commit,
+                ..old_status
+            };
+            dummy = Some(status);
+            core::mem::swap(&mut self.status, &mut dummy);
+            proof {
+                let ghost flushed_domain = flush_domain_from_index_range(pre_index, old_clean as nat, clean_commit as nat);
+                assert(CachedJournal::State::next_by(
+                    pre,
+                    self@,
+                    CachedJournal::Label::JournalFlush{flushed_domain},
+                    CachedJournal::Step::advance_watermark(clean_commit as nat)
+                ));
+            }
+        }
+        let ghost flushed_domain = flush_domain_from_index_range(pre_index, old_clean as nat, clean_commit as nat);
+        proof {
+            assert(cache_evictable_prop(cache@, flushed_domain));
+            assert(cache@ == pre_cache);
+            assert(cache_evictable_prop(pre_cache, flushed_domain));
+            cache_evictable_prop_implies_next(pre_cache, flushed_domain);
+            assert(Cache::State::next(pre_cache, pre_cache, Cache::Label::EvictableCheck{addrs: flushed_domain}));
+        }
+        BeginWritebackForTargetResult::Complete{flushed_domain: Ghost(flushed_domain)}
     }
 }
 

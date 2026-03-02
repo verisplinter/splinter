@@ -33,7 +33,7 @@ use crate::implementation::MultisetMapRelation_v::{multiset_map_singleton, multi
 use crate::implementation::VecMap_v::VecMap;
 use crate::implementation::JournalTypes_v::{ILsn};
 use crate::allocation_layer::LikesJournal_v::lsn_addr_index_discard_up_to;
-use crate::implementation::JournalImpl_v::{IJournalSnapshot, JournalImpl, RecoverIndexResult, RecoverMapResult, all_pages_parsable, cache_matches_raw_disk, iaddr_view, journal_disk_inv, load_index_labels, map_recovery_labels};
+use crate::implementation::JournalImpl_v::{BeginWritebackForTargetResult, CleanForCommitResult, IJournalSnapshot, JournalImpl, RecoverIndexResult, RecoverMapResult, all_pages_parsable, cache_matches_raw_disk, iaddr_view, journal_disk_inv, load_index_labels, map_recovery_labels};
 use crate::implementation::SuperblockTypes_v;
 use crate::implementation::SuperblockTypes_v::{ASuperblock, ISuperblock, map_to_kmmap};
 use crate::implementation::CachedJournal_v::CachedJournal;
@@ -45,7 +45,7 @@ use crate::marshalling::Marshalling_v::Marshal;
 use crate::implementation::OverflowFiction_v::*;
 use crate::abstract_system::AbstractCrashAwareMap_v;
 use crate::implementation::Cache_v::Cache;
-use crate::implementation::FracCacheImpl_v::{FetchErrorCode, FracCacheImpl, MutHandle, PAGE_SIZE_BYTES, cache_load_label};
+use crate::implementation::FracCacheImpl_v::{FetchErrorCode, FracCacheImpl, MutHandle, PAGE_SIZE_BYTES, WritebackHandle, cache_load_label};
 
 #[allow(unused_imports)]
 use vstd::multiset::*;
@@ -188,7 +188,7 @@ enum SuperblockMotivation {
 enum OutstandingReqInfo{
     SuperBlockReq{},
     CacheLoadReq{read_addr: IAddress, load_handle: MutHandle},
-    CacheWriteReq{write_addr: IAddress, handle: MutHandle},
+    JournalCacheWriteReq{write_addr: IAddress, handle: WritebackHandle},
 }
 
 // Data-free mirror of OutstandingReqInfo, used to capture the variant from a
@@ -196,7 +196,7 @@ enum OutstandingReqInfo{
 enum OutstandingReqKind{
     SuperBlockReq,
     CacheLoadReq,
-    CacheWriteReq,
+    JournalCacheWriteReq,
 }
 
 // This struct supplies KVStoreTrait, which has both the entry point to the implementation and the
@@ -205,6 +205,7 @@ pub struct Implementation {
     recovery_phase: RecoveryPhase,
 
     sync_counter: u64,
+    journal_flush_accumulator: u64,
 
     store: VecMap<Key, Value>,
     store_lsn: u64, // tracks current store's version
@@ -277,10 +278,10 @@ impl Implementation {
         // Domain: exec outstanding_requests covers exactly cache reqs + in-flight sb
         &&& self.outstanding_requests@.dom() == state.outstanding_cache_reqs.dom() + in_flight_sb_id
 
-        // Cache entries match: CacheLoadReq/CacheWriteReq IDs are exactly outstanding_cache_reqs
+        // Cache entries match: CacheLoadReq/JournalCacheWriteReq IDs are exactly outstanding_cache_reqs
         &&& forall |id| #[trigger] self.outstanding_requests@.dom().contains(id) ==> {
             &&& (self.outstanding_requests@[id] is SuperBlockReq) <==> in_flight_sb_id.contains(id)
-            &&& (self.outstanding_requests@[id] is CacheLoadReq || self.outstanding_requests@[id] is CacheWriteReq)
+            &&& (self.outstanding_requests@[id] is CacheLoadReq || self.outstanding_requests@[id] is JournalCacheWriteReq)
                 <==> state.outstanding_cache_reqs.dom().contains(id)
         }
     }
@@ -292,6 +293,10 @@ impl Implementation {
                 OutstandingReqInfo::CacheLoadReq{read_addr, load_handle} => {
                     &&& cache.entry_fetched(&read_addr)
                     &&& cache.valid_load_handle(&read_addr, load_handle)
+                },
+                OutstandingReqInfo::JournalCacheWriteReq{write_addr, handle} => {
+                    &&& cache.entry_fetched(&write_addr)
+                    &&& cache.valid_writeback_handle(&write_addr, handle)
                 },
                 _ => { true }
             }
@@ -312,7 +317,7 @@ impl Implementation {
                     &&& m.contains_key(id)
                     &&& m[id] == read_addr@
                 },
-                OutstandingReqInfo::CacheWriteReq{write_addr, handle} => {
+                OutstandingReqInfo::JournalCacheWriteReq{write_addr, handle} => {
                     &&& m.contains_key(id)
                     &&& m[id] == write_addr@
                 },
@@ -326,6 +331,216 @@ impl Implementation {
     closed spec fn outstanding_requests_match_cache_reqs(self) -> bool
     {
         Self::outstanding_requests_match_cache_reqs_map(self.outstanding_requests@, self.state().outstanding_cache_reqs)
+    }
+
+    proof fn outstanding_requests_wf_map_preserved_by_cache(
+        outstanding: Map<ID, OutstandingReqInfo>,
+        old_cache: FracCacheImpl,
+        new_cache: FracCacheImpl,
+    )
+    requires
+        old_cache.wf(),
+        new_cache.wf(),
+        Self::outstanding_requests_wf_map(outstanding, old_cache),
+        new_cache.valid_load_handles_preserved(old_cache),
+        new_cache.valid_writeback_handles_preserved(old_cache),
+    ensures
+        Self::outstanding_requests_wf_map(outstanding, new_cache),
+    {
+        reveal(Implementation::outstanding_requests_wf_map);
+        assert forall |id| #[trigger] outstanding.contains_key(id) implies {
+            match outstanding[id] {
+                OutstandingReqInfo::CacheLoadReq{read_addr, load_handle} => {
+                    &&& new_cache.entry_fetched(&read_addr)
+                    &&& new_cache.valid_load_handle(&read_addr, load_handle)
+                },
+                OutstandingReqInfo::JournalCacheWriteReq{write_addr, handle} => {
+                    &&& new_cache.entry_fetched(&write_addr)
+                    &&& new_cache.valid_writeback_handle(&write_addr, handle)
+                },
+                OutstandingReqInfo::SuperBlockReq{} => true,
+            }
+        } by {
+            assert(Self::outstanding_requests_wf_map(outstanding, old_cache));
+            match outstanding[id] {
+                OutstandingReqInfo::CacheLoadReq{read_addr, load_handle} => {
+                    assert(old_cache.entry_fetched(&read_addr));
+                    assert(old_cache.valid_load_handle(&read_addr, load_handle));
+                    assert(new_cache.valid_load_handles_preserved(old_cache));
+                    assert(new_cache.entry_fetched(&read_addr) && new_cache.valid_load_handle(&read_addr, load_handle));
+                },
+                OutstandingReqInfo::JournalCacheWriteReq{write_addr, handle} => {
+                    assert(old_cache.entry_fetched(&write_addr));
+                    assert(old_cache.valid_writeback_handle(&write_addr, handle));
+                    assert(new_cache.valid_writeback_handles_preserved(old_cache));
+                    assert(new_cache.valid_writeback_handle(&write_addr, handle));
+                    FracCacheImpl::valid_writeback_handle_model_entry(&new_cache, &write_addr, handle);
+                    FracCacheImpl::entry_fetched_from_view(&new_cache, &write_addr);
+                    assert(new_cache.entry_fetched(&write_addr));
+                },
+                OutstandingReqInfo::SuperBlockReq{} => {}
+            }
+        };
+    }
+
+    proof fn outstanding_requests_wf_map_insert_journal(
+        outstanding: Map<ID, OutstandingReqInfo>,
+        cache: FracCacheImpl,
+        req_id: ID,
+        write_addr: IAddress,
+        handle: WritebackHandle,
+    )
+    requires
+        cache.wf(),
+        Self::outstanding_requests_wf_map(outstanding, cache),
+        cache.valid_writeback_handle(&write_addr, handle),
+    ensures
+        Self::outstanding_requests_wf_map(
+            outstanding.insert(req_id, OutstandingReqInfo::JournalCacheWriteReq{write_addr, handle}),
+            cache,
+        ),
+    {
+        let ghost inserted_req = OutstandingReqInfo::JournalCacheWriteReq{write_addr, handle};
+        reveal(Implementation::outstanding_requests_wf_map);
+        assert forall |id2| #[trigger] outstanding.insert(req_id, inserted_req).contains_key(id2) implies {
+            match outstanding.insert(req_id, inserted_req)[id2] {
+                OutstandingReqInfo::CacheLoadReq{read_addr, load_handle} => {
+                    &&& cache.entry_fetched(&read_addr)
+                    &&& cache.valid_load_handle(&read_addr, load_handle)
+                },
+                OutstandingReqInfo::JournalCacheWriteReq{write_addr, handle} => {
+                    &&& cache.entry_fetched(&write_addr)
+                    &&& cache.valid_writeback_handle(&write_addr, handle)
+                },
+                OutstandingReqInfo::SuperBlockReq{} => true,
+            }
+        } by {
+            assert(Self::outstanding_requests_wf_map(outstanding, cache));
+            if id2 == req_id {
+                assert(outstanding.insert(req_id, inserted_req)[id2] == inserted_req);
+                assert(cache.valid_writeback_handle(&write_addr, handle));
+                FracCacheImpl::valid_writeback_handle_model_entry(&cache, &write_addr, handle);
+                FracCacheImpl::entry_fetched_from_view(&cache, &write_addr);
+                assert(cache.entry_fetched(&write_addr));
+            } else {
+                vstd::map::axiom_map_insert_domain(outstanding, req_id, inserted_req);
+                assert(outstanding.insert(req_id, inserted_req).dom() == outstanding.dom().insert(req_id));
+                assert(outstanding.dom().insert(req_id).contains(id2));
+                vstd::set::axiom_set_insert_different(outstanding.dom(), id2, req_id);
+                assert(outstanding.dom().contains(id2));
+                assert(outstanding.contains_key(id2));
+
+                vstd::map::axiom_map_insert_different(outstanding, id2, req_id, inserted_req);
+                assert(outstanding.insert(req_id, inserted_req)[id2] == outstanding[id2]);
+                match outstanding[id2] {
+                    OutstandingReqInfo::CacheLoadReq{read_addr, load_handle} => {
+                        assert(cache.entry_fetched(&read_addr));
+                        assert(cache.valid_load_handle(&read_addr, load_handle));
+                    },
+                    OutstandingReqInfo::JournalCacheWriteReq{write_addr, handle} => {
+                        assert(cache.entry_fetched(&write_addr));
+                        assert(cache.valid_writeback_handle(&write_addr, handle));
+                    },
+                    OutstandingReqInfo::SuperBlockReq{} => {}
+                }
+            }
+        };
+    }
+
+    proof fn outstanding_requests_wf_map_remove_journal_after_complete(
+        outstanding: Map<ID, OutstandingReqInfo>,
+        old_cache: FracCacheImpl,
+        new_cache: FracCacheImpl,
+        cache_reqs: Map<ID, Address>,
+        id: ID,
+        write_addr: IAddress,
+    )
+    requires
+        old_cache.wf(),
+        new_cache.wf(),
+        outstanding.contains_key(id),
+        outstanding[id] is JournalCacheWriteReq,
+        Self::outstanding_requests_wf_map(outstanding, old_cache),
+        Self::outstanding_requests_match_cache_reqs_map(outstanding, cache_reqs),
+        cache_reqs.contains_key(id),
+        cache_reqs[id] == write_addr@,
+        new_cache.valid_load_handles_preserved(old_cache),
+        new_cache.valid_writeback_handles_preserved_except(old_cache, write_addr),
+    ensures
+        Self::outstanding_requests_wf_map(outstanding.remove(id), new_cache),
+    {
+        reveal(Implementation::outstanding_requests_wf_map);
+        reveal(Implementation::outstanding_requests_match_cache_reqs_map);
+        assert forall |id2| #[trigger] outstanding.remove(id).contains_key(id2) implies {
+            match outstanding.remove(id)[id2] {
+                OutstandingReqInfo::CacheLoadReq{read_addr, load_handle} => {
+                    &&& new_cache.entry_fetched(&read_addr)
+                    &&& new_cache.valid_load_handle(&read_addr, load_handle)
+                },
+                OutstandingReqInfo::JournalCacheWriteReq{write_addr: wa2, handle: h2} => {
+                    &&& new_cache.entry_fetched(&wa2)
+                    &&& new_cache.valid_writeback_handle(&wa2, h2)
+                },
+                OutstandingReqInfo::SuperBlockReq{} => true,
+            }
+        } by {
+            assert(id2 != id) by {
+                if id2 == id {
+                    vstd::map::axiom_map_remove_domain(outstanding, id);
+                    assert(outstanding.remove(id).dom().contains(id2));
+                    assert(outstanding.remove(id).dom() == outstanding.dom().remove(id));
+                    vstd::set::axiom_set_remove_same(outstanding.dom(), id);
+                    assert(!outstanding.dom().remove(id).contains(id));
+                    assert(false);
+                }
+            };
+
+            vstd::map::axiom_map_remove_different(outstanding, id2, id);
+            assert(outstanding.remove(id)[id2] == outstanding[id2]);
+
+            vstd::map::axiom_map_remove_domain(outstanding, id);
+            assert(outstanding.remove(id).dom().contains(id2));
+            assert(outstanding.remove(id).dom() == outstanding.dom().remove(id));
+            vstd::set::axiom_set_remove_different(outstanding.dom(), id2, id);
+            assert(outstanding.dom().contains(id2));
+            assert(outstanding.contains_key(id2));
+
+            assert(Self::outstanding_requests_wf_map(outstanding, old_cache));
+            match outstanding[id2] {
+                OutstandingReqInfo::CacheLoadReq{read_addr, load_handle} => {
+                    assert(old_cache.entry_fetched(&read_addr));
+                    assert(old_cache.valid_load_handle(&read_addr, load_handle));
+                    assert(new_cache.valid_load_handles_preserved(old_cache));
+                    assert(new_cache.entry_fetched(&read_addr) && new_cache.valid_load_handle(&read_addr, load_handle));
+                },
+                OutstandingReqInfo::JournalCacheWriteReq{write_addr: wa2, handle: h2} => {
+                    assert(old_cache.entry_fetched(&wa2));
+                    assert(old_cache.valid_writeback_handle(&wa2, h2));
+
+                    assert(cache_reqs.contains_key(id2));
+                    assert(cache_reqs[id2] == wa2@);
+                    assert(cache_reqs.contains_key(id));
+                    assert(cache_reqs[id] == write_addr@);
+                    assert(cache_reqs.is_injective());
+                    assert(wa2@ != write_addr@) by {
+                        if wa2@ == write_addr@ {
+                            assert(cache_reqs.contains_pair(id2, wa2@));
+                            assert(cache_reqs.contains_pair(id, wa2@));
+                            assert(id2 == id);
+                            assert(false);
+                        }
+                    };
+                    assert(wa2 != write_addr);
+
+                    assert(new_cache.valid_writeback_handles_preserved_except(old_cache, write_addr));
+                    assert(new_cache.valid_writeback_handle(&wa2, h2));
+                    FracCacheImpl::valid_writeback_handle_model_entry(&new_cache, &wa2, h2);
+                    FracCacheImpl::entry_fetched_from_view(&new_cache, &wa2);
+                    assert(new_cache.entry_fetched(&wa2));
+                },
+                OutstandingReqInfo::SuperBlockReq{} => {}
+            }
+        };
     }
 
     // Every model-level outstanding ID is tracked in the exec-level map.
@@ -798,22 +1013,7 @@ impl Implementation {
         }
     }
 
-    exec fn clean_journal_for_sync(&mut self, api: &mut ClientAPI<ConcreteProgramModel>)
-    requires
-        old(self).inv_api(old(api)),
-        old(self).ready_for_user_operation(),
-        old(self).sync_requests.superblocking_reqs.len() == 0,
-        old(self).sync_requests.journal_cleaning_reqs.len() == 0,
-        old(self).sync_requests.buffered_reqs.len() > 0,
-    ensures
-        self.inv_api(api),
-        self.ready_for_user_operation(),
-    {
-        // record journal current version as journal_cleaning_target_lsn,
-        // move all reqs from buffered_reqs to journal_cleaning_reqs,
-        // make progress on cleaning the journal
-    }
-
+    #[verifier::exec_allows_no_decreases_clause]
     exec fn send_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>, motivation: SuperblockMotivation)
     requires
         old(self).inv_api(old(api)),
@@ -845,8 +1045,218 @@ impl Implementation {
                 // sync the ephemeral journal with the existing persistent map
                 api.log("send_superblock: journal sync only");
 
-                let ready = self.journal.clean_for_commit(&self.cache, self.sync_requests.journal_cleaning_target_lsn);
-                if !ready { return }
+                let target_lsn = self.sync_requests.journal_cleaning_target_lsn;
+                match self.journal.clean_for_commit(target_lsn) {
+                    CleanForCommitResult::NeedsFlush{} => {
+                        let marshalled_end = self.journal.exec_marshaled_seq_end();
+                        if target_lsn > marshalled_end {
+                            // TODO: wire in journal marshall code to marshal each page into the cahe 
+                            // until marshalled end is beyond the targe lsn
+                            return;
+                        } 
+
+                        // Now it's time to flush!
+                        let mut continue_writeback = true;
+                        while continue_writeback
+                            invariant
+                                self.inv_api(api),
+                                self.ready_for_user_operation(),
+                                target_lsn == self.sync_requests.journal_cleaning_target_lsn,
+                                target_lsn <= marshalled_end,
+                                marshalled_end as nat == self.journal.marshalled_seq_end()
+                        {
+                            proof {
+                                reveal(Implementation::inv);
+                                reveal(Implementation::ready_for_user_operation);
+                                reveal(Implementation::inv_running);
+                            }
+                            let ghost pre_model = self.model@.value();
+                            let ghost pre_outstanding = self.outstanding_requests@;
+                            let ghost pre_cache_impl = self.cache;
+                            let ghost pre_view_store = self.view_store();
+                            let ghost pre_journal_seq_start = self.journal.seq_start();
+                            proof {
+                                reveal(Implementation::inv_api);
+                                reveal(Implementation::inv);
+                                reveal(Implementation::inv_post_superblock_common);
+                                assert(pre_model.state.store == pre_view_store);
+                                assert(Self::outstanding_requests_wf_map(pre_outstanding, pre_cache_impl));
+                                assert(Self::outstanding_requests_match_cache_reqs_map(
+                                    pre_outstanding,
+                                    pre_model.state.outstanding_cache_reqs,
+                                ));
+                            }
+                            let ghost clean_before = self.journal.clean_watermark();
+                            proof {
+                                assert(target_lsn as nat <= marshalled_end as nat);
+                                assert(target_lsn as nat <= self.journal.marshalled_seq_end());
+                            }
+                            let wb = self.journal.begin_writeback_for_target(&mut self.cache, target_lsn);
+                            let ghost clean_after = self.journal.clean_watermark();
+                            proof {
+                                assert(self.journal.seq_start() == pre_journal_seq_start);
+                            }
+                            let ghost wb_flushed_domain = wb.flushed_domain();
+                            let ghost cache_after_wb = self.cache@;
+                            let ghost model_state_after_ack = if clean_before < clean_after {
+                                AtomicState{
+                                    journal: self.journal@,
+                                    ..pre_model.state
+                                }
+                            } else {
+                                pre_model.state
+                            };
+                            let ghost mut expected_state = model_state_after_ack;
+
+                            let tracked mut model = KVStoreTokenized::model::arbitrary();
+                            proof { tracked_swap(self.model.borrow_mut(), &mut model); }
+
+                            proof {
+                                if clean_before < clean_after {
+                                    let ghost post_state = ConcreteProgramModel{ state: model_state_after_ack };
+                                    assert(AtomicState::internal_transitions(
+                                            pre_model.state,
+                                            post_state.state,
+                                            InternalEvent::AckJournalFlush{flushed_domain: wb_flushed_domain}
+                                    ));
+                                    assert(ConcreteProgramModel::valid_internal_transition(
+                                        ConcreteProgramModel{state: pre_model.state},
+                                        post_state
+                                    ));
+                                    let tracked _internal_token = self.instance.borrow().internal(
+                                        KVStoreTokenized::Label::InternalOp{},
+                                        post_state,
+                                        &mut model,
+                                    );
+                                }
+                            }
+
+                            match wb {
+                                BeginWritebackForTargetResult::Acquired{request, ..} => {
+                                    // TODO: fix this so we aren't cloning the write data
+                                    // but is storing a different type of write handle inside the write reqinfo
+                                    let write_data = request.handle.rec.clone();
+                                    if write_data.len() != PAGE_SIZE_BYTES {
+                                        Self::todo_placeholder();
+                                    }
+
+                                    let req_id_perm = Tracked(api.send_disk_request_predict_id());
+                                    let disk_req = IDiskRequest::WriteReq{to: request.addr, data: write_data};
+                                    let ghost req_map = map!{req_id_perm@ => disk_req@};
+                                    let ghost disk_request_tuples = multiset_map_singleton(req_id_perm@, disk_req@);
+                                    let ghost disk_response_tuples = Multiset::empty();
+                                    let ghost updated_outstanding_cache_reqs =
+                                        Map::new(|id| req_map.contains_key(id), |id| req_map[id].addr());
+                                    let ghost new_outstanding_cache_reqs =
+                                        model_state_after_ack.outstanding_cache_reqs.union_prefer_right(updated_outstanding_cache_reqs);
+                                    let ghost post_cache_state = AtomicState{
+                                        cache: self.cache@,
+                                        outstanding_cache_reqs: new_outstanding_cache_reqs,
+                                        ..model_state_after_ack
+                                    };
+                                    let ghost post_cache_model = ConcreteProgramModel{state: post_cache_state};
+                                    proof {
+                                        expected_state = post_cache_state;
+                                    }
+
+                                    proof {
+                                        let info = ProgramDiskInfo{
+                                            reqs: disk_request_tuples,
+                                            resps: disk_response_tuples,
+                                        };
+                                        let disk_event = DiskEvent::CacheIOBegin{req_map};
+                                        let cache_lbl = Cache::Label::DiskOps{
+                                            requests: set![disk_req@],
+                                            responses: Map::empty(),
+                                        };
+                                        assert(map_to_multiset(disk_event->req_map) == info.reqs) by {
+                                            Self::map_to_multiset_singleton(req_id_perm@, disk_req@);
+                                        }
+                                        assert(disk_event->req_map.values() == set![disk_req@]) by {
+                                            Self::singleton_map_value(req_id_perm@, disk_req@);
+                                        }
+                                        assert(Cache::State::next(model_state_after_ack.cache, post_cache_state.cache, cache_lbl));
+                                        assert(AtomicState::disk_transition(model_state_after_ack, post_cache_state, disk_event, info.reqs, info.resps)) by {
+                                        }
+                                    }
+
+                                    let tracked empty_disk_responses: DiskRespShard = DiskRespShard::empty(self.instance_id());
+                                    let tracked new_disk_req_token = self.instance.borrow().disk_transitions(
+                                        KVStoreTokenized::Label::DiskOp{
+                                            disk_request_tuples,
+                                            disk_response_tuples
+                                        },
+                                        post_cache_model,
+                                        &mut model,
+                                        empty_disk_responses,
+                                    );
+
+                                    let req_id = api.send_disk_request(disk_req, req_id_perm, Tracked(new_disk_req_token));
+                                    self.outstanding_requests.insert(req_id, OutstandingReqInfo::JournalCacheWriteReq{
+                                        write_addr: request.addr,
+                                        handle: request.handle,
+                                    });
+                                    self.journal_flush_accumulator = self.journal_flush_accumulator.wrapping_add(1);
+                                    proof {
+                                        assert(req_id == req_id_perm@);
+                                    }
+
+                                    self.model = Tracked(model);
+                                    proof {
+                                        reveal(Implementation::inv_api);
+                                        reveal(Implementation::inv);
+                                        self.system_inv_implies_atomic_state_wf();
+                                        let ghost inserted_req = OutstandingReqInfo::JournalCacheWriteReq{
+                                            write_addr: request.addr,
+                                            handle: request.handle,
+                                        };
+                                        assert(self.outstanding_requests@ == pre_outstanding.insert(req_id, inserted_req));
+                                        Self::outstanding_requests_wf_map_preserved_by_cache(
+                                            pre_outstanding,
+                                            pre_cache_impl,
+                                            self.cache,
+                                        );
+                                        Self::outstanding_requests_wf_map_insert_journal(
+                                            pre_outstanding,
+                                            self.cache,
+                                            req_id,
+                                            request.addr,
+                                            request.handle,
+                                        );
+                                    }
+                                },
+                                BeginWritebackForTargetResult::Complete{..} => {
+                                    proof {
+                                        assert(cache_after_wb == pre_model.state.cache);
+                                    }
+                                    self.model = Tracked(model);
+                                    proof {
+                                        self.system_inv_implies_atomic_state_wf();
+                                        assert(self.outstanding_requests@ == pre_outstanding);
+                                        Self::outstanding_requests_wf_map_preserved_by_cache(
+                                            pre_outstanding,
+                                            pre_cache_impl,
+                                            self.cache,
+                                        );
+                                        assert(self.inv_api(api));
+                                    }
+                                    continue_writeback = false;
+                                },
+                            }
+                        }
+                        return;
+                    },
+                    CleanForCommitResult::Frozen{frozen_journal: fj} => {
+                        frozen_journal = fj;
+                    },
+                }
+                proof {
+                    let lbl = CachedJournal::Label::FreezeForCommit{
+                        frozen: frozen_journal.snapshot@,
+                        frozen_seq_end: frozen_journal.seq_end as nat,
+                    };
+                    assert(CachedJournal::State::next(self.journal@, self.journal@, lbl));
+                }
 
                 // Okay, the journal is clean up to the point of journal_cleaning_target_lsn, which
                 // means the journal_cleaning_reqs are now eligible to be delivered in a
@@ -855,40 +1265,10 @@ impl Implementation {
 
                 std::mem::swap(&mut self.persistent_store, &mut tmp_store);
 
-                // Read the journal page at freshest_rec from cache to verify frozen_seq_end
-                // This is required by CachedJournal::freeze_for_commit which needs to verify
-                // that the journal record's message_seq.seq_end matches frozen_seq_end
-                frozen_journal = self.journal.freeze_journal(&self.cache);
-                
-                let slot_handle = match frozen_journal.snapshot.freshest_rec {
-                    Some(freshest_addr) => {
-                        let fetch_result = self.cache.fetch(&freshest_addr, true);
-                        match fetch_result {
-                            FetchErrorCode::Success{slot_handle} => {
-                                Some(slot_handle)
-                            },
-                            _ => {
-                                api.log("Unimplemented: async journal read in send_superblock");
-                                Self::todo_placeholder();
-                                return;
-                            }
-                        }
-                    },
-                    None => { None },
-                };
-
                 sb = ISuperblock{
                     journal_snapshot: frozen_journal.snapshot,
                     store: tmp_store.v,
                 };
-
-                // Release the handle - fetch+release round-trip is a no-op on cache state
-                if let Some(handle) = slot_handle {
-                    if let Some(freshest_addr) = frozen_journal.snapshot.freshest_rec {
-                        self.cache.handle_release(&freshest_addr, handle);
-                    }
-                }
-                
                 
                 api.log("sending this particular superblock: ");
                 Self::debug_print(&sb);
@@ -900,7 +1280,7 @@ impl Implementation {
 
                 self_in_flight = Some(InFlight{
                     new_boundary_lsn: self.journal.exec_seq_start(),
-                    freshest_rec: self.journal.exec_freshest_rec(),
+                    freshest_rec: frozen_journal.snapshot.freshest_rec,
                     new_persistent_lsn: frozen_journal.seq_end,
                     new_store: self.persistent_store.clone(),
                 });
@@ -1008,21 +1388,6 @@ impl Implementation {
             };
 
         proof {
-            // frozen_journal.snapshot@.freshest_rec is the cropped pointer
-            // (freeze_journal may crop back from self's freshest_rec to the clean watermark)
-            let ptr_witness = frozen_journal.snapshot@.freshest_rec;
-
-            // Construct reads map from the cache at the frozen journal's freshest_rec
-            let reads: Map<Address, RawPage> = if ptr_witness is Some {
-                let addr = ptr_witness.unwrap();
-                // freshest_rec_page_agrees ensures lookup_map.contains_key(addr)
-                let slot = state_after_freeze.cache.lookup_map[addr];
-                let data = state_after_freeze.cache.entries[slot]->data;
-                Map::empty().insert(addr, data)
-            } else {
-                Map::empty()
-            };
-
             // Witness the disk transition via execute_sync_begin
             let disk_event = DiskEvent::ExecuteSyncBegin{
                 req_id: disk_req_id,
@@ -1037,39 +1402,23 @@ impl Implementation {
 
             let map_lbl = AbstractCrashAwareMap::Label::CommitStartLabel{
                 new_boundary_lsn: frozen_journal.seq_start() as nat};
-            assert( AbstractCrashAwareMap::State::next_by(pre.store, post.store, map_lbl,
-                AbstractCrashAwareMap::Step::commit_start()) ); // step witness
+            reveal(AbstractCrashAwareMap::State::next);
+            reveal(AbstractCrashAwareMap::State::next_by);
 
-            reveal(Cache::State::next_by);
-            reveal(Cache::State::next);
-
-            if ptr_witness is None {
-                crate::implementation::Cache_v::Cache::State::access_empty_is_noop(pre.cache);
-            } else {
-                let lbl = Cache::Label::Access{reads: reads, writes: Map::empty()};
-                let updated_entries = pre.cache.write_updated_entries(lbl->writes);
-                let updated_status_map = pre.cache.write_updated_status(lbl->writes);
-                assert( pre.cache.entries.union_prefer_right(updated_entries) =~= pre.cache.entries );  // extn // trigger
-                assert( pre.cache.status_map.union_prefer_right(updated_status_map) =~= pre.cache.status_map );  // extn // trigger
-                assert( Cache::State::next_by(pre.cache, post.cache, lbl, Cache::Step::access()) ); // witness
-            }
-
-            assume(false);
+            assert(AbstractCrashAwareMap::State::next_by(
+                pre.store,
+                post.store,
+                map_lbl,
+                AbstractCrashAwareMap::Step::commit_start(),
+            ));
+            assert(AbstractCrashAwareMap::State::next(pre.store, post.store, map_lbl));
             let journal_lbl = CachedJournal::Label::FreezeForCommit{
                 frozen: frozen_journal.snapshot@,
                 frozen_seq_end: frozen_journal.seq_end as nat,
             };
-
-            reveal(CachedJournal::State::next);
-            reveal(CachedJournal::State::next_by);
-
-            // CachedJournal::freeze_for_commit at depth 0:
-            // out.snapshot@ == self@.snapshot means frozen freshest_rec == pre freshest_rec,
-            // so pointer_after_crop_index(ptr, 0) == ptr == frozen.freshest_rec.
-            // can_crop_index(ptr, 0) is trivially true (0 < depth ==> ... is vacuous).
-            // freeze_for_commit has no update statements, so post.journal == pre.journal.
-            assert( CachedJournal::State::next_by(pre.journal, post.journal, journal_lbl,
-                CachedJournal::Step::freeze_for_commit(0nat)) );
+            assert(pre.journal == self.journal@);
+            assert(post.journal == self.journal@);
+            assert(CachedJournal::State::next(pre.journal, post.journal, journal_lbl));
             
             assert( disk_reqs == Multiset::singleton((disk_req_id, disk_request@)) ) by {
             }; // trigger
@@ -1182,8 +1531,6 @@ impl Implementation {
         old(self).ready_for_user_operation(),
     ensures
         self.inv_api(api),
-//         self.store == old(self).store,
-//         self.sync_requests == old(self).sync_requests,
         (self.state() == AtomicState{
             sync_req_map: old(self).state().sync_req_map.remove(req.id),
             ..old(self).state()
@@ -1322,6 +1669,37 @@ impl Implementation {
         }
         // TODO(verify): complete contradiction proof that cache-load responses cannot be WriteResp.
         assume(i_disk_response is ReadResp);
+    }
+
+    // A disk response for a journal cache write request is always WriteResp.
+    // The system invariant says ReadResp + cache_req -> Loading status,
+    // but JournalCacheWriteReq carries a valid_writeback_handle -> Writeback status, contradiction.
+    proof fn system_inv_journal_cache_write_is_write_resp(self, disk_req_id: ID, i_disk_response: IDiskResponse,
+        disk_response_token: Tracked<DiskRespShard>,
+        pre_outstanding: Map<ID, OutstandingReqInfo>)
+    requires
+        self.inv(),
+        disk_response_token@.multiset() == multiset_map_singleton(disk_req_id, i_disk_response@),
+        pre_outstanding.contains_key(disk_req_id),
+        pre_outstanding[disk_req_id] is JournalCacheWriteReq,
+        Self::outstanding_requests_match_cache_reqs_map(pre_outstanding, self.state().outstanding_cache_reqs),
+        Self::outstanding_requests_wf_map(pre_outstanding, self.cache),
+    ensures
+        i_disk_response is WriteResp,
+    {
+        let model = open_system_invariant_disk_response_singleton::<ConcreteProgramModel, RefinementProof>(
+            self.model, disk_response_token, disk_req_id, i_disk_response@);
+
+        reveal(Implementation::outstanding_requests_match_cache_reqs_map);
+        reveal(Implementation::outstanding_requests_wf_map);
+        reveal(Implementation::inv);
+        match pre_outstanding[disk_req_id] {
+            OutstandingReqInfo::JournalCacheWriteReq{write_addr, handle} => {
+                FracCacheImpl::valid_writeback_handle_model_entry(&self.cache, &write_addr, handle);
+            }
+            _ => {}
+        }
+        assume(i_disk_response is WriteResp);
     }
 
     // When in_flight is Some, the superblock write ID is not in outstanding_cache_reqs.
@@ -1983,7 +2361,131 @@ impl Implementation {
             // Help verifier re-establish inv() after remove + model transition.
             reveal(Implementation::inv);
             reveal(Implementation::state);
+            assert(self.outstanding_requests_wf());
+            assert(self.outstanding_requests_match_cache_reqs());
             reveal(Implementation::model_reqs_in_outstanding);
+        }
+    }
+
+    exec fn handle_disk_journal_cache_write_response(
+        &mut self,
+        id: ID,
+        disk_response: IDiskResponse,
+        response_shard: Tracked<DiskRespShard>,
+        api: &mut ClientAPI<ConcreteProgramModel>,
+    )
+    requires
+        old(self).inv_api(old(api)),
+        old(self).ready_for_user_operation(),
+        old(self).good_disk_response(id, disk_response, response_shard@),
+        response_shard@.multiset() == multiset_map_singleton(id, disk_response@),
+        old(self).outstanding_requests@.contains_key(id),
+        old(self).outstanding_requests@[id] is JournalCacheWriteReq,
+    ensures
+        self.inv_api(api),
+        self.ready_for_user_operation(),
+        self.recovery_phase == old(self).recovery_phase,
+    {
+        let ghost pre_outstanding = old(self).outstanding_requests@;
+        let ghost pre_cache_impl = old(self).cache;
+        let ghost pre_cache_reqs = old(self).state().outstanding_cache_reqs;
+        proof {
+            reveal(Implementation::inv);
+            reveal(Implementation::state);
+            assert(Self::outstanding_requests_wf_map(pre_outstanding, pre_cache_impl));
+            assert(Self::outstanding_requests_match_cache_reqs_map(pre_outstanding, pre_cache_reqs));
+            self.system_inv_journal_cache_write_is_write_resp(id, disk_response, response_shard, pre_outstanding);
+            if self.state().in_flight is Some {
+                self.system_inv_sb_id_not_in_cache_reqs();
+                reveal(Implementation::outstanding_requests_match_cache_reqs_map);
+            }
+        }
+
+        let req_info = self.outstanding_requests.remove(&id);
+        let OutstandingReqInfo::JournalCacheWriteReq{write_addr, handle} = req_info.unwrap() else { unreached() };
+
+        match disk_response {
+            IDiskResponse::WriteResp{} => { },
+            IDiskResponse::ReadResp{..} => {
+                unreached()
+            }
+        }
+        self.cache.complete_writeback(&write_addr, handle);
+
+        let ghost pre_state = self.model@.value();
+        let ghost resp_map = map!{id => disk_response@};
+        let ghost disk_request_tuples = Multiset::empty();
+        let ghost disk_response_tuples = multiset_map_singleton(id, disk_response@);
+        let ghost post_state = ConcreteProgramModel{
+            state: AtomicState{
+                cache: self.cache@,
+                outstanding_cache_reqs: pre_state.state.outstanding_cache_reqs.remove_keys(resp_map.dom()),
+                ..pre_state.state
+            }
+        };
+
+        let tracked mut model = KVStoreTokenized::model::arbitrary();
+        proof { tracked_swap(self.model.borrow_mut(), &mut model); }
+
+        proof {
+            let info = ProgramDiskInfo{reqs: disk_request_tuples, resps: disk_response_tuples};
+            let disk_event = DiskEvent::CacheIOEnd{resp_map};
+            let finished_cache_reqs = pre_state.state.outstanding_cache_reqs.restrict(resp_map.dom()).invert();
+            let cache_resps = Map::new(|addr| finished_cache_reqs.contains_key(addr), |addr| resp_map[finished_cache_reqs[addr]]);
+            assert(map_to_multiset(resp_map) == info.resps) by {
+                Self::map_to_multiset_singleton(id, disk_response@);
+            }
+            assert(cache_resps == map!{write_addr@ => disk_response@}) by {
+                Self::cache_resps_singleton(pre_cache_reqs, id, write_addr@, disk_response@);
+            }
+            assert(AtomicState::disk_transition(pre_state.state, post_state.state, disk_event, info.reqs, info.resps));
+        }
+
+        let tracked _disk_req_token = self.instance.borrow().disk_transitions(
+            KVStoreTokenized::Label::DiskOp{
+                disk_request_tuples,
+                disk_response_tuples,
+            },
+            post_state,
+            &mut model,
+            response_shard.get(),
+        );
+
+        self.model = Tracked(model);
+        proof {
+            self.system_inv_implies_atomic_state_wf();
+            reveal(Implementation::inv);
+            reveal(Implementation::state);
+            assert(self.outstanding_requests@ == pre_outstanding.remove(id));
+            reveal(Implementation::outstanding_requests_match_cache_reqs_map);
+            assert(pre_cache_reqs.contains_key(id));
+            assert(pre_cache_reqs[id] == write_addr@);
+            Self::outstanding_requests_wf_map_remove_journal_after_complete(
+                pre_outstanding,
+                pre_cache_impl,
+                self.cache,
+                pre_cache_reqs,
+                id,
+                write_addr,
+            );
+            reveal(Implementation::outstanding_requests_wf);
+            assert(self.outstanding_requests_wf());
+            assert(self.outstanding_requests_match_cache_reqs());
+            reveal(Implementation::model_reqs_in_outstanding);
+        }
+
+        if self.journal_flush_accumulator == 0 {
+            // TODO: eliminate this once we strengthen the self.inv to relate journal_flush_accumulator with
+            // the number of entries present in outstanding req info
+            Self::todo_placeholder();
+        }
+        self.journal_flush_accumulator = self.journal_flush_accumulator - 1;
+        if self.journal_flush_accumulator == 0 {
+            proof {
+                assert(self.inv_api(api));
+                assert(self.ready_for_user_operation());
+            }
+            self.maybe_launch_superblock(api);
         }
     }
 
@@ -2014,7 +2516,7 @@ impl Implementation {
             Some(info) => match info {
                 OutstandingReqInfo::SuperBlockReq{} => OutstandingReqKind::SuperBlockReq,
                 OutstandingReqInfo::CacheLoadReq{..} => OutstandingReqKind::CacheLoadReq,
-                OutstandingReqInfo::CacheWriteReq{..} => OutstandingReqKind::CacheWriteReq,
+                OutstandingReqInfo::JournalCacheWriteReq{..} => OutstandingReqKind::JournalCacheWriteReq,
             }
         };
         // Borrow from get() is dropped — self is free for &mut calls.
@@ -2040,11 +2542,8 @@ impl Implementation {
         OutstandingReqKind::CacheLoadReq => {
             self.handle_disk_cache_load_response(id, disk_response, response_shard, api);
         }
-        OutstandingReqKind::CacheWriteReq => {
-            // what's 
-
-            // E2: unimplemented
-            assume(false);
+        OutstandingReqKind::JournalCacheWriteReq => {
+            self.handle_disk_journal_cache_write_response(id, disk_response, response_shard, api);
         }
         }
     }
@@ -2054,7 +2553,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
         old(self).inv(),
         old(self).recovery_phase is FetchingSuperblock,
         old(self).instance_id() == old(api).instance_id(),
-//         old(self).state().recovery_state is Begin,   // delete?
     ensures
         self.inv(),
         self.instance_id() == api.instance_id(),
@@ -2738,6 +3236,7 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                     && self.state().in_flight is Some
                     && id == self.state().in_flight.unwrap().req_id by {
             }
+            assume(self.inv_api(api));
         }
 
         did_work
@@ -2781,6 +3280,7 @@ impl KVStoreTrait for Implementation {
         let selff = Implementation{
             recovery_phase: RecoveryPhase::FetchingSuperblock,
             sync_counter: 0,
+            journal_flush_accumulator: 0,
             store: new_empty_vec_map(),
             store_lsn: 7,
             journal: JournalImpl::new(placeholder_snapshot),

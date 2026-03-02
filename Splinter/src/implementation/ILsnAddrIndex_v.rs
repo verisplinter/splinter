@@ -436,13 +436,16 @@ impl ILsnAddrIndex {
         }
     }
 
-    pub exec fn lookup_lsn(&self, lsn: ILsn) -> (out: IAddress)
+    pub exec fn lookup_lsn_with_segment_end(&self, lsn: ILsn) -> (out: (IAddress, ILsn))
         requires
             self.wf(),
             self.seq_start() <= lsn < self.seq_end(),
         ensures
             self@.contains_key(lsn as nat),
-            out@ == self@[lsn as nat],
+            out.0@ == self@[lsn as nat],
+            lsn < out.1,
+            out.1 <= self.seq_end(),
+            self@.restrict(Set::new(|k: LSN| lsn <= k < out.1)).values() == set![out.0@],
     {
         let mut i: usize = 0;
         while i < self.addrs.len()
@@ -456,12 +459,36 @@ impl ILsnAddrIndex {
             decreases self.addrs.len() - i
         {
             if self.bounds[i] <= lsn && lsn < self.bounds[i + 1] {
+                let out_addr = self.addrs[i];
+                let out_end = self.bounds[i + 1];
                 proof {
+                    let ii = i as int;
                     self.lsn_maps_to_addr(i as int, lsn as nat);
+                    self.bounds_monotone((i + 1) as int, (self.bounds.len() - 1) as int);
+                    let seg_index = self@.restrict(Set::new(|k: LSN| lsn <= k < out_end));
+                    let seg_values = self@.restrict(Set::new(|k: LSN| lsn <= k < out_end)).values();
+                    assert(seg_values =~= set![out_addr@]) by {
+                        assert forall |a: Address| #[trigger] seg_values.contains(a) implies set![out_addr@].contains(a) by {
+                            let k = choose |k: LSN| #![auto] seg_index.contains_key(k) && seg_index[k] == a;
+                            assert(self@.contains_key(k));
+                            assert(lsn <= k < out_end);
+                            assert(self.bounds[ii] <= k < self.bounds[ii + 1]) by {
+                                assert(self.bounds[ii] <= lsn);
+                                assert(out_end == self.bounds[ii + 1]);
+                            }
+                            self.lsn_maps_to_addr(ii, k);
+                            assert(a == out_addr@);
+                        };
+                        assert(seg_values.contains(out_addr@)) by {
+                            assert(self@.contains_key(lsn as nat));
+                            assert(self@[lsn as nat] == out_addr@) by {
+                                self.lsn_maps_to_addr(ii, lsn as nat);
+                            }
+                            assert(seg_index.contains_key(lsn as nat));
+                        }
+                    };
                 }
-                return self.addrs[i];
-            }
-            proof {
+                return (out_addr, out_end);
             }
             i = i + 1;
         }

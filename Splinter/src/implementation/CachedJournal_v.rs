@@ -553,9 +553,11 @@ state_machine!{ CachedJournal {
         require pre.status is Some;
         require let Label::FreezeForCommit{frozen, frozen_seq_end} = lbl;
 
+        // TODO: maybe we want to remove the watermark within marshalled journal
         require pre.seq_start() <= frozen.boundary_lsn <= frozen_seq_end;
         require pre.can_crop_index(pre.snapshot.freshest_rec, depth);
 
+        // NOTE: restriction on valid frozen journal range imposed by LikesJournal freeze_for_commit (see comment there)
         let ptr = pre.pointer_after_crop_index(pre.snapshot.freshest_rec, depth);
         require ptr is None ==> pre.snapshot.boundary_lsn == frozen.boundary_lsn;
         require frozen.freshest_rec == discard_old_ptr_by_index(pre.status.unwrap().lsn_addr_index, ptr, frozen.boundary_lsn);
@@ -569,7 +571,7 @@ state_machine!{ CachedJournal {
     }}
 
     transition!{ query_end_lsn(lbl: Label) {
-        require pre.status is Some;              
+        require pre.status is Some;
         require lbl is QueryEndLsn;
         require lbl->end_lsn == pre.seq_end();
     }}
@@ -580,7 +582,7 @@ state_machine!{ CachedJournal {
         require pre.clean_watermark() < target_lsn <= pre.marshalled_seq_end();
 
         let index = pre.status.unwrap().lsn_addr_index;
-        let flushed_lsns = Set::new(|lsn: LSN| pre.clean_watermark() <= lsn && lsn < target_lsn);
+        let flushed_lsns = Set::new(|lsn: LSN| pre.clean_watermark() <= lsn < target_lsn);
         require lbl->flushed_domain == index.restrict(flushed_lsns).values();
 
         update status = Some(JournalStatus{
