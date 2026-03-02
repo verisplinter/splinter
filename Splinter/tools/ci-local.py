@@ -44,7 +44,7 @@ def main() -> int:
     args = parser.parse_args()
 
     script_path = Path(__file__).resolve()
-    # Script lives at <repo>/Splinter/tools/ci-local.sh
+    # Script lives at <repo>/Splinter/tools/ci-local.py
     repo_root = script_path.parents[2]
     splinter_dir = repo_root / "Splinter"
     verus_checkout = repo_root / "_verus"
@@ -77,11 +77,13 @@ def main() -> int:
     print("== build verus ==")
     env = os.environ.copy()
     env["RUSTUP_TOOLCHAIN"] = rust_toolchain
-    run_bash(
-        "source tools/activate && cd source && bash tools/get-z3.sh && vargo build --release",
-        cwd=verus_checkout,
-        env=env,
-    )
+    z3_bin = verus_checkout / "source" / "z3"
+    if z3_bin.is_file() and os.access(z3_bin, os.X_OK):
+        print("== z3 cache hit: using existing _verus/source/z3 ==")
+    else:
+        print("== z3 cache miss: fetching z3 ==")
+        run_bash("cd source && bash tools/get-z3.sh", cwd=verus_checkout, env=env)
+    run_bash("source tools/activate && cd source && vargo build --release", cwd=verus_checkout, env=env)
 
     verus_bin = verus_checkout / "source" / "target-verus" / "release" / "verus"
     cargo_verus_bin = verus_checkout / "source" / "target-verus" / "release"
