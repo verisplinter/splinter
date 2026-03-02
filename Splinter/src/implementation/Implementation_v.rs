@@ -231,6 +231,10 @@ pub struct Implementation {
     sync_requests: SyncRequestBuffer,
 
     outstanding_requests: HashMapWithView<ID, OutstandingReqInfo>,
+
+    // Hint to retry superblock launch from top-level control flow after
+    // background marshalling advances.
+    should_retry_superblock_launch: bool,
 }
 
 impl Implementation {
@@ -1048,13 +1052,17 @@ impl Implementation {
                 let target_lsn = self.sync_requests.journal_cleaning_target_lsn;
                 match self.journal.clean_for_commit(target_lsn) {
                     CleanForCommitResult::NeedsFlush{} => {
+                        api.log("send_superblock: clean_for_commit -> NeedsFlush");
                         let marshalled_end = self.journal.exec_marshaled_seq_end();
                         if target_lsn > marshalled_end {
-                            // TODO: wire in journal marshall code to marshal each page into the cahe 
-                            // until marshalled end is beyond the targe lsn
+                            // Not ready to flush yet; background work may advance marshalling.
+                            // Ask the main loop to retry launching superblock later.
+                            api.log("send_superblock: waiting for tail marshalling before cleaning");
+                            self.should_retry_superblock_launch = true;
                             return;
                         } 
 
+                        api.log("send_superblock: tail marshalled enough, starting journal page cleaning");
                         // Now it's time to flush!
                         let mut continue_writeback = true;
                         while continue_writeback
@@ -1133,6 +1141,7 @@ impl Implementation {
 
                             match wb {
                                 BeginWritebackForTargetResult::Acquired{request, ..} => {
+                                    api.log("send_superblock: cleaning one journal page to disk");
                                     // TODO: fix this so we aren't cloning the write data
                                     // but is storing a different type of write handle inside the write reqinfo
                                     let write_data = request.handle.rec.clone();
@@ -1226,6 +1235,7 @@ impl Implementation {
                                     }
                                 },
                                 BeginWritebackForTargetResult::Complete{..} => {
+                                    api.log("send_superblock: cleaning target reached");
                                     proof {
                                         assert(cache_after_wb == pre_model.state.cache);
                                     }
@@ -3149,13 +3159,29 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
             self.inv_api(api),
             self.ready_for_user_operation(),
     {
+        api.log("background: consider tail marshalling");
         if !self.should_do_background_marshal() {
+            api.log("background: skip marshalling (outstanding requests present)");
             proof {
             }
             return false;
         }
+        let marshalled_before = self.journal.exec_marshaled_seq_end();
         let ghost pre_state = self.model@.value();
         let did_work = self.journal.internal_journal_marshal_one_page(&mut self.cache);
+        let marshalled_after = self.journal.exec_marshaled_seq_end();
+        if did_work {
+            api.log("background: marshalled one page from tail");
+        } else {
+            api.log("background: no marshalling progress");
+        }
+        if did_work {
+            // Background marshalling may have made a pending sync launchable.
+            self.should_retry_superblock_launch = true;
+            if marshalled_after > marshalled_before {
+                api.log("background: marshalling frontier advanced");
+            }
+        }
 
         let tracked mut model = KVStoreTokenized::model::arbitrary();
         proof { tracked_swap(self.model.borrow_mut(), &mut model); }
@@ -3292,6 +3318,7 @@ impl KVStoreTrait for Implementation {
             instance: Tracked(instance),
             sync_requests: SyncRequestBuffer::new_empty(),
             outstanding_requests: HashMapWithView::new(),
+            should_retry_superblock_launch: false,
         };
         selff
     }
@@ -3356,6 +3383,11 @@ impl KVStoreTrait for Implementation {
                     }
                     // Internal/background maintenance work for the ready state.
                     progress = progress || self.do_background_work(&mut api);
+                    if self.should_retry_superblock_launch {
+                        self.should_retry_superblock_launch = false;
+                        self.maybe_launch_superblock(&mut api);
+                        progress = true;
+                    }
                 }
             }
 
