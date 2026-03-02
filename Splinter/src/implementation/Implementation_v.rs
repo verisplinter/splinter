@@ -1054,7 +1054,7 @@ impl Implementation {
                 api.log("send_superblock: journal sync only");
 
                 let target_lsn = self.sync_requests.journal_cleaning_target_lsn;
-                match self.journal.clean_for_commit(target_lsn) {
+                match self.journal.freeze_for_commit(target_lsn) {
                     CleanForCommitResult::NeedsFlush{} => {
                         api.log("send_superblock: clean_for_commit -> NeedsFlush");
                         let marshalled_end = self.journal.exec_marshaled_seq_end();
@@ -1264,6 +1264,7 @@ impl Implementation {
                                 },
                             }
                         }
+                        // TODO: add maybe launch superblock flag
                         return;
                     },
                     CleanForCommitResult::Frozen{frozen_journal: fj} => {

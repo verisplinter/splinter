@@ -285,7 +285,13 @@ impl AtomicState {
     pub closed spec fn journal_background_journal_step(pre_journal: CachedJournal::State, post_journal: CachedJournal::State) -> bool
     {
         ||| post_journal == pre_journal
-        ||| exists |writes: Map<Address, JournalRecord>| {
+        ||| exists |writes: Map<Address, JournalRecord>|
+            #![trigger CachedJournal::State::next(
+                pre_journal,
+                post_journal,
+                CachedJournal::Label::JournalMarshal{writes},
+            )]
+        {
             CachedJournal::State::next(
                 pre_journal,
                 post_journal,
