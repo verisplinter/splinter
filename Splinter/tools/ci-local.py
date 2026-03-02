@@ -37,9 +37,9 @@ def main() -> int:
         description="Run local equivalent of .github/workflows/verify.yml verify job."
     )
     parser.add_argument(
-        "--reuse-verus",
+        "--fresh-verus",
         action="store_true",
-        help="Reuse existing ./_verus checkout/build instead of deleting it.",
+        help="Delete and rebuild ./_verus from scratch (default is reuse).",
     )
     args = parser.parse_args()
 
@@ -62,7 +62,7 @@ def main() -> int:
     print("== rust toolchain ==")
     run(["rustup", "toolchain", "install", rust_toolchain])
 
-    if not args.reuse_verus and verus_checkout.exists():
+    if args.fresh_verus and verus_checkout.exists():
         print("== reset _verus ==")
         shutil.rmtree(verus_checkout)
 
