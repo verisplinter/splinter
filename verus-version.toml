@@ -2,5 +2,5 @@
 # Update verus_commit when the required verus version changes.
 # verus_repo can point to a fork if the needed commit isn't on mainline.
 verus_repo = "https://github.com/verus-lang/verus.git"
-verus_commit = "d4eb2346bf5db8c0aeb8644e3a3adb2bf58b3951"
-rust_toolchain = "1.93.0"
+verus_commit = "25809cb2fc9e2cb893e473d77b92b4d8dbb2afc8"
+rust_toolchain = "1.93.1"
