@@ -1251,6 +1251,7 @@ impl Implementation {
                                         assert(self.inv_api(api));
                                     }
                                     continue_writeback = false;
+                                    self.should_retry_superblock_launch = true;
                                 },
                             }
                         }
