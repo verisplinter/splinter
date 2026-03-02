@@ -55,3 +55,9 @@ jobs:
         run: |
           ../_verus/source/target-verus/release/verus src/main.rs \
             --expand-errors --multiple-errors 5
+
+      - name: Build splinter
+        working-directory: Splinter
+        run: |
+          export PATH="$GITHUB_WORKSPACE/_verus/source/target-verus/release:$PATH"
+          cargo verus build

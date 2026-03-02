@@ -12,10 +12,10 @@ name = "marshalling_test"
 path = "src/marshalling_test.rs"
 
 [dependencies]
-vstd = "=0.0.0-2026-01-25-0057"
-verus_builtin = "=0.0.0-2026-01-25-0057"
-verus_builtin_macros = "=0.0.0-2026-01-25-0057"
-verus_state_machines_macros = "=0.0.0-2026-01-25-0057"
+vstd = "=0.0.0-2026-03-01-0109"
+verus_builtin = "=0.0.0-2026-03-01-0109"
+verus_builtin_macros = "=0.0.0-2026-03-01-0109"
+verus_state_machines_macros = "=0.0.0-2026-03-01-0109"
 
 [package.metadata.verus]
 verify = true

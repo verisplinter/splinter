@@ -261,7 +261,7 @@ impl<ProgramModel: ProgramModelTrait> ClientAPI<ProgramModel>{
     pub proof fn send_disk_request_predict_id(&self) -> (tracked out: ID)
     {
         //Tracked::assume_new()
-        let Tracked(out) = Tracked::assume_new(); out
+        let Tracked(out) = Tracked::<ID>::assume_new(); out
     }
 
     pub fn i_page_count() -> (out: u64)
@@ -383,4 +383,3 @@ impl<ProgramModel: ProgramModelTrait> ClientAPI<ProgramModel>{
 }
 
 } 
-
