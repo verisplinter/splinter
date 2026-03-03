@@ -1000,6 +1000,10 @@ impl Implementation {
         self.ready_for_user_operation(),
     {
         Self::debug_print(&"maybe_launch_superblock...");
+        if self.outstanding_requests.len() > 0 {
+            Self::debug_print(&"  └─ defer launch: waiting on outstanding disk IO");
+            return;
+        }
         if self.sync_requests.superblocking_reqs.len() > 0 {    // todo write as in_flight -- for journal truncation case
             Self::debug_print(&"  └─ another superblock in flight");
         } else {
@@ -1235,7 +1239,13 @@ impl Implementation {
                                     }
                                 },
                                 BeginWritebackForTargetResult::Complete{..} => {
-                                    api.log("send_superblock: cleaning target reached");
+                                    let clean_now = self.journal.exec_clean_watermark();
+                                    if target_lsn <= clean_now {
+                                        api.log("send_superblock: cleaning target reached");
+                                        self.should_retry_superblock_launch = true;
+                                    } else {
+                                        api.log("send_superblock: waiting for writeback responses");
+                                    }
                                     proof {
                                         assert(cache_after_wb == pre_model.state.cache);
                                     }
@@ -1251,7 +1261,6 @@ impl Implementation {
                                         assert(self.inv_api(api));
                                     }
                                     continue_writeback = false;
-                                    self.should_retry_superblock_launch = true;
                                 },
                             }
                         }
@@ -3366,6 +3375,13 @@ impl KVStoreTrait for Implementation {
                     progress = self.recover_apply_journal_to_recover_ephemeral_map(&mut api);
                 }
                 RecoveryPhase::ReadyForUserOperation => {
+                    if self.should_retry_superblock_launch {
+                        if self.outstanding_requests.len() == 0 {
+                            self.should_retry_superblock_launch = false;
+                            self.maybe_launch_superblock(&mut api);
+                            progress = true;
+                        }
+                    }
                     match api.receive_request(debug_print) {
                         None => {},
                         Some(rec) => {
@@ -3383,12 +3399,8 @@ impl KVStoreTrait for Implementation {
                         }
                     }
                     // Internal/background maintenance work for the ready state.
-                    progress = progress || self.do_background_work(&mut api);
-                    if self.should_retry_superblock_launch {
-                        self.should_retry_superblock_launch = false;
-                        self.maybe_launch_superblock(&mut api);
-                        progress = true;
-                    }
+                    let bg_progress = self.do_background_work(&mut api);
+                    progress = progress || bg_progress;
                 }
             }
 
