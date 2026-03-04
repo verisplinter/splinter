@@ -65,8 +65,10 @@ jobs:
       - name: Run Crash-Recovery Scripted Regression
         working-directory: Splinter
         run: |
+          set +e
           timeout 120s ./target/debug/verisplinter > /tmp/verisplinter-script.log 2>&1
           status=$?
+          set -e
           if [ "$status" -eq 124 ]; then
             echo "scripted regression timed out"
             tail -n 120 /tmp/verisplinter-script.log
