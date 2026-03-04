@@ -23,7 +23,7 @@ use crate::abstract_system::AbstractCrashAwareJournal_v::{AbstractCrashAwareJour
 use crate::journal::LinkedJournal_v::*;
 use crate::implementation::CachedJournal_v::*;
 use crate::implementation::Cache_v::*;
-use crate::implementation::AtomicState_v::{InflightInfo, raw_page_to_record, to_journal_reads};
+use crate::implementation::AtomicState_v::{InflightInfo, raw_page_to_record, to_journal_records};
 use crate::allocation_layer::LikesJournal_v::{LikesJournal, LsnAddrIndex};
 use crate::implementation::JournalCoordinationSystem_v::{JournalCoordinationSystem, cj_boundary_lsn, cj_freshest_rec, cj_lsn_addr_index, cj_unmarshalled_tail};
 
@@ -65,7 +65,7 @@ state_machine!{ ConcreteJournal {
         let cache_lbl = Cache::Label::Access{reads: reads, writes: Map::empty()};
         require Cache::State::next(pre.cache, pre.cache, cache_lbl);
 
-        let journal_lbl = CachedJournal::Label::ReadForRecovery{messages, reads: to_journal_reads(reads)};
+        let journal_lbl = CachedJournal::Label::ReadForRecovery{messages, reads: to_journal_records(reads)};
         require CachedJournal::State::next(pre.journal, pre.journal, journal_lbl);
     }}
 
@@ -180,7 +180,7 @@ state_machine!{ ConcreteJournal {
         require Cache::State::next(pre.cache, pre.cache, cache_lbl2);
 
         let ptr = frozen.freshest_rec;
-        let frozen_seq_end = if ptr is Some { to_journal_reads(reads)[ptr.unwrap()].message_seq.seq_end } else { frozen.boundary_lsn };
+        let frozen_seq_end = if ptr is Some { to_journal_records(reads)[ptr.unwrap()].message_seq.seq_end } else { frozen.boundary_lsn };
 
         let journal_lbl = CachedJournal::Label::FreezeForCommit{
             frozen, frozen_seq_end};

@@ -13,7 +13,7 @@ use crate::disk::GenericDisk_v::Pointer;
 use crate::abstract_system::AbstractCrashAwareJournal_v::AbstractCrashAwareJournal;
 use crate::implementation::ConcreteJournal_v::ConcreteJournal;
 use crate::journal::LinkedJournal_v::{DiskView, TruncatedJournal};
-use crate::implementation::AtomicState_v::{AtomicState, DiskEvent, InternalEvent, ProgramEvent, RecoveryState, raw_page_to_record, to_map_label, to_journal_reads};
+use crate::implementation::AtomicState_v::{AtomicState, DiskEvent, InternalEvent, ProgramEvent, RecoveryState, raw_page_to_record, to_map_label, to_journal_records};
 use crate::implementation::JournalImpl_v::journal_disk_inv;
 use crate::implementation::Cache_v::{Cache, Slot};
 use crate::implementation::CachedJournal_v::{CachedJournal, build_lsn_addr_index_from_reads};
@@ -2118,7 +2118,7 @@ proof fn next_refines_ctam_program_internal_case(
             assert(pre.concrete_journal.persistent_journal_seq_end == post.concrete_journal.persistent_journal_seq_end);
             assert(ipre == ipost);
         },
-        InternalEvent::JournalBackgroundWork{} => {
+        InternalEvent::CacheInternal{} | InternalEvent::JournalMarshallStep{..} => {
             // Background journal marshal work is abstract-noop at this layer.
             assume(post.inv());
             assume(pre.i_journal() == post.i_journal());
@@ -4353,7 +4353,7 @@ impl SystemModelTwo::State {
             let raw_disk = self.concrete_journal.disk.content.remove(spec_superblock_addr());
             let journal_disk = DiskView{
                 boundary_lsn: self.concrete_journal.journal.snapshot.boundary_lsn,
-                entries: to_journal_reads(raw_disk),
+                entries: to_journal_records(raw_disk),
             };
             self.concrete_journal.journal.snapshot.freshest_rec is Some
                 ==> journal_disk_inv(journal_disk, self.concrete_journal.journal.snapshot.freshest_rec)
@@ -4370,7 +4370,7 @@ impl SystemModelTwo::State {
             let raw_disk = self.concrete_journal.disk.content.remove(spec_superblock_addr());
             let journal_dv = DiskView{
                 boundary_lsn: self.concrete_journal.journal.snapshot.boundary_lsn,
-                entries: to_journal_reads(raw_disk),
+                entries: to_journal_records(raw_disk),
             };
             let tj = TruncatedJournal{
                 freshest_rec: self.concrete_journal.journal.snapshot.freshest_rec,

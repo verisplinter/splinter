@@ -24,7 +24,7 @@ use crate::abstract_system::MsgHistory_v::MsgHistory;
 use crate::abstract_system::AbstractCrashAwareMap_v::AbstractCrashAwareMap;
 use crate::implementation::CachedJournal_v::*;
 use crate::implementation::Cache_v::*;
-use crate::implementation::AtomicState_v::{AtomicState, RecoveryState, InflightInfo, DiskEvent, InternalEvent, ProgramEvent, raw_page_to_record, to_journal_reads};
+use crate::implementation::AtomicState_v::{AtomicState, RecoveryState, InflightInfo, DiskEvent, InternalEvent, ProgramEvent, raw_page_to_record, to_journal_records};
 use crate::implementation::ConcreteJournal_v::ConcreteJournal;
 use crate::implementation::JournalCoordinationSystem_v::JournalCoordinationSystem;
 use crate::implementation::MultisetMapRelation_v::multiset_to_map;

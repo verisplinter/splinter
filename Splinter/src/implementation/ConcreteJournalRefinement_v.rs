@@ -21,7 +21,7 @@ use crate::abstract_system::AbstractCrashAwareJournal_v::{AbstractCrashAwareJour
 use crate::journal::LinkedJournal_v::*;
 use crate::implementation::CachedJournal_v::*;
 use crate::implementation::Cache_v::*;
-use crate::implementation::AtomicState_v::{InflightInfo, to_journal_reads};
+use crate::implementation::AtomicState_v::{InflightInfo, to_journal_records};
 use crate::allocation_layer::LikesJournal_v::{LikesJournal, LsnAddrIndex};
 use crate::implementation::JournalCoordinationSystem_v::*;
 use crate::journal::PagedJournal_v;

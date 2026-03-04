@@ -20,7 +20,7 @@ use crate::abstract_system::MsgHistory_v::*;
 use crate::journal::LinkedJournal_v::*;
 use crate::implementation::CachedJournal_v::*;
 use crate::implementation::Cache_v::*;
-use crate::implementation::AtomicState_v::{raw_page_to_record, to_journal_reads};
+use crate::implementation::AtomicState_v::{raw_page_to_record, to_journal_records};
 use crate::allocation_layer::LikesJournal_v::*;
 
 verus!{
@@ -89,7 +89,7 @@ state_machine!{ JournalCoordinationSystem{
         let cache_lbl = Cache::Label::Access{reads: reads, writes: Map::empty()};
         require Cache::State::next(pre.cache, pre.cache, cache_lbl);
 
-        let journal_lbl = CachedJournal::Label::ReadForRecovery{messages, reads: to_journal_reads(reads)};
+        let journal_lbl = CachedJournal::Label::ReadForRecovery{messages, reads: to_journal_records(reads)};
         require CachedJournal::State::next(pre.journal, pre.journal, journal_lbl);
     }}
 
@@ -104,7 +104,7 @@ state_machine!{ JournalCoordinationSystem{
 
         // frozen_seq_end computed from state
         let ptr = lbl->frozen.freshest_rec;
-        let frozen_seq_end = if ptr is Some { to_journal_reads(reads)[ptr.unwrap()].message_seq.seq_end } else { lbl->frozen.boundary_lsn };
+        let frozen_seq_end = if ptr is Some { to_journal_records(reads)[ptr.unwrap()].message_seq.seq_end } else { lbl->frozen.boundary_lsn };
 
         let journal_lbl = CachedJournal::Label::FreezeForCommit{
             frozen: lbl->frozen, frozen_seq_end};
@@ -184,7 +184,7 @@ state_machine!{ JournalCoordinationSystem{
     {
         let dv = DiskView{
             boundary_lsn: snapshot.boundary_lsn,
-            entries: to_journal_reads(reads),
+            entries: to_journal_records(reads),
         };
         TruncatedJournal{
             freshest_rec: snapshot.freshest_rec,

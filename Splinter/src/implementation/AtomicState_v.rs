@@ -79,7 +79,8 @@ pub enum DiskEvent{
 
 pub enum InternalEvent{
     StoreInternal{},
-    JournalBackgroundWork{},
+    CacheInternal{},
+    JournalMarshallStep{addr: Address, raw_page: RawPage},
     AckJournalFlush{flushed_domain: Set<Address>},
     JournalRecovery{reads: Map<Address, RawPage>},
     MapRecovery{records: MsgHistory, reads: Map<Address, RawPage>, addr: Address},
@@ -128,11 +129,20 @@ pub open spec fn raw_page_to_record(raw_page: RawPage) -> (out: JournalRecord)
     }
 }
 
-pub open spec fn to_journal_reads(reads: Map<Address, RawPage>) -> Map<Address, JournalRecord>
+pub open spec fn to_journal_records(reads: Map<Address, RawPage>) -> Map<Address, JournalRecord>
 {
     Map::new(
         |addr| reads.contains_key(addr), 
         |addr| raw_page_to_record(reads[addr])
+    )
+}
+
+pub open spec fn journal_marshall_labels(addr: Address, raw_page: RawPage) -> (CachedJournal::Label, Cache::Label)
+{
+    let writes = Map::<Address, RawPage>::empty().insert(addr, raw_page);
+    (
+        CachedJournal::Label::JournalMarshal{writes: to_journal_records(writes)},
+        Cache::Label::Access{reads: Map::<Address, RawPage>::empty(), writes},
     )
 }
 
@@ -250,67 +260,12 @@ impl AtomicState {
         }
     }
 
-    pub closed spec fn cache_background_step(pre_cache: Cache::State, post_cache: Cache::State) -> bool
+    pub open spec fn journal_marshall_step(pre: Self, post: Self, addr: Address, raw_page: RawPage) -> bool
     {
-        ||| pre_cache == post_cache
-        ||| exists |mid_cache: Cache::State, lbl1: Cache::Label, lbl2: Cache::Label| {
-            &&& Cache::State::next(pre_cache, mid_cache, lbl1)
-            &&& Cache::State::next(mid_cache, post_cache, lbl2)
-        }
-    }
-
-    pub proof fn cache_background_step_noop(cache: Cache::State)
-        ensures
-            Self::cache_background_step(cache, cache),
-    {
-        assert(Self::cache_background_step(cache, cache));
-    }
-
-    pub proof fn cache_background_step_two_step(
-        pre_cache: Cache::State,
-        mid_cache: Cache::State,
-        post_cache: Cache::State,
-        lbl1: Cache::Label,
-        lbl2: Cache::Label,
-    )
-        requires
-            Cache::State::next(pre_cache, mid_cache, lbl1),
-            Cache::State::next(mid_cache, post_cache, lbl2),
-        ensures
-            Self::cache_background_step(pre_cache, post_cache),
-    {
-        assert(Self::cache_background_step(pre_cache, post_cache));
-    }
-
-    pub closed spec fn journal_background_journal_step(pre_journal: CachedJournal::State, post_journal: CachedJournal::State) -> bool
-    {
-        ||| post_journal == pre_journal
-        ||| exists |writes: Map<Address, JournalRecord>|
-            #![trigger CachedJournal::State::next(
-                pre_journal,
-                post_journal,
-                CachedJournal::Label::JournalMarshal{writes},
-            )]
-        {
-            CachedJournal::State::next(
-                pre_journal,
-                post_journal,
-                CachedJournal::Label::JournalMarshal{writes},
-            )
-        }
-    }
-
-    // Background journal maintenance step: journal/cache may change, higher-level
-    // store/sync state is unchanged.
-    // TODO(codex): this is underspecified: We're gonna have a tough time
-    // refining this step. Journal maybe is okay if it preserves its inv/wf
-    // and i()==old(i()). (Maybe that's a Journal Internal transition.)
-    // But cache needs to take a cache internal step.
-    pub open spec fn journal_background_work(pre: Self, post: Self) -> bool
-    {
+        let (journal_lbl, cache_lbl) = journal_marshall_labels(addr, raw_page);
         &&& pre.client_ready()
-        &&& Self::journal_background_journal_step(pre.journal, post.journal)
-        &&& Self::cache_background_step(pre.cache, post.cache)
+        &&& CachedJournal::State::next(pre.journal, post.journal, journal_lbl)
+        &&& Cache::State::next(pre.cache, post.cache, cache_lbl)
         &&& post == Self{
             cache: post.cache,
             journal: post.journal,
@@ -382,7 +337,7 @@ impl AtomicState {
     pub open spec fn journal_recovery(pre: Self, post: Self, reads: Map<Address, RawPage>) -> bool
     {
         let cache_lbl = Cache::Label::Access{reads: reads, writes: Map::empty()};
-        let journal_lbl = CachedJournal::Label::LoadIndex{reads: to_journal_reads(reads)};
+        let journal_lbl = CachedJournal::Label::LoadIndex{reads: to_journal_records(reads)};
 
         &&& pre.recovery_state is SuperblockAvailable
         &&& Cache::State::next(pre.cache, post.cache, cache_lbl)
@@ -406,7 +361,7 @@ impl AtomicState {
         &&& Cache::State::next(pre.cache, post.cache, cache_lbl)
         &&& reads.contains_key(addr)
         &&& {
-            let journal_reads = to_journal_reads(reads);
+            let journal_reads = to_journal_records(reads);
             let journal_records = journal_reads[addr].message_seq.maybe_discard_old(pre.journal.snapshot.boundary_lsn);
             let map_records = journal_reads[addr].message_seq.maybe_discard_old(pre.store.ephemeral->v.stamped_map.seq_end);
             let journal_lbl = CachedJournal::Label::ReadForRecovery{messages: journal_records, reads: journal_reads};
@@ -603,7 +558,9 @@ impl AtomicState {
     {
         match internal_event {
             InternalEvent::StoreInternal{} => Self::store_internal(pre, post),
-            InternalEvent::JournalBackgroundWork{} => Self::journal_background_work(pre, post),
+            InternalEvent::CacheInternal{} => Self::cache_internal(pre, post),
+            InternalEvent::JournalMarshallStep{addr, raw_page} =>
+                Self::journal_marshall_step(pre, post, addr, raw_page),
             InternalEvent::AckJournalFlush{flushed_domain} =>
                 Self::acknowledge_flushed_journal_pages(pre, post, flushed_domain),
             InternalEvent::JournalRecovery{reads} => Self::journal_recovery(pre, post, reads),

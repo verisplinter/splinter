@@ -28,7 +28,7 @@ use crate::abstract_system::AbstractCrashAwareMap_v::AbstractCrashAwareMap;
 
 use crate::implementation::ModelRefinement_v::RefinementProof;
 use crate::implementation::ConcreteProgramModel_v::ConcreteProgramModel;
-use crate::implementation::AtomicState_v::{AtomicState, DiskEvent, InflightInfo, InternalEvent, ProgramEvent, RecoveryState, map_to_multiset, to_journal_reads};
+use crate::implementation::AtomicState_v::{AtomicState, DiskEvent, InflightInfo, InternalEvent, ProgramEvent, RecoveryState, journal_marshall_labels, map_to_multiset, to_journal_records};
 use crate::implementation::MultisetMapRelation_v::{multiset_map_singleton, multiset_map_singleton_ensures, multiset_to_map, unique_keys};
 use crate::implementation::VecMap_v::VecMap;
 use crate::implementation::JournalTypes_v::{ILsn};
@@ -45,7 +45,7 @@ use crate::marshalling::Marshalling_v::Marshal;
 use crate::implementation::OverflowFiction_v::*;
 use crate::abstract_system::AbstractCrashAwareMap_v;
 use crate::implementation::Cache_v::Cache;
-use crate::implementation::FracCacheImpl_v::{FetchErrorCode, FracCacheImpl, MutHandle, PAGE_SIZE_BYTES, WritebackHandle, cache_load_label};
+use crate::implementation::FracCacheImpl_v::{FetchErrorCode, FracCacheImpl, MutHandle, PAGE_SIZE_BYTES, ReserveWriteResult, WritebackHandle, cache_load_label};
 
 #[allow(unused_imports)]
 use vstd::multiset::*;
@@ -178,6 +178,12 @@ impl RecoveryPhase {
             Self::ReadyForUserOperation => { self is ReadyForUserOperation },
         }
     }
+}
+
+enum JournalMarshalStepResult {
+    Done{},
+    CacheFull{},
+    Success{},
 }
 
 enum SuperblockMotivation {
@@ -1057,14 +1063,31 @@ impl Implementation {
                 match self.journal.freeze_for_commit(target_lsn) {
                     CleanForCommitResult::NeedsFlush{} => {
                         api.log("send_superblock: clean_for_commit -> NeedsFlush");
-                        let marshalled_end = self.journal.exec_marshaled_seq_end();
+                        let mut marshalled_end = self.journal.exec_marshaled_seq_end();
                         if target_lsn > marshalled_end {
                             // Not ready to flush yet; background work may advance marshalling.
                             // Ask the main loop to retry launching superblock later.
-                            api.log("send_superblock: waiting for tail marshalling before cleaning");
+                            api.log("send_superblock: issuing tail marshalling before flushing");
+                            // TODO: figure out where this goes
                             self.should_retry_superblock_launch = true;
-                            return;
-                        } 
+
+                            let mut keep_marshalling = true;
+                            while keep_marshalling && marshalled_end < target_lsn
+                                invariant
+                                    self.inv_api(api),
+                                    self.ready_for_user_operation(),
+                                    marshalled_end as nat == self.journal.marshalled_seq_end(),
+                            {
+                                if let JournalMarshalStepResult::Success{} = self.maybe_marshall_journal(api, false) {
+                                } else {
+                                    keep_marshalling = false;
+                                }
+                                marshalled_end = self.journal.exec_marshaled_seq_end();
+                            }
+                            if target_lsn > marshalled_end {
+                                return; // still not ready to flush
+                            }
+                        }
 
                         api.log("send_superblock: tail marshalled enough, starting journal page cleaning");
                         // Now it's time to flush!
@@ -1073,24 +1096,15 @@ impl Implementation {
                             invariant
                                 self.inv_api(api),
                                 self.ready_for_user_operation(),
-                                target_lsn == self.sync_requests.journal_cleaning_target_lsn,
                                 target_lsn <= marshalled_end,
                                 marshalled_end as nat == self.journal.marshalled_seq_end()
                         {
-                            proof {
-                                reveal(Implementation::inv);
-                                reveal(Implementation::ready_for_user_operation);
-                                reveal(Implementation::inv_running);
-                            }
                             let ghost pre_model = self.model@.value();
                             let ghost pre_outstanding = self.outstanding_requests@;
                             let ghost pre_cache_impl = self.cache;
                             let ghost pre_view_store = self.view_store();
                             let ghost pre_journal_seq_start = self.journal.seq_start();
                             proof {
-                                reveal(Implementation::inv_api);
-                                reveal(Implementation::inv);
-                                reveal(Implementation::inv_post_superblock_common);
                                 assert(pre_model.state.store == pre_view_store);
                                 assert(Self::outstanding_requests_wf_map(pre_outstanding, pre_cache_impl));
                                 assert(Self::outstanding_requests_match_cache_reqs_map(
@@ -1216,8 +1230,6 @@ impl Implementation {
 
                                     self.model = Tracked(model);
                                     proof {
-                                        reveal(Implementation::inv_api);
-                                        reveal(Implementation::inv);
                                         self.system_inv_implies_atomic_state_wf();
                                         let ghost inserted_req = OutstandingReqInfo::JournalCacheWriteReq{
                                             write_addr: request.addr,
@@ -2015,13 +2027,13 @@ impl Implementation {
             journal_disk_inv(
                 LinkedJournal_v::DiskView{
                     boundary_lsn: self.journal@.snapshot.boundary_lsn,
-                    entries: to_journal_reads(journal_raw_disk),
+                    entries: to_journal_records(journal_raw_disk),
                 },
                 self.journal@.snapshot.freshest_rec),
         self.journal@.status is Some && self.journal@.snapshot.freshest_rec is Some ==> {
             let journal_dv = LinkedJournal_v::DiskView{
                 boundary_lsn: self.journal@.snapshot.boundary_lsn,
-                entries: to_journal_reads(journal_raw_disk),
+                entries: to_journal_records(journal_raw_disk),
             };
             let tj = LinkedJournal_v::TruncatedJournal{
                 freshest_rec: self.journal@.snapshot.freshest_rec,
@@ -2063,13 +2075,13 @@ impl Implementation {
             journal_disk_inv(
                 LinkedJournal_v::DiskView{
                     boundary_lsn: self.journal@.snapshot.boundary_lsn,
-                    entries: to_journal_reads(journal_raw_disk),
+                    entries: to_journal_records(journal_raw_disk),
                 },
                 self.journal@.snapshot.freshest_rec));
         assume(self.journal@.status is Some && self.journal@.snapshot.freshest_rec is Some ==> {
             let journal_dv = LinkedJournal_v::DiskView{
                 boundary_lsn: self.journal@.snapshot.boundary_lsn,
-                entries: to_journal_reads(journal_raw_disk),
+                entries: to_journal_records(journal_raw_disk),
             };
             let tj = LinkedJournal_v::TruncatedJournal{
                 freshest_rec: self.journal@.snapshot.freshest_rec,
@@ -3023,7 +3035,7 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                                 InternalEvent::MapRecovery{records, reads: reads@, addr: addr@}
                             )) by {
                                 let cache_lbl = Cache::Label::Access{reads: reads@, writes: Map::empty()};
-                                let ghost journal_reads = to_journal_reads(reads@);
+                                let ghost journal_reads = to_journal_records(reads@);
 
                                 assert(Cache::State::next(pre_state.state.cache, post_state.state.cache, cache_lbl)) by {
                                     reveal(map_recovery_labels);
@@ -3157,9 +3169,149 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
         println!("{:?}", t);
     }
 
-    fn should_do_background_marshal(&self) -> (out: bool)
+    fn should_do_background_marshall(&self) -> (out: bool)
     {
         self.outstanding_requests.len() == 0
+    }
+
+    fn maybe_marshall_journal(&mut self, api: &mut ClientAPI<ConcreteProgramModel>, background: bool) -> (out: JournalMarshalStepResult)
+        requires
+            old(self).inv_api(old(api)),
+            old(self).ready_for_user_operation(),
+        ensures
+            self.inv_api(api),
+            self.ready_for_user_operation(),
+    {
+        let ghost pre_journal_view = self.journal@;
+        let marshalled_end = self.journal.exec_marshaled_seq_end();
+        let seq_end = self.journal.exec_seq_end();
+
+        if marshalled_end >= seq_end {
+            return JournalMarshalStepResult::Done{};
+        }
+
+        // NOTE: temporary heuristics that only marshall journal once a threshold of unmarshalled
+        // records have been reached, do this only for background tasks
+        if background {
+            let marshall_batch_size = 20;
+            if seq_end - marshalled_end < marshall_batch_size {
+                return JournalMarshalStepResult::Done{};
+            }
+        }
+        
+        let ghost pre_state = self.model@.value();
+        let ghost pre_cache = self.cache;
+        let addr = self.journal.peek_next_addr();
+        proof {
+            assert(self.journal@ == pre_journal_view);
+            assume(!self.journal@.status.unwrap().lsn_addr_index.values().contains(addr@));
+            assume(!pre_cache.entry_fetched(&addr));
+        }
+
+        let reserve_result = self.cache.reserve_for_write_absent(&addr);
+        match reserve_result {
+            ReserveWriteResult::CacheFull => {
+                JournalMarshalStepResult::CacheFull{}
+            }
+            ReserveWriteResult::Reserved{slot_handle} => {
+                let ghost cache_after_reserve = self.cache;
+                let tracked mut model0 = KVStoreTokenized::model::arbitrary();
+                // cache reserve internal transition
+                proof {
+                    tracked_swap(self.model.borrow_mut(), &mut model0);
+                    let ghost post_reserve_state = ConcreteProgramModel{
+                        state: AtomicState{
+                            cache: self.cache@,
+                            journal: self.journal@,
+                            ..pre_state.state
+                        }
+                    };
+                    assert(AtomicState::internal_transitions(
+                            pre_state.state,
+                            post_reserve_state.state,
+                            InternalEvent::CacheInternal{}
+                    )); // witness
+                    self.instance.borrow().internal(
+                        KVStoreTokenized::Label::InternalOp{},
+                        post_reserve_state,
+                        &mut model0,
+                    );
+                }
+                self.model = Tracked(model0);
+
+                // journal marshall step internal transition
+                self.journal.advance_next_addr();
+
+                proof {
+                    assert(self.journal@ == pre_journal_view);
+                    assert(!self.journal@.status.unwrap().lsn_addr_index.values().contains(addr@));
+                    self.system_inv_implies_atomic_state_wf();
+                }
+
+                let marshalled_end_now = self.journal.exec_marshaled_seq_end();
+                let seq_end_now = self.journal.exec_seq_end();
+                proof {
+                    assert(marshalled_end_now as nat == self.journal.marshalled_seq_end());
+                    assert(seq_end_now as nat == self.journal.seq_end());
+                }
+                if marshalled_end_now == seq_end_now {
+                    Self::todo_placeholder();
+                }
+
+                let Ghost(raw_page) =
+                    self.journal.internal_journal_marshall_commit_reserved(&mut self.cache, addr, slot_handle);
+
+                let tracked mut model1 = KVStoreTokenized::model::arbitrary();
+                proof {
+                    let ghost pre_commit_state = self.model@.value();
+                    tracked_swap(self.model.borrow_mut(), &mut model1);
+
+                    let ghost post_commit_state = ConcreteProgramModel{
+                        state: AtomicState{
+                            cache: self.cache@,
+                            journal: self.journal@,
+                            ..pre_commit_state.state
+                        }
+                    };
+
+                    let event = InternalEvent::JournalMarshallStep{addr: addr@, raw_page};
+                    assert(AtomicState::internal_transitions(
+                        pre_commit_state.state,
+                        post_commit_state.state,
+                        event,
+                    ));
+                    self.instance.borrow().internal(
+                        KVStoreTokenized::Label::InternalOp{},
+                        post_commit_state,
+                        &mut model1,
+                    );
+                }
+                self.model = Tracked(model1);
+
+                proof {
+                    self.system_inv_implies_atomic_state_wf();
+                    FracCacheImpl::valid_load_handles_preserved_transitive(
+                        pre_cache,
+                        cache_after_reserve,
+                        self.cache,
+                    );
+                    FracCacheImpl::valid_writeback_handles_preserved_transitive(
+                        pre_cache,
+                        cache_after_reserve,
+                        self.cache,
+                    );
+                    Implementation::outstanding_requests_wf_map_preserved_by_cache(
+                        old(self).outstanding_requests@,
+                        pre_cache,
+                        self.cache,
+                    );
+                    assert(self.outstanding_requests_wf());
+                    assert(self.inv_api(api));
+                    assert(self.ready_for_user_operation());
+                }
+                JournalMarshalStepResult::Success{}
+            }
+        }
     }
 
     fn do_background_work(&mut self, api: &mut ClientAPI<ConcreteProgramModel>) -> (progress: bool)
@@ -3171,112 +3323,22 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
             self.ready_for_user_operation(),
     {
         api.log("background: consider tail marshalling");
-        if !self.should_do_background_marshal() {
+        if !self.should_do_background_marshall() {
             api.log("background: skip marshalling (outstanding requests present)");
-            proof {
-            }
             return false;
         }
-        let marshalled_before = self.journal.exec_marshaled_seq_end();
-        let ghost pre_state = self.model@.value();
-        let did_work = self.journal.internal_journal_marshal_one_page(&mut self.cache);
-        let marshalled_after = self.journal.exec_marshaled_seq_end();
-        if did_work {
-            api.log("background: marshalled one page from tail");
-        } else {
-            api.log("background: no marshalling progress");
-        }
-        if did_work {
-            // Background marshalling may have made a pending sync launchable.
-            self.should_retry_superblock_launch = true;
-            if marshalled_after > marshalled_before {
+
+        match self.maybe_marshall_journal(api, true) {
+            JournalMarshalStepResult::Success{} => { 
+                self.should_retry_superblock_launch = true;
                 api.log("background: marshalling frontier advanced");
-            }
+                return true 
+            },
+            _ => { 
+                api.log("background: no marshalling progress");
+                return false 
+            },
         }
-
-        let tracked mut model = KVStoreTokenized::model::arbitrary();
-        proof { tracked_swap(self.model.borrow_mut(), &mut model); }
-
-        let ghost post_state = ConcreteProgramModel{
-            state: AtomicState{
-                cache: self.cache@,
-                journal: self.journal@,
-                ..pre_state.state
-            }
-        };
-        proof {
-            assert(ConcreteProgramModel::valid_internal_transition(pre_state, post_state)) by {
-                assert(AtomicState::internal_transitions(
-                    pre_state.state,
-                    post_state.state,
-                    InternalEvent::JournalBackgroundWork{}
-                )) by {
-                    reveal(Implementation::inv);
-                    reveal(Implementation::ready_for_user_operation);
-                    reveal(Implementation::inv_running);
-                    assert(pre_state.state.client_ready());
-                    assert(AtomicState::cache_background_step(
-                        pre_state.state.cache,
-                        post_state.state.cache,
-                    ));
-                    assume(AtomicState::journal_background_journal_step(
-                        pre_state.state.journal,
-                        post_state.state.journal,
-                    ));
-                };
-            }
-        }
-        let tracked _new_reply_token = self.instance.borrow().internal(
-            KVStoreTokenized::Label::InternalOp{},
-            post_state,
-            &mut model,
-        );
-        self.model = Tracked(model);
-        proof {
-            reveal(Implementation::inv);
-            reveal(Implementation::ready_for_user_operation);
-            reveal(Implementation::inv_running);
-            if self.recovery_phase is ReadyForUserOperation {
-                let state = self.state();
-                self.system_inv_implies_atomic_state_wf();
-                assert(state.in_flight is Some ==> {
-                    self.in_flight.unwrap().new_boundary_lsn
-                        <= state.journal.status.unwrap().unmarshalled_tail.seq_start
-                });
-                assert(state.in_flight is Some ==> {
-                    let sync_version = state.in_flight.unwrap().journal_version;
-                    let new_persistent_map_version = self.in_flight.unwrap().new_boundary_lsn as nat;
-                    &&& self.journal.seq_start() <= new_persistent_map_version
-                    &&& new_persistent_map_version <= sync_version
-                    &&& self.sync_reqs_in_version(self.sync_requests.superblocking_reqs@, sync_version)
-                });
-                assert(state.in_flight is Some ==> {
-                    &&& self.in_flight.unwrap().new_boundary_lsn as nat == self.journal.seq_start()
-                    &&& self.in_flight.unwrap().new_boundary_lsn as nat == state.store.in_flight.unwrap().seq_end
-                    &&& self.in_flight.unwrap().new_persistent_lsn as nat == state.in_flight.unwrap().journal_version
-                    &&& self.in_flight.unwrap().new_store@ == self.persistent_store@
-                });
-                assert(self.sync_reqs_in_version(
-                    self.sync_requests.journal_cleaning_reqs@,
-                    self.sync_requests.journal_cleaning_target_lsn as nat,
-                ));
-                assert(Self::three_sync_req_lists_mutually_unique(
-                    self.sync_requests.superblocking_reqs@,
-                    self.sync_requests.journal_cleaning_reqs@,
-                    self.sync_requests.buffered_reqs@,
-                ));
-            }
-            assert forall |id| #![auto] self.outstanding_requests@.dom().contains(id)
-                && self.outstanding_requests@[id] is SuperBlockReq
-                ==> self.in_flight is Some
-                    && !self.state().outstanding_cache_reqs.dom().contains(id)
-                    && self.state().in_flight is Some
-                    && id == self.state().in_flight.unwrap().req_id by {
-            }
-            assume(self.inv_api(api));
-        }
-
-        did_work
     }
 }
 
@@ -3422,14 +3484,5 @@ ensures
     assume( obeys_key_model::<Key>() );
     VecMap::new()
 }
-
-// // Convert overflow into a liveness failure
-// #[verifier::exec_allows_no_decreases_clause]
-// pub fn increment(x: u64) -> (y: u64)
-// ensures y == x + 1
-// {
-//     if x == u64::MAX { loop {} }
-//     x + 1
-// }
 
 } // verus!

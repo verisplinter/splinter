@@ -21,7 +21,7 @@ use crate::implementation::CachedJournal_v::{addr_to_lsns, min_lsn, min_lsn_ensu
 use crate::implementation::Cache_v::*;
 use crate::allocation_layer::LikesJournal_v::{LikesJournal, LsnAddrIndex};
 use crate::implementation::JournalCoordinationSystem_v::*;
-use crate::implementation::AtomicState_v::{raw_page_to_record, to_journal_reads};
+use crate::implementation::AtomicState_v::{raw_page_to_record, to_journal_records};
 
 verus!{
 
@@ -71,13 +71,13 @@ impl JournalCoordinationSystem::State {
             Cache::State::next(self.cache, post.cache, Cache::Label::Access{reads: reads, writes: Map::empty()})
         ensures 
             forall |addr| #[trigger] reads.contains_key(addr) && self.ephemeral_disk().entries.contains_key(addr)
-            ==> to_journal_reads(reads)[addr] == self.ephemeral_disk().entries[addr]
+            ==> to_journal_records(reads)[addr] == self.ephemeral_disk().entries[addr]
     {
         assume(false); // TODO: proof gap
         reveal(Cache::State::next);
         reveal(Cache::State::next_by);
 
-        let journal_reads = to_journal_reads(reads);
+        let journal_reads = to_journal_records(reads);
         assert(journal_reads.dom() =~= reads.dom());
 
         let cache_lbl = Cache::Label::Access{reads: reads, writes: Map::empty()};
@@ -120,7 +120,7 @@ impl JournalCoordinationSystem::State {
         reveal(CachedJournal::State::next);
         reveal(CachedJournal::State::next_by);
 
-        let journal_lbl = CachedJournal::Label::ReadForRecovery{messages, reads: to_journal_reads(reads)};
+        let journal_lbl = CachedJournal::Label::ReadForRecovery{messages, reads: to_journal_records(reads)};
         let journal_step = choose |journal_step| CachedJournal::State::next_by(self.journal, post.journal, journal_lbl, journal_step);
         let depth = journal_step.arrow_read_for_recovery_0();
 
@@ -151,7 +151,7 @@ impl JournalCoordinationSystem::State {
         reveal(CachedJournal::State::next);
         reveal(CachedJournal::State::next_by);
 
-        let frozen_reads = to_journal_reads(reads);
+        let frozen_reads = to_journal_records(reads);
         let frozen_ptr = lbl->frozen.freshest_rec;
         let frozen_seq_end = if frozen_ptr is Some { frozen_reads[frozen_ptr.unwrap()].message_seq.seq_end } else { lbl->frozen.boundary_lsn };
         let journal_lbl = CachedJournal::Label::FreezeForCommit{frozen: lbl->frozen, frozen_seq_end};
