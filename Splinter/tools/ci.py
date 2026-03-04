@@ -77,6 +77,9 @@ def main() -> int:
 
         print("== rust toolchain ==")
         run(["rustup", "toolchain", "install", rust_toolchain])
+        run(["rustup", "component", "add", "--toolchain", rust_toolchain, "rust-src"])
+        run(["rustup", "component", "add", "--toolchain", rust_toolchain, "rustc-dev"])
+        run(["rustup", "component", "add", "--toolchain", rust_toolchain, "llvm-tools-preview"])
 
         if args.fresh_verus and verus_checkout.exists():
             print("== reset _verus ==")
