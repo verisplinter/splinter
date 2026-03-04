@@ -10,6 +10,10 @@ import tomllib
 from pathlib import Path
 
 
+def is_executable(path: Path) -> bool:
+    return path.is_file() and os.access(path, os.X_OK)
+
+
 def run(cmd: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None) -> None:
     pretty = " ".join(cmd)
     print(f"+ {pretty}")
@@ -30,6 +34,26 @@ def load_ci_config(repo_root: Path) -> dict[str, str]:
         if key not in c:
             raise RuntimeError(f"Missing key {key} in {config_path}")
     return {k: str(c[k]) for k in required}
+
+
+def verus_build_is_usable(
+    verus_checkout: Path, verus_commit: str
+) -> tuple[bool, Path, Path, Path]:
+    marker = verus_checkout / ".splinter_ci_verus_commit"
+    verus_bin = verus_checkout / "source" / "target-verus" / "release" / "verus"
+    cargo_verus_bin = verus_checkout / "source" / "target-verus" / "release" / "cargo-verus"
+    z3_bin = verus_checkout / "source" / "z3"
+    if not marker.is_file():
+        return False, marker, verus_bin, cargo_verus_bin
+    if marker.read_text().strip() != verus_commit:
+        return False, marker, verus_bin, cargo_verus_bin
+    if not is_executable(verus_bin):
+        return False, marker, verus_bin, cargo_verus_bin
+    if not is_executable(cargo_verus_bin):
+        return False, marker, verus_bin, cargo_verus_bin
+    if not is_executable(z3_bin):
+        return False, marker, verus_bin, cargo_verus_bin
+    return True, marker, verus_bin, cargo_verus_bin
 
 
 def main() -> int:
@@ -62,9 +86,6 @@ def main() -> int:
 
     env = os.environ.copy()
     env["RUSTUP_TOOLCHAIN"] = rust_toolchain
-    cargo_verus_bin = verus_checkout / "source" / "target-verus" / "release"
-    env2 = env.copy()
-    env2["PATH"] = f"{cargo_verus_bin}:{env2.get('PATH', '')}"
 
     do_verify_build = args.phase in ("all", "verify-build")
     do_scripted_test = args.phase in ("all", "scripted-test")
@@ -85,28 +106,40 @@ def main() -> int:
             print("== reset _verus ==")
             shutil.rmtree(verus_checkout)
 
-        if not (verus_checkout / ".git").exists():
-            print("== clone verus ==")
-            run(["git", "clone", verus_repo, str(verus_checkout)])
-
-        print("== checkout pinned verus commit ==")
-        run(["git", "-C", str(verus_checkout), "fetch", "--all", "--tags"])
-        run(["git", "-C", str(verus_checkout), "checkout", verus_commit])
-
-        print("== build verus ==")
-        z3_bin = verus_checkout / "source" / "z3"
-        if z3_bin.is_file() and os.access(z3_bin, os.X_OK):
-            print("== z3 cache hit: using existing _verus/source/z3 ==")
+        cache_hit, marker, verus_bin, cargo_verus = verus_build_is_usable(verus_checkout, verus_commit)
+        if cache_hit:
+            print("== verus cache hit: using prebuilt pinned toolchain ==")
         else:
-            print("== z3 cache miss: fetching z3 ==")
-            run_bash("cd source && bash tools/get-z3.sh", cwd=verus_checkout, env=env)
-        run_bash(
-            "source tools/activate && cd source && vargo build --release",
-            cwd=verus_checkout,
-            env=env,
-        )
+            if not (verus_checkout / ".git").exists():
+                print("== clone verus ==")
+                run(["git", "clone", verus_repo, str(verus_checkout)])
 
-        verus_bin = verus_checkout / "source" / "target-verus" / "release" / "verus"
+            print("== checkout pinned verus commit ==")
+            run(["git", "-C", str(verus_checkout), "fetch", "--all", "--tags"])
+            run(["git", "-C", str(verus_checkout), "checkout", verus_commit])
+
+            print("== build verus ==")
+            z3_bin = verus_checkout / "source" / "z3"
+            if is_executable(z3_bin):
+                print("== z3 cache hit: using existing _verus/source/z3 ==")
+            else:
+                print("== z3 cache miss: fetching z3 ==")
+                run_bash("cd source && bash tools/get-z3.sh", cwd=verus_checkout, env=env)
+            run_bash(
+                "source tools/activate && cd source && vargo build --release",
+                cwd=verus_checkout,
+                env=env,
+            )
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(f"{verus_commit}\n")
+
+            cache_hit, _, verus_bin, cargo_verus = verus_build_is_usable(verus_checkout, verus_commit)
+            if not cache_hit:
+                raise RuntimeError("Verus build completed but cache marker/artifacts are unusable")
+
+        cargo_verus_dir = cargo_verus.parent
+        env2 = env.copy()
+        env2["PATH"] = f"{cargo_verus_dir}:{env2.get('PATH', '')}"
 
         print("== verify splinter ==")
         run(
@@ -125,6 +158,14 @@ def main() -> int:
         run(["cargo", "verus", "build"], cwd=splinter_dir, env=env2)
 
     if do_scripted_test:
+        cache_hit, _, _, cargo_verus = verus_build_is_usable(verus_checkout, verus_commit)
+        if cache_hit:
+            cargo_verus_dir = cargo_verus.parent
+            env2 = env.copy()
+            env2["PATH"] = f"{cargo_verus_dir}:{env2.get('PATH', '')}"
+        else:
+            env2 = env.copy()
+
         print("== run crash-recovery scripted regression ==")
         (splinter_dir / "storage.bin").touch()
         log_path = Path("/tmp/verisplinter-script.log")
