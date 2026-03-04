@@ -44,7 +44,7 @@ def main() -> int:
     args = parser.parse_args()
 
     script_path = Path(__file__).resolve()
-    # Script lives at <repo>/Splinter/tools/ci-local.py
+    # Script lives at <repo>/Splinter/tools/ci.py
     repo_root = script_path.parents[2]
     splinter_dir = repo_root / "Splinter"
     verus_checkout = repo_root / "_verus"
@@ -107,6 +107,7 @@ def main() -> int:
     run(["cargo", "verus", "build"], cwd=splinter_dir, env=env2)
 
     print("== run crash-recovery scripted regression ==")
+    (splinter_dir / "storage.bin").touch()
     log_path = Path("/tmp/verisplinter-script.log")
     with log_path.open("w") as log:
         try:
