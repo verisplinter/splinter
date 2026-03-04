@@ -37,6 +37,12 @@ def main() -> int:
         description="Run local equivalent of .github/workflows/verify.yml verify job."
     )
     parser.add_argument(
+        "--phase",
+        choices=["all", "verify-build", "scripted-test"],
+        default="all",
+        help="Which CI phase to run (default: all).",
+    )
+    parser.add_argument(
         "--fresh-verus",
         action="store_true",
         help="Delete and rebuild ./_verus from scratch (default is reuse).",
@@ -54,80 +60,90 @@ def main() -> int:
     verus_commit = cfg["verus_commit"]
     rust_toolchain = cfg["rust_toolchain"]
 
-    print("== local CI config ==")
-    print(f"verus_repo:     {verus_repo}")
-    print(f"verus_commit:   {verus_commit}")
-    print(f"rust_toolchain: {rust_toolchain}")
-
-    print("== rust toolchain ==")
-    run(["rustup", "toolchain", "install", rust_toolchain])
-
-    if args.fresh_verus and verus_checkout.exists():
-        print("== reset _verus ==")
-        shutil.rmtree(verus_checkout)
-
-    if not (verus_checkout / ".git").exists():
-        print("== clone verus ==")
-        run(["git", "clone", verus_repo, str(verus_checkout)])
-
-    print("== checkout pinned verus commit ==")
-    run(["git", "-C", str(verus_checkout), "fetch", "--all", "--tags"])
-    run(["git", "-C", str(verus_checkout), "checkout", verus_commit])
-
-    print("== build verus ==")
     env = os.environ.copy()
     env["RUSTUP_TOOLCHAIN"] = rust_toolchain
-    z3_bin = verus_checkout / "source" / "z3"
-    if z3_bin.is_file() and os.access(z3_bin, os.X_OK):
-        print("== z3 cache hit: using existing _verus/source/z3 ==")
-    else:
-        print("== z3 cache miss: fetching z3 ==")
-        run_bash("cd source && bash tools/get-z3.sh", cwd=verus_checkout, env=env)
-    run_bash("source tools/activate && cd source && vargo build --release", cwd=verus_checkout, env=env)
-
-    verus_bin = verus_checkout / "source" / "target-verus" / "release" / "verus"
     cargo_verus_bin = verus_checkout / "source" / "target-verus" / "release"
-
-    print("== verify splinter ==")
-    run(
-        [
-            str(verus_bin),
-            "src/main.rs",
-            "--expand-errors",
-            "--multiple-errors",
-            "5",
-        ],
-        cwd=splinter_dir,
-        env=env,
-    )
-
-    print("== cargo verus build ==")
     env2 = env.copy()
     env2["PATH"] = f"{cargo_verus_bin}:{env2.get('PATH', '')}"
-    run(["cargo", "verus", "build"], cwd=splinter_dir, env=env2)
 
-    print("== run crash-recovery scripted regression ==")
-    (splinter_dir / "storage.bin").touch()
-    log_path = Path("/tmp/verisplinter-script.log")
-    with log_path.open("w") as log:
-        try:
-            proc = subprocess.run(
-                ["./target/debug/verisplinter"],
-                cwd=str(splinter_dir),
-                env=env2,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                timeout=120,
-            )
-        except subprocess.TimeoutExpired:
-            print("scripted regression timed out")
+    do_verify_build = args.phase in ("all", "verify-build")
+    do_scripted_test = args.phase in ("all", "scripted-test")
+
+    if do_verify_build:
+        print("== local CI config ==")
+        print(f"verus_repo:     {verus_repo}")
+        print(f"verus_commit:   {verus_commit}")
+        print(f"rust_toolchain: {rust_toolchain}")
+
+        print("== rust toolchain ==")
+        run(["rustup", "toolchain", "install", rust_toolchain])
+
+        if args.fresh_verus and verus_checkout.exists():
+            print("== reset _verus ==")
+            shutil.rmtree(verus_checkout)
+
+        if not (verus_checkout / ".git").exists():
+            print("== clone verus ==")
+            run(["git", "clone", verus_repo, str(verus_checkout)])
+
+        print("== checkout pinned verus commit ==")
+        run(["git", "-C", str(verus_checkout), "fetch", "--all", "--tags"])
+        run(["git", "-C", str(verus_checkout), "checkout", verus_commit])
+
+        print("== build verus ==")
+        z3_bin = verus_checkout / "source" / "z3"
+        if z3_bin.is_file() and os.access(z3_bin, os.X_OK):
+            print("== z3 cache hit: using existing _verus/source/z3 ==")
+        else:
+            print("== z3 cache miss: fetching z3 ==")
+            run_bash("cd source && bash tools/get-z3.sh", cwd=verus_checkout, env=env)
+        run_bash(
+            "source tools/activate && cd source && vargo build --release",
+            cwd=verus_checkout,
+            env=env,
+        )
+
+        verus_bin = verus_checkout / "source" / "target-verus" / "release" / "verus"
+
+        print("== verify splinter ==")
+        run(
+            [
+                str(verus_bin),
+                "src/main.rs",
+                "--expand-errors",
+                "--multiple-errors",
+                "5",
+            ],
+            cwd=splinter_dir,
+            env=env,
+        )
+
+        print("== cargo verus build ==")
+        run(["cargo", "verus", "build"], cwd=splinter_dir, env=env2)
+
+    if do_scripted_test:
+        print("== run crash-recovery scripted regression ==")
+        (splinter_dir / "storage.bin").touch()
+        log_path = Path("/tmp/verisplinter-script.log")
+        with log_path.open("w") as log:
+            try:
+                proc = subprocess.run(
+                    ["./target/debug/verisplinter"],
+                    cwd=str(splinter_dir),
+                    env=env2,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    timeout=120,
+                )
+            except subprocess.TimeoutExpired:
+                print("scripted regression timed out")
+                print(log_path.read_text()[-6000:])
+                raise SystemExit(1)
+        if proc.returncode != 0:
+            print(f"scripted regression failed with status {proc.returncode}")
             print(log_path.read_text()[-6000:])
-            raise SystemExit(1)
-    if proc.returncode != 0:
-        print(f"scripted regression failed with status {proc.returncode}")
-        print(log_path.read_text()[-6000:])
-        raise SystemExit(proc.returncode)
-    print(log_path.read_text()[-4000:])
+            raise SystemExit(proc.returncode)
+        print(log_path.read_text()[-4000:])
 
     print("== done ==")
     return 0

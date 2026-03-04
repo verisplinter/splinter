@@ -15,5 +15,8 @@ jobs:
       - name: Checkout splinter
         uses: actions/checkout@v4
 
-      - name: Run Verify + Build + Scripted Regression
-        run: python3 Splinter/tools/ci.py
+      - name: Verify + Build
+        run: python3 Splinter/tools/ci.py --phase verify-build
+
+      - name: Scripted Regression
+        run: python3 Splinter/tools/ci.py --phase scripted-test
