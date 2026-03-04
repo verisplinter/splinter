@@ -106,6 +106,28 @@ def main() -> int:
     env2["PATH"] = f"{cargo_verus_bin}:{env2.get('PATH', '')}"
     run(["cargo", "verus", "build"], cwd=splinter_dir, env=env2)
 
+    print("== run crash-recovery scripted regression ==")
+    log_path = Path("/tmp/verisplinter-script.log")
+    with log_path.open("w") as log:
+        try:
+            proc = subprocess.run(
+                ["./target/debug/verisplinter"],
+                cwd=str(splinter_dir),
+                env=env2,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                timeout=120,
+            )
+        except subprocess.TimeoutExpired:
+            print("scripted regression timed out")
+            print(log_path.read_text()[-6000:])
+            raise SystemExit(1)
+    if proc.returncode != 0:
+        print(f"scripted regression failed with status {proc.returncode}")
+        print(log_path.read_text()[-6000:])
+        raise SystemExit(proc.returncode)
+    print(log_path.read_text()[-4000:])
+
     print("== done ==")
     return 0
 

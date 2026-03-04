@@ -23,7 +23,9 @@ use std::sync::Arc;
 use std::sync::mpsc;
 use std::sync::mpsc::*;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::{thread, time};
+use std::process;
 
 // The message that rides on the channel from worker threads back to the ClientAPI main thread.
 pub struct ChannelResponse {
@@ -125,6 +127,10 @@ pub struct ClientAPI<ProgramModel: ProgramModelTrait>{
     pub id: AtomicU64,
     pub inputs: Vec<Input>,
     pub outstanding_request_ids: HashSet<ID>,
+    pub expected_replies: VecDeque<Output>,
+    pub script_phase: Option<usize>,
+    pub script_failed: bool,
+    pub poll_budget: u64,
     pub the_disk: TheDisk,
     pub _p: std::marker::PhantomData<(ProgramModel,)>,
 }
@@ -171,11 +177,24 @@ impl<ProgramModel: ProgramModelTrait> ClientAPI<ProgramModel>{
                 ],
                 _ => panic!(),
             };
+        let expected_replies =
+            match script_phase {
+                // Post-crash regression check: recovered values must be visible.
+                Some(1) => VecDeque::from(vec![
+                    Output::QueryOutput{value: Value(11)},
+                    Output::QueryOutput{value: Value(33)},
+                ]),
+                _ => VecDeque::new(),
+            };
 
         Self{
             id: AtomicU64::new(0),
             inputs,
             outstanding_request_ids: HashSet::new(),
+            expected_replies,
+            script_phase,
+            script_failed: false,
+            poll_budget: 50,
             the_disk: TheDisk::new(),
             _p: std::marker::PhantomData
         }
@@ -200,6 +219,14 @@ impl<ProgramModel: ProgramModelTrait> ClientAPI<ProgramModel>{
             }
         }
     {
+        if self.script_phase.is_some() {
+            if self.poll_budget == 0 {
+                eprintln!("script timed out waiting for progress");
+                process::exit(1);
+            }
+            self.poll_budget -= 1;
+        }
+
         // Special case the control flow for the case where the next step is SimulateCrash;
         // this is the only case where we delay replying.
         if 0 < self.inputs.len() && match self.inputs[0] { Input::SimulateCrash => true, _ => false } {
@@ -215,6 +242,15 @@ impl<ProgramModel: ProgramModelTrait> ClientAPI<ProgramModel>{
         let input = if 0 < self.inputs.len() {
             self.inputs.remove(0)
         } else {
+            if self.script_phase == Some(1) && self.outstanding_request_ids.is_empty() {
+                if !self.script_failed && self.expected_replies.is_empty() {
+                    println!("script phase 1 passed");
+                    process::exit(0);
+                } else {
+                    eprintln!("script phase 1 failed: expected replies remaining or mismatch observed");
+                    process::exit(1);
+                }
+            }
             return None;
         };
 
@@ -250,6 +286,17 @@ impl<ProgramModel: ProgramModelTrait> ClientAPI<ProgramModel>{
             reply_shard@.element() == reply
         ensures self.instance_id() == old(self).instance_id(),
     {
+        if self.script_phase == Some(1) {
+            if let Some(expected) = self.expected_replies.pop_front() {
+                if !Self::output_matches(&expected, &reply.output) {
+                    self.script_failed = true;
+                    eprintln!("script mismatch: expected {:?}, got {:?}", expected, reply.output);
+                }
+            } else {
+                self.script_failed = true;
+                eprintln!("script mismatch: unexpected extra reply {:?}", reply.output);
+            }
+        }
         self.outstanding_request_ids.remove(&reply.id);
         if print {
             println!("   reply {:?}", reply);
@@ -320,6 +367,13 @@ impl<ProgramModel: ProgramModelTrait> ClientAPI<ProgramModel>{
             }
         }
     {
+        if self.script_phase.is_some() {
+            if self.poll_budget == 0 {
+                eprintln!("script timed out waiting for disk response");
+                process::exit(1);
+            }
+            self.poll_budget -= 1;
+        }
         match self.the_disk.receiver.try_recv() {
             Err(TryRecvError::Empty) => {
                 println!("receive_disk_response: None");
@@ -330,6 +384,17 @@ impl<ProgramModel: ProgramModelTrait> ClientAPI<ProgramModel>{
                 println!("receive_disk_response -> id {:?}: {:?}", &id, &value);
                 return Some(DiskResponseRecord{id, disk_response: value, token: Tracked::assume_new()})
             }
+        }
+    }
+
+    #[verifier::external_body]
+    fn output_matches(expected: &Output, actual: &Output) -> bool {
+        match (expected, actual) {
+            (Output::QueryOutput{value: ev}, Output::QueryOutput{value: av}) => ev.0 == av.0,
+            (Output::PutOutput, Output::PutOutput) => true,
+            (Output::SyncOutput, Output::SyncOutput) => true,
+            (Output::NoopOutput, Output::NoopOutput) => true,
+            _ => false,
         }
     }
 

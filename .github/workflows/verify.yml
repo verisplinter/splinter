@@ -61,3 +61,20 @@ jobs:
         run: |
           export PATH="$GITHUB_WORKSPACE/_verus/source/target-verus/release:$PATH"
           cargo verus build
+
+      - name: Run Crash-Recovery Scripted Regression
+        working-directory: Splinter
+        run: |
+          timeout 120s ./target/debug/verisplinter > /tmp/verisplinter-script.log 2>&1
+          status=$?
+          if [ "$status" -eq 124 ]; then
+            echo "scripted regression timed out"
+            tail -n 120 /tmp/verisplinter-script.log
+            exit 1
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo "scripted regression failed with status $status"
+            tail -n 120 /tmp/verisplinter-script.log
+            exit "$status"
+          fi
+          tail -n 80 /tmp/verisplinter-script.log
