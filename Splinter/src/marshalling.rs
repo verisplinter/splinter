@@ -24,6 +24,7 @@ pub mod KeyValueFormat_v;
 pub mod IJournalRecordFormat_v;
 pub mod IJournalSnapshotFormat_v;
 pub mod ISuperblockFormat_v;
+pub mod IStoreFormat_v;
 pub mod VecMapFormat_v;
 pub mod Wrappable_v;
 pub mod PaddedFormat_v;
