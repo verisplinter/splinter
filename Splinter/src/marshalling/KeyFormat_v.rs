@@ -108,21 +108,19 @@ impl Marshal for KeyFormat {
                 let result = Key(v);
                 proof {
                     let idata = slice@.i(data@);
-
-                    // Prove parsability (for postcondition self.parsable(idata) <==> ov is Some)
-
-                    // Prove wf (from inner postcondition)
-
-                    // inner postcondition: v.parsedv() == self.inner.parse(...) (as int)
-                    // we need: result.parsedv() == self.parse(...)
-                    // Key(v).parsedv() = Key(v) (identity)
-                    // self.parse(...) = Key(self.inner.parse(...) as u64)
-                    // Since v.parsedv() = v as int = self.inner.parse(...),
-                    // self.inner.parse(...) as u64 = v
+                    assert(self.parsable(idata));
+                    assert(result.parsedv() == self.parse(idata));
+                    assert(result.wf());
                 }
                 Some(result)
             }
-            None => None,
+            None => {
+                proof {
+                    let idata = slice@.i(data@);
+                    assert(!self.parsable(idata));
+                }
+                None
+            },
         }
     }
 }

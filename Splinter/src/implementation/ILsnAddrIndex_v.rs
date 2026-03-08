@@ -729,6 +729,13 @@ impl ILsnAddrIndex {
     {
         self.i_domain(self.bounds.len()-1);
     }
+
+    pub proof fn seq_start_le_seq_end(&self)
+        requires self.wf()
+        ensures self.seq_start() <= self.seq_end()
+    {
+        self.ascending_bounds_monotone(self.bounds.len() - 1);
+    }
 }
 
 impl View for ILsnAddrIndex {

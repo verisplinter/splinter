@@ -32,7 +32,7 @@ pub open spec fn spec_new() -> IStoreFormat
 }
 
 pub fn new() -> (out: IStoreFormat)
-    ensures out.valid(),
+    ensures out.valid(), out == spec_new(),
 {
     ResizableUniformSizedElementSeqFormat::new(
         KeyValueFormat::new(),

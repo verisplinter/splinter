@@ -15,7 +15,6 @@ use crate::marshalling::Slice_v::Slice;
 use crate::trusted::ClientAPI_t::BLOCK_SIZE;
 use crate::marshalling::UniformSized_v::UniformSized;
 use crate::marshalling::UniformSizedMarshal_v::UniformSizedMarshal;
-use crate::abstract_system::StampedMap_v;
 // use crate::marshalling::WF_v::WF;
 use crate::marshalling::UniformPairFormat_v::uniform_size_matches_spec_size;
 
@@ -121,7 +120,7 @@ impl DiskLayout {
     {
         &&& disk.contains_key(spec_superblock_addr())
         &&& Superblock{
-            store: StampedMap_v::empty(),
+            store_ptr: None,
             journal: JournalSnapshot{
                 boundary_lsn: 0,
                 freshest_rec: None,
@@ -136,7 +135,7 @@ impl DiskLayout {
             boundary_lsn: 0,
             freshest_rec: None,
         };
-        let sb = ISuperblock { journal_snapshot, store: vec![] };
+        let sb = ISuperblock { journal_snapshot, store_ptr: None };
         self.marshall(&sb)
     }
 

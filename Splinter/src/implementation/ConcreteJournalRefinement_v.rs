@@ -241,7 +241,7 @@ impl ConcreteJournal::State {
         // In-flight stability: same argument at in_flight LSN
         if pre.in_flight is Some {
             let ifl = pre.in_flight.unwrap().journal_version;
-            let bdy = pre.in_flight.unwrap().new_boundary_lsn;
+            let bdy = pre.in_flight.unwrap().frozen_store.seq_end;
             assert_maps_equal!(
                 h.concat(messages).discard_recent(ifl).msgs,
                 h.discard_recent(ifl).msgs
@@ -436,7 +436,7 @@ impl ConcreteJournal::State {
         let ifl = post.in_flight.unwrap();
         Self::full_journal_seq_end(pre);
         assert(frozen_journal
-            == pre.full_journal().discard_recent(ifl.journal_version).discard_old(ifl.new_boundary_lsn));
+            == pre.full_journal().discard_recent(ifl.journal_version).discard_old(ifl.frozen_store.seq_end));
         assert(AbstractJournal::State::next_by(
             pre_aj,
             pre_aj,
@@ -475,7 +475,7 @@ impl ConcreteJournal::State {
         let start_lsn = pre.i().in_flight.unwrap().seq_start;
 
         let journal_lbl = CachedJournal::Label::DiscardOld{
-            start_lsn: pre.in_flight.unwrap().new_boundary_lsn,
+            start_lsn: pre.in_flight.unwrap().frozen_store.seq_end,
             require_end: lbl->require_end,
             discard_addrs,
         };
@@ -501,7 +501,7 @@ impl ConcreteJournal::State {
             AbstractJournal::Label::DiscardOldLabel{start_lsn, require_end: lbl->require_end},
         ));
         let jv = pre.in_flight.unwrap().journal_version;
-        let bdy = pre.in_flight.unwrap().new_boundary_lsn;
+        let bdy = pre.in_flight.unwrap().frozen_store.seq_end;
         let left = pre_aj.journal.discard_old(start_lsn).discard_recent(jv);
         let right = pre_aj.journal.discard_recent(jv).discard_old(start_lsn);
         assert(left.ext_equal(right)); // trigger
@@ -528,7 +528,7 @@ impl ConcreteJournal::State {
                 assert(post.persistent_image
                     == pre.full_journal()
                         .discard_recent(pre.in_flight.unwrap().journal_version)
-                        .discard_old(pre.in_flight.unwrap().new_boundary_lsn));
+                        .discard_old(pre.in_flight.unwrap().frozen_store.seq_end));
             } else {
             }
         } else {

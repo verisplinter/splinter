@@ -115,6 +115,7 @@ impl SystemModelTwo::State {
                         sm2_post.outstanding_cache_reqs,
                         sm2_post.recovery_state,
                         sm2_post.store,
+                        sm2_post.persistent_store_ptr,
                         sm2_post.sync_req_map)));
             },
             SystemModel::Step::program_internal(new_program) => {
@@ -123,7 +124,8 @@ impl SystemModelTwo::State {
                         sm2_post.concrete_journal,
                         sm2_post.outstanding_cache_reqs,
                         sm2_post.recovery_state,
-                        sm2_post.store)));
+                        sm2_post.store,
+                        sm2_post.persistent_store_ptr)));
             },
             SystemModel::Step::disk_internal(new_disk) => {
                 assert(SystemModelTwo::State::next_by(sm2_pre, sm2_post, sm2_lbl,

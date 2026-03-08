@@ -96,10 +96,11 @@ impl<AF: Marshal + UniformSized, BF: Marshal + UniformSized> Marshal for Uniform
             };
             let pair_value = (a_value, b_value);
             proof {
-                // extn: subrange transitivity
                 let idata = slice@.i(data@);
-//                 assert( pair_value.0.parsedv() == self.a_fmt.parse(idata.subrange(0, bdy0)) );
-                assert( pair_value.wf() );  // trigger ensures?
+                assert(pair_value.0.parsedv() == self.a_fmt.parse(idata.subrange(0, bdy0)));
+                assert(pair_value.1.parsedv() == self.b_fmt.parse(idata.subrange(bdy0, bdy1)));
+                assert(pair_value.parsedv() == self.parse(idata));
+                assert(pair_value.wf());
             }
             Some(pair_value)
         }

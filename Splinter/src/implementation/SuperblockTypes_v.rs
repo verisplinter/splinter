@@ -5,24 +5,21 @@ use crate::spec::MapSpec_t::{MapSpec, Version};
 use crate::spec::FloatingSeq_t::FloatingSeq;
 use crate::spec::KeyType_t::Key;
 use crate::spec::Messages_t::{Message, Value};
-use crate::implementation::VecMap_v::VecMap;
 use crate::marshalling::Marshalling_v::Parsedview;
 use crate::marshalling::WF_v::WF;
 use crate::implementation::JournalImpl_v::IJournalSnapshot;
 use crate::implementation::CachedJournal_v::JournalSnapshot;
 use crate::spec::TotalKMMap_t::TotalKMMap;
-use crate::abstract_system::StampedMap_v::{LSN, StampedMap, empty};
+use crate::spec::AsyncDisk_t::Address;
+use crate::spec::ImplDisk_t::IAddress;
 
 verus! {
-
-// Stores structured for easy marshalling. :v/
-type ARawStore = Seq<(Key, Value)>;
 
 pub open spec fn map_to_kmmap(m: Map<Key, Value>) -> TotalKMMap
 {
     TotalKMMap(
         Map::new(|k: Key| true,
-            |k: Key| 
+            |k: Key|
                 if m.contains_key(k) {
                     Message::Define{value: m[k]}
                 } else {
@@ -32,49 +29,32 @@ pub open spec fn map_to_kmmap(m: Map<Key, Value>) -> TotalKMMap
     )
 }
 
-pub open spec fn arawstore_as_stamped_map(selff: ARawStore, seq_end: LSN) -> StampedMap
-{
-    let value_map = VecMap::seq_to_map(selff);
-    let total_map = map_to_kmmap(value_map);
-    StampedMap{value: total_map, seq_end}
-}
-
-pub type RawStore = Vec<(Key, Value)>;
-// 
-// pub fn vec_map_to_raw_store(vec_map: &VecMap<Key, Value>) -> RawStore {
-//     vec_map.v
-// }
-
 pub struct Superblock {
-    pub store: StampedMap,
+    pub store_ptr: Option<Address>,
     pub journal: JournalSnapshot,
 }
 
 pub open spec(checked) fn singleton_floating_seq(at_index: nat, kmmap: TotalKMMap) -> FloatingSeq<Version>
 {
-    FloatingSeq::new(at_index, at_index+1,
+    FloatingSeq::new(at_index, at_index + 1,
           |i| Version{ appv: MapSpec::State{ kmmap } } )
 }
 
 impl Superblock {
     pub open spec fn wf(self) -> bool
     {
-        &&& self.store.seq_end == self.journal.boundary_lsn
-        // &&& self.journal.wf()
+        true
     }
 }
 
 pub struct ASuperblock {
-    pub store: ARawStore,
+    pub store_ptr: Option<Address>,
     pub journal: JournalSnapshot,
-    // need version so recovery knows the shape of the (mostly-empty) history to reconstruct (the LSN)
-    // Wait no this is dumb; the journal contains its start LSN, which must match the store's LSN.
-//     pub version_index: u64,
 }
 
 impl ASuperblock {
     pub open spec fn wf(self) -> bool {
-        &&& VecMap::unique_keys(self.store)
+        true
     }
 }
 
@@ -84,7 +64,7 @@ impl View for ASuperblock {
     open spec fn view(&self) -> Self::V
     {
         Superblock{
-            store: arawstore_as_stamped_map(self.store, self.journal.boundary_lsn),
+            store_ptr: self.store_ptr,
             journal: self.journal,
         }
     }
@@ -93,16 +73,17 @@ impl View for ASuperblock {
 #[derive(Debug)]
 pub struct ISuperblock {
     pub journal_snapshot: IJournalSnapshot,
-    pub store: RawStore,  // TODO: try
-    // need version so recovery knows the shape of the (mostly-empty) history to reconstruct (the LSN)
-    // pub version_index: u64,
+    pub store_ptr: Option<IAddress>,
 }
 
 impl Parsedview<ASuperblock> for ISuperblock {
     open spec fn parsedv(&self) -> ASuperblock {
         ASuperblock{
             journal: self.journal_snapshot@,
-            store: self.store@,
+            store_ptr: match self.store_ptr {
+                Some(addr) => Some(addr@),
+                None => None,
+            },
         }
     }
 }

@@ -20,6 +20,7 @@ use crate::implementation::FracCacheImpl_v::{
     WritebackAcquireResult, cache_load_label, cache_write_label, PAGE_SIZE_BYTES
 };
 use crate::implementation::ILsnAddrIndex_v::ILsnAddrIndex;
+use crate::implementation::PageAllocator_v::PageAllocator;
 use crate::marshalling::Slice_v::Slice;
 use crate::marshalling::IJournalRecordFormat_v::{IJournalHeader, IJournalRecord, IJournalRecordFormat};
 use crate::marshalling::Marshalling_v::Marshal;
@@ -230,7 +231,7 @@ pub struct JournalImpl {
     index_builder: Option<IndexBuilder>,
     status: Option<IJournalStatus>,
     fmt: IJournalRecordFormat,
-    next_alloc_page: u32,
+    journal_alloc: PageAllocator,
 }
 
 closed spec fn flush_domain_from_index_range(
@@ -421,17 +422,24 @@ impl JournalImpl {
         self.status is Some
     }
 
+    pub exec fn exec_index_ready(&self) -> (out: bool)
+        ensures out == self.index_ready()
+    {
+        self.status.is_some()
+    }
+
     pub closed spec fn no_unmarshalled_entries(&self) -> bool
     {
         &&& self.index_ready()
         &&& self.status.unwrap().lsn_addr_index.seq_end() as nat == self.seq_end()
     }
 
-    pub exec fn new(snapshot: IJournalSnapshot) -> (out: Self)
+    pub exec fn new(snapshot: IJournalSnapshot, alloc_au: u32) -> (out: Self)
     ensures
         out.wf(),
         !out.index_ready(),
         out@.snapshot == snapshot@,
+        out.alloc_au() == alloc_au as nat,
     {
         Self{
             snapshot,
@@ -440,7 +448,7 @@ impl JournalImpl {
             }),
             status: None,
             fmt: IJournalRecordFormat::new(),
-            next_alloc_page: 0,
+            journal_alloc: PageAllocator::new(alloc_au, 0),
         }
     }
 
@@ -496,7 +504,6 @@ impl JournalImpl {
     {
         let seq_end = self.exec_seq_end();
         proof {
-            reveal(JournalImpl::no_unmarshalled_entries);
             // trigger
             assert(self.status.unwrap().lsn_addr_index.seq_start() <= start_lsn < self.status.unwrap().lsn_addr_index.seq_end());
         }
@@ -507,7 +514,6 @@ impl JournalImpl {
         let ghost cache_pre = cache@;
         let ghost journal_raw_disk = journal_raw_disk_ghost@;
         proof {
-            reveal(JournalImpl::wf);
 
             // Construct DiskView and TruncatedJournal matching the requires
             let journal_dv = LinkedJournal_v::DiskView{
@@ -527,12 +533,42 @@ impl JournalImpl {
             reveal(LinkedJournal_v::TruncatedJournal::index_domain_valid);
             // index_domain_valid: model_index.contains_key(lsn) <==> tj.seq_start() <= lsn < tj.seq_end()
             self.status.unwrap().lsn_addr_index.view_domain();
+            self.status.unwrap().lsn_addr_index.seq_start_le_seq_end();
+            self.seq_start_le_seq_end();
             // view_domain: model_index.dom() =~= Set::new(|lsn| lai.seq_start() <= lsn < lai.seq_end())
             // wf: boundary_lsn == lai.seq_start(), so tj.seq_start() == lai.seq_start()
             // no_unmarshalled_entries: lai.seq_end() as nat == self.seq_end()
-            let lai_seq_end = self.status.unwrap().lsn_addr_index.seq_end() as nat;
-            let _ = lai_seq_end;
-//             assert(tj.seq_end() == self.seq_end());
+            let ghost lai_seq_end = self.status.unwrap().lsn_addr_index.seq_end() as nat;
+            assert(tj.seq_start() == self.seq_start());
+            assert(tj.seq_end() == lai_seq_end) by {
+                if tj.seq_end() < lai_seq_end {
+                    let lsn = tj.seq_end();
+                    assert(self.seq_start() <= lsn) by {
+                        assert(tj.seq_start() <= tj.seq_end());
+                    }
+                    assert(model_index.contains_key(lsn)) by {
+                        assert(self.status.unwrap().lsn_addr_index@.dom() =~= Set::new(|lsn: LSN| self.seq_start() <= lsn < lai_seq_end));
+                    }
+                    assert(!model_index.contains_key(lsn));
+                    assert(false);
+                }
+                if lai_seq_end < tj.seq_end() {
+                    let lsn = lai_seq_end;
+                    assert(self.seq_start() <= lsn) by {
+                        assert(self.seq_start() <= self.seq_end());
+                        assert(self.seq_end() == lai_seq_end);
+                    }
+                    assert(model_index.contains_key(lsn)) by {
+                        assert(tj.seq_start() <= lsn < tj.seq_end());
+                    }
+                    assert(!model_index.contains_key(lsn)) by {
+                        assert(self.status.unwrap().lsn_addr_index@.dom() =~= Set::new(|lsn: LSN| self.seq_start() <= lsn < lai_seq_end));
+                    }
+                    assert(false);
+                }
+            };
+            assert(tj.seq_end() == self.seq_end()) by {
+            };
 
             journal_dv.instantiate_index_keys_map_to_valid_entries(model_index, start_lsn as nat);
 
@@ -566,7 +602,7 @@ impl JournalImpl {
                     assert(false);
                 }
                 // Now record.seq_end <= tj.seq_end() == self.seq_end()
-                assume(record.message_seq.seq_end <= self.seq_end());
+                assert(record.message_seq.seq_end <= self.seq_end());
             };
         }
         match cache.fetch(&addr, false) {
@@ -594,13 +630,9 @@ impl JournalImpl {
                     assert(self.status.unwrap().lsn_addr_index@.contains_key(start_lsn as nat));
                     assert(addr@ == self.status.unwrap().lsn_addr_index@[start_lsn as nat]);
                     assert(self.status.unwrap().lsn_addr_index@.values().contains(addr@));
-                    assert(raw_page_to_record(journal_raw_disk[addr@]).message_seq.seq_start <= start_lsn as nat);
-                    assert((start_lsn as nat) < raw_page_to_record(journal_raw_disk[addr@]).message_seq.seq_end);
                     assert(raw_page_to_record(slot_handle.rec@).message_seq.seq_start <= start_lsn as nat);
                     assert((start_lsn as nat) < raw_page_to_record(slot_handle.rec@).message_seq.seq_end);
-                    assert(raw_page_to_record(journal_raw_disk[addr@]).message_seq.seq_end <= self.seq_end());
                     assert(raw_page_to_record(slot_handle.rec@).message_seq.seq_end <= self.seq_end());
-                    assert(reads[addr@] == slot_handle.rec@);
                     assert(to_journal_records(reads)[addr@] == raw_page_to_record(slot_handle.rec@));
                     assert(i_journal_record.parsedv().view().message_seq.seq_start
                         == raw_page_to_record(slot_handle.rec@).message_seq.seq_start);
@@ -621,19 +653,13 @@ impl JournalImpl {
                         fetched_slot, Entry::Filled{addr: addr@, data: fetched_data}));
                     assert(cache@.entries == cache_pre.entries);
 
-                    assert(cache_pre.lookup_map == cache_after_fetch.lookup_map);
-                    assert(cache@.lookup_map == cache_after_fetch.lookup_map);
                     assert(cache@.lookup_map == cache_pre.lookup_map);
 
-                    assert(cache_pre.status_map == cache_after_fetch.status_map);
-                    assert(cache@.status_map == cache_after_fetch.status_map);
                     assert(cache@.status_map == cache_pre.status_map);
 
                     assert(cache@ == cache_pre);
-                    assert(cache@ =~= cache_pre);
 
                     let ghost cache_lbl = Cache::Label::Access{reads, writes: Map::empty()};
-                    reveal(map_recovery_labels);
                     assert(lbls.0 == cache_lbl);
 
                     assert(cache_pre.valid_read(addr@, fetched_data));
@@ -657,7 +683,6 @@ impl JournalImpl {
                     let ghost index_seq_end = self.status.unwrap().lsn_addr_index.seq_end() as nat;
                     assert((self.snapshot.boundary_lsn as nat) <= (start_lsn as nat));
                     assert((start_lsn as nat) < index_seq_end);
-                    assert((self.snapshot.boundary_lsn as nat) < index_seq_end);
                     assert(self.snapshot.freshest_rec is Some);
                     assert(self.status.unwrap().lsn_addr_index@[(index_seq_end - 1) as nat]
                         == self.snapshot.freshest_rec.unwrap()@);
@@ -691,7 +716,6 @@ impl JournalImpl {
                     assert(addr@ == self.status.unwrap().lsn_addr_index@[start_lsn as nat]);
                     assert(self@.pointer_after_crop_index(self@.snapshot.freshest_rec, depth) == Some(addr@));
 
-                    reveal(map_recovery_labels);
                     let ghost journal_reads = to_journal_records(reads);
                     let ghost journal_lbl = CachedJournal::Label::ReadForRecovery{
                         messages: journal_reads[addr@].message_seq.maybe_discard_old(self.seq_start()),
@@ -753,6 +777,7 @@ impl JournalImpl {
     ensures ({
         &&& self.wf()
         &&& self@.wf()
+        &&& self.alloc_au() == old(self).alloc_au()
         &&& self.seq_start() == old(self).seq_start()
         &&& cache.wf()
         &&& cache.valid_load_handles_preserved(*old(cache))
@@ -794,7 +819,6 @@ impl JournalImpl {
                 // A9: journal_raw_disk from system invariant via caller
                 let ghost journal_raw_disk = journal_raw_disk_ghost@;
                 proof {
-                    reveal(JournalImpl::wf);
                     // wf() gives self.fmt.valid(), which constrains fmt fields to match spec_new()
                     // all_pages_parsable uses spec_new().parsable; since fields match, so does self.fmt.parsable
                     assert(journal_raw_disk_inv(self.fmt, journal_raw_disk));
@@ -1093,6 +1117,7 @@ impl JournalImpl {
     ensures 
         self.wf(),
         self@.wf(),
+        self.alloc_au() == old(self).alloc_au(),
         self.seq_start() == old(self).seq_start(),
         self.seq_end() == old(self).seq_end() + 1,
         CachedJournal::State::put(old(self)@, self@,
@@ -1128,23 +1153,30 @@ impl JournalImpl {
         }
     }
 
-    pub exec fn peek_next_addr(&self) -> (out: IAddress) {
-        IAddress{au: 1, page: self.next_alloc_page}
+    pub exec fn peek_next_addr(&self) -> (out: IAddress)
+        ensures
+            out.au as nat == self.alloc_au(),
+            out@.au == self.alloc_au(),
+    {
+        self.journal_alloc.peek_next_addr()
     }
 
     pub exec fn advance_next_addr(&mut self)
         ensures
             self@ == old(self)@,
             self.format_ok() == old(self).format_ok(),
+            self.alloc_au() == old(self).alloc_au(),
             old(self).wf() ==> self.wf(),
             old(self).index_ready() ==> self.index_ready(),
             self.seq_start() == old(self).seq_start(),
             self.seq_end() == old(self).seq_end(),
     {
-        if self.next_alloc_page == u32::MAX {
-            convert_overflow_into_liveness_failure();
-        }
-        self.next_alloc_page = self.next_alloc_page + 1;
+        self.journal_alloc.advance_next_addr();
+    }
+
+    pub closed spec fn alloc_au(&self) -> nat
+    {
+        self.journal_alloc.alloc_au() as nat
     }
 
     fn record_fits_in_page(&self, message_len: usize) -> (fits: bool)
@@ -1163,6 +1195,8 @@ impl JournalImpl {
         ensures
             self.wf(),
             old(self)@ == self@,
+            self.seq_start() == old(self).seq_start(),
+            self.alloc_au() == old(self).alloc_au(),
             cache.wf(),
             cache.valid_load_handles_preserved(*old(cache)),
             match out {
@@ -1221,8 +1255,11 @@ impl JournalImpl {
         ensures ({
             &&& self.wf()
             &&& self.index_ready()
+            &&& self.alloc_au() == old(self).alloc_au()
             &&& self.seq_start() == old(self).seq_start()
             &&& self.seq_end() == old(self).seq_end()
+            &&& old(self)@.status.unwrap().unmarshalled_tail.seq_start
+                <= self@.status.unwrap().unmarshalled_tail.seq_start
             &&& cache.wf()
             &&& cache.valid_load_handles_preserved(*old(cache))
             &&& cache.valid_writeback_handles_preserved(*old(cache))
@@ -1313,8 +1350,6 @@ impl JournalImpl {
             let ghost journal_lbl = lbls.0;
             let ghost cache_lbl = lbls.1;
             assert(to_journal_records(writes)[addr@] == record.parsedv().view()) by {
-                reveal(to_journal_records);
-                reveal(raw_page_to_record);
                 assert(self.fmt.parsable(raw.subrange(0, end as int)));
                 assert(self.fmt.parse(raw.subrange(0, end as int)) == record.parsedv());
 
@@ -1346,6 +1381,7 @@ impl JournalImpl {
             assert(journal_lbl == CachedJournal::Label::JournalMarshal{writes: map!{addr@ => marshalled_record}});
             assert(self@.status.unwrap().unmarshalled_tail
                 == pre_journal.status.unwrap().unmarshalled_tail.discard_old(cut));
+            assert(self@.status.unwrap().unmarshalled_tail.seq_start == cut);
             reveal(CachedJournal::State::next_by);
             reveal(CachedJournal::State::next);
             assert(CachedJournal::State::next_by(
@@ -1364,11 +1400,6 @@ impl JournalImpl {
                 cache@,
                 cache_lbl,
             ));
-            reveal(JournalImpl::wf);
-            reveal(lsn_addr_index_append_record);
-            assert(self.status.unwrap().lsn_addr_index@[
-                (self.status.unwrap().lsn_addr_index.seq_end() - 1) as nat
-            ] == addr@);
 
             let clean = self.status.unwrap().clean_watermark_lsn;
             let bdy = self.snapshot.boundary_lsn;
@@ -1407,21 +1438,45 @@ impl JournalImpl {
             self@.seq_end() == self.seq_end(),
     {
         broadcast use JournalImpl::view_ensures;
-        reveal(CachedJournal::State::seq_end);
-        reveal(JournalImpl::seq_end);
+    }
+
+    pub proof fn view_marshaled_seq_end_ensures(&self)
+        requires
+            self.index_ready(),
+        ensures
+            self@.marshalled_seq_end() == self.marshalled_seq_end(),
+    {
+        broadcast use JournalImpl::view_ensures;
     }
 
     pub proof fn view_seq_start_ensures(&self)
         ensures
             self@.snapshot.boundary_lsn == self.seq_start(),
     {
-        reveal(JournalImpl::seq_start);
     }
 
     pub proof fn seq_start_le_marshalled_end(&self)
         requires self.wf(), self.index_ready()
         ensures self.seq_start() as nat <= self@.status.unwrap().unmarshalled_tail.seq_start
     {
+    }
+
+    pub proof fn seq_start_le_seq_end(&self)
+        requires self.wf(), self.index_ready()
+        ensures self.seq_start() <= self.seq_end()
+    {
+        match &self.status {
+            Some(status) => {
+                status.lsn_addr_index.seq_start_le_seq_end();
+                assert(self.snapshot.boundary_lsn == status.lsn_addr_index.seq_start());
+                assert(self.snapshot.boundary_lsn as nat <= status.lsn_addr_index.seq_end() as nat);
+                assert(status.lsn_addr_index.seq_end() as nat
+                    <= status.lsn_addr_index.seq_end() as nat + status.unmarshalled_tail.len() as nat);
+            }
+            None => {
+                assert(false);
+            }
+        }
     }
 
     /// All keys in the model-level lsn_addr_index are >= boundary_lsn.
@@ -1431,8 +1486,6 @@ impl JournalImpl {
         ensures forall |lsn: LSN| self@.status.unwrap().lsn_addr_index.contains_key(lsn)
             ==> lsn >= self@.snapshot.boundary_lsn,
     {
-        reveal(JournalImpl::wf);
-        reveal(JournalImpl::index_ready);
         // wf: self.snapshot.boundary_lsn == status.lsn_addr_index.seq_start()
         // view_domain: keys in [seq_start, seq_end), so all keys >= seq_start == boundary_lsn
         match &self.status {
@@ -1448,10 +1501,6 @@ impl JournalImpl {
         requires self.wf(), self.index_ready(), self.seq_start() == self.seq_end()
         ensures self@.snapshot.freshest_rec is None
     {
-        reveal(JournalImpl::wf);
-        reveal(JournalImpl::index_ready);
-        reveal(JournalImpl::seq_end);
-        reveal(JournalImpl::seq_start);
         self.view_seq_end_ensures();
         match &self.status {
             Some(status) => {
@@ -1557,7 +1606,6 @@ impl JournalImpl {
                     frozen: frozen_journal.snapshot@,
                     frozen_seq_end: frozen_journal.seq_end as nat,
                 };
-                reveal(JournalImpl::wf);
                 reveal(CachedJournal::State::next_by);
                 reveal(CachedJournal::State::next);
 
@@ -1679,6 +1727,7 @@ impl JournalImpl {
     ensures
         self.wf(),
         self.index_ready(),
+        self.alloc_au() == old(self).alloc_au(),
         cache.wf(),
         cache.valid_load_handles_preserved(*old(cache)),
         cache.valid_writeback_handles_preserved(*old(cache)),
@@ -1731,9 +1780,11 @@ impl JournalImpl {
         let ghost pre_index = self@.status.unwrap().lsn_addr_index;
         let ghost pre_cache = cache@;
         let ghost pre_cache_impl = *cache;
+        let ghost pre_alloc_au = self.alloc_au();
         if target_lsn <= old_clean {
             let ghost flushed_domain = Set::<Address>::empty();
             proof {
+                assert(self.alloc_au() == pre_alloc_au);
                 assert(cache_evictable_prop(cache@, flushed_domain)) by {
                     assert(forall |a: Address|
                         flushed_domain.contains(a) && #[trigger] cache@.lookup_map.contains_key(a)
@@ -1753,7 +1804,6 @@ impl JournalImpl {
             return BeginWritebackForTargetResult::Complete{flushed_domain: Ghost(flushed_domain)};
         }
         proof {
-            reveal(flush_domain_from_index_range);
             reveal(CachedJournal::State::next_by);
             reveal(CachedJournal::State::next);
         }
@@ -1790,6 +1840,7 @@ impl JournalImpl {
                 self.status.unwrap().lsn_addr_index@ == pre_index,
                 self@.snapshot == pre.snapshot,
                 self@.status.unwrap().unmarshalled_tail == pre.status.unwrap().unmarshalled_tail,
+                self.alloc_au() == pre_alloc_au,
                 self.status.unwrap().lsn_addr_index.seq_end() == index_end,
                 old_clean <= clean_commit <= clean_scan,
                 clean_scan <= index_end,
@@ -1836,6 +1887,7 @@ impl JournalImpl {
                     }
                     let ghost flushed_domain = flush_domain_from_index_range(pre_index, old_clean as nat, clean_commit as nat);
                     proof {
+                        assert(self.alloc_au() == pre_alloc_au);
                         let req = DiskRequest::WriteReq{to: addr@, data: handle.rec@};
                         let lbl = Cache::Label::DiskOps{
                             requests: set![req],
@@ -1996,6 +2048,7 @@ impl JournalImpl {
         }
         let ghost flushed_domain = flush_domain_from_index_range(pre_index, old_clean as nat, clean_commit as nat);
         proof {
+            assert(self.alloc_au() == pre_alloc_au);
             assert(cache_evictable_prop(cache@, flushed_domain));
             assert(cache@ == pre_cache);
             assert(cache_evictable_prop(pre_cache, flushed_domain));
