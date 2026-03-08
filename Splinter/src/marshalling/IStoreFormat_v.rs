@@ -5,6 +5,7 @@ use vstd::prelude::*;
 
 use crate::spec::KeyType_t::Key;
 use crate::spec::Messages_t::Value;
+use crate::trusted::ClientAPI_t::BLOCK_SIZE;
 use crate::marshalling::KeyValueFormat_v::KeyValueFormat;
 use crate::marshalling::ResizableUniformSizedSeq_v::ResizableUniformSizedElementSeqFormat;
 use crate::marshalling::IntegerMarshalling_v::IntFormat;
@@ -27,7 +28,7 @@ pub open spec fn spec_new() -> IStoreFormat
     ResizableUniformSizedElementSeqFormat::spec_new(
         KeyValueFormat::spec_new(),
         IntFormat::<u8>::spec_new(),
-        store_max_length(),
+        BLOCK_SIZE,
     )
 }
 
@@ -37,7 +38,7 @@ pub fn new() -> (out: IStoreFormat)
     ResizableUniformSizedElementSeqFormat::new(
         KeyValueFormat::new(),
         IntFormat::<u8>::new(),
-        200usize,
+        BLOCK_SIZE,
     )
 }
 

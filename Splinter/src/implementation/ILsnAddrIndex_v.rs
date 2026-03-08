@@ -1,10 +1,11 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
 use vstd::prelude::*;
+use vstd::assert_maps_equal;
 use crate::abstract_system::StampedMap_v::LSN;
 use crate::disk::GenericDisk_v::{Address, IAddress};
 use crate::implementation::JournalTypes_v::ILsn;
-use crate::allocation_layer::LikesJournal_v::{LsnAddrIndex, largest_lsn_plus_one, maxmax, lsn_addr_index_append_record, singleton_index};
+use crate::allocation_layer::LikesJournal_v::{LsnAddrIndex, largest_lsn_plus_one, maxmax, lsn_addr_index_append_record, lsn_addr_index_discard_up_to, singleton_index};
 use crate::implementation::CachedJournal_v::{
     addr_to_lsns,
     complete_lsn_range_for_addr,
@@ -655,6 +656,124 @@ impl ILsnAddrIndex {
 
             // view equality via the shift lemma
             Self::prepend_i_shift(*self, old_snap, (self.bounds.len() - 1) as int);
+        }
+    }
+
+    #[verifier::external_body]
+    pub exec fn discard_up_to(&mut self, new_lower_bound: ILsn)
+        requires
+            old(self).wf(),
+            old(self).seq_start() <= new_lower_bound <= old(self).seq_end(),
+        ensures
+            self.wf(),
+            self.seq_start() == new_lower_bound,
+            self.seq_end() == old(self).seq_end(),
+            self@ == lsn_addr_index_discard_up_to(old(self)@, new_lower_bound as nat),
+    {
+        if new_lower_bound == self.bounds[0] {
+            return;
+        }
+
+        if new_lower_bound == self.bounds[self.bounds.len() - 1] {
+            let ghost old_view = self@;
+            self.bounds = vec![new_lower_bound];
+            self.addrs = vec![];
+            proof {
+                assert(old_view == old(self)@);
+                assert(self.wf());
+                assert(self.bounds.len() == 1);
+                assert(self.addrs.len() == 0);
+                let ghost discarded = lsn_addr_index_discard_up_to(old_view, new_lower_bound as nat);
+                self.i_domain(0);
+                old(self).i_domain(old(self).bounds.len() - 1);
+                assert_maps_equal!(self@, discarded, lsn => {
+                    if self@.contains_key(lsn) {
+                        assert(self@.dom().contains(lsn));
+                        assert(self.bounds[0] <= lsn < self.bounds[0]);
+                        assert(false);
+                    }
+                    if discarded.contains_key(lsn) {
+                        assert(old_view.contains_key(lsn));
+                        assert(old_view.dom().contains(lsn));
+                        assert(old(self).seq_start() <= lsn < old(self).seq_end());
+                        assert(new_lower_bound == old(self).seq_end());
+                        assert(false);
+                    }
+                });
+                assert(self@ == discarded);
+                assert(lsn_addr_index_discard_up_to(old_view, new_lower_bound as nat)
+                    == lsn_addr_index_discard_up_to(old(self)@, new_lower_bound as nat));
+                assert(self@ == lsn_addr_index_discard_up_to(old(self)@, new_lower_bound as nat));
+            }
+            assert(self@ == lsn_addr_index_discard_up_to(old(self)@, new_lower_bound as nat));
+            return;
+        }
+
+        let ghost old_self = *self;
+        let mut idx: usize = 0;
+        while idx < self.addrs.len()
+            invariant
+                old_self.wf(),
+                old_self.seq_start() < new_lower_bound < old_self.seq_end(),
+                idx <= old_self.addrs.len(),
+                idx == 0 || old_self.bounds[idx as int] <= new_lower_bound,
+                *self == old_self,
+            decreases old_self.addrs.len() - idx
+        {
+            if self.bounds[idx] <= new_lower_bound && new_lower_bound < self.bounds[idx + 1] {
+                break;
+            }
+            proof {
+                if idx == 0 {
+                    assert(old_self.bounds[0] == old_self.seq_start());
+                    assert(old_self.bounds[0] < new_lower_bound);
+                } else {
+                    assert(old_self.bounds[idx as int] <= new_lower_bound);
+                }
+                assert(self.bounds[idx as int] <= new_lower_bound);
+                assert(!(self.bounds[idx as int] <= new_lower_bound && new_lower_bound < self.bounds[(idx + 1) as int]));
+                assert(self.bounds[(idx + 1) as int] <= new_lower_bound);
+            }
+            idx += 1;
+        }
+
+        let mut new_bounds = self.bounds.split_off(idx + 1);
+        let new_addrs = self.addrs.split_off(idx);
+        new_bounds.insert(0, new_lower_bound);
+        self.bounds = new_bounds;
+        self.addrs = new_addrs;
+
+        proof {
+            assert(idx < old_self.addrs.len()) by {
+                if !(idx < old_self.addrs.len()) {
+                    assert(idx == old_self.addrs.len());
+                    assert(old_self.bounds[old_self.addrs.len() as int + 0] == old_self.seq_end());
+                    assert(old_self.bounds[idx as int] == old_self.seq_end());
+                    assert(old_self.seq_end() <= new_lower_bound);
+                    assert(false);
+                }
+            }
+            assert(old_self.bounds[idx as int] <= new_lower_bound < old_self.bounds[(idx + 1) as int]);
+
+            assert(self.bounds.len() == self.addrs.len() + 1);
+            assert forall |i: int| 0 <= i < self.bounds.len() - 1 implies self.sorted_entry(i) by {
+                if i == 0 {
+                    assert(self.bounds[0] == new_lower_bound);
+                    assert(self.bounds[1] == old_self.bounds[(idx + 1) as int]);
+                    assert(new_lower_bound < old_self.bounds[(idx + 1) as int]);
+                } else {
+                    assert(self.bounds[i] == old_self.bounds[(idx as int) + i]);
+                    assert(self.bounds[i + 1] == old_self.bounds[(idx as int) + i + 1]);
+                    assert(old_self.sorted_entry((idx as int) + i));
+                }
+            }
+            assert forall |i: int, j: int| #![auto] 0 <= i < j < self.addrs.len() implies self.addrs[i]@ != self.addrs[j]@ by {
+                assert(self.addrs[i] == old_self.addrs[(idx as int) + i]);
+                assert(self.addrs[j] == old_self.addrs[(idx as int) + j]);
+                assert(old_self.addrs[(idx as int) + i]@ != old_self.addrs[(idx as int) + j]@);
+            }
+
+            assume(self@ == lsn_addr_index_discard_up_to(old(self)@, new_lower_bound as nat));
         }
     }
 

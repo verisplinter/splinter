@@ -42,6 +42,8 @@ state_machine!{ SystemModelTwo {
         // Map component (identity refinement to abstract)
         pub store: Ephemeral,
         pub persistent_store_ptr: Option<Address>,
+        pub prepared_store_ptr: Option<Address>,
+        pub prepared_store_lsn: LSN,
 
         // Coordination state
         pub recovery_state: RecoveryState,
@@ -122,7 +124,14 @@ state_machine!{ SystemModelTwo {
 
         // The AtomicState execute transition operates on journal + store
         require exists |program_event| AtomicState::execute_transition(
-            pre.to_atomic(), Self::to_atomic_two(new_concrete_journal, new_store, pre.persistent_store_ptr, pre),
+            pre.to_atomic(), Self::to_atomic_two(
+                new_concrete_journal,
+                new_store,
+                pre.persistent_store_ptr,
+                pre.prepared_store_ptr,
+                pre.prepared_store_lsn,
+                pre,
+            ),
             lbl->op->req, lbl->op->reply, program_event);
 
         // Disk unchanged by program execution (matches SM1 semantics)
@@ -167,7 +176,7 @@ state_machine!{ SystemModelTwo {
     // Program disk I/O transitions: journal-affecting ops go through ConcreteJournal
     // ================================================================
 
-    transition!{ program_disk(lbl: Label, new_concrete_journal: ConcreteJournal::State, new_outstanding_cache_reqs: Map<ID, Address>, new_recovery_state: RecoveryState, new_store: Ephemeral, new_store_ptr: Option<Address>, new_sync_req_map: Map<SyncReqId, nat>) {
+    transition!{ program_disk(lbl: Label, new_concrete_journal: ConcreteJournal::State, new_outstanding_cache_reqs: Map<ID, Address>, new_recovery_state: RecoveryState, new_store: Ephemeral, new_store_ptr: Option<Address>, new_prepared_store_ptr: Option<Address>, new_prepared_store_lsn: LSN, new_sync_req_map: Map<SyncReqId, nat>) {
         require lbl is ProgramDiskOp;
 
         // Use valid_disk_transition wrapper to avoid disk_transition trigger issues.
@@ -177,6 +186,8 @@ state_machine!{ SystemModelTwo {
             outstanding_cache_reqs: new_outstanding_cache_reqs,
             store: new_store,
             persistent_store_ptr: new_store_ptr,
+            prepared_store_ptr: new_prepared_store_ptr,
+            prepared_store_lsn: new_prepared_store_lsn,
             journal: new_concrete_journal.journal,
             persistent_journal_seq_end: new_concrete_journal.persistent_journal_seq_end,
             in_flight: new_concrete_journal.in_flight,
@@ -199,6 +210,8 @@ state_machine!{ SystemModelTwo {
         update recovery_state = new_recovery_state;
         update store = new_store;
         update persistent_store_ptr = new_store_ptr;
+        update prepared_store_ptr = new_prepared_store_ptr;
+        update prepared_store_lsn = new_prepared_store_lsn;
         update sync_req_map = new_sync_req_map;
     }}
 
@@ -206,7 +219,7 @@ state_machine!{ SystemModelTwo {
     // Program internal transitions
     // ================================================================
 
-    transition!{ program_internal(lbl: Label, new_concrete_journal: ConcreteJournal::State, new_outstanding_cache_reqs: Map<ID, Address>, new_recovery_state: RecoveryState, new_store: Ephemeral, new_store_ptr: Option<Address>) {
+    transition!{ program_internal(lbl: Label, new_concrete_journal: ConcreteJournal::State, new_outstanding_cache_reqs: Map<ID, Address>, new_recovery_state: RecoveryState, new_store: Ephemeral, new_store_ptr: Option<Address>, new_prepared_store_ptr: Option<Address>, new_prepared_store_lsn: LSN) {
         require lbl is ProgramInternal;
 
         // Disk unchanged by program internal transitions (matches SM1 semantics)
@@ -221,6 +234,8 @@ state_machine!{ SystemModelTwo {
             outstanding_cache_reqs: new_outstanding_cache_reqs,
             store: new_store,
             persistent_store_ptr: new_store_ptr,
+            prepared_store_ptr: new_prepared_store_ptr,
+            prepared_store_lsn: new_prepared_store_lsn,
             journal: new_concrete_journal.journal,
             persistent_journal_seq_end: new_concrete_journal.persistent_journal_seq_end,
             in_flight: new_concrete_journal.in_flight,
@@ -234,6 +249,8 @@ state_machine!{ SystemModelTwo {
         update recovery_state = new_recovery_state;
         update store = new_store;
         update persistent_store_ptr = new_store_ptr;
+        update prepared_store_ptr = new_prepared_store_ptr;
+        update prepared_store_lsn = new_prepared_store_lsn;
     }}
 
     // ================================================================
@@ -261,6 +278,8 @@ state_machine!{ SystemModelTwo {
             outstanding_cache_reqs: Map::empty(),
             store: new_store,
             persistent_store_ptr: None,
+            prepared_store_ptr: None,
+            prepared_store_lsn: 0,
             journal: new_concrete_journal.journal,
             persistent_journal_seq_end: new_concrete_journal.persistent_journal_seq_end,
             in_flight: new_concrete_journal.in_flight,
@@ -271,6 +290,8 @@ state_machine!{ SystemModelTwo {
         update concrete_journal = ConcreteJournal::State{ disk: new_disk, ..new_concrete_journal };
         update store = new_store;
         update persistent_store_ptr = None;
+        update prepared_store_ptr = None;
+        update prepared_store_lsn = 0;
         update recovery_state = RecoveryState::Begin;
         update outstanding_cache_reqs = Map::empty();
         update sync_req_map = Map::empty();
@@ -295,6 +316,8 @@ impl SystemModelTwo::State {
             outstanding_cache_reqs: self.outstanding_cache_reqs,
             store: self.store,
             persistent_store_ptr: self.persistent_store_ptr,
+            prepared_store_ptr: self.prepared_store_ptr,
+            prepared_store_lsn: self.prepared_store_lsn,
             journal: self.concrete_journal.journal,
             persistent_journal_seq_end: self.concrete_journal.persistent_journal_seq_end,
             in_flight: self.concrete_journal.in_flight,
@@ -303,7 +326,7 @@ impl SystemModelTwo::State {
     }
 
     /// Reconstruct AtomicState from new concrete_journal + store, preserving coordination from self
-    pub open spec fn to_atomic_two(cj: ConcreteJournal::State, store: Ephemeral, store_ptr: Option<Address>, coord: Self) -> AtomicState
+    pub open spec fn to_atomic_two(cj: ConcreteJournal::State, store: Ephemeral, store_ptr: Option<Address>, prepared_store_ptr: Option<Address>, prepared_store_lsn: LSN, coord: Self) -> AtomicState
     {
         AtomicState {
             recovery_state: coord.recovery_state,
@@ -311,6 +334,8 @@ impl SystemModelTwo::State {
             outstanding_cache_reqs: coord.outstanding_cache_reqs,
             store: store,
             persistent_store_ptr: store_ptr,
+            prepared_store_ptr,
+            prepared_store_lsn,
             journal: cj.journal,
             persistent_journal_seq_end: cj.persistent_journal_seq_end,
             in_flight: cj.in_flight,
@@ -333,6 +358,8 @@ impl SystemModelTwo::State {
             },
             store: sm.program.state.store,
             persistent_store_ptr: sm.program.state.persistent_store_ptr,
+            prepared_store_ptr: sm.program.state.prepared_store_ptr,
+            prepared_store_lsn: sm.program.state.prepared_store_lsn,
             recovery_state: sm.program.state.recovery_state,
             outstanding_cache_reqs: sm.program.state.outstanding_cache_reqs,
             sync_req_map: sm.program.state.sync_req_map,

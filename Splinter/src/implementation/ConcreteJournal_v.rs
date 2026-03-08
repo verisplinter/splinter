@@ -199,7 +199,7 @@ state_machine!{ ConcreteJournal {
         );
 
         update in_flight = Some(InflightInfo{
-            frozen_store: StampedMap{value: arbitrary(), seq_end: frozen.boundary_lsn},
+            boundary_lsn: frozen.boundary_lsn,
             store_ptr: None,
             journal_version: frozen_seq_end,
             req_id: arbitrary()
@@ -210,7 +210,7 @@ state_machine!{ ConcreteJournal {
         require lbl is CommitComplete;
         require pre.journal.status is Some;
         require pre.in_flight is Some;
-        let start_lsn = pre.in_flight.unwrap().frozen_store.seq_end;
+        let start_lsn = pre.in_flight.unwrap().boundary_lsn;
         let pre_full_journal = pre.full_journal();
         let post_full_journal = JournalCoordinationSystem::State{
             journal: new_journal,
@@ -234,7 +234,7 @@ state_machine!{ ConcreteJournal {
         update persistent_journal_seq_end = pre.in_flight.unwrap().journal_version;
         update persistent_image = pre.full_journal()
             .discard_recent(pre.in_flight.unwrap().journal_version)
-            .discard_old(pre.in_flight.unwrap().frozen_store.seq_end);
+            .discard_old(pre.in_flight.unwrap().boundary_lsn);
         update journal = new_journal;
         update in_flight = None;
     }}
@@ -254,7 +254,7 @@ state_machine!{ ConcreteJournal {
         update persistent_image = if lbl->keep_in_flight && pre.in_flight is Some && pre.journal.status is Some {
             pre.full_journal()
                 .discard_recent(pre.in_flight.unwrap().journal_version)
-                .discard_old(pre.in_flight.unwrap().frozen_store.seq_end)
+                .discard_old(pre.in_flight.unwrap().boundary_lsn)
         } else {
             pre.persistent_image
         };
@@ -318,8 +318,8 @@ state_machine!{ ConcreteJournal {
         let tail = self.journal.status.unwrap().unmarshalled_tail;
         &&& tail.can_discard_to(self.persistent_journal_seq_end)
         &&& self.in_flight is Some ==> {
-            &&& self.journal.seq_start() <= self.in_flight.unwrap().frozen_store.seq_end
-            &&& self.in_flight.unwrap().frozen_store.seq_end <= self.in_flight.unwrap().journal_version
+            &&& self.journal.seq_start() <= self.in_flight.unwrap().boundary_lsn
+            &&& self.in_flight.unwrap().boundary_lsn <= self.in_flight.unwrap().journal_version
             &&& tail.can_discard_to(self.in_flight.unwrap().journal_version)
             &&& self.persistent_journal_seq_end <= self.in_flight.unwrap().journal_version
         }
@@ -423,7 +423,7 @@ impl ConcreteJournal::State {
                     Some(
                         full_journal
                             .discard_recent(self.in_flight.unwrap().journal_version)
-                            .discard_old(self.in_flight.unwrap().frozen_store.seq_end)
+                            .discard_old(self.in_flight.unwrap().boundary_lsn)
                     )
                 } else {
                     None

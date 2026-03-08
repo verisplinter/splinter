@@ -536,6 +536,53 @@ pub proof fn disk_internal_preserves_i(
     }
 }
 
+/// Disk ops (request enqueue / response dequeue) preserves ephemeral_disk and JCS.i()
+/// when journal and cache are unchanged because disk content is unchanged.
+pub proof fn disk_ops_preserves_i(
+    pre: JournalCoordinationSystem::State,
+    post: JournalCoordinationSystem::State,
+    new_disk: AsyncDisk::State,
+    disk_requests: Map<ID, DiskRequest>,
+    disk_responses: Map<ID, DiskResponse>,
+)
+    requires
+        pre.inv(),
+        AsyncDisk::State::next(pre.disk, new_disk, AsyncDisk::Label::DiskOps{
+            requests: disk_requests,
+            responses: disk_responses,
+        }),
+        post.journal == pre.journal,
+        post.cache == pre.cache,
+        post.disk == new_disk,
+    ensures
+        pre.ephemeral_disk() =~= post.ephemeral_disk(),
+        pre.i() =~= post.i(),
+{
+    reveal(AsyncDisk::State::next);
+    reveal(AsyncDisk::State::next_by);
+    let step = choose |step| AsyncDisk::State::next_by(
+        pre.disk,
+        post.disk,
+        AsyncDisk::Label::DiskOps{requests: disk_requests, responses: disk_responses},
+        step,
+    );
+    match step {
+        AsyncDisk::Step::disk_ops() => {
+            assert(post.disk.content == pre.disk.content);
+            assert(pre.persistent_journal_disk() =~= post.persistent_journal_disk());
+            assert(pre.dirty_journal_cache() =~= post.dirty_journal_cache());
+            assert(pre.ephemeral_disk() =~= post.ephemeral_disk());
+            assert(pre.i() =~= post.i()) by {
+                reveal(JournalCoordinationSystem::State::i);
+                assert(pre.ephemeral_tj() =~= post.ephemeral_tj());
+            }
+        }
+        _ => {
+            assert(false);
+        }
+    }
+}
+
 /// Cache disk ops preserves ephemeral_disk and JCS.i().
 pub proof fn cache_disk_ops_preserves_i(
     pre: JournalCoordinationSystem::State,

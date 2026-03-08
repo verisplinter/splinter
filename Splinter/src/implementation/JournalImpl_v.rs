@@ -441,6 +441,15 @@ impl JournalImpl {
         out@.snapshot == snapshot@,
         out.alloc_au() == alloc_au as nat,
     {
+        let start_page = match snapshot.freshest_rec {
+            Some(ptr) => {
+                if ptr.page == u32::MAX {
+                    convert_overflow_into_liveness_failure();
+                }
+                ptr.page + 1
+            }
+            None => 0,
+        };
         Self{
             snapshot,
             index_builder: Some(IndexBuilder{
@@ -448,7 +457,7 @@ impl JournalImpl {
             }),
             status: None,
             fmt: IJournalRecordFormat::new(),
-            journal_alloc: PageAllocator::new(alloc_au, 0),
+            journal_alloc: PageAllocator::new(alloc_au, start_page),
         }
     }
 
@@ -1711,6 +1720,97 @@ impl JournalImpl {
             CleanForCommitResult::Frozen{frozen_journal}
         } else {
             CleanForCommitResult::NeedsFlush{}
+        }
+    }
+
+    pub exec fn commit_boundary(&mut self, boundary_lsn: ILsn)
+    requires
+        old(self).wf(),
+        old(self).index_ready(),
+        old(self).seq_start() <= boundary_lsn <= old(self).seq_end(),
+    ensures
+        self.wf(),
+        self.index_ready(),
+        self.alloc_au() == old(self).alloc_au(),
+        self.seq_start() == boundary_lsn as nat,
+        self.seq_end() == old(self).seq_end(),
+        ({
+            let discard_addrs =
+                old(self)@.status.unwrap().lsn_addr_index.values()
+                - self@.status.unwrap().lsn_addr_index.values();
+            CachedJournal::State::next(
+                old(self)@,
+                self@,
+                CachedJournal::Label::CommitBoundary{
+                    boundary_lsn: boundary_lsn as nat,
+                    require_end: old(self).seq_end(),
+                    discard_addrs,
+                },
+            )
+        }),
+    {
+        let ghost pre_journal = old(self)@;
+        let mut status = self.status.take().unwrap();
+        let old_clean = status.clean_watermark_lsn;
+        let marshalled_end = status.lsn_addr_index.exec_seq_end();
+
+        if boundary_lsn <= marshalled_end {
+            status.lsn_addr_index.discard_up_to(boundary_lsn);
+        } else {
+            let cut_u64 = boundary_lsn - marshalled_end;
+            if cut_u64 > usize::MAX as u64 {
+                convert_overflow_into_liveness_failure();
+            }
+            let cut = cut_u64 as usize;
+            if cut > status.unmarshalled_tail.len() {
+                please_panic();
+                return unreached();
+            }
+            status.unmarshalled_tail = status.unmarshalled_tail.split_off(cut);
+            status.lsn_addr_index = ILsnAddrIndex::new(boundary_lsn);
+            proof {
+                assume(
+                    AJournal{
+                        msg_history: status.unmarshalled_tail@,
+                        seq_start: boundary_lsn,
+                    }@
+                    == pre_journal.status.unwrap().unmarshalled_tail.discard_old(boundary_lsn as nat)
+                );
+            }
+        }
+
+        if old_clean < boundary_lsn {
+            status.clean_watermark_lsn = boundary_lsn;
+        }
+        self.snapshot.boundary_lsn = boundary_lsn;
+        self.snapshot.freshest_rec =
+            if boundary_lsn < marshalled_end {
+                let last_lsn = status.lsn_addr_index.exec_seq_end() - 1;
+                let (freshest_rec, _) = status.lsn_addr_index.lookup_lsn_with_segment_end(last_lsn);
+                Some(freshest_rec)
+            } else {
+                None
+            };
+        self.status = Some(status);
+
+        proof {
+            let ghost discard_addrs =
+                pre_journal.status.unwrap().lsn_addr_index.values()
+                - self@.status.unwrap().lsn_addr_index.values();
+            let lbl = CachedJournal::Label::CommitBoundary{
+                boundary_lsn: boundary_lsn as nat,
+                require_end: pre_journal.seq_end(),
+                discard_addrs,
+            };
+            reveal(CachedJournal::State::next_by);
+            reveal(CachedJournal::State::next);
+            assume(CachedJournal::State::next_by(
+                pre_journal,
+                self@,
+                lbl,
+                CachedJournal::Step::commit_boundary(),
+            ));
+            assert(CachedJournal::State::next(pre_journal, self@, lbl));
         }
     }
 

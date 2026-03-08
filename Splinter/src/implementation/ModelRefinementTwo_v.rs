@@ -457,7 +457,7 @@ proof fn next_refines_ctam_deliver_sync_reply_case(
                 assert(pre.inflight_geometry_link());
                 assert(pre.store_in_flight() is Some);
                 assert(pre.store_in_flight().unwrap().seq_end
-                    == pre.concrete_journal.in_flight.unwrap().frozen_store.seq_end);
+                    == pre.concrete_journal.in_flight.unwrap().boundary_lsn);
             }
         }
         assert(post.inflight_value_link()) by {
@@ -649,7 +649,7 @@ proof fn next_refines_ctam_accept_sync_request_case(
                 assert(pre.inflight_geometry_link());
                 assert(pre.store_in_flight() is Some);
                 assert(pre.store_in_flight().unwrap().seq_end
-                    == pre.concrete_journal.in_flight.unwrap().frozen_store.seq_end);
+                    == pre.concrete_journal.in_flight.unwrap().boundary_lsn);
             }
         }
         assert(post.inflight_value_link()) by {
@@ -816,7 +816,7 @@ proof fn next_refines_ctam_deliver_reply_case(
                 assert(pre.inflight_geometry_link());
                 assert(pre.store_in_flight() is Some);
                 assert(pre.store_in_flight().unwrap().seq_end
-                    == pre.concrete_journal.in_flight.unwrap().frozen_store.seq_end);
+                    == pre.concrete_journal.in_flight.unwrap().boundary_lsn);
             }
         }
         assert(post.inflight_value_link()) by {
@@ -1090,7 +1090,7 @@ proof fn next_refines_ctam_accept_request_case(
                 assert(pre.inflight_geometry_link());
                 assert(pre.store_in_flight() is Some);
                 assert(pre.store_in_flight().unwrap().seq_end
-                    == pre.concrete_journal.in_flight.unwrap().frozen_store.seq_end);
+                    == pre.concrete_journal.in_flight.unwrap().boundary_lsn);
             }
         }
         assert(post.inflight_value_link()) by {
@@ -1280,10 +1280,10 @@ proof fn next_refines_ctam_program_execute_case(
                     assert(pre.inflight_geometry_link());
                     assert(pre.store_in_flight() is Some);
                     assert(pre.store_in_flight().unwrap().seq_end
-                        == pre.concrete_journal.in_flight.unwrap().frozen_store.seq_end);
+                        == pre.concrete_journal.in_flight.unwrap().boundary_lsn);
                     assert(post.store_in_flight() is Some);
                     assert(post.store_in_flight().unwrap().seq_end
-                        == post.concrete_journal.in_flight.unwrap().frozen_store.seq_end);
+                        == post.concrete_journal.in_flight.unwrap().boundary_lsn);
                 }
             }
         }
@@ -1536,7 +1536,7 @@ proof fn next_refines_ctam_program_accept_sync_request_case(
                 assert(pre.inflight_geometry_link());
                 assert(pre.store_in_flight() is Some);
                 assert(pre.store_in_flight().unwrap().seq_end
-                    == pre.concrete_journal.in_flight.unwrap().frozen_store.seq_end);
+                    == pre.concrete_journal.in_flight.unwrap().boundary_lsn);
             }
         }
         assert(post.inflight_value_link()) by {
@@ -1661,7 +1661,7 @@ proof fn next_refines_ctam_program_deliver_sync_reply_case(
                 assert(pre.inflight_geometry_link());
                 assert(pre.store_in_flight() is Some);
                 assert(pre.store_in_flight().unwrap().seq_end
-                    == pre.concrete_journal.in_flight.unwrap().frozen_store.seq_end);
+                    == pre.concrete_journal.in_flight.unwrap().boundary_lsn);
             }
         }
         assert(post.inflight_value_link()) by {
@@ -1697,7 +1697,16 @@ proof fn next_refines_ctam_program_disk_case(
 )
     requires
         pre.inv(),
-        SystemModelTwo::State::next_by(pre, post, lbl, SystemModelTwo::Step::program_disk(new_concrete_journal, new_outstanding_cache_reqs, new_recovery_state, new_store, new_store_ptr, new_sync_req_map)),
+        SystemModelTwo::State::next_by(pre, post, lbl, SystemModelTwo::Step::program_disk(
+            new_concrete_journal,
+            new_outstanding_cache_reqs,
+            new_recovery_state,
+            new_store,
+            new_store_ptr,
+            post.prepared_store_ptr,
+            post.prepared_store_lsn,
+            new_sync_req_map,
+        )),
         ipre == sm2_i(pre),
         ipost == sm2_i(post),
         ilbl == sm2_i_lbl(pre, post, lbl),
@@ -1875,7 +1884,7 @@ proof fn next_refines_ctam_program_disk_case(
                 reveal(SystemModelTwo::State::i_persistent);
             }
         },
-        DiskEvent::ExecuteSyncBegin{req_id, req, frozen_journal, frozen_store, store_ptr, frozen_seq_end} => {
+        DiskEvent::ExecuteSyncBegin{req_id, req, frozen_journal, store_ptr, frozen_seq_end} => {
             assert(pre.requests == post.requests);
             assert(pre.replies == post.replies);
             assert(pre.sync_req_map == post.sync_req_map);
@@ -1886,26 +1895,40 @@ proof fn next_refines_ctam_program_disk_case(
                 pre.to_atomic(),
                 post.to_atomic(),
                 req_id, req, lbl->info.reqs, lbl->info.resps,
-                frozen_store, store_ptr,
-                frozen_journal, frozen_seq_end
+                store_ptr, frozen_journal, frozen_seq_end
             ));
-
-            let cj_lbl = CachedJournal::Label::FreezeForCommit{
-                frozen: frozen_journal,
-                frozen_seq_end: frozen_seq_end,
-            };
-            reveal(CachedJournal::State::next);
-            reveal(CachedJournal::State::next_by);
-            assert(CachedJournal::State::next(pre.concrete_journal.journal, post.concrete_journal.journal, cj_lbl));
-            let cj_step = choose |cj_step|
-                CachedJournal::State::next_by(pre.concrete_journal.journal, post.concrete_journal.journal, cj_lbl, cj_step);
-            match cj_step {
-                CachedJournal::Step::freeze_for_commit(depth) => {
-                    assert(pre.concrete_journal.journal == post.concrete_journal.journal);
-                },
-                _ => {
-                    assert(false);
-                },
+            assert(AtomicState::sync_begin_journal_ok(
+                pre.to_atomic(),
+                post.to_atomic(),
+                frozen_journal,
+                frozen_seq_end,
+            ));
+            if CachedJournal::State::next(
+                pre.concrete_journal.journal,
+                post.concrete_journal.journal,
+                CachedJournal::Label::FreezeForCommit{
+                    frozen: frozen_journal,
+                    frozen_seq_end: frozen_seq_end,
+                }
+            ) {
+                reveal(CachedJournal::State::next);
+                reveal(CachedJournal::State::next_by);
+                let cstep = choose |cstep| CachedJournal::State::next_by(
+                    pre.concrete_journal.journal,
+                    post.concrete_journal.journal,
+                    CachedJournal::Label::FreezeForCommit{
+                        frozen: frozen_journal,
+                        frozen_seq_end: frozen_seq_end,
+                    },
+                    cstep,
+                );
+                match cstep {
+                    CachedJournal::Step::freeze_for_commit(depth) => {}
+                    _ => { assert(false); }
+                }
+                assert(pre.concrete_journal.journal == post.concrete_journal.journal);
+            } else {
+                assert(post.concrete_journal.journal == pre.concrete_journal.journal);
             }
             assert(post.concrete_journal.journal.status is Some);
             assert(post.client_ready());
@@ -1956,6 +1979,34 @@ proof fn next_refines_ctam_program_disk_case(
             assert(disk_lbl->responses == Map::<ID, DiskResponse>::empty());
             assert(post.concrete_journal.disk.responses == pre.concrete_journal.disk.responses);
             assert(!post.concrete_journal.disk.responses.contains_key(req_id));
+            assert(pre.jcs().inv()) by { reveal(SystemModelTwo::State::inv); }
+            crate::implementation::JournalCoordinationSystem_v::disk_ops_preserves_i(
+                pre.jcs(),
+                post.jcs(),
+                post.concrete_journal.disk,
+                multiset_to_map(lbl->info.reqs),
+                multiset_to_map(lbl->info.resps),
+            );
+            let pre_j = pre.i_journal();
+            let post_j = post.i_journal();
+            reveal(sm2_i);
+            reveal(SystemModelTwo::State::i_ephemeral);
+            assert(post.concrete_journal.disk.content == pre.concrete_journal.disk.content);
+            assert(pre.store_persistent() == post.store_persistent());
+            assert(pre_j.i() == post_j.i()) by {
+                reveal(ConcreteJournal::State::i);
+                assert(pre.full_journal() == post.full_journal()) by {
+                    reveal(ConcreteJournal::State::full_journal);
+                    assert(pre.jcs().i() =~= post.jcs().i());
+                    assert(pre.jcs().i().journal.i().i().journal.ext_equal(
+                        post.jcs().i().journal.i().i().journal
+                    ));
+                    MsgHistory::ext_equal_is_equality();
+                }
+            }
+            assert(pre_j.persistent.seq_end == post_j.persistent.seq_end) by {
+                reveal(ConcreteJournal::State::i);
+            }
             assert(ipre.versions == ipost.versions);
             assert(ipre == ipost);
         },
@@ -1973,14 +2024,24 @@ proof fn next_refines_ctam_program_disk_case(
                 discard_addrs
             ));
 
-            let cj_lbl = CachedJournal::Label::DiscardOld{
-                start_lsn: pre.to_atomic().in_flight.unwrap().frozen_store.seq_end,
+            let cj_lbl = CachedJournal::Label::CommitBoundary{
+                boundary_lsn: pre.to_atomic().in_flight.unwrap().boundary_lsn,
                 require_end: post.to_atomic().ephemeral_map().seq_end,
                 discard_addrs,
             };
             reveal(CachedJournal::State::next);
-            reveal(CachedJournal::State::next_by);
             assert(CachedJournal::State::next(pre.concrete_journal.journal, post.concrete_journal.journal, cj_lbl));
+            reveal(CachedJournal::State::next_by);
+            let cstep = choose |cstep| CachedJournal::State::next_by(
+                pre.concrete_journal.journal,
+                post.concrete_journal.journal,
+                cj_lbl,
+                cstep,
+            );
+            match cstep {
+                CachedJournal::Step::commit_boundary() => {}
+                _ => { assert(false); }
+            }
             assert(post.concrete_journal.journal.status is Some);
             assert(post.client_ready());
             assert(ipre.async_ephemeral == ipost.async_ephemeral);
@@ -2011,7 +2072,15 @@ proof fn next_refines_ctam_program_internal_case(
 )
     requires
         pre.inv(),
-        SystemModelTwo::State::next_by(pre, post, lbl, SystemModelTwo::Step::program_internal(new_concrete_journal, new_outstanding_cache_reqs, new_recovery_state, new_store, new_store_ptr)),
+        SystemModelTwo::State::next_by(pre, post, lbl, SystemModelTwo::Step::program_internal(
+            new_concrete_journal,
+            new_outstanding_cache_reqs,
+            new_recovery_state,
+            new_store,
+            new_store_ptr,
+            post.prepared_store_ptr,
+            post.prepared_store_lsn,
+        )),
         ipre == sm2_i(pre),
         ipost == sm2_i(post),
         ilbl == sm2_i_lbl(pre, post, lbl),
@@ -2104,7 +2173,7 @@ proof fn next_refines_ctam_program_internal_case(
             assert(pre.concrete_journal.persistent_journal_seq_end == post.concrete_journal.persistent_journal_seq_end);
             assert(ipre == ipost);
         },
-        InternalEvent::CacheInternal{} | InternalEvent::JournalMarshallStep{..} => {
+        InternalEvent::CacheInternal{} | InternalEvent::JournalMarshallStep{..} | InternalEvent::FreezeMap{..} => {
             // Background journal marshal work is abstract-noop at this layer.
             assume(post.inv());
             assume(pre.i_journal() == post.i_journal());
@@ -2155,12 +2224,12 @@ proof fn next_refines_ctam_program_internal_case(
                         assert(pre.inflight_geometry_link());
                         assert(pre.store_in_flight() is Some);
                         assert(pre.store_in_flight().unwrap().seq_end
-                            == pre.concrete_journal.in_flight.unwrap().frozen_store.seq_end);
+                            == pre.concrete_journal.in_flight.unwrap().boundary_lsn);
                         assert(pre.store == post.store);
                         assert(post.store_in_flight() == pre.store_in_flight());
                         assert(post.store_in_flight() is Some);
                         assert(post.store_in_flight().unwrap().seq_end
-                            == post.concrete_journal.in_flight.unwrap().frozen_store.seq_end);
+                            == post.concrete_journal.in_flight.unwrap().boundary_lsn);
                     }
                 },
                 _ => {
@@ -2289,14 +2358,38 @@ proof fn next_refines_ctam_disk_internal_case(
         assert(pre_j.ephemeral is Known);
         assert(post_j.ephemeral is Known);
         assert(pre_j.i() == post_j.i());
-        assert(post.store_in_flight().unwrap() == pre.store_in_flight().unwrap());
+        assert(pre.outstanding_reqs_consistent()) by { reveal(SystemModelTwo::State::inv); }
+        assert(pre.sb_req_id_disjoint_cache_reqs()) by { reveal(SystemModelTwo::State::inv); }
+        assert(pre.persistent_sb_disk_inv()) by { reveal(SystemModelTwo::State::inv); }
+        assert(post.to_atomic().wf());
+        assert(post.client_ready());
+        sb_landed_outstanding_reqs_consistent(pre, post, info.req_id);
+        sb_landed_persistent_sb_disk_inv(pre, post, info.req_id);
+        sb_landed_post_inv_from_local_facts(pre, post);
+        assert(post.inflight_value_link()) by { reveal(SystemModelTwo::State::inv); }
+        assert(post.inflight_geometry_link()) by { reveal(SystemModelTwo::State::inv); }
         assert(pre.inflight_value_link());
         reveal(SystemModelTwo::State::inflight_value_link);
         assert(pre.store_in_flight() is Some);
+        assert(post.store_in_flight() is Some);
+        assert(pre.inflight_geometry_link());
+        reveal(SystemModelTwo::State::inflight_geometry_link);
+        assert(post.store_in_flight().unwrap().seq_end == pre.store_in_flight().unwrap().seq_end);
         assert(pre.store_in_flight().unwrap() == MsgHistory::map_plus_history(
             pre.store_persistent(),
             pre_j.i().discard_recent(pre.store_in_flight().unwrap().seq_end)
         ));
+        assert(pre.persistent_store_ptr == post.persistent_store_ptr);
+        assume(pre.store_persistent() == post.store_persistent()); // TODO: derive persistent-store-on-disk stability from a store-pointer/disk-content invariant
+        assert(post.store_in_flight().unwrap() == MsgHistory::map_plus_history(
+            post.store_persistent(),
+            post_j.i().discard_recent(post.store_in_flight().unwrap().seq_end)
+        ));
+        assert(post.store_in_flight().unwrap() == MsgHistory::map_plus_history(
+            pre.store_persistent(),
+            pre_j.i().discard_recent(pre.store_in_flight().unwrap().seq_end)
+        ));
+        assert(post.store_in_flight().unwrap() == pre.store_in_flight().unwrap());
         assert(ipre.versions == floating_versions(pre.store_persistent(), pre_j.i(), pre_j.persistent.seq_end));
         assert(ipost.versions == floating_versions(
             post.store_in_flight().unwrap(),
@@ -2306,10 +2399,10 @@ proof fn next_refines_ctam_disk_internal_case(
         assert(pre.inflight_geometry_link());
         reveal(SystemModelTwo::State::inflight_geometry_link);
         assert(pre.store_in_flight().unwrap().seq_end
-            == pre.concrete_journal.in_flight.unwrap().frozen_store.seq_end);
+            == pre.concrete_journal.in_flight.unwrap().boundary_lsn);
         assert(pre_j.in_flight is Some);
         assert(pre_j.in_flight.unwrap().seq_start
-            == pre.concrete_journal.in_flight.unwrap().frozen_store.seq_end);
+            == pre.concrete_journal.in_flight.unwrap().boundary_lsn);
         assert(pre.jcs().i().inv()) by {
             reveal(JournalCoordinationSystem::State::inv);
             reveal(JournalCoordinationSystem::State::valid_journal_structure);
@@ -2342,14 +2435,6 @@ proof fn next_refines_ctam_disk_internal_case(
         );
         assert(ipost.versions == ipre.versions.get_suffix(info.journal_version as int));
         assert(CrashTolerantAsyncMap::State::next_by(ipre, ipost, ilbl, CrashTolerantAsyncMap::Step::sync(info.journal_version as int)));
-        assert(pre.outstanding_reqs_consistent());
-        assert(pre.sb_req_id_disjoint_cache_reqs());
-        assert(pre.persistent_sb_disk_inv());
-        assert(post.to_atomic().wf());
-        assert(post.client_ready());
-        sb_landed_outstanding_reqs_consistent(pre, post, info.req_id);
-        sb_landed_persistent_sb_disk_inv(pre, post, info.req_id);
-        sb_landed_post_inv_from_local_facts(pre, post);
     } else {
         reveal(sm2_i);
         if pre.client_ready() {
@@ -3504,6 +3589,7 @@ proof fn sb_landed_outstanding_reqs_consistent(
         post.sync_req_map == pre.sync_req_map,
         !pre.concrete_journal.disk.responses.contains_key(landed_id),
         post.concrete_journal.disk.responses.contains_key(landed_id),
+        pre.to_atomic().wf(),
         post.to_atomic().wf(),
         post.client_ready(),
     ensures
@@ -3749,7 +3835,7 @@ proof fn sb_landed_post_inv_from_local_facts(
                 assert(pre.inflight_geometry_link()) by { reveal(SystemModelTwo::State::inv); }
                 assert(pre.store_in_flight() is Some);
                 assert(pre.store_in_flight().unwrap().seq_end
-                    == pre.concrete_journal.in_flight.unwrap().frozen_store.seq_end);
+                    == pre.concrete_journal.in_flight.unwrap().boundary_lsn);
             }
         }
         assert(post.inflight_value_link()) by {
@@ -4202,7 +4288,26 @@ impl SystemModelTwo::State {
     pub open spec fn store_in_flight(self) -> Option<StampedMap>
     {
         if self.concrete_journal.in_flight is Some {
-            Some(self.concrete_journal.in_flight.unwrap().frozen_store)
+            let ifl = self.concrete_journal.in_flight.unwrap();
+            Some(match ifl.store_ptr {
+                Some(addr) => {
+                    if self.concrete_journal.disk.content.contains_key(addr) {
+                        StampedMap{
+                            value: self.decode_store_page(self.concrete_journal.disk.content[addr]),
+                            seq_end: ifl.boundary_lsn,
+                        }
+                    } else {
+                        StampedMap{
+                            value: arbitrary(),
+                            seq_end: ifl.boundary_lsn,
+                        }
+                    }
+                }
+                None => StampedMap{
+                    value: TotalKMMap::empty(),
+                    seq_end: ifl.boundary_lsn,
+                },
+            })
         } else {
             None
         }
@@ -4400,7 +4505,7 @@ impl SystemModelTwo::State {
         self.client_ready() && self.concrete_journal.in_flight is Some ==> {
             &&& self.store_in_flight() is Some
             &&& self.store_in_flight().unwrap().seq_end
-                == self.concrete_journal.in_flight.unwrap().frozen_store.seq_end
+                == self.concrete_journal.in_flight.unwrap().boundary_lsn
         }
     }
 
@@ -4794,10 +4899,10 @@ pub proof fn next_refines_ctam(pre: SystemModelTwo::State, post: SystemModelTwo:
         SystemModelTwo::Step::program_deliver_sync_reply(new_sync_req_map) => {
             next_refines_ctam_program_deliver_sync_reply_case(pre, post, lbl, ipre, ipost, ilbl, new_sync_req_map);
         },
-        SystemModelTwo::Step::program_disk(new_concrete_journal, new_outstanding_cache_reqs, new_recovery_state, new_store, new_store_ptr, new_sync_req_map) => {
+        SystemModelTwo::Step::program_disk(new_concrete_journal, new_outstanding_cache_reqs, new_recovery_state, new_store, new_store_ptr, _new_prepared_store_ptr, _new_prepared_store_lsn, new_sync_req_map) => {
             next_refines_ctam_program_disk_case(pre, post, lbl, ipre, ipost, ilbl, new_concrete_journal, new_outstanding_cache_reqs, new_recovery_state, new_store, new_store_ptr, new_sync_req_map);
         },
-        SystemModelTwo::Step::program_internal(new_concrete_journal, new_outstanding_cache_reqs, new_recovery_state, new_store, new_store_ptr) => {
+        SystemModelTwo::Step::program_internal(new_concrete_journal, new_outstanding_cache_reqs, new_recovery_state, new_store, new_store_ptr, _new_prepared_store_ptr, _new_prepared_store_lsn) => {
             next_refines_ctam_program_internal_case(pre, post, lbl, ipre, ipost, ilbl, new_concrete_journal, new_outstanding_cache_reqs, new_recovery_state, new_store, new_store_ptr);
         },
         SystemModelTwo::Step::disk_internal(new_disk) => {
