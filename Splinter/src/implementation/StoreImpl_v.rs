@@ -63,6 +63,8 @@ pub struct StoreImpl {
     store: VecMap<Key, Value>,
     store_lsn: u64,
     persistent_store_ptr: Option<IAddress>,
+    prepared_store_ptr: Option<IAddress>,
+    prepared_store_lsn: u64,
     store_alloc: PageAllocator,
 }
 
@@ -80,6 +82,10 @@ impl StoreImpl {
         &&& self.store_alloc.wf()
         &&& self.persistent_store_ptr is Some
             ==> (self.persistent_store_ptr.unwrap().page as nat) < self.next_alloc_page()
+        &&& self.prepared_store_ptr is Some
+            ==> self.prepared_store_ptr.unwrap().au as nat == self.alloc_au() as nat
+        &&& self.prepared_store_ptr is Some
+            ==> (self.prepared_store_ptr.unwrap().page as nat) < self.next_alloc_page()
     }
 
     pub fn new(init_store_ptr: Option<IAddress>, alloc_au: u32) -> (out: Self)
@@ -88,6 +94,10 @@ impl StoreImpl {
             out.alloc_au() == alloc_au,
             out.persistent_store_ptr() == init_store_ptr,
             out.persistent_store_ptr_view() == iaddr_view(init_store_ptr),
+            out.prepared_store_ptr() is None,
+            out.prepared_store_ptr_view() is None,
+            out.prepared_store_lsn() == 0,
+            out.prepared_store_lsn_nat() == 0,
     {
         let start_page = match init_store_ptr {
             Some(ptr) => {
@@ -102,6 +112,8 @@ impl StoreImpl {
             store: VecMap::new(),
             store_lsn: 0,
             persistent_store_ptr: init_store_ptr,
+            prepared_store_ptr: None,
+            prepared_store_lsn: 0,
             store_alloc: PageAllocator::new(alloc_au, start_page),
         }
     }
@@ -170,6 +182,9 @@ impl StoreImpl {
             self.store_lsn() == old(self).store_lsn(),
             self.store_lsn_nat() == old(self).store_lsn_nat(),
             self.persistent_store_ptr() == old(self).persistent_store_ptr(),
+            self.prepared_store_ptr() == old(self).prepared_store_ptr(),
+            self.prepared_store_lsn() == old(self).prepared_store_lsn(),
+            self.prepared_store_lsn_nat() == old(self).prepared_store_lsn_nat(),
             self.alloc_au() == old(self).alloc_au(),
             self.next_alloc_page() == old(self).next_alloc_page() + 1,
     {
@@ -255,6 +270,10 @@ impl StoreImpl {
             self@ == self.kmmap(),
             self.persistent_store_ptr() == old(self).persistent_store_ptr(),
             self.persistent_store_ptr_view() == old(self).persistent_store_ptr_view(),
+            self.prepared_store_ptr() == old(self).prepared_store_ptr(),
+            self.prepared_store_ptr_view() == old(self).prepared_store_ptr_view(),
+            self.prepared_store_lsn() == old(self).prepared_store_lsn(),
+            self.prepared_store_lsn_nat() == old(self).prepared_store_lsn_nat(),
             self.alloc_au() == old(self).alloc_au(),
             self.next_alloc_page() == old(self).next_alloc_page(),
     {
@@ -286,6 +305,10 @@ impl StoreImpl {
             cache.valid_load_handles_preserved(*old(cache)),
             self.persistent_store_ptr_view() == old(self).persistent_store_ptr_view(),
             self.persistent_store_ptr_matches_alloc_au(),
+            self.prepared_store_ptr() == old(self).prepared_store_ptr(),
+            self.prepared_store_ptr_view() == old(self).prepared_store_ptr_view(),
+            self.prepared_store_lsn() == old(self).prepared_store_lsn(),
+            self.prepared_store_lsn_nat() == old(self).prepared_store_lsn_nat(),
             self.alloc_au() == old(self).alloc_au(),
             self.next_alloc_page() == old(self).next_alloc_page(),
             match out {
@@ -482,6 +505,48 @@ impl StoreImpl {
         self.persistent_store_ptr
     }
 
+    pub closed spec fn prepared_store_ptr(self) -> Option<IAddress> {
+        self.prepared_store_ptr
+    }
+
+    pub closed spec fn prepared_store_ptr_view(self) -> Option<Address> {
+        iaddr_view(self.prepared_store_ptr)
+    }
+
+    pub proof fn prepared_store_ptr_view_ensures(self)
+        ensures
+            self.prepared_store_ptr_view() == iaddr_view(self.prepared_store_ptr()),
+    {
+    }
+
+    pub fn exec_prepared_store_ptr(&self) -> (out: Option<IAddress>)
+        ensures out == self.prepared_store_ptr()
+    {
+        self.prepared_store_ptr
+    }
+
+    pub closed spec fn prepared_store_lsn(self) -> u64 {
+        self.prepared_store_lsn
+    }
+
+    pub closed spec fn prepared_store_lsn_nat(self) -> nat {
+        self.prepared_store_lsn as nat
+    }
+
+    pub fn exec_prepared_store_lsn(&self) -> (out: u64)
+        ensures
+            out == self.prepared_store_lsn(),
+            out as nat == self.prepared_store_lsn_nat(),
+    {
+        self.prepared_store_lsn
+    }
+
+    pub proof fn prepared_store_lsn_nat_ensures(self)
+        ensures
+            self.prepared_store_lsn_nat() == self.prepared_store_lsn() as nat,
+    {
+    }
+
     pub fn set_persistent_store_ptr(&mut self, ptr: Option<IAddress>)
         requires
             old(self).wf(),
@@ -501,6 +566,41 @@ impl StoreImpl {
         self.next_alloc_page() == old(self).next_alloc_page(),
     {
         self.persistent_store_ptr = ptr;
+        proof {
+            if ptr is Some {
+                assert(ptr.unwrap().au == old(self).alloc_au());
+                assert(self.alloc_au() == old(self).alloc_au());
+                assert(ptr.unwrap().au == self.alloc_au());
+                assert(ptr.unwrap().au as nat == self.alloc_au() as nat);
+            }
+        }
+    }
+
+    pub fn set_prepared_store(&mut self, ptr: Option<IAddress>, lsn: u64)
+        requires
+            old(self).wf(),
+            old(self).persistent_store_ptr_matches_alloc_au(),
+            ptr is Some ==> ptr.unwrap().au == old(self).alloc_au(),
+            ptr is Some ==> (ptr.unwrap().page as nat) < old(self).next_alloc_page(),
+        ensures
+            self.wf(),
+            self.store_wf(),
+            self.persistent_store_ptr_matches_alloc_au(),
+            self.prepared_store_ptr() == ptr,
+            self.prepared_store_ptr_view() == iaddr_view(ptr),
+            self.prepared_store_lsn() == lsn,
+            self.prepared_store_lsn_nat() == lsn as nat,
+            self@ == old(self)@,
+            self.store_entries() == old(self).store_entries(),
+            self.store_lsn() == old(self).store_lsn(),
+            self.store_lsn_nat() == old(self).store_lsn_nat(),
+            self.persistent_store_ptr() == old(self).persistent_store_ptr(),
+            self.persistent_store_ptr_view() == old(self).persistent_store_ptr_view(),
+            self.alloc_au() == old(self).alloc_au(),
+            self.next_alloc_page() == old(self).next_alloc_page(),
+    {
+        self.prepared_store_ptr = ptr;
+        self.prepared_store_lsn = lsn;
         proof {
             if ptr is Some {
                 assert(ptr.unwrap().au == old(self).alloc_au());
@@ -548,7 +648,25 @@ impl StoreImpl {
     {
     }
 
-    pub closed spec fn store_addrs(self, prepared_store_ptr: Option<IAddress>, inflight_store_ptr: Option<IAddress>) -> Set<Address>
+    pub proof fn prepared_store_ptr_has_alloc_au(self)
+        requires
+            self.wf(),
+        ensures
+            self.prepared_store_ptr() is Some
+                ==> self.prepared_store_ptr().unwrap().au as nat == self.alloc_au() as nat,
+    {
+    }
+
+    pub proof fn prepared_store_ptr_before_next_alloc(self)
+        requires
+            self.wf(),
+        ensures
+            self.prepared_store_ptr() is Some
+                ==> (self.prepared_store_ptr().unwrap().page as nat) < self.next_alloc_page(),
+    {
+    }
+
+    pub closed spec fn store_addrs(self, inflight_store_ptr: Option<IAddress>) -> Set<Address>
     {
         let persistent =
             if self.persistent_store_ptr is Some {
@@ -557,8 +675,8 @@ impl StoreImpl {
                 set![]
             };
         let prepared =
-            if prepared_store_ptr is Some {
-                set!{prepared_store_ptr.unwrap()@}
+            if self.prepared_store_ptr is Some {
+                set!{self.prepared_store_ptr.unwrap()@}
             } else {
                 set![]
             };
@@ -571,14 +689,13 @@ impl StoreImpl {
         persistent + prepared + inflight
     }
 
-    pub proof fn store_addrs_are_alloc_au(self, prepared_store_ptr: Option<IAddress>, inflight_store_ptr: Option<IAddress>)
+    pub proof fn store_addrs_are_alloc_au(self, inflight_store_ptr: Option<IAddress>)
         requires
             self.wf(),
             self.persistent_store_ptr_matches_alloc_au(),
-            prepared_store_ptr is Some ==> prepared_store_ptr.unwrap().au as nat == self.alloc_au() as nat,
             inflight_store_ptr is Some ==> inflight_store_ptr.unwrap().au as nat == self.alloc_au() as nat,
         ensures
-            forall |a: Address| #[trigger] self.store_addrs(prepared_store_ptr, inflight_store_ptr).contains(a)
+            forall |a: Address| #[trigger] self.store_addrs(inflight_store_ptr).contains(a)
                 ==> a.au == self.alloc_au() as nat,
     {
         let persistent =
@@ -588,8 +705,8 @@ impl StoreImpl {
                 set![]
             };
         let prepared =
-            if prepared_store_ptr is Some {
-                set!{prepared_store_ptr.unwrap()@}
+            if self.prepared_store_ptr is Some {
+                set!{self.prepared_store_ptr.unwrap()@}
             } else {
                 set![]
             };
@@ -599,10 +716,10 @@ impl StoreImpl {
             } else {
                 set![]
             };
-        assert(self.store_addrs(prepared_store_ptr, inflight_store_ptr) == persistent + prepared + inflight);
-        assert forall |a: Address| #[trigger] self.store_addrs(prepared_store_ptr, inflight_store_ptr).contains(a)
+        assert(self.store_addrs(inflight_store_ptr) == persistent + prepared + inflight);
+        assert forall |a: Address| #[trigger] self.store_addrs(inflight_store_ptr).contains(a)
             implies a.au == self.alloc_au() as nat by {
-            if self.store_addrs(prepared_store_ptr, inflight_store_ptr).contains(a) {
+            if self.store_addrs(inflight_store_ptr).contains(a) {
                 assert((persistent + prepared + inflight).contains(a));
                 if persistent.contains(a) {
                     if self.persistent_store_ptr is Some {
@@ -613,9 +730,9 @@ impl StoreImpl {
                         assert(false);
                     }
                 } else if prepared.contains(a) {
-                    if prepared_store_ptr is Some {
-                        assert(a == prepared_store_ptr.unwrap()@);
-                        assert(prepared_store_ptr.unwrap().au as nat == self.alloc_au() as nat);
+                    if self.prepared_store_ptr is Some {
+                        assert(a == self.prepared_store_ptr.unwrap()@);
+                        assert(self.prepared_store_ptr.unwrap().au as nat == self.alloc_au() as nat);
                         assert(a.au == self.alloc_au() as nat);
                     } else {
                         assert(false);
@@ -636,11 +753,17 @@ impl StoreImpl {
 
     pub proof fn store_addrs_none_matches_persistent_view(self)
         ensures
-            self.store_addrs(None, None) == if self.persistent_store_ptr_view() is Some {
-                set!{self.persistent_store_ptr_view().unwrap()}
-            } else {
-                set![]
-            },
+            self.store_addrs(None)
+                == (if self.persistent_store_ptr_view() is Some {
+                    set!{self.persistent_store_ptr_view().unwrap()}
+                } else {
+                    set![]
+                })
+                + (if self.prepared_store_ptr_view() is Some {
+                    set!{self.prepared_store_ptr_view().unwrap()}
+                } else {
+                    set![]
+                }),
     {
         let persistent =
             if self.persistent_store_ptr is Some {
@@ -648,25 +771,37 @@ impl StoreImpl {
             } else {
                 set![]
             };
+        let prepared =
+            if self.prepared_store_ptr is Some {
+                set!{self.prepared_store_ptr.unwrap()@}
+            } else {
+                set![]
+            };
         assert(self.persistent_store_ptr_view() == iaddr_view(self.persistent_store_ptr));
-        assert(self.store_addrs(None, None) == persistent);
+        assert(self.prepared_store_ptr_view() == iaddr_view(self.prepared_store_ptr));
+        assert(self.store_addrs(None) == persistent + prepared);
         if self.persistent_store_ptr_view() is Some {
             assert(persistent == set!{self.persistent_store_ptr_view().unwrap()});
         } else {
             assert(persistent == Set::<Address>::empty());
         }
+        if self.prepared_store_ptr_view() is Some {
+            assert(prepared == set!{self.prepared_store_ptr_view().unwrap()});
+        } else {
+            assert(prepared == Set::<Address>::empty());
+        }
     }
 
-    pub proof fn store_addrs_matches_views(self, prepared_store_ptr: Option<IAddress>, inflight_store_ptr: Option<IAddress>)
+    pub proof fn store_addrs_matches_views(self, inflight_store_ptr: Option<IAddress>)
         ensures
-            self.store_addrs(prepared_store_ptr, inflight_store_ptr)
+            self.store_addrs(inflight_store_ptr)
                 == (if self.persistent_store_ptr_view() is Some {
                     set!{self.persistent_store_ptr_view().unwrap()}
                 } else {
                     set![]
                 })
-                + (if prepared_store_ptr is Some {
-                    set!{prepared_store_ptr.unwrap()@}
+                + (if self.prepared_store_ptr_view() is Some {
+                    set!{self.prepared_store_ptr_view().unwrap()}
                 } else {
                     set![]
                 })
@@ -683,8 +818,8 @@ impl StoreImpl {
                 set![]
             };
         let prepared =
-            if prepared_store_ptr is Some {
-                set!{prepared_store_ptr.unwrap()@}
+            if self.prepared_store_ptr is Some {
+                set!{self.prepared_store_ptr.unwrap()@}
             } else {
                 set![]
             };
@@ -695,7 +830,7 @@ impl StoreImpl {
                 set![]
             };
         assert(self.persistent_store_ptr_view() == iaddr_view(self.persistent_store_ptr));
-        assert(self.store_addrs(prepared_store_ptr, inflight_store_ptr) == persistent + prepared + inflight);
+        assert(self.store_addrs(inflight_store_ptr) == persistent + prepared + inflight);
         if self.persistent_store_ptr_view() is Some {
             assert(persistent == set!{self.persistent_store_ptr_view().unwrap()});
         } else {
@@ -703,9 +838,9 @@ impl StoreImpl {
         }
     }
 
-    pub closed spec fn is_store_addr(self, prepared_store_ptr: Option<IAddress>, inflight_store_ptr: Option<IAddress>, addr: Address) -> bool
+    pub closed spec fn is_store_addr(self, inflight_store_ptr: Option<IAddress>, addr: Address) -> bool
     {
-        self.store_addrs(prepared_store_ptr, inflight_store_ptr).contains(addr)
+        self.store_addrs(inflight_store_ptr).contains(addr)
     }
 
 }

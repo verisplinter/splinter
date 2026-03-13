@@ -527,7 +527,6 @@ state_machine!{ CachedJournal {
         QueryEndLsn{end_lsn: LSN},
         Put{messages: MsgHistory},
         DiscardOld{start_lsn: LSN, require_end: LSN, discard_addrs: Set<Address>},
-        CommitBoundary{boundary_lsn: LSN, require_end: LSN, discard_addrs: Set<Address>},
         JournalMarshal{writes: Map<Address, JournalRecord>},
         Internal{},
     }
@@ -623,41 +622,6 @@ state_machine!{ CachedJournal {
         });
     }}
 
-    transition!{ commit_boundary(lbl: Label) {
-        require pre.status is Some;
-        require let Label::CommitBoundary{boundary_lsn, require_end, discard_addrs} = lbl;
-
-        require require_end == pre.seq_end();
-        require pre.seq_start() <= boundary_lsn <= require_end;
-
-        let marshalled_end = pre.marshalled_seq_end();
-        let new_freshest_rec =
-            if boundary_lsn < marshalled_end { pre.snapshot.freshest_rec } else { None };
-        let new_lsn_addr_index =
-            if boundary_lsn <= marshalled_end {
-                lsn_addr_index_discard_up_to(pre.status.unwrap().lsn_addr_index, boundary_lsn)
-            } else {
-                Map::<LSN, Address>::empty()
-            };
-        let new_unmarshalled_tail =
-            if boundary_lsn <= marshalled_end {
-                pre.status.unwrap().unmarshalled_tail
-            } else {
-                pre.status.unwrap().unmarshalled_tail.discard_old(boundary_lsn)
-            };
-        let new_clean_watermark =
-            if boundary_lsn > pre.clean_watermark() { boundary_lsn } else { pre.clean_watermark() };
-
-        require discard_addrs <= pre.status.unwrap().lsn_addr_index.values() - new_lsn_addr_index.values();
-
-        update snapshot = JournalSnapshot{boundary_lsn: boundary_lsn, freshest_rec: new_freshest_rec};
-        update status = Some(JournalStatus{
-            lsn_addr_index: new_lsn_addr_index,
-            unmarshalled_tail: new_unmarshalled_tail,
-            clean_watermark_lsn: new_clean_watermark,
-        });
-    }}
-
     transition!{ internal_journal_marshal(lbl: Label, cut: LSN, addr: Address) {
         require pre.status is Some;
         require lbl is JournalMarshal;
@@ -730,9 +694,6 @@ state_machine!{ CachedJournal {
     #[inductive(discard_old)]
     fn discard_old_inductive(pre: Self, post: Self, lbl: Label) { }
 
-    #[inductive(commit_boundary)]
-    fn commit_boundary_inductive(pre: Self, post: Self, lbl: Label) { }
-    
     #[inductive(internal_journal_marshal)]
     fn internal_journal_marshal_inductive(pre: Self, post: Self, lbl: Label, cut: LSN, addr: Address) { }
     

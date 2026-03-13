@@ -82,9 +82,9 @@ struct SyncRequestBuffer {
     // This field is meaningless if send_superblock doesn't have journal cleaning IO activity
     // outstanding (which is connected to a nonempty journal_cleaning_reqs). Make it an Option
     // and express this comment as an invariant?
-    journal_cleaning_target_lsn: ILsn,
+    sync_target_lsn: ILsn,
 
-    // every sync req in this buffer has lsn <= journal_cleaning_target_lsn
+    // every sync req in this buffer has lsn <= sync_target_lsn
     journal_cleaning_reqs: Vec<Request>,
 
     // reqs in here will be satisfied when in-flight superblock lands (their lsn <= in flight journal seq_end)
@@ -98,7 +98,7 @@ impl SyncRequestBuffer {
         &&& self.buffered_reqs@.len() == 0
         &&& self.journal_cleaning_reqs@.len() == 0
         &&& self.superblocking_reqs@.len() == 0
-        &&& self.journal_cleaning_target_lsn == 0
+        &&& self.sync_target_lsn == 0
         &&& self.wf(instance_id)
     }
 
@@ -121,7 +121,7 @@ impl SyncRequestBuffer {
     {
         SyncRequestBuffer{
             buffered_reqs: vec![],
-            journal_cleaning_target_lsn: 0,
+            sync_target_lsn: 0,
             journal_cleaning_reqs: vec![],
             superblocking_reqs: vec![],
         }
@@ -141,7 +141,7 @@ impl SyncRequestBuffer {
     ensures
         self.buffered_reqs@ == old(self).buffered_reqs@,
         self.journal_cleaning_reqs@ == old(self).journal_cleaning_reqs@,
-        self.journal_cleaning_target_lsn == old(self).journal_cleaning_target_lsn,
+        self.sync_target_lsn == old(self).sync_target_lsn,
         self.superblocking_reqs@.len() == 0,
         out@ == old(self).superblocking_reqs@,
     {
@@ -150,7 +150,7 @@ impl SyncRequestBuffer {
         invariant
             self.buffered_reqs@ == old(self).buffered_reqs@,
             self.journal_cleaning_reqs@ == old(self).journal_cleaning_reqs@,
-            self.journal_cleaning_target_lsn == old(self).journal_cleaning_target_lsn,
+            self.sync_target_lsn == old(self).sync_target_lsn,
             self.superblocking_reqs@ + out@ == old(self).superblocking_reqs@,
         decreases self.superblocking_reqs.len(),
         {
@@ -167,6 +167,16 @@ impl SyncRequestBuffer {
             }
         }
         out
+    }
+
+    fn swap_cleaning_and_superblocking(&mut self)
+    ensures
+        self.buffered_reqs@ == old(self).buffered_reqs@,
+        self.sync_target_lsn == old(self).sync_target_lsn,
+        self.journal_cleaning_reqs@ == old(self).superblocking_reqs@,
+        self.superblocking_reqs@ == old(self).journal_cleaning_reqs@,
+    {
+        std::mem::swap(&mut self.superblocking_reqs, &mut self.journal_cleaning_reqs);
     }
 }
 
@@ -214,6 +224,7 @@ enum JournalMarshalStepResult {
     Success{},
 }
 
+#[derive(Clone, Copy)]
 enum SuperblockMotivation {
     PushMap,
     PushJournal,
@@ -242,6 +253,7 @@ pub struct Implementation {
 
     sync_counter: u64,
     journal_flush_accumulator: u64,
+    current_sync_motivation: Option<SuperblockMotivation>,
 
     // starts at recovered map version, ends matching store
     journal: JournalImpl,
@@ -253,10 +265,6 @@ pub struct Implementation {
 
     store: StoreImpl,
     store_initialized: bool,
-    prepared_store_ptr: Option<IAddress>,
-    prepared_store_lsn: u64,
-    landed_store_ptr: Option<IAddress>,
-    landed_store_lsn: u64,
 
     // token for the program model variable
     model: Tracked<ModelShard>,
@@ -310,14 +318,70 @@ impl Implementation {
         self.store.alloc_au() as nat
     }
 
+    pub closed spec fn prepared_store_ptr(&self) -> Option<IAddress>
+    {
+        self.store.prepared_store_ptr()
+    }
+
     pub closed spec fn prepared_store_ptr_view(&self) -> Option<Address>
     {
-        iaddr_view(self.prepared_store_ptr)
+        self.store.prepared_store_ptr_view()
+    }
+
+    pub closed spec fn prepared_store_lsn(&self) -> u64
+    {
+        self.store.prepared_store_lsn()
+    }
+
+    pub closed spec fn prepared_store_lsn_nat(&self) -> nat
+    {
+        self.store.prepared_store_lsn_nat()
+    }
+
+    pub fn exec_prepared_store_ptr(&self) -> (out: Option<IAddress>)
+        ensures out == self.prepared_store_ptr()
+    {
+        self.store.exec_prepared_store_ptr()
+    }
+
+    pub fn exec_prepared_store_lsn(&self) -> (out: u64)
+        ensures
+            out == self.prepared_store_lsn(),
+            out as nat == self.prepared_store_lsn_nat(),
+    {
+        self.store.exec_prepared_store_lsn()
+    }
+
+    pub closed spec fn landed_store_ptr(&self) -> Option<IAddress>
+    {
+        self.store.persistent_store_ptr()
     }
 
     pub closed spec fn landed_store_ptr_view(&self) -> Option<Address>
     {
-        iaddr_view(self.landed_store_ptr)
+        self.store.persistent_store_ptr_view()
+    }
+
+    pub closed spec fn landed_store_lsn_nat(&self) -> nat
+    {
+        self.journal.seq_start()
+    }
+
+    pub closed spec fn landed_store_lsn(&self) -> u64
+    {
+        self.journal.seq_start() as u64
+    }
+
+    pub fn exec_landed_store_ptr(&self) -> (out: Option<IAddress>)
+        ensures out == self.landed_store_ptr()
+    {
+        self.store.exec_persistent_store_ptr()
+    }
+
+    pub fn exec_landed_store_lsn(&self) -> (out: u64)
+        ensures out as nat == self.landed_store_lsn_nat()
+    {
+        self.journal.exec_seq_start()
     }
 
     closed spec fn inv_recover(self) -> bool {
@@ -1625,10 +1689,6 @@ impl Implementation {
         &&& self.store_initialized
         &&& self.journal.alloc_au() != self.store_alloc_au()
         &&& self.store.persistent_store_ptr_matches_alloc_au()
-        &&& self.prepared_store_ptr is Some ==> self.prepared_store_ptr.unwrap().au as nat == self.store_alloc_au()
-        &&& self.prepared_store_ptr is Some ==> (self.prepared_store_ptr.unwrap().page as nat) < self.store.next_alloc_page()
-        &&& self.landed_store_ptr is Some ==> self.landed_store_ptr.unwrap().au as nat == self.store_alloc_au()
-        &&& self.landed_store_ptr is Some ==> (self.landed_store_ptr.unwrap().page as nat) < self.store.next_alloc_page()
         &&& (self.in_flight is Some && self.in_flight.unwrap().store_ptr is Some
             ==> self.in_flight.unwrap().store_ptr.unwrap().au as nat == self.store_alloc_au())
         &&& (self.in_flight is Some && self.in_flight.unwrap().store_ptr is Some
@@ -1660,6 +1720,7 @@ impl Implementation {
             let new_persistent_map_version = self.in_flight.unwrap().new_boundary_lsn as nat;
             &&& self.journal.seq_start() <= new_persistent_map_version
             &&& new_persistent_map_version <= sync_version
+            &&& sync_version <= self.journal.marshalled_seq_end()
             // The in-flight 'satisfied requests' can indeed be satisfied by the in-flight version
             &&& self.sync_reqs_in_version(self.sync_requests.superblocking_reqs@, sync_version)
         })
@@ -1678,8 +1739,8 @@ impl Implementation {
 
         &&& self.sync_requests.wf(self.instance@.id())
         &&& self.sync_reqs_in_version(self.sync_requests.buffered_reqs@, self.version())
-        &&& self.sync_requests.journal_cleaning_target_lsn <= self.version()
-        &&& self.sync_reqs_in_version(self.sync_requests.journal_cleaning_reqs@, self.sync_requests.journal_cleaning_target_lsn as nat)
+        &&& self.sync_requests.sync_target_lsn <= self.version()
+        &&& self.sync_reqs_in_version(self.sync_requests.journal_cleaning_reqs@, self.sync_requests.sync_target_lsn as nat)
         // This is getting to be a nasty framing-shaped disjointness argument.
         &&& Self::three_sync_req_lists_mutually_unique(
                 self.sync_requests.superblocking_reqs@,
@@ -1700,13 +1761,9 @@ impl Implementation {
         &&& self.state().store == self.i_ephemeral_store()
         &&& self.state().persistent_store_ptr == self.store.persistent_store_ptr_view()
         &&& self.state().prepared_store_ptr == self.prepared_store_ptr_view()
-        &&& self.state().prepared_store_lsn == self.prepared_store_lsn as nat
+        &&& self.state().prepared_store_lsn == self.prepared_store_lsn_nat()
         &&& self.state().journal == self.journal@
         &&& self.store.persistent_store_ptr_matches_alloc_au()
-        &&& self.prepared_store_ptr is Some ==> self.prepared_store_ptr.unwrap().au as nat == self.store_alloc_au()
-        &&& self.prepared_store_ptr is Some ==> (self.prepared_store_ptr.unwrap().page as nat) < self.store.next_alloc_page()
-        &&& self.landed_store_ptr is Some ==> self.landed_store_ptr.unwrap().au as nat == self.store_alloc_au()
-        &&& self.landed_store_ptr is Some ==> (self.landed_store_ptr.unwrap().page as nat) < self.store.next_alloc_page()
         &&& (forall |a: Address| #[trigger] self.store_addrs().contains(a) ==> a.au == self.store_alloc_au())
     }
 
@@ -1746,10 +1803,6 @@ impl Implementation {
         &&& self.state().cache == self.cache@
         &&& self.outstanding_requests_wf()
         &&& self.outstanding_requests_match_cache_reqs()
-        &&& self.no_outstanding_store_write() ==> {
-            &&& self.prepared_store_ptr == self.landed_store_ptr
-            &&& self.prepared_store_lsn == self.landed_store_lsn
-        }
 
         // from the physical phase field to stuff we know
         &&& self.recovery_phase is FetchingSuperblock ==> self.inv_recover()
@@ -1784,7 +1837,7 @@ impl Implementation {
     pub closed spec fn store_addrs(&self) -> Set<Address>
     {
         let inflight_store_ptr = if self.in_flight is Some { self.in_flight.unwrap().store_ptr } else { None };
-        self.store.store_addrs(self.prepared_store_ptr, inflight_store_ptr)
+        self.store.store_addrs(inflight_store_ptr)
     }
 
     proof fn state_store_addrs_match(&self)
@@ -1798,8 +1851,8 @@ impl Implementation {
     {
         let inflight_store_ptr =
             if self.in_flight is Some { self.in_flight.unwrap().store_ptr } else { None };
-        self.store.store_addrs_matches_views(self.prepared_store_ptr, inflight_store_ptr);
-        assert(self.store_addrs() == self.store.store_addrs(self.prepared_store_ptr, inflight_store_ptr));
+        self.store.store_addrs_matches_views(inflight_store_ptr);
+        assert(self.store_addrs() == self.store.store_addrs(inflight_store_ptr));
         if self.in_flight is Some {
             assert(self.state().in_flight is Some);
             assert(self.state().store_addrs()
@@ -1838,7 +1891,7 @@ impl Implementation {
     pub closed spec fn is_store_addr(&self, addr: Address) -> bool
     {
         let inflight_store_ptr = if self.in_flight is Some { self.in_flight.unwrap().store_ptr } else { None };
-        self.store.is_store_addr(self.prepared_store_ptr, inflight_store_ptr, addr)
+        self.store.is_store_addr(inflight_store_ptr, addr)
     }
 
     pub closed spec fn good_req(self, req: Request, req_shard: RequestShard) -> bool
@@ -2022,16 +2075,16 @@ impl Implementation {
             assert(self.store_initialized);
             assert(self.journal.alloc_au() != self.store_alloc_au());
             assert(self.store.persistent_store_ptr_matches_alloc_au());
-            assert(self.prepared_store_ptr is Some ==> self.prepared_store_ptr.unwrap().au as nat == self.store_alloc_au());
-            assert(self.prepared_store_ptr is Some ==> (self.prepared_store_ptr.unwrap().page as nat) < self.store.next_alloc_page());
-            assert(self.landed_store_ptr is Some ==> self.landed_store_ptr.unwrap().au as nat == self.store_alloc_au());
-            assert(self.landed_store_ptr is Some ==> (self.landed_store_ptr.unwrap().page as nat) < self.store.next_alloc_page());
+            self.store.prepared_store_ptr_has_alloc_au();
+            self.store.prepared_store_ptr_before_next_alloc();
+            self.store.persistent_store_ptr_has_alloc_au();
+            self.store.persistent_store_ptr_before_next_alloc();
             let inflight_store_ptr = if self.in_flight is Some { self.in_flight.unwrap().store_ptr } else { None };
             if inflight_store_ptr is Some {
                 assert(inflight_store_ptr.unwrap().au as nat == self.store_alloc_au());
                 assert((inflight_store_ptr.unwrap().page as nat) < self.store.next_alloc_page());
             }
-            self.store.store_addrs_are_alloc_au(self.prepared_store_ptr, inflight_store_ptr);
+            self.store.store_addrs_are_alloc_au(inflight_store_ptr);
             self.state_store_addrs_match();
             assert(self.journal.index_ready());
             assert(self.state().recovery_state is RecoveryComplete);
@@ -2046,6 +2099,14 @@ impl Implementation {
                 let new_persistent_map_version = self.in_flight.unwrap().new_boundary_lsn as nat;
                 assert(self.journal.seq_start() <= new_persistent_map_version);
                 assert(new_persistent_map_version <= sync_version);
+                self.journal.view_marshaled_seq_end_ensures();
+                self.journal.view_seq_end_ensures();
+                assert(sync_version <= self.state().journal.marshalled_seq_end());
+                assert(sync_version <= self.state().journal.seq_end());
+                assert(self.state().journal.marshalled_seq_end() == self.journal.marshalled_seq_end());
+                assert(self.state().journal.seq_end() == self.journal.seq_end());
+                assert(sync_version <= self.journal.marshalled_seq_end());
+                assert(sync_version <= self.journal.seq_end());
                 assert(self.sync_reqs_in_version(self.sync_requests.superblocking_reqs@, sync_version));
                 assert(self.in_flight.unwrap().new_boundary_lsn as nat == self.state().in_flight.unwrap().boundary_lsn);
                 assert(self.in_flight.unwrap().new_persistent_lsn as nat == self.state().in_flight.unwrap().journal_version);
@@ -2058,12 +2119,12 @@ impl Implementation {
             assert(self.sync_reqs_in_version(self.sync_requests.buffered_reqs@, self.version())) by {
                 assert(old(self).version() <= self.version());
             }
-            assert(self.sync_requests.journal_cleaning_target_lsn <= self.version()) by {
+            assert(self.sync_requests.sync_target_lsn <= self.version()) by {
                 assert(old(self).version() <= self.version());
             }
             assert(self.sync_reqs_in_version(
                 self.sync_requests.journal_cleaning_reqs@,
-                self.sync_requests.journal_cleaning_target_lsn as nat,
+                self.sync_requests.sync_target_lsn as nat,
             )) by {
             }
             assert(Self::three_sync_req_lists_mutually_unique(
@@ -2246,16 +2307,17 @@ impl Implementation {
                     return;
                 }
                 // "now" lsn is at least as new as than all the buffered reqs
-                self.sync_requests.journal_cleaning_target_lsn = self.journal.exec_seq_end();
+                self.sync_requests.sync_target_lsn = self.journal.exec_seq_end();
                 std::mem::swap(&mut self.sync_requests.buffered_reqs, &mut self.sync_requests.journal_cleaning_reqs);
             }
+            self.current_sync_motivation = Some(SuperblockMotivation::PushMap);
             Self::debug_print(&"  └─ send_superblock");
-            self.send_superblock(api, SuperblockMotivation::PushMap);
+            self.send_superblock(api);
         }
     }
 
     #[verifier::exec_allows_no_decreases_clause]
-    exec fn send_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>, motivation: SuperblockMotivation)
+    exec fn send_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>)
     requires
         old(self).inv_api(old(api)),
         // do we have room to send a superblock?
@@ -2264,8 +2326,9 @@ impl Implementation {
         // this requirement nonsense for map-only (journal truncation) case:
         old(self).sync_requests.journal_cleaning_reqs.len() > 0,
         old(self).ready_for_user_operation(),
-        motivation is PushJournal ==> {
-            &&& old(self).prepared_store_ptr == old(self).store.persistent_store_ptr()
+        old(self).current_sync_motivation is Some,
+        old(self).current_sync_motivation.unwrap() is PushJournal ==> {
+            &&& old(self).prepared_store_ptr() == old(self).store.persistent_store_ptr()
         },
     ensures
         self.inv_api(api),
@@ -2283,8 +2346,49 @@ impl Implementation {
             assert(self.outstanding_requests@.is_empty());
             assert(self.no_outstanding_store_write()) by {
             }
-            assert(self.prepared_store_ptr == self.landed_store_ptr);
-            assert(self.prepared_store_lsn == self.landed_store_lsn);
+            assert(self.sync_requests.journal_cleaning_reqs@.len() > 0);
+            assert(self.sync_requests.superblocking_reqs@.len() == 0);
+        }
+        let motivation = self.current_sync_motivation.unwrap();
+        let target_lsn = self.sync_requests.sync_target_lsn;
+        let prepared_store_ptr_for_send = self.exec_prepared_store_ptr();
+        let prepared_store_lsn_for_send = self.exec_prepared_store_lsn();
+        let mut marshalled_end = self.journal.exec_marshaled_seq_end();
+
+        // Checks if marshalling is needed
+        if target_lsn > marshalled_end {
+            api.log("send_superblock: marshalling journal tail up to cleaning target");
+            self.should_retry_superblock_launch = true;
+
+            let mut keep_marshalling = true;
+            proof {
+                assert(self.no_outstanding_store_write()) by {
+                }
+            }
+            while keep_marshalling && marshalled_end < target_lsn
+                invariant
+                    self.inv_api(api),
+                    self.ready_for_user_operation(),
+                    marshalled_end as nat == self.journal.marshalled_seq_end(),
+                    self.in_flight is None,
+                    self.state().in_flight is None,
+                    !self.sync_requests.in_flight(),
+                    self.sync_requests.sync_target_lsn == target_lsn,
+                    0 < self.sync_requests.journal_cleaning_reqs.len(),
+                    self.sync_requests.superblocking_reqs.len() == 0,
+                    self.no_outstanding_store_write(),
+                    self.prepared_store_ptr() == prepared_store_ptr_for_send,
+                    self.prepared_store_lsn() == prepared_store_lsn_for_send,
+            {
+                if let JournalMarshalStepResult::Success{} = self.maybe_marshall_journal(api, false) {
+                } else {
+                    keep_marshalling = false;
+                }
+                marshalled_end = self.journal.exec_marshaled_seq_end();
+            }
+            if target_lsn > marshalled_end {
+                return;
+            }
         }
         let mut raw_page = Vec::new();
 
@@ -2292,10 +2396,17 @@ impl Implementation {
         let mut self_in_flight;
         let mut store_ptr;
         let mut frozen_journal;
+        let mut committed_boundary_lsn: u64 = 0;
+        let mut committed_version_lsn: u64 = 0;
+        let ghost mut pushmap_target_covered = false;
+        let ghost mut pushjournal_target_covered = false;
+        let ghost mut pushmap_boundary_marshaled = false;
+        let ghost mut pushjournal_boundary_marshaled = false;
+        let ghost mut ready_reqs_for_send = Seq::<Request>::empty();
         match motivation {
             SuperblockMotivation::PushMap => {
-                let target_lsn = self.sync_requests.journal_cleaning_target_lsn;
-                if self.landed_store_lsn < target_lsn {
+                let prepared_covers_target = target_lsn <= prepared_store_lsn_for_send;
+                if !prepared_covers_target {
                     api.log("send_superblock: push map before sending superblock");
 
                     let ghost pre_state = self.model@.value();
@@ -2306,7 +2417,6 @@ impl Implementation {
                     let ghost pre_store_kmmap = self.store@;
                     let ghost pre_store_lsn = self.store.store_lsn_nat();
                     let addr = self.store.peek_next_addr();
-                    let persistent_store_ptr = self.store.exec_persistent_store_ptr();
                     let raw_page_local = self.store.marshall_current_store_page();
                     let ghost raw_page_g = raw_page_local@;
 
@@ -2319,29 +2429,38 @@ impl Implementation {
                         assert(pre_state.state.store == pre_view_store);
                         assert(pre_state.state.store_addrs() == self.store_addrs());
                         assert(self.store.wf());
-                        assert(self.prepared_store_ptr is Some ==> (self.prepared_store_ptr.unwrap().page as nat) < self.store.next_alloc_page());
+                        self.store.prepared_store_ptr_before_next_alloc();
                         self.store.persistent_store_ptr_view_ensures();
-                        self.store.persistent_store_ptr_before_next_alloc();
                         assert(pre_state.state.persistent_store_ptr == self.store.persistent_store_ptr_view());
-                        self.store.store_addrs_matches_views(self.prepared_store_ptr, None);
                         assert(!self.store_addrs().contains(addr@)) by {
-                            assert(self.store_addrs() == self.store.store_addrs(self.prepared_store_ptr, None));
-                            if self.store.store_addrs(self.prepared_store_ptr, None).contains(addr@) {
-                                if self.prepared_store_ptr is Some {
-                                    if self.prepared_store_ptr.unwrap()@ == addr@ {
-                                        assert((self.prepared_store_ptr.unwrap().page as nat) < self.store.next_alloc_page());
-                                        assert((self.prepared_store_ptr.unwrap().page as nat) == (addr.page as nat));
-                                        assert(false);
-                                    }
-                                }
-                                if pre_state.state.persistent_store_ptr == Some(addr@) {
+                            let inflight_store_ptr =
+                                if self.in_flight is Some { self.in_flight.unwrap().store_ptr } else { None };
+                            self.store.store_addrs_matches_views(inflight_store_ptr);
+                            if self.store_addrs().contains(addr@) {
+                                assert(self.store_addrs() == self.store.store_addrs(inflight_store_ptr));
+                                if self.store.persistent_store_ptr_view() is Some
+                                    && self.store.persistent_store_ptr_view().unwrap() == addr@
+                                {
+                                    self.store.persistent_store_ptr_view_ensures();
                                     assert(self.store.persistent_store_ptr() is Some);
-                                    assert((self.store.persistent_store_ptr().unwrap().page as nat) < self.store.next_alloc_page());
-                                    assert(self.store.persistent_store_ptr_view() == Some(addr@));
-                                    assert(self.store.persistent_store_ptr().unwrap()@ == addr@);
-                                    assert((self.store.persistent_store_ptr().unwrap().page as nat) == (addr.page as nat));
-                                    assert(false);
+                                    assert(self.store.persistent_store_ptr().unwrap() == addr);
+                                    self.store.persistent_store_ptr_before_next_alloc();
+                                    assert((addr.page as nat) < self.store.next_alloc_page());
+                                } else if self.prepared_store_ptr_view() is Some
+                                    && self.prepared_store_ptr_view().unwrap() == addr@
+                                {
+                                    self.store.prepared_store_ptr_view_ensures();
+                                    assert(self.store.prepared_store_ptr() is Some);
+                                    assert(self.store.prepared_store_ptr().unwrap() == addr);
+                                    self.store.prepared_store_ptr_before_next_alloc();
+                                    assert((addr.page as nat) < self.store.next_alloc_page());
+                                } else {
+                                    assert(inflight_store_ptr is Some);
+                                    assert(inflight_store_ptr.unwrap()@ == addr@);
+                                    assert(inflight_store_ptr.unwrap() == addr);
+                                    assert((inflight_store_ptr.unwrap().page as nat) < self.store.next_alloc_page());
                                 }
+                                assert((addr.page as nat) == self.store.next_alloc_page());
                                 assert(false);
                             }
                         }
@@ -2385,8 +2504,17 @@ impl Implementation {
                             let mut slot_handle = slot_handle;
                             slot_handle.rec = raw_page_local;
                             self.cache.write_release(&addr, slot_handle);
-                            self.prepared_store_ptr = Some(addr);
-                            self.prepared_store_lsn = prepared_store_lsn;
+                            proof {
+                                assert(pre_store_impl.persistent_store_ptr_matches_alloc_au());
+                                assert(self.store.persistent_store_ptr() == pre_store_impl.persistent_store_ptr());
+                                assert(self.store.alloc_au() == pre_store_impl.alloc_au());
+                                pre_store_impl.persistent_store_ptr_has_alloc_au();
+                                if pre_store_impl.persistent_store_ptr() is Some {
+                                    assert(pre_store_impl.persistent_store_ptr().unwrap().au as nat == self.store.alloc_au() as nat);
+                                }
+                                self.store.persistent_store_ptr_matches_alloc_au_from_ptr(pre_store_impl.persistent_store_ptr());
+                            }
+                            self.store.set_prepared_store(Some(addr), prepared_store_lsn);
 
                             let ghost post_freeze_state = ConcreteProgramModel{
                                 state: AtomicState{
@@ -2514,6 +2642,7 @@ impl Implementation {
                                     write_addr: addr,
                                     handle,
                                 };
+                                assert(self.in_flight is None);
                                 assert(self.state() == post_cache_state.state);
                                 assert(self.state().cache == self.cache@);
                                 assert(self.state().store == post_freeze_state.state.store);
@@ -2537,7 +2666,7 @@ impl Implementation {
                                     assert(post_freeze_state.state.persistent_store_ptr == pre_state.state.persistent_store_ptr);
                                 }
                                 assert(self.state().prepared_store_ptr == self.prepared_store_ptr_view());
-                                assert(self.state().prepared_store_lsn == self.prepared_store_lsn as nat);
+                                assert(self.state().prepared_store_lsn == self.prepared_store_lsn_nat());
                                 self.state_store_addrs_match();
                                 assert(self.outstanding_requests@ == pre_outstanding.insert(req_id, inserted_req));
                                 Self::outstanding_requests_wf_map_preserved_by_cache(
@@ -2593,25 +2722,18 @@ impl Implementation {
                                 }
                                 self.store.persistent_store_ptr_matches_alloc_au_from_ptr(pre_store_impl.persistent_store_ptr());
                                 assert(self.state().wf());
-                                assert(self.state().store_addrs() == self.store_addrs());
                                 assert(self.store_initialized);
                                 assert(self.journal.index_ready());
                                 assert(self.journal.seq_end() == self.store.store_lsn_nat());
                                 assert(self.state().recovery_state is RecoveryComplete);
-                                assert(self.state().in_flight is None);
-                                assert(!self.sync_requests.in_flight());
-                                assert((self.state().in_flight is Some) <==> self.sync_requests.in_flight());
-                                assert((self.state().in_flight is Some) <==> (self.in_flight is Some));
-                                assert(self.prepared_store_ptr is Some ==> self.prepared_store_ptr.unwrap().au as nat == self.store_alloc_au());
-                                assert(self.prepared_store_ptr is Some ==> (self.prepared_store_ptr.unwrap().page as nat) < self.store.next_alloc_page());
-                                assert(self.landed_store_ptr is Some ==> self.landed_store_ptr.unwrap().au as nat == self.store_alloc_au());
-                                assert(self.landed_store_ptr is Some ==> (self.landed_store_ptr.unwrap().page as nat) < self.store.next_alloc_page());
+                                self.store.prepared_store_ptr_has_alloc_au();
+                                self.store.prepared_store_ptr_before_next_alloc();
                                 assert(self.sync_requests.wf(self.instance@.id()));
                                 assert(self.sync_reqs_in_version(self.sync_requests.buffered_reqs@, self.version()));
-                                assert(self.sync_requests.journal_cleaning_target_lsn <= self.version());
+                                assert(self.sync_requests.sync_target_lsn <= self.version());
                                 assert(self.sync_reqs_in_version(
                                     self.sync_requests.journal_cleaning_reqs@,
-                                    self.sync_requests.journal_cleaning_target_lsn as nat,
+                                    self.sync_requests.sync_target_lsn as nat,
                                 ));
                                 assert(Self::three_sync_req_lists_mutually_unique(
                                     self.sync_requests.superblocking_reqs@,
@@ -2623,79 +2745,94 @@ impl Implementation {
                                     assert(self.outstanding_requests@.contains_key(req_id));
                                     assert(self.outstanding_requests@[req_id] is StoreWriteReq);
                                 }
-                                assert(self.inv()) by {
-                                    assert(!self.no_outstanding_store_write());
-                                }
+                                assert(self.inv());
                                 assert(self.inv_api(api));
                             }
                             return;
                         }
                     }
-                }
+                } else {
+                    if marshalled_end < prepared_store_lsn_for_send {
+                        api.log("send_superblock: marshalling journal tail up to prepared store lsn");
+                        self.should_retry_superblock_launch = true;
 
-                api.log("send_superblock: durable prepared map already covers target");
-                std::mem::swap(&mut self.sync_requests.superblocking_reqs, &mut self.sync_requests.journal_cleaning_reqs);
-                store_ptr = self.landed_store_ptr;
-                frozen_journal = FrozenJournal{
-                    snapshot: IJournalSnapshot{
-                        boundary_lsn: self.landed_store_lsn,
+                        let mut keep_marshalling = true;
+                        proof {
+                            assert(self.no_outstanding_store_write()) by {
+                            }
+                        }
+                        while keep_marshalling && marshalled_end < prepared_store_lsn_for_send
+                            invariant
+                                self.inv_api(api),
+                                self.ready_for_user_operation(),
+                                marshalled_end as nat == self.journal.marshalled_seq_end(),
+                                self.in_flight is None,
+                                self.state().in_flight is None,
+                                !self.sync_requests.in_flight(),
+                                self.sync_requests.sync_target_lsn == target_lsn,
+                                0 < self.sync_requests.journal_cleaning_reqs.len(),
+                                self.sync_requests.superblocking_reqs.len() == 0,
+                                self.no_outstanding_store_write(),
+                                self.prepared_store_ptr() == prepared_store_ptr_for_send,
+                                self.prepared_store_lsn() == prepared_store_lsn_for_send,
+                        {
+                            if let JournalMarshalStepResult::Success{} = self.maybe_marshall_journal(api, false) {
+                            } else {
+                                keep_marshalling = false;
+                            }
+                            marshalled_end = self.journal.exec_marshaled_seq_end();
+                        }
+                        let prepared_boundary_marshaled = prepared_store_lsn_for_send <= marshalled_end;
+                        if !prepared_boundary_marshaled {
+                            return;
+                        }
+                    }
+
+                    api.log("send_superblock: prepared map already covers target");
+                    proof {
+                        pushmap_target_covered = target_lsn as nat <= prepared_store_lsn_for_send as nat;
+                        pushmap_boundary_marshaled = prepared_store_lsn_for_send as nat <= marshalled_end as nat;
+                    }
+                    proof {
+                        ready_reqs_for_send = self.sync_requests.journal_cleaning_reqs@;
+                    }
+                    proof {
+                        assert(self.sync_requests.superblocking_reqs.len() == 0);
+                        assert(self.sync_requests.journal_cleaning_reqs@.len() > 0);
+                    }
+                    self.sync_requests.swap_cleaning_and_superblocking();
+                    store_ptr = prepared_store_ptr_for_send;
+                    frozen_journal = FrozenJournal{
+                        snapshot: IJournalSnapshot{
+                            boundary_lsn: prepared_store_lsn_for_send,
+                            freshest_rec: None,
+                        },
+                        seq_end: prepared_store_lsn_for_send,
+                    };
+                    sb = ISuperblock{
+                        journal_snapshot: frozen_journal.snapshot,
+                        store_ptr,
+                    };
+                    api.log("sending this particular superblock: ");
+                    Self::debug_print(&sb);
+                    raw_page = DiskLayout::new().marshall(&sb);
+                    self_in_flight = Some(InFlight{
+                        new_boundary_lsn: frozen_journal.snapshot.boundary_lsn,
                         freshest_rec: None,
-                    },
-                    seq_end: self.landed_store_lsn,
-                };
-                sb = ISuperblock{
-                    journal_snapshot: frozen_journal.snapshot,
-                    store_ptr,
-                };
-                api.log("sending this particular superblock: ");
-                Self::debug_print(&sb);
-                raw_page = DiskLayout::new().marshall(&sb);
-                self_in_flight = Some(InFlight{
-                    new_boundary_lsn: frozen_journal.snapshot.boundary_lsn,
-                    freshest_rec: None,
-                    new_persistent_lsn: frozen_journal.seq_end,
-                    store_ptr,
-                });
+                        new_persistent_lsn: frozen_journal.seq_end,
+                        store_ptr,
+                    });
+                    committed_boundary_lsn = prepared_store_lsn_for_send;
+                    committed_version_lsn = prepared_store_lsn_for_send;
+                }
             },
             SuperblockMotivation::PushJournal => {
                 // sync the ephemeral journal with the existing persistent map
                 api.log("send_superblock: journal sync only");
 
-                let target_lsn = self.sync_requests.journal_cleaning_target_lsn;
                 match self.journal.freeze_for_commit(target_lsn) {
                     CleanForCommitResult::NeedsFlush{} => {
                         api.log("send_superblock: clean_for_commit -> NeedsFlush");
-                        let mut marshalled_end = self.journal.exec_marshaled_seq_end();
-                        if target_lsn > marshalled_end {
-                            // Not ready to flush yet; background work may advance marshalling.
-                            // Ask the main loop to retry launching superblock later.
-                            api.log("send_superblock: issuing tail marshalling before flushing");
-                            // TODO: figure out where this goes
-                            self.should_retry_superblock_launch = true;
-
-                            let mut keep_marshalling = true;
-                            proof {
-                                assert(self.no_outstanding_store_write()) by {
-                                }
-                            }
-                            while keep_marshalling && marshalled_end < target_lsn
-                                invariant
-                                    self.inv_api(api),
-                                    self.ready_for_user_operation(),
-                                    marshalled_end as nat == self.journal.marshalled_seq_end(),
-                                    self.no_outstanding_store_write(),
-                            {
-                                if let JournalMarshalStepResult::Success{} = self.maybe_marshall_journal(api, false) {
-                                } else {
-                                    keep_marshalling = false;
-                                }
-                                marshalled_end = self.journal.exec_marshaled_seq_end();
-                            }
-                            if target_lsn > marshalled_end {
-                                return; // still not ready to flush
-                            }
-                        }
-
                         api.log("send_superblock: tail marshalled enough, starting journal page cleaning");
                         // Now it's time to flush!
                         let mut continue_writeback = true;
@@ -2709,6 +2846,7 @@ impl Implementation {
                                     self.ready_for_user_operation(),
                                     target_lsn <= marshalled_end,
                                     marshalled_end as nat == self.journal.marshalled_seq_end(),
+                                    self.sync_requests.sync_target_lsn == target_lsn,
                                     self.no_outstanding_store_write(),
                         {
                             let ghost pre_model = self.model@.value();
@@ -2929,10 +3067,10 @@ impl Implementation {
                                         assert(self.state().wf());
                                         assert(self.sync_requests.wf(self.instance@.id()));
                                         assert(self.sync_reqs_in_version(self.sync_requests.buffered_reqs@, self.version()));
-                                        assert(self.sync_requests.journal_cleaning_target_lsn <= self.version());
+                                        assert(self.sync_requests.sync_target_lsn <= self.version());
                                         assert(self.sync_reqs_in_version(
                                             self.sync_requests.journal_cleaning_reqs@,
-                                            self.sync_requests.journal_cleaning_target_lsn as nat,
+                                            self.sync_requests.sync_target_lsn as nat,
                                         ));
                                         assert(Self::three_sync_req_lists_mutually_unique(
                                             self.sync_requests.superblocking_reqs@,
@@ -3020,10 +3158,10 @@ impl Implementation {
                                         assert(self.state().wf());
                                         assert(self.sync_requests.wf(self.instance@.id()));
                                         assert(self.sync_reqs_in_version(self.sync_requests.buffered_reqs@, self.version()));
-                                        assert(self.sync_requests.journal_cleaning_target_lsn <= self.version());
+                                        assert(self.sync_requests.sync_target_lsn <= self.version());
                                         assert(self.sync_reqs_in_version(
                                             self.sync_requests.journal_cleaning_reqs@,
-                                            self.sync_requests.journal_cleaning_target_lsn as nat,
+                                            self.sync_requests.sync_target_lsn as nat,
                                         ));
                                         assert(Self::three_sync_req_lists_mutually_unique(
                                             self.sync_requests.superblocking_reqs@,
@@ -3061,6 +3199,13 @@ impl Implementation {
                         return;
                     },
                     CleanForCommitResult::Frozen{frozen_journal: fj} => {
+                        proof {
+                            pushjournal_target_covered = target_lsn as nat <= fj.seq_end as nat;
+                            assert(fj.seq_end as nat == self.journal.clean_watermark());
+                            self.journal.clean_watermark_le_marshaled_seq_end();
+                            assert(self.journal.clean_watermark() <= self.journal.marshalled_seq_end());
+                            pushjournal_boundary_marshaled = fj.seq_end as nat <= self.journal.marshalled_seq_end();
+                        }
                         frozen_journal = fj;
                     },
                 }
@@ -3072,11 +3217,18 @@ impl Implementation {
                     assert(CachedJournal::State::next(self.journal@, self.journal@, lbl));
                 }
 
-                // Okay, the journal is clean up to the point of journal_cleaning_target_lsn, which
+                // Okay, the journal is clean up to the point of sync_target_lsn, which
                 // means the journal_cleaning_reqs are now eligible to be delivered in a
                 // superblock.
-                std::mem::swap(&mut self.sync_requests.superblocking_reqs, &mut self.sync_requests.journal_cleaning_reqs);
-                store_ptr = self.prepared_store_ptr;
+                proof {
+                    ready_reqs_for_send = self.sync_requests.journal_cleaning_reqs@;
+                }
+                proof {
+                    assert(self.sync_requests.superblocking_reqs.len() == 0);
+                    assert(self.sync_requests.journal_cleaning_reqs@.len() > 0);
+                }
+                self.sync_requests.swap_cleaning_and_superblocking();
+                store_ptr = self.exec_prepared_store_ptr();
 
                 sb = ISuperblock{
                     journal_snapshot: frozen_journal.snapshot,
@@ -3093,14 +3245,21 @@ impl Implementation {
                     new_persistent_lsn: frozen_journal.seq_end,
                     store_ptr,
                 });
+                committed_boundary_lsn = frozen_journal.snapshot.boundary_lsn;
+                committed_version_lsn = frozen_journal.seq_end;
             },
         }
-
         // First step: store internal no-op on the map model.
-        let ghost state_after_freeze = old(self).state();
+        let ghost state_after_freeze = self.state();
+        proof {
+            assert(state_after_freeze == self.state());
+            assert(state_after_freeze.prepared_store_ptr == self.prepared_store_ptr_view());
+            assert(state_after_freeze.prepared_store_lsn == self.prepared_store_lsn_nat());
+        }
+        let ghost pre_send_outstanding = self.outstanding_requests@;
         {
             let tracked mut model = KVStoreTokenized::model::arbitrary();
-            let ghost pre_store = old(self).state().store;
+            let ghost pre_store = state_after_freeze.store;
             let ghost post_state = ConcreteProgramModel {
                 state: state_after_freeze
             };
@@ -3182,8 +3341,17 @@ impl Implementation {
             // Prove preconditions of execute_sync_begin:
             let pre = state_after_freeze;
             let post = post_state.state;
+            assert(pre == self.state());
+            self.store.prepared_store_ptr_view_ensures();
+            self.store.prepared_store_lsn_nat_ensures();
+            assert(self.state().prepared_store_ptr == self.prepared_store_ptr_view());
+            assert(self.state().prepared_store_lsn == self.prepared_store_lsn_nat());
+            assert(self.prepared_store_ptr_view() == iaddr_view(prepared_store_ptr_for_send));
+            assert(self.prepared_store_lsn_nat() == prepared_store_lsn_for_send as nat);
             assert(pre.journal == self.journal@);
             assert(post.journal == self.journal@);
+            assert(pre.prepared_store_ptr == self.prepared_store_ptr_view());
+            assert(pre.prepared_store_lsn == self.prepared_store_lsn_nat());
             assert(AtomicState::sync_begin_journal_ok(
                 pre,
                 post,
@@ -3207,31 +3375,25 @@ impl Implementation {
             };
             assert(pre.store is Known);
             assert(post.store == pre.store);
-            assert(post.in_flight == Some(inflight_info));
-            assert(disk_request@ is WriteReq);
-            assert(disk_request@->to == spec_superblock_addr());
             assert(DiskLayout::spec_new().spec_parse(disk_request@->data) == sb@@);
             assert(sb@@.journal == frozen_journal.snapshot@);
             if motivation is PushMap {
-                assert(store_ptr == self.landed_store_ptr);
                 assert(self.no_outstanding_store_write()) by {
                 }
-                assert(self.prepared_store_ptr == self.landed_store_ptr);
-                assert(self.prepared_store_lsn == self.landed_store_lsn);
-                assert(store_ptr == self.prepared_store_ptr);
-            } else {
-                assert(store_ptr == self.prepared_store_ptr);
             }
+            assert(store_ptr == prepared_store_ptr_for_send);
             assert(sb@@.store_ptr == iaddr_view(store_ptr));
-            assert(iaddr_view(store_ptr) == self.prepared_store_ptr_view());
+            assert(iaddr_view(store_ptr) == iaddr_view(prepared_store_ptr_for_send));
             assert(AtomicState::selected_sync_pair(
                 pre,
                 iaddr_view(store_ptr),
                 frozen_journal.snapshot.boundary_lsn as nat,
             )) by {
-                assert(pre.prepared_store_ptr == self.prepared_store_ptr_view());
+                assert(pre.prepared_store_ptr == iaddr_view(prepared_store_ptr_for_send));
                 assert(iaddr_view(store_ptr) == pre.prepared_store_ptr);
                 if motivation is PushMap {
+                    assert(frozen_journal.snapshot.boundary_lsn as nat == prepared_store_lsn_for_send as nat);
+                    assert(pre.prepared_store_lsn == prepared_store_lsn_for_send as nat);
                     assert(frozen_journal.snapshot.boundary_lsn as nat == pre.prepared_store_lsn);
                 } else {
                     self.journal.view_seq_start_ensures();
@@ -3286,36 +3448,31 @@ impl Implementation {
             assert(self.state().journal == self.journal@);
             assert(self.state().in_flight is Some);
             assert(self.in_flight is Some);
-            assert(self.sync_requests.in_flight());
             assert(self.state().in_flight is Some <==> self.in_flight is Some);
             assert(self.state().in_flight is Some <==> self.sync_requests.in_flight());
             assert(self.in_flight.unwrap().new_boundary_lsn as nat == self.state().in_flight.unwrap().boundary_lsn);
             assert(self.in_flight.unwrap().new_persistent_lsn as nat == self.state().in_flight.unwrap().journal_version);
+            assert(self.state().in_flight.unwrap().boundary_lsn == committed_boundary_lsn as nat);
+            assert(self.state().in_flight.unwrap().journal_version == committed_version_lsn as nat);
             assert(iaddr_view(self.in_flight.unwrap().store_ptr) == self.state().in_flight.unwrap().store_ptr);
             if self.in_flight.unwrap().store_ptr is Some {
                 assert(self.in_flight.unwrap().store_ptr == store_ptr);
-                if motivation is PushMap {
-                    assert(self.landed_store_ptr is Some);
-                    assert(self.landed_store_ptr.unwrap() == self.in_flight.unwrap().store_ptr.unwrap());
-                    assert(self.landed_store_ptr.unwrap().au as nat == self.store_alloc_au());
-                    assert(self.prepared_store_ptr is Some);
-                    assert(self.prepared_store_ptr.unwrap() == self.landed_store_ptr.unwrap());
-                } else {
-                    assert(self.prepared_store_ptr is Some);
-                    assert(self.prepared_store_ptr.unwrap() == self.in_flight.unwrap().store_ptr.unwrap());
-                    assert(self.prepared_store_ptr.unwrap().au as nat == self.store_alloc_au());
-                }
+                assert(self.prepared_store_ptr() is Some);
+                assert(self.prepared_store_ptr().unwrap() == self.in_flight.unwrap().store_ptr.unwrap());
+                self.store.prepared_store_ptr_has_alloc_au();
+                self.store.prepared_store_ptr_before_next_alloc();
+                assert((self.in_flight.unwrap().store_ptr.unwrap().page as nat) < self.store.next_alloc_page());
                 assert(self.in_flight.unwrap().store_ptr.unwrap().au as nat == self.store_alloc_au());
             }
             self.state_store_addrs_match();
-            assert(self.outstanding_requests@ == old(self).outstanding_requests@.insert(disk_req_id_exec, OutstandingReqInfo::SuperBlockReq{}));
+            assert(self.outstanding_requests@ == pre_send_outstanding.insert(disk_req_id_exec, OutstandingReqInfo::SuperBlockReq{}));
             Self::outstanding_requests_wf_map_insert_superblock(
-                old(self).outstanding_requests@,
+                pre_send_outstanding,
                 self.cache,
                 disk_req_id_exec,
             );
             Self::outstanding_requests_match_cache_reqs_map_insert_superblock(
-                old(self).outstanding_requests@,
+                pre_send_outstanding,
                 self.state().outstanding_cache_reqs,
                 disk_req_id_exec,
             );
@@ -3326,29 +3483,48 @@ impl Implementation {
             assert(self.store_initialized);
             assert(self.journal.alloc_au() != self.store_alloc_au());
             assert(self.store.persistent_store_ptr_matches_alloc_au());
+            self.store.prepared_store_ptr_has_alloc_au();
+            self.store.prepared_store_ptr_before_next_alloc();
+            self.store.persistent_store_ptr_has_alloc_au();
+            self.store.persistent_store_ptr_before_next_alloc();
+            let inflight_store_ptr = if self.in_flight is Some { self.in_flight.unwrap().store_ptr } else { None };
+            self.store.store_addrs_are_alloc_au(inflight_store_ptr);
             assert(self.journal.index_ready());
             assert(self.state().recovery_state is RecoveryComplete);
             assert(self.journal.seq_end() == self.store.store_lsn_nat());
+            assert(self.state().wf());
             assert(self.sync_requests.wf(self.instance@.id()));
             assert(self.sync_reqs_in_version(self.sync_requests.buffered_reqs@, self.version()));
-            assert(self.sync_requests.journal_cleaning_target_lsn <= self.version());
+            assert(self.sync_requests.sync_target_lsn == target_lsn);
+            assert(self.sync_requests.sync_target_lsn <= self.version());
+            assert(self.sync_requests.journal_cleaning_reqs@.len() == 0);
             assert(self.sync_reqs_in_version(
                 self.sync_requests.journal_cleaning_reqs@,
-                self.sync_requests.journal_cleaning_target_lsn as nat,
-            ));
+                self.sync_requests.sync_target_lsn as nat,
+            )) by {
+                if self.sync_requests.journal_cleaning_reqs@.len() == 0 {
+                    assert forall |i| #![auto] 0 <= i < self.sync_requests.journal_cleaning_reqs@.len() implies {
+                        &&& self.sync_requests.journal_cleaning_reqs@[i].input is SyncInput
+                        &&& self.sync_req_in_version(
+                            self.sync_requests.journal_cleaning_reqs@[i].id,
+                            self.sync_requests.sync_target_lsn as nat,
+                        )
+                    } by {
+                    };
+                }
+            };
             assert(Self::three_sync_req_lists_mutually_unique(
                 self.sync_requests.superblocking_reqs@,
                 self.sync_requests.journal_cleaning_reqs@,
                 self.sync_requests.buffered_reqs@,
             ));
             if motivation is PushMap {
-                assert(self.state().in_flight.unwrap().boundary_lsn == self.prepared_store_lsn as nat);
-                assert(self.state().wf());
-                assert(self.state().prepared_store_lsn == self.prepared_store_lsn as nat);
-                assert(self.prepared_store_lsn == self.landed_store_lsn);
-                assert(self.sync_requests.journal_cleaning_target_lsn <= self.landed_store_lsn);
+                assert(self.state().in_flight.unwrap().boundary_lsn == prepared_store_lsn_for_send as nat);
+                assert(self.state().prepared_store_lsn == prepared_store_lsn_for_send as nat);
+                assert(committed_version_lsn == prepared_store_lsn_for_send);
+                assert(pushmap_target_covered);
+                assert(target_lsn as nat <= prepared_store_lsn_for_send as nat);
                 self.journal.view_seq_start_ensures();
-                assert(self.state().journal == self.journal@);
                 assert(self.state().journal.snapshot.boundary_lsn == self.journal.seq_start());
                 assert(self.journal.seq_start() <= self.state().in_flight.unwrap().boundary_lsn);
             } else {
@@ -3357,14 +3533,72 @@ impl Implementation {
                     frozen_seq_end: frozen_journal.seq_end as nat,
                 };
                 assert(CachedJournal::State::next(self.journal@, self.journal@, journal_lbl));
+                assert(committed_version_lsn == frozen_journal.seq_end);
+                assert(pushjournal_target_covered);
+                assert(target_lsn as nat <= frozen_journal.seq_end as nat);
                 assert(self.journal.seq_start() <= self.state().in_flight.unwrap().boundary_lsn);
             }
             assert(self.journal.seq_start() <= self.in_flight.unwrap().new_boundary_lsn as nat);
             assert(self.in_flight.unwrap().new_boundary_lsn as nat <= self.state().in_flight.unwrap().journal_version);
+            assert(self.state().in_flight.unwrap().journal_version <= self.journal.marshalled_seq_end()) by {
+                if motivation is PushMap {
+                    assert(committed_version_lsn == prepared_store_lsn_for_send);
+                    assert(pushmap_boundary_marshaled);
+                } else {
+                    assert(committed_version_lsn == frozen_journal.seq_end);
+                    assert(pushjournal_boundary_marshaled);
+                }
+                assert(committed_version_lsn as nat == self.state().in_flight.unwrap().journal_version);
+            };
+            assert(self.state().in_flight.unwrap().journal_version <= self.journal.seq_end());
+            assert(self.sync_requests.in_flight());
             assert(self.sync_reqs_in_version(
                 self.sync_requests.superblocking_reqs@,
                 self.state().in_flight.unwrap().journal_version,
-            ));
+            )) by {
+                assert(self.sync_requests.superblocking_reqs@ == ready_reqs_for_send);
+                if motivation is PushMap {
+                    assert(committed_version_lsn == prepared_store_lsn_for_send);
+                    assert(pushmap_target_covered);
+                    assert(target_lsn as nat <= prepared_store_lsn_for_send as nat);
+                } else {
+                    assert(committed_version_lsn == frozen_journal.seq_end);
+                    assert(pushjournal_target_covered);
+                    assert(target_lsn as nat <= frozen_journal.seq_end as nat);
+                }
+                assert(committed_version_lsn as nat == self.state().in_flight.unwrap().journal_version);
+                assert forall |i| #![auto] 0 <= i < self.sync_requests.superblocking_reqs@.len() implies {
+                    &&& self.sync_requests.superblocking_reqs@[i].input is SyncInput
+                    &&& self.sync_req_in_version(
+                        self.sync_requests.superblocking_reqs@[i].id,
+                        self.state().in_flight.unwrap().journal_version,
+                    )
+                } by {
+                    assert(self.sync_requests.superblocking_reqs@[i] == ready_reqs_for_send[i]);
+                    assert(self.sync_req_in_version(
+                        ready_reqs_for_send[i].id,
+                        self.sync_requests.sync_target_lsn as nat,
+                    ));
+                    assert(self.sync_requests.sync_target_lsn == target_lsn);
+                    if motivation is PushMap {
+                        assert(target_lsn as nat <= prepared_store_lsn_for_send as nat);
+                        assert(committed_version_lsn as nat == prepared_store_lsn_for_send as nat);
+                    } else {
+                        assert(target_lsn as nat <= frozen_journal.seq_end as nat);
+                        assert(committed_version_lsn as nat == frozen_journal.seq_end as nat);
+                    }
+                    assert(self.sync_requests.sync_target_lsn as nat <= committed_version_lsn as nat) by {
+                        if motivation is PushMap {
+                            assert(target_lsn as nat <= prepared_store_lsn_for_send as nat);
+                            assert(committed_version_lsn as nat == prepared_store_lsn_for_send as nat);
+                        } else {
+                            assert(target_lsn as nat <= frozen_journal.seq_end as nat);
+                            assert(committed_version_lsn as nat == frozen_journal.seq_end as nat);
+                        }
+                    };
+                    assert(self.sync_requests.sync_target_lsn as nat <= self.state().in_flight.unwrap().journal_version);
+                };
+            };
             assert(self.inv_running()) by {
             };
             assert(self.model_reqs_in_outstanding()) by {
@@ -3418,7 +3652,7 @@ impl Implementation {
                 if inflight_store_ptr is Some {
                     assert(inflight_store_ptr.unwrap().au as nat == self.store_alloc_au());
                 }
-                self.store.store_addrs_are_alloc_au(self.prepared_store_ptr, inflight_store_ptr);
+                self.store.store_addrs_are_alloc_au(inflight_store_ptr);
                 assert(self.inv_post_superblock_common());
                 assert(self.cache.wf());
                 assert(self.store.wf());
@@ -3426,12 +3660,10 @@ impl Implementation {
                 assert(self.state().cache == self.cache@);
                 assert(self.outstanding_requests_wf());
                 assert(self.outstanding_requests_match_cache_reqs());
-                assert(self.recovery_phase is ReadyForUserOperation ==> self.inv_running());
                 assert(self.recovery_phase is FetchingSuperblock ==> self.inv_recover());
                 assert(!(self.recovery_phase is FetchingSuperblock) ==> self.inv_post_superblock_common());
                 assert(self.recovery_phase is ReadingJournalIndex ==> self.inv_reading_journal());
                 assert(self.recovery_phase is ApplyingJournalToRecoverEphemeralMap ==> self.inv_applying_journal());
-                assert(self.in_flight is Some ==> self.recovery_phase is ReadyForUserOperation);
                 assert forall |id| #![auto] self.outstanding_requests@.dom().contains(id)
                     && self.outstanding_requests@[id] is SuperBlockReq
                     implies self.in_flight is Some
@@ -3542,8 +3774,8 @@ impl Implementation {
         };
 
         let ghost oself = *self;
-        assert( self.sync_reqs_in_version(self.sync_requests.journal_cleaning_reqs@, self.sync_requests.journal_cleaning_target_lsn as nat) );
-        assert( oself.sync_reqs_in_version(oself.sync_requests.journal_cleaning_reqs@, oself.sync_requests.journal_cleaning_target_lsn as nat) );
+        assert( self.sync_reqs_in_version(self.sync_requests.journal_cleaning_reqs@, self.sync_requests.sync_target_lsn as nat) );
+        assert( oself.sync_reqs_in_version(oself.sync_requests.journal_cleaning_reqs@, oself.sync_requests.sync_target_lsn as nat) );
         let tracked mut model = KVStoreTokenized::model::arbitrary();
         proof { tracked_swap(self.model.borrow_mut(), &mut model); }
 
@@ -4167,11 +4399,8 @@ impl Implementation {
                 None => {}
             }
             self.store.set_persistent_store_ptr(store_ptr);
-            self.prepared_store_ptr = store_ptr;
-            self.prepared_store_lsn = new_boundary_lsn;
-            self.landed_store_ptr = store_ptr;
-            self.landed_store_lsn = new_boundary_lsn;
-            self.journal.commit_boundary(new_boundary_lsn);
+            self.store.set_prepared_store(store_ptr, new_boundary_lsn);
+            self.journal.discard_old(new_boundary_lsn);
 
             let ghost post_store = pre_state.state.store;
             let ghost post_state = ConcreteProgramModel{ state: AtomicState{
@@ -4200,11 +4429,11 @@ impl Implementation {
 
                 // Access inv_running conjuncts from old(self).inv() precondition
 
-                // commit_boundary: advance journal boundary
+                // discard_old: advance journal boundary
                 reveal(CachedJournal::State::next_by);
                 reveal(CachedJournal::State::next);
-                let journal_lbl = CachedJournal::Label::CommitBoundary{
-                    boundary_lsn: pre_state.state.in_flight.unwrap().boundary_lsn,
+                let journal_lbl = CachedJournal::Label::DiscardOld{
+                    start_lsn: pre_state.state.in_flight.unwrap().boundary_lsn,
                     require_end: post_state.state.ephemeral_map().seq_end,
                     discard_addrs,
                 };
@@ -4213,7 +4442,7 @@ impl Implementation {
                     pre_state.state.journal,
                     post_state.state.journal,
                     journal_lbl,
-                    CachedJournal::Step::commit_boundary(),
+                    CachedJournal::Step::discard_old(),
                 )) by {
                     assert(discard_addrs <=
                         pre_state.state.journal.status.unwrap().lsn_addr_index.values()
@@ -4320,19 +4549,19 @@ impl Implementation {
                 assert(self.store_initialized);
                 assert(self.journal.alloc_au() != self.store_alloc_au());
                 assert(self.store.persistent_store_ptr_matches_alloc_au());
-                assert(self.prepared_store_ptr is Some ==> self.prepared_store_ptr.unwrap().au as nat == self.store_alloc_au());
-                assert(self.prepared_store_ptr is Some ==> (self.prepared_store_ptr.unwrap().page as nat) < self.store.next_alloc_page());
-                assert(self.landed_store_ptr is Some ==> self.landed_store_ptr.unwrap().au as nat == self.store_alloc_au());
-                assert(self.landed_store_ptr is Some ==> (self.landed_store_ptr.unwrap().page as nat) < self.store.next_alloc_page());
-                self.store.store_addrs_are_alloc_au(self.prepared_store_ptr, None);
+                self.store.prepared_store_ptr_has_alloc_au();
+                self.store.prepared_store_ptr_before_next_alloc();
+                self.store.persistent_store_ptr_has_alloc_au();
+                self.store.persistent_store_ptr_before_next_alloc();
+                self.store.store_addrs_are_alloc_au(None);
                 assert(self.state().recovery_state is RecoveryComplete);
                 assert(self.journal.seq_end() == self.store.store_lsn_nat());
                 assert(self.sync_requests.wf(self.instance@.id()));
                 assert(self.sync_reqs_in_version(self.sync_requests.buffered_reqs@, self.version()));
-                assert(self.sync_requests.journal_cleaning_target_lsn <= self.version());
+                assert(self.sync_requests.sync_target_lsn <= self.version());
                 assert(self.sync_reqs_in_version(
                     self.sync_requests.journal_cleaning_reqs@,
-                    self.sync_requests.journal_cleaning_target_lsn as nat,
+                    self.sync_requests.sync_target_lsn as nat,
                 ));
                 assert(Self::three_sync_req_lists_mutually_unique(
                     self.sync_requests.superblocking_reqs@,
@@ -4352,6 +4581,7 @@ impl Implementation {
             self.deliver_inflight_replies(&mut ready_reqs, api);
 
             // maybe launch another superblock
+            self.current_sync_motivation = None;
             self.maybe_launch_superblock(api);
         } else {
             api.log("handle_disk_superblock_write_response: received non superblock related disk response");
@@ -4485,7 +4715,7 @@ impl Implementation {
                 if inflight_store_ptr is Some {
                     assert(inflight_store_ptr.unwrap().au as nat == self.store_alloc_au());
                 }
-                self.store.store_addrs_are_alloc_au(self.prepared_store_ptr, inflight_store_ptr);
+                self.store.store_addrs_are_alloc_au(inflight_store_ptr);
                 assert(forall |a: Address| #[trigger] self.store_addrs().contains(a) ==> a.au == self.store_alloc_au());
             }
             assert(self.model_reqs_in_outstanding()) by {
@@ -4543,11 +4773,11 @@ impl Implementation {
             } else if self.recovery_phase is ReadyForUserOperation {
                 assert(self.state().store_addrs() == self.store_addrs()) by {
                     if self.in_flight is Some {
-                        self.store.store_addrs_matches_views(self.prepared_store_ptr, self.in_flight.unwrap().store_ptr);
+                        self.store.store_addrs_matches_views(self.in_flight.unwrap().store_ptr);
                         assert(iaddr_view(self.in_flight.unwrap().store_ptr) == self.state().in_flight.unwrap().store_ptr);
                     } else {
                         self.store.store_addrs_none_matches_persistent_view();
-                        assert(self.store_addrs() == self.store.store_addrs(self.prepared_store_ptr, None));
+                        assert(self.store_addrs() == self.store.store_addrs(None));
                     }
                     assert(self.state().persistent_store_ptr == self.store.persistent_store_ptr_view());
                 }
@@ -4778,8 +5008,6 @@ impl Implementation {
         );
 
         self.model = Tracked(model);
-        self.landed_store_ptr = self.prepared_store_ptr;
-        self.landed_store_lsn = self.prepared_store_lsn;
         proof {
             self.system_inv_implies_atomic_state_wf();
             assert(self.outstanding_requests@ == pre_outstanding.remove(id));
@@ -4801,7 +5029,7 @@ impl Implementation {
             );
             assert(self.outstanding_requests_wf());
             assert(self.outstanding_requests_match_cache_reqs());
-            assert(self.landed_store_ptr is Some ==> self.landed_store_ptr.unwrap().au as nat == self.store_alloc_au());
+            self.store.prepared_store_ptr_has_alloc_au();
         }
         self.maybe_launch_superblock(api);
     }
@@ -4936,10 +5164,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
             self.journal = JournalImpl::new(superblock.journal_snapshot, 1);
             self.store = StoreImpl::new(superblock.store_ptr, 2);
             self.store_initialized = false;
-            self.prepared_store_ptr = superblock.store_ptr;
-            self.prepared_store_lsn = superblock.journal_snapshot.boundary_lsn;
-            self.landed_store_ptr = superblock.store_ptr;
-            self.landed_store_lsn = superblock.journal_snapshot.boundary_lsn;
             let expected_store_au = self.store.exec_alloc_au();
             match superblock.store_ptr {
                 Some(ptr) => {
@@ -4947,9 +5171,25 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                     if ptr.au != expected_store_au {
                         Self::todo_placeholder();
                     }
+                    proof {
+                        assert(self.store.persistent_store_ptr() == superblock.store_ptr);
+                        self.store.persistent_store_ptr_before_next_alloc();
+                        assert((ptr.page as nat) < self.store.next_alloc_page());
+                    }
                 }
                 None => {}
             }
+            proof {
+                match superblock.store_ptr {
+                    Some(ptr) => {
+                        self.store.persistent_store_ptr_matches_alloc_au_from_ptr(superblock.store_ptr);
+                    }
+                    None => {
+                        self.store.persistent_store_ptr_matches_alloc_au_from_ptr(superblock.store_ptr);
+                    }
+                }
+            }
+            self.store.set_prepared_store(superblock.store_ptr, superblock.journal_snapshot.boundary_lsn);
             proof {
                 assert(superblock@ == layout.spec_parse_inner(raw_page@));
                 assert(superblock@@ == layout.spec_parse(raw_page@));
@@ -4959,11 +5199,8 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                     Some(ptr) => {
                         assert(ptr.au == expected_store_au);
                         assert(expected_store_au == self.store.alloc_au());
-                        self.store.persistent_store_ptr_matches_alloc_au_from_ptr(superblock.store_ptr);
                     }
-                    None => {
-                        self.store.persistent_store_ptr_matches_alloc_au_from_ptr(superblock.store_ptr);
-                    }
+                    None => {}
                 }
             }
 
@@ -4975,7 +5212,7 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                     store: self.i_ephemeral_store(),
                     persistent_store_ptr: self.store.persistent_store_ptr_view(),
                     prepared_store_ptr: self.prepared_store_ptr_view(),
-                    prepared_store_lsn: self.prepared_store_lsn as nat,
+                    prepared_store_lsn: self.prepared_store_lsn() as nat,
                     // TODO: don't we know the persistent journal seq_end right now?
                     persistent_journal_seq_end: arbitrary(),
                     in_flight: None,
@@ -5018,22 +5255,13 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
             assert(self.state().store == self.i_ephemeral_store());
             assert(self.state().persistent_store_ptr == self.store.persistent_store_ptr_view());
             assert(self.state().prepared_store_ptr == self.prepared_store_ptr_view());
-            assert(self.state().prepared_store_lsn == self.prepared_store_lsn as nat);
             assert(self.state().journal == self.journal@);
             assert(self.store.persistent_store_ptr_matches_alloc_au());
-            if self.prepared_store_ptr is Some {
-                assert(self.prepared_store_ptr == self.store.persistent_store_ptr());
-                self.store.persistent_store_ptr_before_next_alloc();
-                assert(self.prepared_store_ptr.unwrap().au as nat == self.store_alloc_au());
-                assert((self.prepared_store_ptr.unwrap().page as nat) < self.store.next_alloc_page());
-            }
-            if self.landed_store_ptr is Some {
-                assert(self.landed_store_ptr == self.store.persistent_store_ptr());
-                self.store.persistent_store_ptr_before_next_alloc();
-                assert(self.landed_store_ptr.unwrap().au as nat == self.store_alloc_au());
-                assert((self.landed_store_ptr.unwrap().page as nat) < self.store.next_alloc_page());
-            }
-            self.store.store_addrs_are_alloc_au(self.prepared_store_ptr, None);
+            self.store.prepared_store_ptr_has_alloc_au();
+            self.store.prepared_store_ptr_before_next_alloc();
+            self.store.persistent_store_ptr_has_alloc_au();
+            self.store.persistent_store_ptr_before_next_alloc();
+            self.store.store_addrs_are_alloc_au(None);
             assert(self.inv());
         }
     }
@@ -5247,20 +5475,19 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
         };
 
         proof {
-            self.store.store_addrs_are_alloc_au(self.prepared_store_ptr, None);
+            self.store.store_addrs_are_alloc_au(None);
             assert(self.state().cache == self.cache@);
             assert(self.state().store == self.i_ephemeral_store());
             assert(self.state().persistent_store_ptr == self.store.persistent_store_ptr_view());
             assert(self.state().prepared_store_ptr == self.prepared_store_ptr_view());
-            assert(self.state().prepared_store_lsn == self.prepared_store_lsn as nat);
             assert(self.state().journal == self.journal@);
             assert(self.outstanding_requests_match_cache_reqs());
             assert(self.outstanding_requests_wf());
             assert(self.store.persistent_store_ptr_matches_alloc_au());
-            assert(self.prepared_store_ptr is Some ==> self.prepared_store_ptr.unwrap().au as nat == self.store_alloc_au());
-            assert(self.prepared_store_ptr is Some ==> (self.prepared_store_ptr.unwrap().page as nat) < self.store.next_alloc_page());
-            assert(self.landed_store_ptr is Some ==> self.landed_store_ptr.unwrap().au as nat == self.store_alloc_au());
-            assert(self.landed_store_ptr is Some ==> (self.landed_store_ptr.unwrap().page as nat) < self.store.next_alloc_page());
+            self.store.prepared_store_ptr_has_alloc_au();
+            self.store.prepared_store_ptr_before_next_alloc();
+            self.store.persistent_store_ptr_has_alloc_au();
+            self.store.persistent_store_ptr_before_next_alloc();
             assert(self.recovery_phase is ReadingJournalIndex ==> self.inv_reading_journal());
             if self.recovery_phase is ApplyingJournalToRecoverEphemeralMap {
                 self.journal.seq_start_le_seq_end();
@@ -5425,7 +5652,7 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
             if self.recovery_phase is ApplyingJournalToRecoverEphemeralMap {
                 self.journal.seq_start_le_seq_end();
             }
-            self.store.store_addrs_are_alloc_au(self.prepared_store_ptr, None);
+            self.store.store_addrs_are_alloc_au(None);
             assert(self.state().cache == self.cache@);
             assert(self.outstanding_requests_match_cache_reqs());
             assert(self.outstanding_requests_wf());
@@ -5462,20 +5689,24 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
         }
         let ghost journal_alloc_au0 = self.journal.alloc_au();
         let ghost store_alloc_au0 = self.store_alloc_au();
-        let ghost prepared_store_ptr0 = self.prepared_store_ptr;
-        let ghost prepared_store_lsn0 = self.prepared_store_lsn;
-        let ghost landed_store_ptr0 = self.landed_store_ptr;
-        let ghost landed_store_lsn0 = self.landed_store_lsn;
+        let ghost prepared_store_ptr0 = self.prepared_store_ptr();
+        let ghost prepared_store_lsn0 = self.prepared_store_lsn();
+        let ghost prepared_store_ptr_view0 = self.prepared_store_ptr_view();
+        let ghost prepared_store_lsn_nat0 = self.prepared_store_lsn_nat();
+        let ghost landed_store_ptr0 = self.landed_store_ptr();
+        let ghost landed_store_lsn0 = self.landed_store_lsn();
         let ghost store_next_alloc_page0 = self.store.next_alloc_page();
         proof {
-            if prepared_store_ptr0 is Some {
-                assert(prepared_store_ptr0.unwrap().au as nat == store_alloc_au0);
-                assert((prepared_store_ptr0.unwrap().page as nat) < store_next_alloc_page0);
-            }
-            if landed_store_ptr0 is Some {
-                assert(landed_store_ptr0.unwrap().au as nat == store_alloc_au0);
-                assert((landed_store_ptr0.unwrap().page as nat) < store_next_alloc_page0);
-            }
+            self.store.prepared_store_ptr_view_ensures();
+            self.store.prepared_store_lsn_nat_ensures();
+            self.store.prepared_store_ptr_has_alloc_au();
+            self.store.prepared_store_ptr_before_next_alloc();
+            self.store.persistent_store_ptr_has_alloc_au();
+            self.store.persistent_store_ptr_before_next_alloc();
+            assert(prepared_store_ptr0 == self.prepared_store_ptr());
+            assert(prepared_store_ptr_view0 == iaddr_view(prepared_store_ptr0));
+            assert(prepared_store_lsn_nat0 == prepared_store_lsn0 as nat);
+            assert(landed_store_ptr0 == self.landed_store_ptr());
         }
         if self.store.exec_store_lsn() < self.journal.exec_seq_start() {
             return false;
@@ -5501,7 +5732,7 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
             match fetch {
                 RecoverMapResult::NotInCache{} => {
                     proof {
-                        self.store.store_addrs_are_alloc_au(self.prepared_store_ptr, None);
+                        self.store.store_addrs_are_alloc_au(None);
                         assert(self.inv_api(api));
                     }
                     return false;
@@ -5584,10 +5815,10 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                         pre_state.state.persistent_store_ptr == self.store.persistent_store_ptr_view(),
                         self.journal.alloc_au() == journal_alloc_au0,
                         self.store_alloc_au() == store_alloc_au0,
-                        self.prepared_store_ptr == prepared_store_ptr0,
-                        self.prepared_store_lsn == prepared_store_lsn0,
-                        self.landed_store_ptr == landed_store_ptr0,
-                        self.landed_store_lsn == landed_store_lsn0,
+                        self.prepared_store_ptr() == prepared_store_ptr0,
+                        self.prepared_store_lsn() == prepared_store_lsn0,
+                        self.landed_store_ptr() == landed_store_ptr0,
+                        self.landed_store_lsn() == landed_store_lsn0,
                         self.store.next_alloc_page() == store_next_alloc_page0,
                         self.cache@ == cache_after_fetch,
                         self.journal@ == journal_after_fetch,
@@ -5855,45 +6086,32 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                     if self.store.exec_store_lsn() < exec_seq_end {
                         proof {
                             self.system_inv_implies_atomic_state_wf();
-                            assert(self.prepared_store_ptr == prepared_store_ptr0);
-                            assert(self.prepared_store_lsn == prepared_store_lsn0);
-                            assert(self.landed_store_ptr == landed_store_ptr0);
-                            assert(self.landed_store_lsn == landed_store_lsn0);
+                            assert(self.prepared_store_ptr() == prepared_store_ptr0);
+                            assert(self.prepared_store_lsn() == prepared_store_lsn0);
+                            assert(self.landed_store_ptr() == landed_store_ptr0);
+                            assert(self.landed_store_lsn() == landed_store_lsn0);
                             assert(self.store.next_alloc_page() == store_next_alloc_page0);
                             assert(self.state().cache == self.cache@);
                             assert(self.state().store == self.i_ephemeral_store());
                             assert(self.state().persistent_store_ptr == self.store.persistent_store_ptr_view());
                             assert(self.state().prepared_store_ptr == pre_state.state.prepared_store_ptr);
                             assert(self.state().prepared_store_lsn == pre_state.state.prepared_store_lsn);
-                            assert(pre_state.state.prepared_store_ptr == iaddr_view(prepared_store_ptr0));
-                            assert(pre_state.state.prepared_store_lsn == prepared_store_lsn0 as nat);
+                            self.store.prepared_store_ptr_view_ensures();
+                            self.store.prepared_store_lsn_nat_ensures();
+                            assert(self.prepared_store_ptr_view() == iaddr_view(prepared_store_ptr0));
+                            assert(self.prepared_store_lsn_nat() == prepared_store_lsn0 as nat);
                             assert(self.state().prepared_store_ptr == self.prepared_store_ptr_view());
-                            assert(self.state().prepared_store_lsn == self.prepared_store_lsn as nat);
+                            assert(self.state().prepared_store_lsn == self.prepared_store_lsn_nat());
                             assert(self.state().journal == self.journal@);
                             assert(self.outstanding_requests_wf());
                             assert(self.outstanding_requests_match_cache_reqs());
                             assert(self.store.persistent_store_ptr_matches_alloc_au());
-                            assert(self.prepared_store_ptr is Some ==> self.prepared_store_ptr.unwrap().au as nat == self.store_alloc_au()) by {
-                                if prepared_store_ptr0 is Some {
-                                    assert(prepared_store_ptr0.unwrap().au as nat == store_alloc_au0);
-                                }
-                            }
-                            assert(self.prepared_store_ptr is Some ==> (self.prepared_store_ptr.unwrap().page as nat) < self.store.next_alloc_page()) by {
-                                if prepared_store_ptr0 is Some {
-                                    assert((prepared_store_ptr0.unwrap().page as nat) < store_next_alloc_page0);
-                                }
-                            }
-                            assert(self.landed_store_ptr is Some ==> self.landed_store_ptr.unwrap().au as nat == self.store_alloc_au()) by {
-                                if landed_store_ptr0 is Some {
-                                    assert(landed_store_ptr0.unwrap().au as nat == store_alloc_au0);
-                                }
-                            }
-                            assert(self.landed_store_ptr is Some ==> (self.landed_store_ptr.unwrap().page as nat) < self.store.next_alloc_page()) by {
-                                if landed_store_ptr0 is Some {
-                                    assert((landed_store_ptr0.unwrap().page as nat) < store_next_alloc_page0);
-                                }
-                            }
-                            self.store.store_addrs_are_alloc_au(self.prepared_store_ptr, None);
+                            self.store.prepared_store_ptr_has_alloc_au();
+                            self.store.prepared_store_ptr_before_next_alloc();
+                            self.store.persistent_store_ptr_has_alloc_au();
+                            self.store.persistent_store_ptr_before_next_alloc();
+                            self.store.store_addrs_are_alloc_au(None);
+                            self.state_store_addrs_match();
                             assert(self.inv_applying_journal());
                             assert(self.inv());
                             assert(self.inv_api(api));
@@ -5921,6 +6139,8 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
             self.journal.view_seq_end_ensures();
             assert(pre_state.store == self.i_ephemeral_store());
             assert(pre_state.persistent_store_ptr == self.store.persistent_store_ptr_view());
+            assert(pre_state.prepared_store_ptr == prepared_store_ptr_view0);
+            assert(pre_state.prepared_store_lsn == prepared_store_lsn_nat0);
         }
 
         {
@@ -5969,10 +6189,10 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
             self.model = Tracked(model);
             proof {
                 self.system_inv_implies_atomic_state_wf();
-                assert(self.prepared_store_ptr == prepared_store_ptr0);
-                assert(self.prepared_store_lsn == prepared_store_lsn0);
-                assert(self.landed_store_ptr == landed_store_ptr0);
-                assert(self.landed_store_lsn == landed_store_lsn0);
+                assert(self.prepared_store_ptr() == prepared_store_ptr0);
+                assert(self.prepared_store_lsn() == prepared_store_lsn0);
+                assert(self.landed_store_ptr() == landed_store_ptr0);
+                assert(self.landed_store_lsn() == landed_store_lsn0);
                 assert(self.store.next_alloc_page() == store_next_alloc_page0);
                 assert(self.state() == post_state.state);
                 assert(self.store_initialized);
@@ -5980,37 +6200,27 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                 assert(self.store.persistent_store_ptr_matches_alloc_au());
                 assert(self.state().prepared_store_ptr == pre_state.prepared_store_ptr);
                 assert(self.state().prepared_store_lsn == pre_state.prepared_store_lsn);
-                assert(pre_state.prepared_store_ptr == iaddr_view(prepared_store_ptr0));
-                assert(pre_state.prepared_store_lsn == prepared_store_lsn0 as nat);
+                assert(pre_state.prepared_store_ptr == prepared_store_ptr_view0);
+                assert(pre_state.prepared_store_lsn == prepared_store_lsn_nat0);
+                self.store.prepared_store_ptr_view_ensures();
+                self.store.prepared_store_lsn_nat_ensures();
+                assert(self.prepared_store_ptr_view() == iaddr_view(prepared_store_ptr0));
+                assert(self.prepared_store_lsn_nat() == prepared_store_lsn0 as nat);
                 assert(self.state().prepared_store_ptr == self.prepared_store_ptr_view());
-                assert(self.state().prepared_store_lsn == self.prepared_store_lsn as nat);
-                assert(self.prepared_store_ptr is Some ==> self.prepared_store_ptr.unwrap().au as nat == self.store_alloc_au()) by {
-                    if prepared_store_ptr0 is Some {
-                        assert(prepared_store_ptr0.unwrap().au as nat == store_alloc_au0);
-                    }
-                }
-                assert(self.prepared_store_ptr is Some ==> (self.prepared_store_ptr.unwrap().page as nat) < self.store.next_alloc_page()) by {
-                    if prepared_store_ptr0 is Some {
-                        assert((prepared_store_ptr0.unwrap().page as nat) < store_next_alloc_page0);
-                    }
-                }
-                assert(self.landed_store_ptr is Some ==> self.landed_store_ptr.unwrap().au as nat == self.store_alloc_au()) by {
-                    if landed_store_ptr0 is Some {
-                        assert(landed_store_ptr0.unwrap().au as nat == store_alloc_au0);
-                    }
-                }
-                assert(self.landed_store_ptr is Some ==> (self.landed_store_ptr.unwrap().page as nat) < self.store.next_alloc_page()) by {
-                    if landed_store_ptr0 is Some {
-                        assert((landed_store_ptr0.unwrap().page as nat) < store_next_alloc_page0);
-                    }
-                }
-                self.store.store_addrs_are_alloc_au(self.prepared_store_ptr, None);
+                assert(self.state().prepared_store_lsn == self.prepared_store_lsn_nat());
+                self.store.prepared_store_ptr_has_alloc_au();
+                self.store.prepared_store_ptr_before_next_alloc();
+                self.store.persistent_store_ptr_has_alloc_au();
+                self.store.persistent_store_ptr_before_next_alloc();
+                self.store.store_addrs_are_alloc_au(None);
                 assert(self.in_flight is None);
-                assert(self.store_addrs() == self.store.store_addrs(self.prepared_store_ptr, None));
+                assert(self.store_addrs() == self.store.store_addrs(None));
                 assert(self.state().cache == self.cache@);
                 assert(self.state().store == self.i_ephemeral_store());
                 assert(self.state().persistent_store_ptr == pre_state.persistent_store_ptr);
                 assert(pre_state.persistent_store_ptr == self.store.persistent_store_ptr_view());
+                assert(self.state().prepared_store_ptr == pre_state.prepared_store_ptr);
+                assert(self.state().prepared_store_lsn == pre_state.prepared_store_lsn);
                 assert(self.state().journal == self.journal@);
                 assert(self.cache.wf());
                 assert(self.store.wf());
@@ -6083,6 +6293,14 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
         ensures
             self.inv_api(api),
             self.ready_for_user_operation(),
+            self.sync_requests == old(self).sync_requests,
+            self.in_flight == old(self).in_flight,
+            self.store == old(self).store,
+            self.store_initialized == old(self).store_initialized,
+            self.prepared_store_ptr() == old(self).prepared_store_ptr(),
+            self.prepared_store_lsn() == old(self).prepared_store_lsn(),
+            self.landed_store_ptr() == old(self).landed_store_ptr(),
+            self.landed_store_lsn() == old(self).landed_store_lsn(),
             self.outstanding_requests@ == old(self).outstanding_requests@,
     {
         let ghost pre_journal_view = self.journal@;
@@ -6218,6 +6436,61 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                     assert(self.journal.alloc_au() == journal_alloc_au0);
                     assert(self.store_alloc_au() == store_alloc_au0);
                     assert(self.journal.alloc_au() != self.store_alloc_au());
+                    assert(self.store_initialized);
+                    assert(self.store.persistent_store_ptr_matches_alloc_au());
+                    self.store.prepared_store_ptr_has_alloc_au();
+                    self.store.prepared_store_ptr_before_next_alloc();
+                    self.store.persistent_store_ptr_has_alloc_au();
+                    self.store.persistent_store_ptr_before_next_alloc();
+                    let inflight_store_ptr = if self.in_flight is Some { self.in_flight.unwrap().store_ptr } else { None };
+                    if inflight_store_ptr is Some {
+                        assert(inflight_store_ptr.unwrap().au as nat == self.store_alloc_au());
+                        assert((inflight_store_ptr.unwrap().page as nat) < self.store.next_alloc_page());
+                    }
+                    self.store.store_addrs_are_alloc_au(inflight_store_ptr);
+                    self.state_store_addrs_match();
+                    assert(self.journal.index_ready());
+                    assert(self.state().recovery_state is RecoveryComplete);
+                    assert(self.journal.seq_end() == self.store.store_lsn_nat());
+                    assert(self.state().wf());
+                    assert(self.state().in_flight is Some <==> self.sync_requests.in_flight());
+                    assert(self.state().in_flight is Some <==> self.in_flight is Some);
+                    if self.state().in_flight is Some {
+                        assert(self.in_flight is Some);
+                        assert(self.sync_requests.in_flight());
+                        let sync_version = self.state().in_flight.unwrap().journal_version;
+                        let new_persistent_map_version = self.in_flight.unwrap().new_boundary_lsn as nat;
+                        assert(self.journal.seq_start() <= new_persistent_map_version);
+                        assert(new_persistent_map_version <= sync_version);
+                        self.journal.view_marshaled_seq_end_ensures();
+                        self.journal.view_seq_end_ensures();
+                        assert(sync_version <= self.state().journal.marshalled_seq_end());
+                        assert(sync_version <= self.state().journal.seq_end());
+                        assert(self.state().journal.marshalled_seq_end() == self.journal.marshalled_seq_end());
+                        assert(self.state().journal.seq_end() == self.journal.seq_end());
+                        assert(sync_version <= self.journal.marshalled_seq_end());
+                        assert(sync_version <= self.journal.seq_end());
+                        assert(self.sync_reqs_in_version(self.sync_requests.superblocking_reqs@, sync_version));
+                        assert(self.in_flight.unwrap().new_boundary_lsn as nat == self.state().in_flight.unwrap().boundary_lsn);
+                        assert(self.in_flight.unwrap().new_persistent_lsn as nat == self.state().in_flight.unwrap().journal_version);
+                        assert(iaddr_view(self.in_flight.unwrap().store_ptr) == self.state().in_flight.unwrap().store_ptr);
+                        if self.in_flight.unwrap().store_ptr is Some {
+                            assert(self.in_flight.unwrap().store_ptr.unwrap().au as nat == self.store_alloc_au());
+                            assert((self.in_flight.unwrap().store_ptr.unwrap().page as nat) < self.store.next_alloc_page());
+                        }
+                    }
+                    assert(self.sync_requests.wf(self.instance@.id()));
+                    assert(self.sync_reqs_in_version(self.sync_requests.buffered_reqs@, self.version()));
+                    assert(self.sync_requests.sync_target_lsn <= self.version());
+                    assert(self.sync_reqs_in_version(
+                        self.sync_requests.journal_cleaning_reqs@,
+                        self.sync_requests.sync_target_lsn as nat,
+                    ));
+                    assert(Self::three_sync_req_lists_mutually_unique(
+                        self.sync_requests.superblocking_reqs@,
+                        self.sync_requests.journal_cleaning_reqs@,
+                        self.sync_requests.buffered_reqs@,
+                    ));
                     assert(old(self).inv_running());
                     FracCacheImpl::valid_load_handles_preserved_transitive(
                         pre_cache,
@@ -6308,12 +6581,9 @@ impl KVStoreTrait for Implementation {
             recovery_phase: RecoveryPhase::FetchingSuperblock,
             sync_counter: 0,
             journal_flush_accumulator: 0,
+            current_sync_motivation: None,
             store: StoreImpl::new(None, 2),
             store_initialized: false,
-            prepared_store_ptr: None,
-            prepared_store_lsn: 0,
-            landed_store_ptr: None,
-            landed_store_lsn: 0,
             journal: JournalImpl::new(placeholder_snapshot, 1),
             cache,
             in_flight: None,

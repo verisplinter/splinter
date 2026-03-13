@@ -2024,8 +2024,8 @@ proof fn next_refines_ctam_program_disk_case(
                 discard_addrs
             ));
 
-            let cj_lbl = CachedJournal::Label::CommitBoundary{
-                boundary_lsn: pre.to_atomic().in_flight.unwrap().boundary_lsn,
+            let cj_lbl = CachedJournal::Label::DiscardOld{
+                start_lsn: pre.to_atomic().in_flight.unwrap().boundary_lsn,
                 require_end: post.to_atomic().ephemeral_map().seq_end,
                 discard_addrs,
             };
@@ -2039,7 +2039,7 @@ proof fn next_refines_ctam_program_disk_case(
                 cstep,
             );
             match cstep {
-                CachedJournal::Step::commit_boundary() => {}
+                CachedJournal::Step::discard_old() => {}
                 _ => { assert(false); }
             }
             assert(post.concrete_journal.journal.status is Some);

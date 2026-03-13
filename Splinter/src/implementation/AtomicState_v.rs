@@ -240,6 +240,7 @@ impl AtomicState {
             &&& if let Some(ifl) = self.in_flight {
                 &&& self.journal.snapshot.boundary_lsn <= ifl.boundary_lsn
                 &&& ifl.boundary_lsn <= ifl.journal_version
+                &&& ifl.journal_version <= self.journal.marshalled_seq_end()
                 &&& ifl.journal_version <= self.journal.seq_end()
             } else { true }
         }
@@ -650,8 +651,8 @@ impl AtomicState {
     pub open spec fn execute_sync_end(pre: Self, post: Self, reqs: Multiset<(ID, DiskRequest)>, resps: Multiset<(ID, DiskResponse)>,
         discard_addrs: Set<Address>) -> bool
     {
-        let journal_lbl = CachedJournal::Label::CommitBoundary{
-            boundary_lsn: pre.in_flight.unwrap().boundary_lsn,
+        let journal_lbl = CachedJournal::Label::DiscardOld{
+            start_lsn: pre.in_flight.unwrap().boundary_lsn,
             require_end: post.ephemeral_map().seq_end, // requires journal to still line up with ephemeral map, might not be needed
             discard_addrs,
         };

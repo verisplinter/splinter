@@ -1470,6 +1470,12 @@ impl JournalImpl {
     {
     }
 
+    pub proof fn clean_watermark_le_marshaled_seq_end(&self)
+        requires self.wf(), self.index_ready()
+        ensures self.clean_watermark() <= self.marshalled_seq_end()
+    {
+    }
+
     pub proof fn seq_start_le_seq_end(&self)
         requires self.wf(), self.index_ready()
         ensures self.seq_start() <= self.seq_end()
@@ -1723,11 +1729,11 @@ impl JournalImpl {
         }
     }
 
-    pub exec fn commit_boundary(&mut self, boundary_lsn: ILsn)
+    pub exec fn discard_old(&mut self, boundary_lsn: ILsn)
     requires
         old(self).wf(),
         old(self).index_ready(),
-        old(self).seq_start() <= boundary_lsn <= old(self).seq_end(),
+        old(self).seq_start() <= boundary_lsn <= old(self).marshalled_seq_end(),
     ensures
         self.wf(),
         self.index_ready(),
@@ -1741,8 +1747,8 @@ impl JournalImpl {
             CachedJournal::State::next(
                 old(self)@,
                 self@,
-                CachedJournal::Label::CommitBoundary{
-                    boundary_lsn: boundary_lsn as nat,
+                CachedJournal::Label::DiscardOld{
+                    start_lsn: boundary_lsn as nat,
                     require_end: old(self).seq_end(),
                     discard_addrs,
                 },
@@ -1750,55 +1756,77 @@ impl JournalImpl {
         }),
     {
         let ghost pre_journal = old(self)@;
+        let old_seq_end = self.exec_seq_end();
+        let old_freshest_rec = self.snapshot.freshest_rec;
         let mut status = self.status.take().unwrap();
-        let old_clean = status.clean_watermark_lsn;
-        let marshalled_end = status.lsn_addr_index.exec_seq_end();
-
-        if boundary_lsn <= marshalled_end {
-            status.lsn_addr_index.discard_up_to(boundary_lsn);
-        } else {
-            let cut_u64 = boundary_lsn - marshalled_end;
-            if cut_u64 > usize::MAX as u64 {
-                convert_overflow_into_liveness_failure();
-            }
-            let cut = cut_u64 as usize;
-            if cut > status.unmarshalled_tail.len() {
-                please_panic();
-                return unreached();
-            }
-            status.unmarshalled_tail = status.unmarshalled_tail.split_off(cut);
-            status.lsn_addr_index = ILsnAddrIndex::new(boundary_lsn);
-            proof {
-                assume(
-                    AJournal{
-                        msg_history: status.unmarshalled_tail@,
-                        seq_start: boundary_lsn,
-                    }@
-                    == pre_journal.status.unwrap().unmarshalled_tail.discard_old(boundary_lsn as nat)
-                );
-            }
+        let ghost old_index = status.lsn_addr_index@;
+        let old_index_seq_end = status.lsn_addr_index.exec_seq_end();
+        proof {
+            status.lsn_addr_index.derive_lsn_index_domain_exact();
         }
+        let old_clean = status.clean_watermark_lsn;
+        status.lsn_addr_index.discard_up_to(boundary_lsn);
 
         if old_clean < boundary_lsn {
             status.clean_watermark_lsn = boundary_lsn;
         }
         self.snapshot.boundary_lsn = boundary_lsn;
         self.snapshot.freshest_rec =
-            if boundary_lsn < marshalled_end {
-                let last_lsn = status.lsn_addr_index.exec_seq_end() - 1;
-                let (freshest_rec, _) = status.lsn_addr_index.lookup_lsn_with_segment_end(last_lsn);
-                Some(freshest_rec)
-            } else {
-                None
-            };
+            if boundary_lsn == old_index_seq_end { None } else { old_freshest_rec };
         self.status = Some(status);
 
         proof {
+            assert(self.wf()) by {
+                assert(self.status is Some);
+                assert(self.status.unwrap().wf());
+                assert(self.status.unwrap().lsn_addr_index.seq_start() == boundary_lsn);
+                assert(self.status.unwrap().lsn_addr_index.seq_end() == old_index_seq_end);
+                assert(self.snapshot.boundary_lsn == self.status.unwrap().lsn_addr_index.seq_start());
+                assert(self.snapshot.boundary_lsn <= self.status.unwrap().clean_watermark_lsn);
+                assert(self.status.unwrap().clean_watermark_lsn <= self.status.unwrap().lsn_addr_index.seq_end());
+                assert(self.snapshot.freshest_rec is Some <==> self.snapshot.boundary_lsn < self.status.unwrap().lsn_addr_index.seq_end()) by {
+                    assert(boundary_lsn <= old_index_seq_end);
+                    if boundary_lsn == old_index_seq_end {
+                        assert(self.snapshot.freshest_rec is None);
+                    } else {
+                        assert(boundary_lsn < old_index_seq_end) by {
+                            if !(boundary_lsn < old_index_seq_end) {
+                                assert(old_index_seq_end <= boundary_lsn);
+                                assert(boundary_lsn == old_index_seq_end);
+                            }
+                        }
+                        assert(self.snapshot.boundary_lsn < self.status.unwrap().lsn_addr_index.seq_end());
+                        assert(pre_journal.snapshot.boundary_lsn <= boundary_lsn as nat);
+                        assert(pre_journal.snapshot.boundary_lsn < pre_journal.seq_end());
+                        assert(pre_journal.snapshot.freshest_rec is Some);
+                        assert(self.snapshot.freshest_rec == old_freshest_rec);
+                        assert(self.snapshot.freshest_rec is Some);
+                    }
+                }
+                if self.snapshot.freshest_rec is Some {
+                    let last_lsn = (self.status.unwrap().lsn_addr_index.seq_end() - 1) as nat;
+                    assert(self.snapshot.boundary_lsn < self.status.unwrap().lsn_addr_index.seq_end());
+                    assert(self.snapshot.freshest_rec == old_freshest_rec);
+                    assert(pre_journal.snapshot.freshest_rec is Some);
+                    crate::allocation_layer::LikesJournal_v::lsn_addr_index_discard_up_to_ensures(old_index, boundary_lsn as nat);
+                    assert(boundary_lsn as nat <= last_lsn);
+                    assert(old_index.contains_key(last_lsn));
+                    assert(crate::allocation_layer::LikesJournal_v::lsn_addr_index_discard_up_to(
+                        old_index,
+                        boundary_lsn as nat,
+                    ).contains_key(last_lsn));
+                    assert(self@.status.unwrap().lsn_addr_index.contains_key(last_lsn));
+                    assert(pre_journal.snapshot.freshest_rec.unwrap() == old_index[last_lsn]);
+                    assert(self.status.unwrap().lsn_addr_index@[last_lsn] == old_index[last_lsn]);
+                    assert(self.status.unwrap().lsn_addr_index@[last_lsn]
+                        == self.snapshot.freshest_rec.unwrap()@);
+                }
+            }
             let ghost discard_addrs =
                 pre_journal.status.unwrap().lsn_addr_index.values()
                 - self@.status.unwrap().lsn_addr_index.values();
-            let lbl = CachedJournal::Label::CommitBoundary{
-                boundary_lsn: boundary_lsn as nat,
+            let lbl = CachedJournal::Label::DiscardOld{
+                start_lsn: boundary_lsn as nat,
                 require_end: pre_journal.seq_end(),
                 discard_addrs,
             };
@@ -1808,7 +1836,7 @@ impl JournalImpl {
                 pre_journal,
                 self@,
                 lbl,
-                CachedJournal::Step::commit_boundary(),
+                CachedJournal::Step::discard_old(),
             ));
             assert(CachedJournal::State::next(pre_journal, self@, lbl));
         }
