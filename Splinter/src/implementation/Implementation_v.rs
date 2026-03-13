@@ -159,11 +159,8 @@ impl SyncRequestBuffer {
             let req = self.superblocking_reqs.pop().unwrap();
             out.insert(0, req);
             proof {
-                assert(prev_super == self.superblocking_reqs@.push(req));
-                assert(out@ == seq![req] + prev_out);
                 assert(self.superblocking_reqs@ + out@
                     == self.superblocking_reqs@ + seq![req] + prev_out);
-                assert(self.superblocking_reqs@ + seq![req] == prev_super);
             }
         }
         out
@@ -506,23 +503,13 @@ impl Implementation {
                 OutstandingReqInfo::SuperBlockReq{} => true,
             }
         } by {
-            assert(Self::outstanding_requests_wf_map(outstanding, old_cache));
             match outstanding[id] {
                 OutstandingReqInfo::CacheLoadReq{read_addr, load_handle} => {
-                    assert(old_cache.entry_fetched(&read_addr));
-                    assert(old_cache.valid_load_handle(&read_addr, load_handle));
-                    assert(new_cache.valid_load_handles_preserved(old_cache));
-                    assert(new_cache.entry_fetched(&read_addr) && new_cache.valid_load_handle(&read_addr, load_handle));
                 },
                 OutstandingReqInfo::JournalCacheWriteReq{write_addr, handle}
                 | OutstandingReqInfo::StoreWriteReq{write_addr, handle} => {
-                    assert(old_cache.entry_fetched(&write_addr));
-                    assert(old_cache.valid_writeback_handle(&write_addr, handle));
-                    assert(new_cache.valid_writeback_handles_preserved(old_cache));
-                    assert(new_cache.valid_writeback_handle(&write_addr, handle));
                     FracCacheImpl::valid_writeback_handle_model_entry(&new_cache, &write_addr, handle);
                     FracCacheImpl::entry_fetched_from_view(&new_cache, &write_addr);
-                    assert(new_cache.entry_fetched(&write_addr));
                 },
                 OutstandingReqInfo::SuperBlockReq{} => {}
             }
@@ -752,16 +739,10 @@ impl Implementation {
                 OutstandingReqInfo::SuperBlockReq{} => true,
             }
         } by {
-            assert(outstanding[id] is CacheLoadReq);
             match outstanding[id] {
                 OutstandingReqInfo::CacheLoadReq{read_addr, load_handle} => {
-                    assert(old_cache.entry_fetched(&read_addr));
-                    assert(old_cache.valid_load_handle(&read_addr, load_handle));
-                    assert(new_cache.valid_load_handles_preserved(old_cache));
-                    assert(new_cache.entry_fetched(&read_addr) && new_cache.valid_load_handle(&read_addr, load_handle));
                 },
                 _ => {
-                    assert(false);
                 }
             }
         };
@@ -1141,16 +1122,10 @@ impl Implementation {
             assert(id2 != req_id) by {
                 if id2 == req_id {
                     vstd::map::axiom_map_remove_domain(outstanding, req_id);
-                    assert(outstanding.remove(req_id).dom().contains(id2));
-                    assert(outstanding.remove(req_id).dom() == outstanding.dom().remove(req_id));
                     vstd::set::axiom_set_remove_same(outstanding.dom(), req_id);
-                    assert(!outstanding.dom().remove(req_id).contains(req_id));
-                    assert(false);
                 }
             };
             vstd::map::axiom_map_remove_different(outstanding, id2, req_id);
-            assert(outstanding.remove(req_id)[id2] == outstanding[id2]);
-            assert(Self::outstanding_requests_wf_map(outstanding, cache));
         };
     }
 
@@ -1167,7 +1142,6 @@ impl Implementation {
     ensures
         Self::outstanding_requests_match_cache_reqs_map(outstanding.remove(req_id), cache_reqs),
     {
-        assert(cache_reqs.is_injective());
         assert forall |id2| #[trigger] outstanding.remove(req_id).contains_key(id2) implies {
             match outstanding.remove(req_id)[id2] {
                 OutstandingReqInfo::CacheLoadReq{read_addr, load_handle} => {
@@ -1187,16 +1161,10 @@ impl Implementation {
             assert(id2 != req_id) by {
                 if id2 == req_id {
                     vstd::map::axiom_map_remove_domain(outstanding, req_id);
-                    assert(outstanding.remove(req_id).dom().contains(id2));
-                    assert(outstanding.remove(req_id).dom() == outstanding.dom().remove(req_id));
                     vstd::set::axiom_set_remove_same(outstanding.dom(), req_id);
-                    assert(!outstanding.dom().remove(req_id).contains(req_id));
-                    assert(false);
                 }
             };
             vstd::map::axiom_map_remove_different(outstanding, id2, req_id);
-            assert(outstanding.remove(req_id)[id2] == outstanding[id2]);
-            assert(Self::outstanding_requests_match_cache_reqs_map(outstanding, cache_reqs));
         };
     }
 
@@ -1239,57 +1207,28 @@ impl Implementation {
             assert(id2 != id) by {
                 if id2 == id {
                     vstd::map::axiom_map_remove_domain(outstanding, id);
-                    assert(outstanding.remove(id).dom().contains(id2));
-                    assert(outstanding.remove(id).dom() == outstanding.dom().remove(id));
                     vstd::set::axiom_set_remove_same(outstanding.dom(), id);
-                    assert(!outstanding.dom().remove(id).contains(id));
-                    assert(false);
                 }
             };
 
             vstd::map::axiom_map_remove_different(outstanding, id2, id);
-            assert(outstanding.remove(id)[id2] == outstanding[id2]);
 
             vstd::map::axiom_map_remove_domain(outstanding, id);
-            assert(outstanding.remove(id).dom().contains(id2));
-            assert(outstanding.remove(id).dom() == outstanding.dom().remove(id));
             vstd::set::axiom_set_remove_different(outstanding.dom(), id2, id);
-            assert(outstanding.dom().contains(id2));
-            assert(outstanding.contains_key(id2));
 
-            assert(Self::outstanding_requests_wf_map(outstanding, old_cache));
             match outstanding[id2] {
                 OutstandingReqInfo::CacheLoadReq{read_addr, load_handle} => {
-                    assert(old_cache.entry_fetched(&read_addr));
-                    assert(old_cache.valid_load_handle(&read_addr, load_handle));
-                    assert(new_cache.valid_load_handles_preserved(old_cache));
-                    assert(new_cache.entry_fetched(&read_addr) && new_cache.valid_load_handle(&read_addr, load_handle));
                 },
                 OutstandingReqInfo::JournalCacheWriteReq{write_addr: wa2, handle: h2}
                 | OutstandingReqInfo::StoreWriteReq{write_addr: wa2, handle: h2} => {
-                    assert(old_cache.entry_fetched(&wa2));
-                    assert(old_cache.valid_writeback_handle(&wa2, h2));
 
-                    assert(cache_reqs.contains_key(id2));
-                    assert(cache_reqs[id2] == wa2@);
-                    assert(cache_reqs.contains_key(id));
-                    assert(cache_reqs[id] == write_addr@);
-                    assert(cache_reqs.is_injective());
                     assert(wa2@ != write_addr@) by {
                         if wa2@ == write_addr@ {
-                            assert(cache_reqs.contains_pair(id2, wa2@));
-                            assert(cache_reqs.contains_pair(id, wa2@));
-                            assert(id2 == id);
-                            assert(false);
                         }
                     };
-                    assert(wa2 != write_addr);
 
-                    assert(new_cache.valid_writeback_handles_preserved_except(old_cache, write_addr));
-                    assert(new_cache.valid_writeback_handle(&wa2, h2));
                     FracCacheImpl::valid_writeback_handle_model_entry(&new_cache, &wa2, h2);
                     FracCacheImpl::entry_fetched_from_view(&new_cache, &wa2);
-                    assert(new_cache.entry_fetched(&wa2));
                 },
                 OutstandingReqInfo::SuperBlockReq{} => {}
             }
@@ -1335,57 +1274,28 @@ impl Implementation {
             assert(id2 != id) by {
                 if id2 == id {
                     vstd::map::axiom_map_remove_domain(outstanding, id);
-                    assert(outstanding.remove(id).dom().contains(id2));
-                    assert(outstanding.remove(id).dom() == outstanding.dom().remove(id));
                     vstd::set::axiom_set_remove_same(outstanding.dom(), id);
-                    assert(!outstanding.dom().remove(id).contains(id));
-                    assert(false);
                 }
             };
 
             vstd::map::axiom_map_remove_different(outstanding, id2, id);
-            assert(outstanding.remove(id)[id2] == outstanding[id2]);
 
             vstd::map::axiom_map_remove_domain(outstanding, id);
-            assert(outstanding.remove(id).dom().contains(id2));
-            assert(outstanding.remove(id).dom() == outstanding.dom().remove(id));
             vstd::set::axiom_set_remove_different(outstanding.dom(), id2, id);
-            assert(outstanding.dom().contains(id2));
-            assert(outstanding.contains_key(id2));
 
-            assert(Self::outstanding_requests_wf_map(outstanding, old_cache));
             match outstanding[id2] {
                 OutstandingReqInfo::CacheLoadReq{read_addr, load_handle} => {
-                    assert(old_cache.entry_fetched(&read_addr));
-                    assert(old_cache.valid_load_handle(&read_addr, load_handle));
-                    assert(new_cache.valid_load_handles_preserved(old_cache));
-                    assert(new_cache.entry_fetched(&read_addr) && new_cache.valid_load_handle(&read_addr, load_handle));
                 },
                 OutstandingReqInfo::JournalCacheWriteReq{write_addr: wa2, handle: h2}
                 | OutstandingReqInfo::StoreWriteReq{write_addr: wa2, handle: h2} => {
-                    assert(old_cache.entry_fetched(&wa2));
-                    assert(old_cache.valid_writeback_handle(&wa2, h2));
 
-                    assert(cache_reqs.contains_key(id2));
-                    assert(cache_reqs[id2] == wa2@);
-                    assert(cache_reqs.contains_key(id));
-                    assert(cache_reqs[id] == write_addr@);
-                    assert(cache_reqs.is_injective());
                     assert(wa2@ != write_addr@) by {
                         if wa2@ == write_addr@ {
-                            assert(cache_reqs.contains_pair(id2, wa2@));
-                            assert(cache_reqs.contains_pair(id, wa2@));
-                            assert(id2 == id);
-                            assert(false);
                         }
                     };
-                    assert(wa2 != write_addr);
 
-                    assert(new_cache.valid_writeback_handles_preserved_except(old_cache, write_addr));
-                    assert(new_cache.valid_writeback_handle(&wa2, h2));
                     FracCacheImpl::valid_writeback_handle_model_entry(&new_cache, &wa2, h2);
                     FracCacheImpl::entry_fetched_from_view(&new_cache, &wa2);
-                    assert(new_cache.entry_fetched(&wa2));
                 },
                 OutstandingReqInfo::SuperBlockReq{} => {}
             }
@@ -1431,58 +1341,28 @@ impl Implementation {
             assert(id2 != id) by {
                 if id2 == id {
                     vstd::map::axiom_map_remove_domain(outstanding, id);
-                    assert(outstanding.remove(id).dom().contains(id2));
-                    assert(outstanding.remove(id).dom() == outstanding.dom().remove(id));
                     vstd::set::axiom_set_remove_same(outstanding.dom(), id);
-                    assert(!outstanding.dom().remove(id).contains(id));
-                    assert(false);
                 }
             };
             vstd::map::axiom_map_remove_different(outstanding, id2, id);
-            assert(outstanding.remove(id)[id2] == outstanding[id2]);
 
             vstd::map::axiom_map_remove_domain(outstanding, id);
-            assert(outstanding.remove(id).dom().contains(id2));
-            assert(outstanding.remove(id).dom() == outstanding.dom().remove(id));
             vstd::set::axiom_set_remove_different(outstanding.dom(), id2, id);
-            assert(outstanding.dom().contains(id2));
-            assert(outstanding.contains_key(id2));
 
-            assert(Self::outstanding_requests_wf_map(outstanding, old_cache));
             match outstanding[id2] {
                 OutstandingReqInfo::CacheLoadReq{read_addr: ra2, load_handle: h2} => {
-                    assert(old_cache.entry_fetched(&ra2));
-                    assert(old_cache.valid_load_handle(&ra2, h2));
 
-                    assert(cache_reqs.contains_key(id2));
-                    assert(cache_reqs[id2] == ra2@);
-                    assert(cache_reqs.contains_key(id));
-                    assert(cache_reqs[id] == read_addr@);
-                    assert(cache_reqs.is_injective());
                     assert(ra2@ != read_addr@) by {
                         if ra2@ == read_addr@ {
-                            assert(cache_reqs.contains_pair(id2, ra2@));
-                            assert(cache_reqs.contains_pair(id, ra2@));
-                            assert(id2 == id);
-                            assert(false);
                         }
                     };
-                    assert(ra2 != read_addr);
 
-                    assert(new_cache.valid_load_handles_preserved_except(old_cache, read_addr));
-                    assert(new_cache.valid_load_handle(&ra2, h2));
                     FracCacheImpl::entry_fetched_from_view(&new_cache, &ra2);
-                    assert(new_cache.entry_fetched(&ra2));
                 },
                 OutstandingReqInfo::JournalCacheWriteReq{write_addr, handle}
                 | OutstandingReqInfo::StoreWriteReq{write_addr, handle} => {
-                    assert(old_cache.entry_fetched(&write_addr));
-                    assert(old_cache.valid_writeback_handle(&write_addr, handle));
-                    assert(new_cache.valid_writeback_handles_preserved(old_cache));
-                    assert(new_cache.valid_writeback_handle(&write_addr, handle));
                     FracCacheImpl::valid_writeback_handle_model_entry(&new_cache, &write_addr, handle);
                     FracCacheImpl::entry_fetched_from_view(&new_cache, &write_addr);
-                    assert(new_cache.entry_fetched(&write_addr));
                 },
                 OutstandingReqInfo::SuperBlockReq{} => {}
             }
@@ -1507,7 +1387,6 @@ impl Implementation {
             cache_reqs.remove(id),
         ),
     {
-        assert(cache_reqs.is_injective());
         assert(cache_reqs.remove(id).is_injective()) by {
             assert forall |id1: ID, id2: ID| #![auto]
                 cache_reqs.remove(id).contains_key(id1)
@@ -1516,10 +1395,6 @@ impl Implementation {
                 implies id1 == id2 by {
                 vstd::map::axiom_map_remove_different(cache_reqs, id1, id);
                 vstd::map::axiom_map_remove_different(cache_reqs, id2, id);
-                assert(cache_reqs.contains_key(id1));
-                assert(cache_reqs.contains_key(id2));
-                assert(cache_reqs[id1] == cache_reqs[id2]);
-                assert(id1 == id2);
             };
         }
         assert forall |id2| #[trigger] outstanding.remove(id).contains_key(id2) implies {
@@ -1541,41 +1416,24 @@ impl Implementation {
             assert(id2 != id) by {
                 if id2 == id {
                     vstd::map::axiom_map_remove_domain(outstanding, id);
-                    assert(outstanding.remove(id).dom().contains(id2));
-                    assert(outstanding.remove(id).dom() == outstanding.dom().remove(id));
                     vstd::set::axiom_set_remove_same(outstanding.dom(), id);
-                    assert(!outstanding.dom().remove(id).contains(id));
-                    assert(false);
                 }
             };
             vstd::map::axiom_map_remove_different(outstanding, id2, id);
             vstd::map::axiom_map_remove_different(cache_reqs, id2, id);
-            assert(outstanding.remove(id)[id2] == outstanding[id2]);
-            assert(Self::outstanding_requests_match_cache_reqs_map(outstanding, cache_reqs));
             match outstanding[id2] {
                 OutstandingReqInfo::CacheLoadReq{read_addr: ra2, load_handle: h2} => {
-                    assert(cache_reqs.contains_key(id2));
                     vstd::map::axiom_map_remove_domain(cache_reqs, id);
-                    assert(cache_reqs.remove(id).dom() == cache_reqs.dom().remove(id));
                     vstd::set::axiom_set_remove_different(cache_reqs.dom(), id2, id);
-                    assert(cache_reqs.remove(id).contains_key(id2));
-                    assert(cache_reqs.remove(id)[id2] == cache_reqs[id2]);
                 },
                 OutstandingReqInfo::JournalCacheWriteReq{write_addr, handle}
                 | OutstandingReqInfo::StoreWriteReq{write_addr, handle} => {
-                    assert(cache_reqs.contains_key(id2));
                     vstd::map::axiom_map_remove_domain(cache_reqs, id);
-                    assert(cache_reqs.remove(id).dom() == cache_reqs.dom().remove(id));
                     vstd::set::axiom_set_remove_different(cache_reqs.dom(), id2, id);
-                    assert(cache_reqs.remove(id).contains_key(id2));
-                    assert(cache_reqs.remove(id)[id2] == cache_reqs[id2]);
                 },
                 OutstandingReqInfo::SuperBlockReq{} => {
-                    assert(!cache_reqs.contains_key(id2));
                     vstd::map::axiom_map_remove_domain(cache_reqs, id);
-                    assert(cache_reqs.remove(id).dom() == cache_reqs.dom().remove(id));
                     vstd::set::axiom_set_remove_different(cache_reqs.dom(), id2, id);
-                    assert(!cache_reqs.remove(id).contains_key(id2));
                 }
             }
         };
@@ -1599,7 +1457,6 @@ impl Implementation {
             cache_reqs.remove(id),
         ),
     {
-        assert(cache_reqs.is_injective());
         assert(cache_reqs.remove(id).is_injective()) by {
             assert forall |id1: ID, id2: ID| #![auto]
                 cache_reqs.remove(id).contains_key(id1)
@@ -1608,10 +1465,6 @@ impl Implementation {
                 implies id1 == id2 by {
                 vstd::map::axiom_map_remove_different(cache_reqs, id1, id);
                 vstd::map::axiom_map_remove_different(cache_reqs, id2, id);
-                assert(cache_reqs.contains_key(id1));
-                assert(cache_reqs.contains_key(id2));
-                assert(cache_reqs[id1] == cache_reqs[id2]);
-                assert(id1 == id2);
             };
         }
         assert forall |id2| #[trigger] outstanding.remove(id).contains_key(id2) implies {
@@ -1633,41 +1486,24 @@ impl Implementation {
             assert(id2 != id) by {
                 if id2 == id {
                     vstd::map::axiom_map_remove_domain(outstanding, id);
-                    assert(outstanding.remove(id).dom().contains(id2));
-                    assert(outstanding.remove(id).dom() == outstanding.dom().remove(id));
                     vstd::set::axiom_set_remove_same(outstanding.dom(), id);
-                    assert(!outstanding.dom().remove(id).contains(id));
-                    assert(false);
                 }
             };
             vstd::map::axiom_map_remove_different(outstanding, id2, id);
             vstd::map::axiom_map_remove_different(cache_reqs, id2, id);
-            assert(outstanding.remove(id)[id2] == outstanding[id2]);
-            assert(Self::outstanding_requests_match_cache_reqs_map(outstanding, cache_reqs));
             match outstanding[id2] {
                 OutstandingReqInfo::CacheLoadReq{read_addr: ra2, load_handle: h2} => {
-                    assert(cache_reqs.contains_key(id2));
                     vstd::map::axiom_map_remove_domain(cache_reqs, id);
-                    assert(cache_reqs.remove(id).dom() == cache_reqs.dom().remove(id));
                     vstd::set::axiom_set_remove_different(cache_reqs.dom(), id2, id);
-                    assert(cache_reqs.remove(id).contains_key(id2));
-                    assert(cache_reqs.remove(id)[id2] == cache_reqs[id2]);
                 },
                 OutstandingReqInfo::JournalCacheWriteReq{write_addr, handle}
                 | OutstandingReqInfo::StoreWriteReq{write_addr, handle} => {
-                    assert(cache_reqs.contains_key(id2));
                     vstd::map::axiom_map_remove_domain(cache_reqs, id);
-                    assert(cache_reqs.remove(id).dom() == cache_reqs.dom().remove(id));
                     vstd::set::axiom_set_remove_different(cache_reqs.dom(), id2, id);
-                    assert(cache_reqs.remove(id).contains_key(id2));
-                    assert(cache_reqs.remove(id)[id2] == cache_reqs[id2]);
                 },
                 OutstandingReqInfo::SuperBlockReq{} => {
-                    assert(!cache_reqs.contains_key(id2));
                     vstd::map::axiom_map_remove_domain(cache_reqs, id);
-                    assert(cache_reqs.remove(id).dom() == cache_reqs.dom().remove(id));
                     vstd::set::axiom_set_remove_different(cache_reqs.dom(), id2, id);
-                    assert(!cache_reqs.remove(id).contains_key(id2));
                 }
             }
         };
@@ -1852,9 +1688,7 @@ impl Implementation {
         let inflight_store_ptr =
             if self.in_flight is Some { self.in_flight.unwrap().store_ptr } else { None };
         self.store.store_addrs_matches_views(inflight_store_ptr);
-        assert(self.store_addrs() == self.store.store_addrs(inflight_store_ptr));
         if self.in_flight is Some {
-            assert(self.state().in_flight is Some);
             assert(self.state().store_addrs()
                 == (if self.state().persistent_store_ptr is Some {
                     set!{self.state().persistent_store_ptr.unwrap()}
@@ -1872,7 +1706,6 @@ impl Implementation {
                     set![]
                 }));
         } else {
-            assert(self.state().in_flight is None);
             assert(self.state().store_addrs()
                 == (if self.state().persistent_store_ptr is Some {
                     set!{self.state().persistent_store_ptr.unwrap()}
@@ -1999,25 +1832,10 @@ impl Implementation {
                 }
                 assert(pre_state.state.store == old(self).i_ephemeral_store()) by {
                 }
-                assert(pre_state.state.store is Known);
-                assert(old(self).journal.seq_end() == old(self).store.store_lsn_nat());
-                assert(pre_store_kmmap.wf());
-                assert(pre_store.value == pre_store_kmmap);
-                assert(pre_store.seq_end == old(self).store.store_lsn_nat());
-                assert(pre_store.value.wf());
-                assert(puts.can_follow(pre_store.seq_end));
                 assert(post_state.state.store is Known) by {
                 }
                 assert(post_state.state.store == self.i_ephemeral_store()) by {
                 }
-                assert(post_store.value == self.store@);
-                assert(post_store.seq_end == self.store.store_lsn_nat());
-                assert(self.store@ == old(self).store@.insert(key, Message::Define{value}));
-                assert(post_store.value == pre_store.value.insert(key, Message::Define{value}));
-                assert(self.store.store_lsn_nat() == old(self).store.store_lsn_nat() + 1);
-                assert(post_store.seq_end == pre_store.seq_end + 1);
-                assert(puts.len() == 1);
-                assert(post_store.seq_end == pre_store.seq_end + puts.len());
 
                 // Need to unwind two instances of the recursive definition: one for the empty base
                 // case and one for the single message we stuck in the history.
@@ -2062,65 +1880,32 @@ impl Implementation {
         };
         proof {
             self.system_inv_implies_atomic_state_wf();
-            assert(api.instance_id() == self.instance_id());
-            assert(self.recovery_phase is ReadyForUserOperation);
             assert(self.state().cache == self.cache@) by {
             }
             assert(self.outstanding_requests_wf()) by {
             }
             assert(self.outstanding_requests_match_cache_reqs()) by {
             }
-            assert(self.journal.wf());
-            assert(self.store.wf());
-            assert(self.store_initialized);
-            assert(self.journal.alloc_au() != self.store_alloc_au());
-            assert(self.store.persistent_store_ptr_matches_alloc_au());
             self.store.prepared_store_ptr_has_alloc_au();
             self.store.prepared_store_ptr_before_next_alloc();
             self.store.persistent_store_ptr_has_alloc_au();
             self.store.persistent_store_ptr_before_next_alloc();
             let inflight_store_ptr = if self.in_flight is Some { self.in_flight.unwrap().store_ptr } else { None };
             if inflight_store_ptr is Some {
-                assert(inflight_store_ptr.unwrap().au as nat == self.store_alloc_au());
-                assert((inflight_store_ptr.unwrap().page as nat) < self.store.next_alloc_page());
             }
             self.store.store_addrs_are_alloc_au(inflight_store_ptr);
             self.state_store_addrs_match();
-            assert(self.journal.index_ready());
-            assert(self.state().recovery_state is RecoveryComplete);
-            assert(self.journal.seq_end() == self.store.store_lsn_nat());
-            assert(self.state().wf());
-            assert(self.state().in_flight is Some <==> self.sync_requests.in_flight());
-            assert(self.state().in_flight is Some <==> self.in_flight is Some);
             if self.state().in_flight is Some {
-                assert(self.in_flight is Some);
-                assert(self.sync_requests.in_flight());
                 let sync_version = self.state().in_flight.unwrap().journal_version;
                 let new_persistent_map_version = self.in_flight.unwrap().new_boundary_lsn as nat;
-                assert(self.journal.seq_start() <= new_persistent_map_version);
-                assert(new_persistent_map_version <= sync_version);
                 self.journal.view_marshaled_seq_end_ensures();
                 self.journal.view_seq_end_ensures();
-                assert(sync_version <= self.state().journal.marshalled_seq_end());
-                assert(sync_version <= self.state().journal.seq_end());
-                assert(self.state().journal.marshalled_seq_end() == self.journal.marshalled_seq_end());
-                assert(self.state().journal.seq_end() == self.journal.seq_end());
-                assert(sync_version <= self.journal.marshalled_seq_end());
-                assert(sync_version <= self.journal.seq_end());
-                assert(self.sync_reqs_in_version(self.sync_requests.superblocking_reqs@, sync_version));
-                assert(self.in_flight.unwrap().new_boundary_lsn as nat == self.state().in_flight.unwrap().boundary_lsn);
-                assert(self.in_flight.unwrap().new_persistent_lsn as nat == self.state().in_flight.unwrap().journal_version);
-                assert(iaddr_view(self.in_flight.unwrap().store_ptr) == self.state().in_flight.unwrap().store_ptr);
                 if self.in_flight.unwrap().store_ptr is Some {
-                    assert(self.in_flight.unwrap().store_ptr.unwrap().au as nat == self.store_alloc_au());
                 }
             }
-            assert(self.sync_requests.wf(self.instance@.id()));
             assert(self.sync_reqs_in_version(self.sync_requests.buffered_reqs@, self.version())) by {
-                assert(old(self).version() <= self.version());
             }
             assert(self.sync_requests.sync_target_lsn <= self.version()) by {
-                assert(old(self).version() <= self.version());
             }
             assert(self.sync_reqs_in_version(
                 self.sync_requests.journal_cleaning_reqs@,
@@ -2137,8 +1922,6 @@ impl Implementation {
             }
             assert(self.inv()) by {
             }
-            assert(self.inv_api(api));
-            assert(self.ready_for_user_operation());
         }
     }
 
@@ -2186,11 +1969,7 @@ impl Implementation {
                 }
                 assert(pre_state.state.store == old(self).i_ephemeral_store()) by {
                 }
-                assert(pre_state.state.store is Known);
-                assert(post_state.state.store is Known);
-                assert(end_lsn == pre_state.state.store->Known_v.stamped_map.seq_end);
                 assert(value == pre_state.state.store->Known_v.stamped_map.value[key]->value) by {
-                    assert(value == old(self).store.kmmap()[key]->value);
                 }
 
                 reveal(AbstractMap::State::next_by);
@@ -2213,16 +1992,12 @@ impl Implementation {
 
             api.send_reply(reply, Tracked(new_reply_token), true);
             proof {
-                assert(self.state() == post_state.state);
-                assert(self.state().journal == self.journal@);
                 assert(self.state().store == self.i_ephemeral_store()) by {
                 }
                 assert(self.inv_running()) by {
                 }
                 assert(self.inv()) by {
                 }
-                assert(self.inv_api(api));
-                assert(self.ready_for_user_operation());
             }
         },
             _ => unreached(),
@@ -2295,8 +2070,6 @@ impl Implementation {
             return;
         }
         proof {
-            assert(outstanding_empty);
-            assert(self.outstanding_requests@.is_empty());
         }
         if self.sync_requests.superblocking_reqs.len() > 0 {    // todo write as in_flight -- for journal truncation case
             Self::debug_print(&"  └─ another superblock in flight");
@@ -4336,21 +4109,7 @@ impl Implementation {
         let ghost pre_buffered_reqs = self.sync_requests.buffered_reqs@;
 
         proof {
-            assert(pre_state.state == self.state());
-            assert(pre_state.state.journal == self.journal@);
-            assert(pre_state.state.store == pre_view_store);
-            assert(self.store.store_lsn_nat() == pre_store_lsn);
-            assert(self.store_initialized);
-            assert(pre_view_store is Known);
-            assert(pre_view_store->Known_v.stamped_map.value == pre_store_kmmap);
-            assert(pre_view_store->Known_v.stamped_map.seq_end == pre_store_lsn);
             self.journal.view_seq_start_ensures();
-            assert(pre_state.state.journal.seq_start() == self.journal.seq_start());
-            assert(pre_exec_in_flight is Some);
-            assert(pre_state.state.in_flight is Some);
-            assert(pre_exec_in_flight.unwrap().new_boundary_lsn as nat == pre_state.state.in_flight.unwrap().boundary_lsn);
-            assert(pre_exec_in_flight.unwrap().new_persistent_lsn as nat == pre_state.state.in_flight.unwrap().journal_version);
-            assert(iaddr_view(pre_exec_in_flight.unwrap().store_ptr) == pre_state.state.in_flight.unwrap().store_ptr);
             assert(self.sync_reqs_in_version(
                 pre_superblocking_reqs,
                 pre_state.state.in_flight.unwrap().journal_version,
@@ -4374,19 +4133,12 @@ impl Implementation {
             //   in_flight is Some, !cache_reqs.contains(id), req_id == id
             // in_flight and model are unchanged by remove
             self.system_inv_response_implies_in_flight(id, disk_response, response_shard);
-            assert(pre_state.state == self.state());
         }
 
         let mut in_flight = None;
         std::mem::swap(&mut self.in_flight, &mut in_flight);
         if let Some(InFlight{new_boundary_lsn, freshest_rec, new_persistent_lsn, store_ptr}) = in_flight {
             proof {
-                assert(new_boundary_lsn == pre_exec_in_flight.unwrap().new_boundary_lsn);
-                assert(new_persistent_lsn == pre_exec_in_flight.unwrap().new_persistent_lsn);
-                assert(store_ptr == pre_exec_in_flight.unwrap().store_ptr);
-                assert(new_boundary_lsn as nat == pre_state.state.in_flight.unwrap().boundary_lsn);
-                assert(new_persistent_lsn as nat == pre_state.state.in_flight.unwrap().journal_version);
-                assert(iaddr_view(store_ptr) == pre_state.state.in_flight.unwrap().store_ptr);
             }
             match store_ptr {
                 Some(ptr) => {
@@ -4394,7 +4146,6 @@ impl Implementation {
                     if ptr.au != expected_store_au {
                         Self::todo_placeholder();
                     }
-                    assert((ptr.page as nat) < self.store.next_alloc_page());
                 }
                 None => {}
             }
@@ -4437,7 +4188,6 @@ impl Implementation {
                     require_end: post_state.state.ephemeral_map().seq_end,
                     discard_addrs,
                 };
-                assert(post_state.state.ephemeral_map().seq_end == pre_state.state.journal.seq_end());
                 assert(CachedJournal::State::next_by(
                     pre_state.state.journal,
                     post_state.state.journal,
@@ -4479,27 +4229,10 @@ impl Implementation {
 
             proof {
                 self.system_inv_implies_atomic_state_wf();
-                assert(ready_reqs@ == pre_superblocking_reqs);
-                assert(self.sync_requests.superblocking_reqs@.len() == 0);
-                assert(!self.sync_requests.in_flight());
-                assert(self.state() == post_state.state);
-                assert(self.state().cache == self.cache@);
                 assert(self.i_ephemeral_store() == pre_view_store) by {
-                    assert(self.store_initialized);
-                    assert(self.store@ == pre_store_kmmap);
-                    assert(self.store.store_lsn_nat() == pre_store_lsn);
-                    assert(pre_view_store is Known);
-                    assert(pre_view_store->Known_v.stamped_map.value == pre_store_kmmap);
-                    assert(pre_view_store->Known_v.stamped_map.seq_end == pre_store_lsn);
                 }
-                assert(self.state().store == self.i_ephemeral_store());
-                assert(self.state().persistent_store_ptr == self.store.persistent_store_ptr_view());
-                assert(self.state().journal == self.journal@);
-                assert(self.state().in_flight is None);
-                assert(self.in_flight is None);
                 self.store.store_addrs_none_matches_persistent_view();
                 self.state_store_addrs_match();
-                assert(self.outstanding_requests@ == pre_outstanding.remove(id));
                 Self::outstanding_requests_wf_map_remove_superblock(
                     pre_outstanding,
                     self.cache,
@@ -4510,20 +4243,13 @@ impl Implementation {
                     self.state().outstanding_cache_reqs,
                     id,
                 );
-                assert(self.outstanding_requests_wf());
-                assert(self.outstanding_requests_match_cache_reqs());
                 assert(self.state().outstanding_cache_reqs.dom() <= self.outstanding_requests@.dom()) by {
                     assert(self.state().outstanding_cache_reqs.dom() <= pre_outstanding.dom()) by {
-                        assert((self.state().outstanding_cache_reqs.dom() + set!{id}) <= pre_outstanding.dom());
                     }
-                    assert(self.outstanding_requests@.dom() == pre_outstanding.dom().remove(id));
                     assert forall |id2: ID| #[trigger] self.state().outstanding_cache_reqs.dom().contains(id2)
                         implies self.outstanding_requests@.dom().contains(id2) by {
-                        assert(pre_outstanding.dom().contains(id2));
                         if id2 == id {
                             self.system_inv_sb_id_not_in_cache_reqs();
-                            assert(!self.state().outstanding_cache_reqs.dom().contains(id));
-                            assert(false);
                         }
                         vstd::set::axiom_set_remove_different(pre_outstanding.dom(), id2, id);
                     };
@@ -4532,33 +4258,13 @@ impl Implementation {
                     self.outstanding_requests@.dom().contains(id2)
                     && self.outstanding_requests@[id2] is SuperBlockReq
                     implies false by {
-                    assert(pre_outstanding.dom().contains(id2));
                     vstd::map::axiom_map_remove_different(pre_outstanding, id2, id);
-                    assert(self.outstanding_requests@[id2] == pre_outstanding[id2]);
-                    assert(pre_outstanding[id2] is SuperBlockReq);
-                    assert(pre_state.state.in_flight is Some);
-                    assert(pre_state.state.in_flight.unwrap().req_id == id);
-                    assert(id2 == pre_state.state.in_flight.unwrap().req_id);
-                    assert(id2 == id);
-                    assert(false);
                 };
-                assert(self.model_reqs_in_outstanding());
-                assert(self.ready_for_user_operation());
-                assert(self.journal.wf());
-                assert(self.store.wf());
-                assert(self.store_initialized);
-                assert(self.journal.alloc_au() != self.store_alloc_au());
-                assert(self.store.persistent_store_ptr_matches_alloc_au());
                 self.store.prepared_store_ptr_has_alloc_au();
                 self.store.prepared_store_ptr_before_next_alloc();
                 self.store.persistent_store_ptr_has_alloc_au();
                 self.store.persistent_store_ptr_before_next_alloc();
                 self.store.store_addrs_are_alloc_au(None);
-                assert(self.state().recovery_state is RecoveryComplete);
-                assert(self.journal.seq_end() == self.store.store_lsn_nat());
-                assert(self.sync_requests.wf(self.instance@.id()));
-                assert(self.sync_reqs_in_version(self.sync_requests.buffered_reqs@, self.version()));
-                assert(self.sync_requests.sync_target_lsn <= self.version());
                 assert(self.sync_reqs_in_version(
                     self.sync_requests.journal_cleaning_reqs@,
                     self.sync_requests.sync_target_lsn as nat,
@@ -4570,8 +4276,6 @@ impl Implementation {
                 ));
                 assert(self.inv_running()) by {
                 }
-                assert(self.inv_api(api));
-                assert(self.sync_reqs_in_version(ready_reqs@, self.state().persistent_journal_seq_end));
                 assert(Self::three_sync_req_lists_mutually_unique(
                     ready_reqs@,
                     self.sync_requests.journal_cleaning_reqs@,
@@ -4609,9 +4313,6 @@ impl Implementation {
             self.system_inv_cache_load_is_read_resp(id, disk_response, response_shard, pre_outstanding);
             assert(!(self.recovery_phase is FetchingSuperblock)) by {
                 if self.recovery_phase is FetchingSuperblock {
-                    assert(self.outstanding_requests@ == Map::<ID, OutstandingReqInfo>::empty());
-                    assert(!self.outstanding_requests@.contains_key(id));
-                    assert(false);
                 }
             };
             // Establish sb_req_id disjointness BEFORE the remove, while self.state() is fresh.
@@ -4682,13 +4383,6 @@ impl Implementation {
             self.system_inv_implies_atomic_state_wf();
 
             // Help verifier re-establish inv() after remove + model transition.
-            assert(self.state() == post_state.state);
-            assert(self.state().cache == self.cache@);
-            assert(self.outstanding_requests@ == pre_outstanding.remove(id));
-            assert(!(self.recovery_phase is FetchingSuperblock));
-            assert(self.state().store == self.i_ephemeral_store());
-            assert(self.state().persistent_store_ptr == self.store.persistent_store_ptr_view());
-            assert(self.state().journal == self.journal@);
             Self::outstanding_requests_wf_map_remove_load_after_complete(
                 pre_outstanding,
                 pre_cache_impl,
@@ -4703,70 +4397,37 @@ impl Implementation {
                 id,
                 read_addr,
             );
-            assert(self.outstanding_requests_wf());
-            assert(self.outstanding_requests_match_cache_reqs());
-            assert(self.recovery_phase == old(self).recovery_phase);
-            assert(self.cache.wf());
-            assert(self.store.wf());
-            assert(self.journal.alloc_au() != self.store_alloc_au());
-            assert(self.store.persistent_store_ptr_matches_alloc_au());
             if !(self.recovery_phase is FetchingSuperblock) {
                 let inflight_store_ptr = if self.in_flight is Some { self.in_flight.unwrap().store_ptr } else { None };
                 if inflight_store_ptr is Some {
-                    assert(inflight_store_ptr.unwrap().au as nat == self.store_alloc_au());
                 }
                 self.store.store_addrs_are_alloc_au(inflight_store_ptr);
-                assert(forall |a: Address| #[trigger] self.store_addrs().contains(a) ==> a.au == self.store_alloc_au());
             }
             assert(self.model_reqs_in_outstanding()) by {
                 let in_flight_sb_id = if self.state().in_flight is Some { set!{self.state().in_flight.unwrap().req_id} } else { set!{} };
-                assert((pre_cache_reqs.dom() + in_flight_sb_id) <= pre_outstanding.dom());
-                assert(self.state().outstanding_cache_reqs.dom() == pre_cache_reqs.dom().remove(id));
-                assert(self.outstanding_requests@.dom() == pre_outstanding.dom().remove(id));
                 assert((self.state().outstanding_cache_reqs.dom() + in_flight_sb_id) <= self.outstanding_requests@.dom()) by {
                     assert forall |id2: ID| #[trigger] (self.state().outstanding_cache_reqs.dom() + in_flight_sb_id).contains(id2)
                         implies self.outstanding_requests@.dom().contains(id2) by {
-                        assert((pre_cache_reqs.dom() + in_flight_sb_id).contains(id2));
-                        assert(pre_outstanding.dom().contains(id2));
                         if id2 == id {
-                            assert(pre_cache_reqs.dom().contains(id));
-                            assert(!self.state().outstanding_cache_reqs.dom().contains(id));
                             if in_flight_sb_id.contains(id2) {
                                 self.system_inv_sb_id_not_in_cache_reqs();
-                                assert(!pre_cache_reqs.dom().contains(id));
                             }
-                            assert(false);
                         }
                         vstd::set::axiom_set_remove_different(pre_outstanding.dom(), id2, id);
                     };
                 }
             }
             if self.recovery_phase is ReadingJournalIndex {
-                assert(self.state().in_flight is None);
-                assert(self.sync_requests.valid_empty_sync_buffer(self.instance@.id()));
-                assert(self.journal.wf());
                 assert forall |id2: ID| #[trigger] self.outstanding_requests@.contains_key(id2)
                     implies self.outstanding_requests@[id2] is CacheLoadReq by {
-                    assert(id2 != id);
                     vstd::map::axiom_map_remove_different(pre_outstanding, id2, id);
-                    assert(self.outstanding_requests@[id2] == pre_outstanding[id2]);
-                    assert(old(self).outstanding_requests@[id2] is CacheLoadReq);
                 };
                 assert(self.inv_reading_journal()) by {
                 }
             } else if self.recovery_phase is ApplyingJournalToRecoverEphemeralMap {
-                assert(self.state().in_flight is None);
-                assert(self.sync_requests.valid_empty_sync_buffer(self.instance@.id()));
-                assert(self.journal.wf());
-                assert(self.store_initialized);
-                assert(self.journal.seq_start() <= self.store.store_lsn_nat());
-                assert(self.store.store_lsn_nat() <= self.journal.seq_end());
                 assert forall |id2: ID| #[trigger] self.outstanding_requests@.contains_key(id2)
                     implies self.outstanding_requests@[id2] is CacheLoadReq by {
-                    assert(id2 != id);
                     vstd::map::axiom_map_remove_different(pre_outstanding, id2, id);
-                    assert(self.outstanding_requests@[id2] == pre_outstanding[id2]);
-                    assert(old(self).outstanding_requests@[id2] is CacheLoadReq);
                 };
                 assert(self.inv_applying_journal()) by {
                 }
@@ -4774,19 +4435,13 @@ impl Implementation {
                 assert(self.state().store_addrs() == self.store_addrs()) by {
                     if self.in_flight is Some {
                         self.store.store_addrs_matches_views(self.in_flight.unwrap().store_ptr);
-                        assert(iaddr_view(self.in_flight.unwrap().store_ptr) == self.state().in_flight.unwrap().store_ptr);
                     } else {
                         self.store.store_addrs_none_matches_persistent_view();
-                        assert(self.store_addrs() == self.store.store_addrs(None));
                     }
-                    assert(self.state().persistent_store_ptr == self.store.persistent_store_ptr_view());
                 }
-                assert(self.state().in_flight is Some <==> self.sync_requests.in_flight());
-                assert(self.state().in_flight is Some <==> self.in_flight is Some);
                 assert(self.inv_running()) by {
                 }
             }
-            assert(self.model@.instance_id() == self.instance@.id());
             assert forall |id2: ID| #![auto]
                 self.outstanding_requests@.dom().contains(id2)
                 && self.outstanding_requests@[id2] is SuperBlockReq
@@ -4794,21 +4449,8 @@ impl Implementation {
                     && !self.state().outstanding_cache_reqs.dom().contains(id2)
                     && self.state().in_flight is Some
                     && id2 == self.state().in_flight.unwrap().req_id by {
-                assert(id2 != id);
                 vstd::map::axiom_map_remove_different(pre_outstanding, id2, id);
-                assert(self.outstanding_requests@[id2] == pre_outstanding[id2]);
-                assert(pre_outstanding[id2] is SuperBlockReq);
-                assert(old(self).in_flight is Some);
-                assert(old(self).state().in_flight is Some);
-                assert(id2 == old(self).state().in_flight.unwrap().req_id);
-                assert(self.in_flight is Some);
-                assert(self.state().in_flight is Some);
-                assert(id2 == self.state().in_flight.unwrap().req_id);
-                assert(!old(self).state().outstanding_cache_reqs.dom().contains(id2));
-                assert(self.state().outstanding_cache_reqs == old(self).state().outstanding_cache_reqs.remove_keys(set!{id}));
-                assert(!self.state().outstanding_cache_reqs.dom().contains(id2));
             };
-            assert(self.inv_api(api));
         }
     }
 
@@ -4835,8 +4477,6 @@ impl Implementation {
         let ghost pre_cache_impl = old(self).cache;
         let ghost pre_cache_reqs = old(self).state().outstanding_cache_reqs;
         proof {
-            assert(Self::outstanding_requests_wf_map(pre_outstanding, pre_cache_impl));
-            assert(Self::outstanding_requests_match_cache_reqs_map(pre_outstanding, pre_cache_reqs));
             self.system_inv_journal_cache_write_is_write_resp(id, disk_response, response_shard, pre_outstanding);
             if self.state().in_flight is Some {
                 self.system_inv_sb_id_not_in_cache_reqs();
@@ -4880,7 +4520,7 @@ impl Implementation {
             assert(cache_resps == map!{write_addr@ => disk_response@}) by {
                 Self::cache_resps_singleton(pre_cache_reqs, id, write_addr@, disk_response@);
             }
-            assert(AtomicState::disk_transition(pre_state.state, post_state.state, disk_event, info.reqs, info.resps));
+            assert(AtomicState::disk_transition(pre_state.state, post_state.state, disk_event, info.reqs, info.resps)); // trigger
         }
 
         let tracked _disk_req_token = self.instance.borrow().disk_transitions(
@@ -4896,9 +4536,6 @@ impl Implementation {
         self.model = Tracked(model);
         proof {
             self.system_inv_implies_atomic_state_wf();
-            assert(self.outstanding_requests@ == pre_outstanding.remove(id));
-            assert(pre_cache_reqs.contains_key(id));
-            assert(pre_cache_reqs[id] == write_addr@);
             Self::outstanding_requests_wf_map_remove_journal_after_complete(
                 pre_outstanding,
                 pre_cache_impl,
@@ -4907,8 +4544,6 @@ impl Implementation {
                 id,
                 write_addr,
             );
-            assert(self.outstanding_requests_wf());
-            assert(self.outstanding_requests_match_cache_reqs());
         }
 
         if self.journal_flush_accumulator == 0 {
@@ -4919,8 +4554,6 @@ impl Implementation {
         self.journal_flush_accumulator = self.journal_flush_accumulator - 1;
         if self.journal_flush_accumulator == 0 {
             proof {
-                assert(self.inv_api(api));
-                assert(self.ready_for_user_operation());
             }
             self.maybe_launch_superblock(api);
         }
@@ -4949,8 +4582,6 @@ impl Implementation {
         let ghost pre_cache_impl = old(self).cache;
         let ghost pre_cache_reqs = old(self).state().outstanding_cache_reqs;
         proof {
-            assert(Self::outstanding_requests_wf_map(pre_outstanding, pre_cache_impl));
-            assert(Self::outstanding_requests_match_cache_reqs_map(pre_outstanding, pre_cache_reqs));
             self.system_inv_store_cache_write_is_write_resp(id, disk_response, response_shard, pre_outstanding);
             if self.state().in_flight is Some {
                 self.system_inv_sb_id_not_in_cache_reqs();
@@ -4994,7 +4625,7 @@ impl Implementation {
             assert(cache_resps == map!{write_addr@ => disk_response@}) by {
                 Self::cache_resps_singleton(pre_cache_reqs, id, write_addr@, disk_response@);
             }
-            assert(AtomicState::disk_transition(pre_state.state, post_state.state, disk_event, info.reqs, info.resps));
+            assert(AtomicState::disk_transition(pre_state.state, post_state.state, disk_event, info.reqs, info.resps)); // trigger
         }
 
         let tracked _disk_req_token = self.instance.borrow().disk_transitions(
@@ -5010,9 +4641,6 @@ impl Implementation {
         self.model = Tracked(model);
         proof {
             self.system_inv_implies_atomic_state_wf();
-            assert(self.outstanding_requests@ == pre_outstanding.remove(id));
-            assert(pre_cache_reqs.contains_key(id));
-            assert(pre_cache_reqs[id] == write_addr@);
             Self::outstanding_requests_wf_map_remove_store_after_complete(
                 pre_outstanding,
                 pre_cache_impl,
@@ -5027,8 +4655,6 @@ impl Implementation {
                 id,
                 write_addr,
             );
-            assert(self.outstanding_requests_wf());
-            assert(self.outstanding_requests_match_cache_reqs());
             self.store.prepared_store_ptr_has_alloc_au();
         }
         self.maybe_launch_superblock(api);
@@ -5172,9 +4798,7 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                         Self::todo_placeholder();
                     }
                     proof {
-                        assert(self.store.persistent_store_ptr() == superblock.store_ptr);
                         self.store.persistent_store_ptr_before_next_alloc();
-                        assert((ptr.page as nat) < self.store.next_alloc_page());
                     }
                 }
                 None => {}
@@ -5191,14 +4815,8 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
             }
             self.store.set_prepared_store(superblock.store_ptr, superblock.journal_snapshot.boundary_lsn);
             proof {
-                assert(superblock@ == layout.spec_parse_inner(raw_page@));
-                assert(superblock@@ == layout.spec_parse(raw_page@));
-                assert(self.store.persistent_store_ptr() == superblock.store_ptr);
-                assert(self.store.persistent_store_ptr_view() == superblock@@.store_ptr);
                 match superblock.store_ptr {
                     Some(ptr) => {
-                        assert(ptr.au == expected_store_au);
-                        assert(expected_store_au == self.store.alloc_au());
                     }
                     None => {}
                 }
@@ -5251,18 +4869,11 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
         api.log("recovery phase now ReadingJournalIndex");
         self.recovery_phase = RecoveryPhase::ReadingJournalIndex;
         proof {
-            assert(self.state().cache == self.cache@);
-            assert(self.state().store == self.i_ephemeral_store());
-            assert(self.state().persistent_store_ptr == self.store.persistent_store_ptr_view());
-            assert(self.state().prepared_store_ptr == self.prepared_store_ptr_view());
-            assert(self.state().journal == self.journal@);
-            assert(self.store.persistent_store_ptr_matches_alloc_au());
             self.store.prepared_store_ptr_has_alloc_au();
             self.store.prepared_store_ptr_before_next_alloc();
             self.store.persistent_store_ptr_has_alloc_au();
             self.store.persistent_store_ptr_before_next_alloc();
             self.store.store_addrs_are_alloc_au(None);
-            assert(self.inv());
         }
     }
 
@@ -5285,11 +4896,7 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
         let ghost pre_cache_impl = self.cache;
         let ghost pre_outstanding = self.outstanding_requests@;
         proof {
-            assert(pre_state.state == self.state());
             self.system_inv_implies_atomic_state_wf();
-            assert(pre_state.state.wf());
-            assert(pre_state.state.cache == pre_cache_impl@);
-            assert(pre_state.state.outstanding_cache_reqs.values() <= pre_cache_impl@.lookup_map.dom());
         }
 
         let boundary_lsn = self.journal.exec_seq_start();
@@ -5334,7 +4941,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                     assert(disk_event->req_map.values() == set!{disk_req@}) by {
                         Self::singleton_map_value(req_id_perm@, disk_req@);
                     }
-                    assert(Cache::State::next(pre_state.state.cache, post_state.state.cache, cache_load_label(&store_ptr)));
 
                     let updated_outstanding_cache_reqs =
                         Map::new(|id| disk_event->req_map.contains_key(id), |id| disk_event->req_map[id].addr());
@@ -5354,7 +4960,7 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                     assert(new_outstanding_cache_reqs == pre_state.state.outstanding_cache_reqs.insert(req_id_perm@, store_ptr@)) by {
                         vstd::map_lib::lemma_union_insert_right(pre_state.state.outstanding_cache_reqs, Map::<ID, Address>::empty(), req_id_perm@, store_ptr@);
                     }
-                    assert(AtomicState::disk_transition(pre_state.state, post_state.state, disk_event, program_lbl->info.reqs, program_lbl->info.resps));
+                    assert(AtomicState::disk_transition(pre_state.state, post_state.state, disk_event, program_lbl->info.reqs, program_lbl->info.resps)); // trigger
                 }
 
                 let tracked empty_disk_responses: DiskRespShard = DiskRespShard::empty(self.instance_id());
@@ -5375,8 +4981,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                     load_handle: slot_handle,
                 };
                 proof {
-                    assert(self.cache.entry_fetched(&store_ptr));
-                    assert(pre_state.state.outstanding_cache_reqs.values() <= pre_cache_impl@.lookup_map.dom());
                     Self::outstanding_requests_wf_map_preserved_by_cache_loads_only(
                         pre_outstanding,
                         pre_cache_impl,
@@ -5397,14 +5001,12 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                         store_ptr,
                         slot_handle,
                     );
-                    assert(id == req_id_perm@);
                 }
                 self.outstanding_requests.insert(id, OutstandingReqInfo::CacheLoadReq{
                     read_addr: store_ptr,
                     load_handle: slot_handle,
                 });
                 proof {
-                    assert(self.outstanding_requests@ == pre_outstanding.insert(id, inserted_req));
                 }
                 true
             }
@@ -5424,30 +5026,15 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
 
                 proof {
                     self.journal.view_seq_start_ensures();
-                    assert(pre_state.state.store is Unknown);
                     assert(pre_state.state.recovery_state is SuperblockAvailable
                         || pre_state.state.recovery_state is JournalIndexComplete);
-                    assert(boundary_lsn as nat == self.journal.seq_start());
-                    assert(pre_state.state.journal == self.journal@);
-                    assert(pre_state.state.journal.snapshot.boundary_lsn == boundary_lsn as nat);
-                    assert(post_state.state.store is Known);
-                    assert(post_state.state.store->Known_v.stamped_map.value == self.store@);
                     assert(post_state.state.store->Known_v.stamped_map.seq_end
                         == pre_state.state.journal.snapshot.boundary_lsn);
-                    assert(pre_persistent_store_ptr == self.store.persistent_store_ptr_view());
                     if pre_persistent_store_ptr is None {
-                        assert(reads@ == Map::<Address, RawPage>::empty());
-                        assert(post_state.state.cache == pre_state.state.cache);
-                        assert(post_state.state.store->Known_v.stamped_map.value == TotalKMMap::empty());
                     } else {
                         let ptr = pre_persistent_store_ptr.unwrap();
                         let cache_lbl = Cache::Label::Access{reads: reads@, writes: Map::empty()};
-                        assert(reads@.contains_key(ptr));
-                        assert(reads@.dom() == set!{ptr});
-                        assert(Cache::State::next(pre_state.state.cache, post_state.state.cache, cache_lbl));
-                        assert(post_state.state.store->Known_v.stamped_map.value == to_store_maps(reads@)[ptr]);
                     }
-                    assert(AtomicState::load_map(pre_state.state, post_state.state, reads@));
                     assert(ConcreteProgramModel::valid_internal_transition(pre_state, post_state)) by {
                         assert(AtomicState::internal_transitions(
                             pre_state.state,
@@ -5476,25 +5063,13 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
 
         proof {
             self.store.store_addrs_are_alloc_au(None);
-            assert(self.state().cache == self.cache@);
-            assert(self.state().store == self.i_ephemeral_store());
-            assert(self.state().persistent_store_ptr == self.store.persistent_store_ptr_view());
-            assert(self.state().prepared_store_ptr == self.prepared_store_ptr_view());
-            assert(self.state().journal == self.journal@);
-            assert(self.outstanding_requests_match_cache_reqs());
-            assert(self.outstanding_requests_wf());
-            assert(self.store.persistent_store_ptr_matches_alloc_au());
             self.store.prepared_store_ptr_has_alloc_au();
             self.store.prepared_store_ptr_before_next_alloc();
             self.store.persistent_store_ptr_has_alloc_au();
             self.store.persistent_store_ptr_before_next_alloc();
-            assert(self.recovery_phase is ReadingJournalIndex ==> self.inv_reading_journal());
             if self.recovery_phase is ApplyingJournalToRecoverEphemeralMap {
                 self.journal.seq_start_le_seq_end();
-                assert(self.inv_applying_journal());
             }
-            assert(self.inv());
-            assert(self.inv_api(api));
         }
         progress
     }
@@ -5653,16 +5228,10 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                 self.journal.seq_start_le_seq_end();
             }
             self.store.store_addrs_are_alloc_au(None);
-            assert(self.state().cache == self.cache@);
-            assert(self.outstanding_requests_match_cache_reqs());
-            assert(self.outstanding_requests_wf());
-            assert(self.recovery_phase is ReadingJournalIndex ==> self.inv_reading_journal());
             if self.recovery_phase is ApplyingJournalToRecoverEphemeralMap {
                 assert(self.inv_applying_journal()) by {
                 }
             }
-            assert(self.inv());
-            assert(self.inv_api(api));
         }
         progress // either index is complete or journal has made progress building the index
     }
@@ -5677,13 +5246,11 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
             || self.recovery_phase is ReadyForUserOperation,
     {
         proof {
-            assert(self.inv());
             self.system_inv_implies_atomic_state_wf();
             assert(self.inv_applying_journal()) by {
             }
             assert(self.in_flight is None) by {
                 if self.in_flight is Some {
-                    assert(self.recovery_phase is ReadyForUserOperation);
                 }
             }
         }
@@ -5703,10 +5270,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
             self.store.prepared_store_ptr_before_next_alloc();
             self.store.persistent_store_ptr_has_alloc_au();
             self.store.persistent_store_ptr_before_next_alloc();
-            assert(prepared_store_ptr0 == self.prepared_store_ptr());
-            assert(prepared_store_ptr_view0 == iaddr_view(prepared_store_ptr0));
-            assert(prepared_store_lsn_nat0 == prepared_store_lsn0 as nat);
-            assert(landed_store_ptr0 == self.landed_store_ptr());
         }
         if self.store.exec_store_lsn() < self.journal.exec_seq_start() {
             return false;
@@ -5733,7 +5296,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                 RecoverMapResult::NotInCache{} => {
                     proof {
                         self.store.store_addrs_are_alloc_au(None);
-                        assert(self.inv_api(api));
                     }
                     return false;
                 }
@@ -5757,37 +5319,14 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                     let ghost records = record_msgs.maybe_discard_old(pre_store_lsn);
                     proof {
                         self.journal.view_seq_start_ensures();
-                        assert(fetch_boundary_lsn == self.journal.seq_start());
                         assert(CachedJournal::State::next(
                             journal_after_fetch,
                             journal_after_fetch,
                             map_recovery_labels(fetch_boundary_lsn, reads@, addr@).1,
                         ));
-                        assert(pre_state.state == self.state());
-                        assert(pre_state.state.store == self.i_ephemeral_store());
-                        assert(pre_state.state.store is Known);
                         self.store.kmmap_wf_ensures();
-                        assert(pre_state.state.store->Known_v.stamped_map == pre_store);
-                        assert(pre_state.state.persistent_store_ptr == self.store.persistent_store_ptr_view());
-                        assert(pre_store.seq_end == pre_store_lsn);
-                        assert(pre_store.value.wf());
-                        assert(record_msgs.wf());
-                        assert(record_msgs.seq_start <= pre_store_lsn);
-                        assert(pre_store_lsn < record_msgs.seq_end);
-                        assert(records == record_msgs.discard_old(pre_store_lsn));
-                        assert(records.wf());
-                        assert(records.seq_start == pre_store_lsn);
-                        assert(records.seq_end == record_msgs.seq_end);
-                        assert(records.can_follow(pre_store.seq_end));
-                        assert(records.seq_end == record_seq_end as nat);
-                        assert(records.can_discard_to(self.store.store_lsn_nat()));
                         let empty_prefix = records.discard_recent(self.store.store_lsn_nat());
-                        assert(empty_prefix.seq_start == pre_store_lsn);
-                        assert(empty_prefix.seq_end == pre_store_lsn);
-                        assert(empty_prefix.wf());
-                        assert(empty_prefix.is_empty());
                         reveal_with_fuel(MsgHistory::apply_to_stamped_map, 1);
-                        assert(MsgHistory::map_plus_history(pre_store, empty_prefix).value == pre_store.value);
                     }
 
                     while next_lsn < record_seq_end
@@ -5844,49 +5383,25 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                                 let key = km.key;
                                 self.store.insert(key, value);
                                 proof {
-                                    assert(old_store_lsn_exec == next_lsn);
                                     let prefix = records.discard_recent(old_store_lsn);
-                                    assert(old_store_lsn == next_lsn as nat);
                                     assert(old_store_lsn < records.seq_end) by {
-                                        assert(next_lsn < record_seq_end);
-                                        assert(records.seq_end == record_seq_end as nat);
                                     }
-                                    assert(records.can_discard_to((old_store_lsn + 1) as nat));
                                     let next_prefix = records.discard_recent((old_store_lsn + 1) as nat);
-                                    assert(prefix.wf());
-                                    assert(next_prefix.wf());
-                                    assert(prefix.can_follow(pre_store.seq_end));
-                                    assert(next_prefix.can_follow(pre_store.seq_end));
-                                    assert(next_prefix.can_discard_to(old_store_lsn));
                                     assert(next_prefix.discard_recent(old_store_lsn).ext_equal(prefix)) by {
                                         assert forall |lsn: LSN| #[trigger] next_prefix.discard_recent(old_store_lsn).msgs.contains_key(lsn)
                                             <==> prefix.msgs.contains_key(lsn) by {
                                             assert(next_prefix.discard_recent(old_store_lsn).contains(lsn)
                                                 <==> next_prefix.seq_start <= lsn < old_store_lsn);
-                                            assert(prefix.contains(lsn) <==> prefix.seq_start <= lsn < old_store_lsn);
-                                            assert(next_prefix.seq_start == prefix.seq_start);
                                         }
-                                        assert(next_prefix.discard_recent(old_store_lsn).seq_start == prefix.seq_start);
-                                        assert(next_prefix.discard_recent(old_store_lsn).seq_end == prefix.seq_end);
                                     }
                                     assert(next_prefix.discard_recent(old_store_lsn) == prefix) by {
                                         MsgHistory::ext_equal_is_equality();
                                     }
-                                    assert(record.parsedv().messages[next_index as int] == km);
-                                    assert((old_store_lsn - record.header.start_lsn as nat) as int == next_index as int);
                                     assert(record_msgs.msgs[old_store_lsn]
                                         == record.parsedv().messages[(old_store_lsn - record.header.start_lsn as nat) as int]);
-                                    assert(records.msgs.contains_key(old_store_lsn));
                                     assert(records.msgs[old_store_lsn] == km) by {
-                                        assert(record_msgs.msgs[old_store_lsn] == record.messages[next_index as int]);
                                     }
-                                    assert(self.store.store_lsn_nat() == old_store_lsn + 1);
-                                    assert(self.store.kmmap() == old_store_kmmap.insert(key, Message::Define{value}));
-                                    assert(self.store.store_lsn_nat() <= records.seq_end);
-                                    assert(self.store.store_lsn_nat() <= self.journal.seq_end());
-                                    assert(records.can_discard_to(self.store.store_lsn_nat()));
                                     reveal_with_fuel(MsgHistory::apply_to_stamped_map, 2);
-                                    assert(old_store_kmmap == MsgHistory::map_plus_history(pre_store, prefix).value);
                                     assert(MsgHistory::map_plus_history(pre_store, next_prefix).value
                                         == old_store_kmmap.insert(key, Message::Define{value}));
                                 }
@@ -5922,13 +5437,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                     let final_store_lsn = self.store.exec_store_lsn();
 
                     proof {
-                        assert(final_store_lsn == next_lsn);
-                        assert(self.store.store_lsn_nat() == final_store_lsn as nat);
-                        assert(!(next_lsn < record_seq_end));
-                        assert(record_seq_end <= next_lsn);
-                        assert(self.store.store_lsn_nat() == next_lsn as nat);
-                        assert(record_seq_end <= next_lsn);
-                        assert(self.store.store_lsn_nat() == records.seq_end);
                         assert(self.store.kmmap()
                             == MsgHistory::map_plus_history(pre_store, records).value) by {
                             assert(records.discard_recent(self.store.store_lsn_nat()).ext_equal(records)) by {
@@ -5936,16 +5444,12 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                                     <==> records.msgs.contains_key(lsn) by {
                                     assert(records.discard_recent(self.store.store_lsn_nat()).contains(lsn)
                                         <==> records.seq_start <= lsn < self.store.store_lsn_nat());
-                                    assert(records.contains(lsn) <==> records.seq_start <= lsn < records.seq_end);
                                 }
-                                assert(records.discard_recent(self.store.store_lsn_nat()).seq_start == records.seq_start);
-                                assert(records.discard_recent(self.store.store_lsn_nat()).seq_end == records.seq_end);
                             }
                             assert(records.discard_recent(self.store.store_lsn_nat()) == records) by {
                                 MsgHistory::ext_equal_is_equality();
                             }
                         }
-                        assert(pre_state.state.store->Known_v.stamped_map == pre_store);
                         MsgHistory::map_plus_history_seq_end_lemma(pre_store, records);
 
                         reveal(AbstractMap::State::next_by);
@@ -5983,21 +5487,12 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                             let ghost journal_reads = to_journal_records(reads@);
                             let ghost recovery_record = journal_reads[addr@];
                             let ghost boundary_lsn = pre_state.state.journal.snapshot.boundary_lsn;
-                            assert(Cache::State::next(pre_state.state.cache, post_state.state.cache, cache_lbl));
                             assert(records == recovery_record.message_seq.maybe_discard_old(
                                 pre_state.state.store->Known_v.stamped_map.seq_end
                             ));
                             self.journal.view_seq_start_ensures();
-                            assert(pre_state.state.journal == self.journal@);
-                            assert(boundary_lsn == self.journal@.snapshot.boundary_lsn);
-                            assert(self.journal@.snapshot.boundary_lsn == fetch_boundary_lsn);
-                            assert(boundary_lsn == fetch_boundary_lsn);
                             assert(boundary_lsn <= recovery_record.message_seq.seq_end) by {
-                                assert(self.journal.seq_start() <= pre_store.seq_end);
-                                assert(pre_store.seq_end == start_lsn as nat);
-                                assert((start_lsn as nat) < recovery_record.message_seq.seq_end);
                             }
-                            assert(self.journal.seq_start() <= recovery_record.message_seq.seq_end);
                             let ghost journal_lbl = CachedJournal::Label::ReadForRecovery{
                                 messages: recovery_record.message_seq.maybe_discard_old(boundary_lsn),
                                 reads: journal_reads,
@@ -6006,7 +5501,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                                 messages: recovery_record.message_seq.maybe_discard_old(fetch_boundary_lsn),
                                 reads: journal_reads,
                             };
-                            assert(recovery_record == to_journal_records(reads@)[addr@]);
                             let ghost fetch_journal_lbl_from_map = map_recovery_labels(fetch_boundary_lsn, reads@, addr@).1;
                             assert(fetch_journal_lbl_from_map is ReadForRecovery) by {
                             }
@@ -6015,8 +5509,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                             assert(fetch_journal_lbl_from_map.arrow_ReadForRecovery_messages()
                                 == recovery_record.message_seq.maybe_discard_old(fetch_boundary_lsn)) by {
                             }
-                            assert(fetch_journal_lbl == journal_lbl);
-                            assert(fetch_journal_lbl_from_map == fetch_journal_lbl);
                             assert(CachedJournal::State::next(
                                 journal_after_fetch,
                                 journal_after_fetch,
@@ -6063,12 +5555,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                                 assert(pre_state.state.journal.snapshot.boundary_lsn
                                     <= journal_seq_end) by {
                                     self.journal.view_seq_start_ensures();
-                                    assert(pre_state.state.journal == self.journal@);
-                                    assert(pre_state.state.journal.snapshot.boundary_lsn == self.journal@.snapshot.boundary_lsn);
-                                    assert(self.journal@.snapshot.boundary_lsn == fetch_boundary_lsn);
-                                    assert(fetch_boundary_lsn <= pre_store.seq_end);
-                                    assert(pre_store.seq_end == start_lsn as nat);
-                                    assert((start_lsn as nat) < journal_seq_end);
                                 }
                             };
                         }
@@ -6086,35 +5572,14 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                     if self.store.exec_store_lsn() < exec_seq_end {
                         proof {
                             self.system_inv_implies_atomic_state_wf();
-                            assert(self.prepared_store_ptr() == prepared_store_ptr0);
-                            assert(self.prepared_store_lsn() == prepared_store_lsn0);
-                            assert(self.landed_store_ptr() == landed_store_ptr0);
-                            assert(self.landed_store_lsn() == landed_store_lsn0);
-                            assert(self.store.next_alloc_page() == store_next_alloc_page0);
-                            assert(self.state().cache == self.cache@);
-                            assert(self.state().store == self.i_ephemeral_store());
-                            assert(self.state().persistent_store_ptr == self.store.persistent_store_ptr_view());
-                            assert(self.state().prepared_store_ptr == pre_state.state.prepared_store_ptr);
-                            assert(self.state().prepared_store_lsn == pre_state.state.prepared_store_lsn);
                             self.store.prepared_store_ptr_view_ensures();
                             self.store.prepared_store_lsn_nat_ensures();
-                            assert(self.prepared_store_ptr_view() == iaddr_view(prepared_store_ptr0));
-                            assert(self.prepared_store_lsn_nat() == prepared_store_lsn0 as nat);
-                            assert(self.state().prepared_store_ptr == self.prepared_store_ptr_view());
-                            assert(self.state().prepared_store_lsn == self.prepared_store_lsn_nat());
-                            assert(self.state().journal == self.journal@);
-                            assert(self.outstanding_requests_wf());
-                            assert(self.outstanding_requests_match_cache_reqs());
-                            assert(self.store.persistent_store_ptr_matches_alloc_au());
                             self.store.prepared_store_ptr_has_alloc_au();
                             self.store.prepared_store_ptr_before_next_alloc();
                             self.store.persistent_store_ptr_has_alloc_au();
                             self.store.persistent_store_ptr_before_next_alloc();
                             self.store.store_addrs_are_alloc_au(None);
                             self.state_store_addrs_match();
-                            assert(self.inv_applying_journal());
-                            assert(self.inv());
-                            assert(self.inv_api(api));
                         }
                         return true;
                     }
@@ -6124,23 +5589,14 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
         let exec_seq_end = self.journal.exec_seq_end();
         if self.store.exec_store_lsn() < exec_seq_end {
             proof {
-                assert(self.inv_applying_journal());
-                assert(self.inv_api(api));
             }
             return true;
         }
         proof {
-            assert(self.inv_applying_journal());
         }
         let ghost pre_state = self.state();
         proof {
-            assert(pre_state == self.state());
-            assert(self.store_initialized);
             self.journal.view_seq_end_ensures();
-            assert(pre_state.store == self.i_ephemeral_store());
-            assert(pre_state.persistent_store_ptr == self.store.persistent_store_ptr_view());
-            assert(pre_state.prepared_store_ptr == prepared_store_ptr_view0);
-            assert(pre_state.prepared_store_lsn == prepared_store_lsn_nat0);
         }
 
         {
@@ -6189,54 +5645,15 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
             self.model = Tracked(model);
             proof {
                 self.system_inv_implies_atomic_state_wf();
-                assert(self.prepared_store_ptr() == prepared_store_ptr0);
-                assert(self.prepared_store_lsn() == prepared_store_lsn0);
-                assert(self.landed_store_ptr() == landed_store_ptr0);
-                assert(self.landed_store_lsn() == landed_store_lsn0);
-                assert(self.store.next_alloc_page() == store_next_alloc_page0);
-                assert(self.state() == post_state.state);
-                assert(self.store_initialized);
-                assert(post_state.state.store == self.i_ephemeral_store());
-                assert(self.store.persistent_store_ptr_matches_alloc_au());
-                assert(self.state().prepared_store_ptr == pre_state.prepared_store_ptr);
-                assert(self.state().prepared_store_lsn == pre_state.prepared_store_lsn);
-                assert(pre_state.prepared_store_ptr == prepared_store_ptr_view0);
-                assert(pre_state.prepared_store_lsn == prepared_store_lsn_nat0);
                 self.store.prepared_store_ptr_view_ensures();
                 self.store.prepared_store_lsn_nat_ensures();
-                assert(self.prepared_store_ptr_view() == iaddr_view(prepared_store_ptr0));
-                assert(self.prepared_store_lsn_nat() == prepared_store_lsn0 as nat);
-                assert(self.state().prepared_store_ptr == self.prepared_store_ptr_view());
-                assert(self.state().prepared_store_lsn == self.prepared_store_lsn_nat());
                 self.store.prepared_store_ptr_has_alloc_au();
                 self.store.prepared_store_ptr_before_next_alloc();
                 self.store.persistent_store_ptr_has_alloc_au();
                 self.store.persistent_store_ptr_before_next_alloc();
                 self.store.store_addrs_are_alloc_au(None);
-                assert(self.in_flight is None);
-                assert(self.store_addrs() == self.store.store_addrs(None));
-                assert(self.state().cache == self.cache@);
-                assert(self.state().store == self.i_ephemeral_store());
-                assert(self.state().persistent_store_ptr == pre_state.persistent_store_ptr);
-                assert(pre_state.persistent_store_ptr == self.store.persistent_store_ptr_view());
-                assert(self.state().prepared_store_ptr == pre_state.prepared_store_ptr);
-                assert(self.state().prepared_store_lsn == pre_state.prepared_store_lsn);
-                assert(self.state().journal == self.journal@);
-                assert(self.cache.wf());
-                assert(self.store.wf());
-                assert(self.journal.alloc_au() == journal_alloc_au0);
-                assert(self.store_alloc_au() == store_alloc_au0);
-                assert(self.journal.alloc_au() != self.store_alloc_au());
-                assert(self.outstanding_requests_match_cache_reqs());
-                assert(self.outstanding_requests_wf());
-                assert(self.journal.seq_end() == self.store.store_lsn_nat());
-                assert(self.state().recovery_state is RecoveryComplete);
-                assert(self.state().in_flight is None);
-                assert(!self.sync_requests.in_flight());
                 self.store.store_addrs_none_matches_persistent_view();
                 self.state_store_addrs_match();
-                assert(self.inv_running());
-                assert(self.inv_api(api));
             }
         }
         true
@@ -6326,18 +5743,10 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
         let ghost store_alloc_au0 = self.store_alloc_au();
         let addr = self.journal.peek_next_addr();
         proof {
-            assert(self.journal@ == pre_journal_view);
-            assert(addr.au as nat == self.journal.alloc_au());
-            assert(self.journal.alloc_au() != self.store_alloc_au());
             assert(!self.store_addrs().contains(addr@)) by {
                 if self.store_addrs().contains(addr@) {
-                    assert(addr@.au == self.store_alloc_au());
-                    assert(addr@.au == addr.au as nat);
-                    assert(false);
                 }
             }
-            assert(pre_state.state.store_addrs() == self.store_addrs());
-            assert(!pre_state.state.store_addrs().contains(addr@));
             assume(!self.journal@.status.unwrap().lsn_addr_index.values().contains(addr@));
             assume(!pre_cache.entry_fetched(&addr));
         }
@@ -6377,16 +5786,12 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                 self.journal.advance_next_addr();
 
                 proof {
-                    assert(self.journal@ == pre_journal_view);
-                    assert(!self.journal@.status.unwrap().lsn_addr_index.values().contains(addr@));
                     self.system_inv_implies_atomic_state_wf();
                 }
 
                 let marshalled_end_now = self.journal.exec_marshaled_seq_end();
                 let seq_end_now = self.journal.exec_seq_end();
                 proof {
-                    assert(marshalled_end_now as nat == self.journal.marshalled_seq_end());
-                    assert(seq_end_now as nat == self.journal.seq_end());
                 }
                 if marshalled_end_now == seq_end_now {
                     Self::todo_placeholder();
@@ -6406,10 +5811,7 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                 proof {
                     let ghost pre_commit_state = self.model@.value();
                     tracked_swap(self.model.borrow_mut(), &mut model1);
-                    assert(pre_commit_state.state == post_reserve_state.state);
                     let event = InternalEvent::JournalMarshallStep{addr: addr@, raw_page};
-                    assert(pre_commit_state.state.store_addrs() == pre_state.state.store_addrs());
-                    assert(!pre_commit_state.state.store_addrs().contains(addr@));
                     assert(AtomicState::internal_transitions(
                         pre_commit_state.state,
                         post_commit_state.state,
@@ -6425,63 +5827,23 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
 
                 proof {
                     self.system_inv_implies_atomic_state_wf();
-                    assert(self.state() == post_commit_state.state);
-                    assert(self.state().cache == self.cache@);
-                    assert(self.state().store == self.i_ephemeral_store());
-                    assert(self.state().persistent_store_ptr == pre_state.state.persistent_store_ptr);
-                    assert(pre_state.state.persistent_store_ptr == self.store.persistent_store_ptr_view());
-                    assert(self.state().journal == self.journal@);
-                    assert(self.cache.wf());
-                    assert(self.store.wf());
-                    assert(self.journal.alloc_au() == journal_alloc_au0);
-                    assert(self.store_alloc_au() == store_alloc_au0);
-                    assert(self.journal.alloc_au() != self.store_alloc_au());
-                    assert(self.store_initialized);
-                    assert(self.store.persistent_store_ptr_matches_alloc_au());
                     self.store.prepared_store_ptr_has_alloc_au();
                     self.store.prepared_store_ptr_before_next_alloc();
                     self.store.persistent_store_ptr_has_alloc_au();
                     self.store.persistent_store_ptr_before_next_alloc();
                     let inflight_store_ptr = if self.in_flight is Some { self.in_flight.unwrap().store_ptr } else { None };
                     if inflight_store_ptr is Some {
-                        assert(inflight_store_ptr.unwrap().au as nat == self.store_alloc_au());
-                        assert((inflight_store_ptr.unwrap().page as nat) < self.store.next_alloc_page());
                     }
                     self.store.store_addrs_are_alloc_au(inflight_store_ptr);
                     self.state_store_addrs_match();
-                    assert(self.journal.index_ready());
-                    assert(self.state().recovery_state is RecoveryComplete);
-                    assert(self.journal.seq_end() == self.store.store_lsn_nat());
-                    assert(self.state().wf());
-                    assert(self.state().in_flight is Some <==> self.sync_requests.in_flight());
-                    assert(self.state().in_flight is Some <==> self.in_flight is Some);
                     if self.state().in_flight is Some {
-                        assert(self.in_flight is Some);
-                        assert(self.sync_requests.in_flight());
                         let sync_version = self.state().in_flight.unwrap().journal_version;
                         let new_persistent_map_version = self.in_flight.unwrap().new_boundary_lsn as nat;
-                        assert(self.journal.seq_start() <= new_persistent_map_version);
-                        assert(new_persistent_map_version <= sync_version);
                         self.journal.view_marshaled_seq_end_ensures();
                         self.journal.view_seq_end_ensures();
-                        assert(sync_version <= self.state().journal.marshalled_seq_end());
-                        assert(sync_version <= self.state().journal.seq_end());
-                        assert(self.state().journal.marshalled_seq_end() == self.journal.marshalled_seq_end());
-                        assert(self.state().journal.seq_end() == self.journal.seq_end());
-                        assert(sync_version <= self.journal.marshalled_seq_end());
-                        assert(sync_version <= self.journal.seq_end());
-                        assert(self.sync_reqs_in_version(self.sync_requests.superblocking_reqs@, sync_version));
-                        assert(self.in_flight.unwrap().new_boundary_lsn as nat == self.state().in_flight.unwrap().boundary_lsn);
-                        assert(self.in_flight.unwrap().new_persistent_lsn as nat == self.state().in_flight.unwrap().journal_version);
-                        assert(iaddr_view(self.in_flight.unwrap().store_ptr) == self.state().in_flight.unwrap().store_ptr);
                         if self.in_flight.unwrap().store_ptr is Some {
-                            assert(self.in_flight.unwrap().store_ptr.unwrap().au as nat == self.store_alloc_au());
-                            assert((self.in_flight.unwrap().store_ptr.unwrap().page as nat) < self.store.next_alloc_page());
                         }
                     }
-                    assert(self.sync_requests.wf(self.instance@.id()));
-                    assert(self.sync_reqs_in_version(self.sync_requests.buffered_reqs@, self.version()));
-                    assert(self.sync_requests.sync_target_lsn <= self.version());
                     assert(self.sync_reqs_in_version(
                         self.sync_requests.journal_cleaning_reqs@,
                         self.sync_requests.sync_target_lsn as nat,
@@ -6491,7 +5853,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                         self.sync_requests.journal_cleaning_reqs@,
                         self.sync_requests.buffered_reqs@,
                     ));
-                    assert(old(self).inv_running());
                     FracCacheImpl::valid_load_handles_preserved_transitive(
                         pre_cache,
                         cache_after_reserve,
@@ -6507,12 +5868,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                         pre_cache,
                         self.cache,
                     );
-                    assert(self.outstanding_requests_match_cache_reqs());
-                    assert(self.outstanding_requests_wf());
-                    assert(self.inv_running());
-                    assert(self.inv());
-                    assert(self.inv_api(api));
-                    assert(self.ready_for_user_operation());
                 }
                 JournalMarshalStepResult::Success{}
             }
