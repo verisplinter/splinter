@@ -16,7 +16,7 @@ pub mod JournalCoordinationRefinement_v;
 pub mod CachedBranch_v;
 pub mod ConcreteBranch_v;
 pub mod ConcreteBranchRefinement_v;
-// pub mod ConcreteBranchMapRefinement_v;
+pub mod ConcreteBranchMapRefinement_v;
 pub mod ConcreteJournal_v;
 pub mod ConcreteJournalRefinement_v;
 pub mod SystemModelTwo_v;

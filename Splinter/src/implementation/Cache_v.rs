@@ -556,7 +556,9 @@ state_machine!{ Cache {
             map.contains_pair(map.invert()[value], value),
     {
         assert(exists |key: K| map.contains_pair(key, value)) by {
-            let key = choose |key: K| map.contains_key(key) && map[key] == value;
+            let key = choose |key: K|
+                #![trigger map[key]]
+                map.contains_key(key) && map[key] == value;
             assert(map.contains_pair(key, value));
         }
         let key = choose |key: K| map.contains_pair(key, value);
@@ -1056,7 +1058,9 @@ state_machine!{ Cache {
         }
         assert(updated_status_map.dom() <= pre.status_map.dom()) by {
             assert forall |slot| #[trigger] updated_status_map.contains_key(slot) implies pre.status_map.contains_key(slot) by {
-                let req = choose |req: DiskRequest| lbl->requests.contains(req) && pre.lookup_map[req->to] == slot;
+                let req = choose |req: DiskRequest|
+                    #![trigger lbl->requests.contains(req)]
+                    lbl->requests.contains(req) && pre.lookup_map[req->to] == slot;
                 assert(pre.valid_writeback_requests(lbl->requests));
                 assert(pre.lookup_map.contains_key(req->to));
                 assert(pre.lookup_map[req->to] == slot);
@@ -1115,7 +1119,9 @@ state_machine!{ Cache {
         }
         assert(updated_status_map.dom() <= pre.status_map.dom()) by {
             assert forall |slot| #[trigger] updated_status_map.contains_key(slot) implies pre.status_map.contains_key(slot) by {
-                let addr = choose |addr: Address| lbl->responses.contains_key(addr) && pre.lookup_map[addr] == slot;
+                let addr = choose |addr: Address|
+                    #![trigger pre.lookup_map[addr]]
+                    lbl->responses.contains_key(addr) && pre.lookup_map[addr] == slot;
                 assert(pre.valid_writeback_responses(lbl->responses));
                 assert(pre.lookup_map.contains_key(addr));
                 assert(pre.lookup_map[addr] == slot);
@@ -1231,7 +1237,9 @@ state_machine!{ Cache {
                 assert(pre.lookup_map[addr] == slot);
                 assert(!evicted_addrs.contains(addr)) by {
                     if evicted_addrs.contains(addr) {
-                        let s = choose |s: Slot| evicted_slots.contains(s) && pre.entries[s].get_addr() == addr;
+                        let s = choose |s: Slot|
+                            #![trigger evicted_slots.contains(s)]
+                            evicted_slots.contains(s) && pre.entries[s].get_addr() == addr;
                         assert(pre.non_empty_slot(s));
                         assert(pre.non_empty_slot(slot));
                         assert(pre.entries[s].get_addr() == pre.entries[slot].get_addr());

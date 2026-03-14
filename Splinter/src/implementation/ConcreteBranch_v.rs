@@ -49,7 +49,9 @@ pub proof fn invert_contains_pair<K, V>(map: Map<K, V>, value: V)
         map.contains_pair(map.invert()[value], value),
 {
     assert(exists |key: K| map.contains_pair(key, value)) by {
-        let key = choose |key: K| map.contains_key(key) && map[key] == value;
+        let key = choose |key: K|
+            #![trigger map[key]]
+            map.contains_key(key) && map[key] == value;
         assert(map.contains_pair(key, value));
     }
     let key = choose |key: K| map.contains_pair(key, value);
@@ -382,13 +384,6 @@ state_machine!{ ConcreteBranch {
                 assert(false);
             }
             assert forall |id: ID| #[trigger] post.disk.responses.contains_key(id) implies post.outstanding_reqs_responses_ok() by {
-                assert(false);
-            }
-            assert forall |id: ID|
-                #![trigger post.disk.requests.contains_key(id)]
-                #![trigger post.disk.responses.contains_key(id)]
-                (post.disk.requests.contains_key(id) || post.disk.responses.contains_key(id))
-                implies post.io_id_valid(id) by {
                 assert(false);
             }
         }
@@ -1038,6 +1033,7 @@ impl ConcreteBranch::State {
                 assert(!updated_entries.contains_key(slot)) by {
                     if updated_entries.contains_key(slot) {
                         let write_addr = choose |write_addr: Address|
+                            #![trigger pre.cache.lookup_map.restrict(writes.dom())[write_addr]]
                             pre.cache.lookup_map.restrict(writes.dom()).contains_key(write_addr)
                             && pre.cache.lookup_map.restrict(writes.dom())[write_addr] == slot;
                         assert(pre.cache.lookup_map.contains_key(write_addr));
@@ -1051,6 +1047,7 @@ impl ConcreteBranch::State {
                 assert(!updated_status_map.contains_key(slot)) by {
                     if updated_status_map.contains_key(slot) {
                         let write_addr = choose |write_addr: Address|
+                            #![trigger pre.cache.lookup_map.restrict(writes.dom())[write_addr]]
                             pre.cache.lookup_map.restrict(writes.dom()).contains_key(write_addr)
                             && pre.cache.lookup_map.restrict(writes.dom())[write_addr] == slot;
                         assert(pre.cache.lookup_map.contains_key(write_addr));
@@ -1104,6 +1101,7 @@ impl ConcreteBranch::State {
                 assert(!updated_entries.contains_key(slot)) by {
                     if updated_entries.contains_key(slot) {
                         let write_addr = choose |write_addr: Address|
+                            #![trigger pre.cache.lookup_map.restrict(writes.dom())[write_addr]]
                             pre.cache.lookup_map.restrict(writes.dom()).contains_key(write_addr)
                             && pre.cache.lookup_map.restrict(writes.dom())[write_addr] == slot;
                         assert(pre.cache.lookup_map.restrict(writes.dom()).contains_key(write_addr));
@@ -1118,6 +1116,7 @@ impl ConcreteBranch::State {
                 assert(!updated_status_map.contains_key(slot)) by {
                     if updated_status_map.contains_key(slot) {
                         let write_addr = choose |write_addr: Address|
+                            #![trigger pre.cache.lookup_map.restrict(writes.dom())[write_addr]]
                             pre.cache.lookup_map.restrict(writes.dom()).contains_key(write_addr)
                             && pre.cache.lookup_map.restrict(writes.dom())[write_addr] == slot;
                         assert(pre.cache.lookup_map.restrict(writes.dom()).contains_key(write_addr));
@@ -1172,6 +1171,7 @@ impl ConcreteBranch::State {
                 assert(!updated_entries.contains_key(slot)) by {
                     if updated_entries.contains_key(slot) {
                         let write_addr = choose |write_addr: Address|
+                            #![trigger pre.cache.lookup_map.restrict(writes.dom())[write_addr]]
                             pre.cache.lookup_map.restrict(writes.dom()).contains_key(write_addr)
                             && pre.cache.lookup_map.restrict(writes.dom())[write_addr] == slot;
                         assert(pre.cache.lookup_map.contains_key(write_addr));
@@ -1185,6 +1185,7 @@ impl ConcreteBranch::State {
                 assert(!updated_status_map.contains_key(slot)) by {
                     if updated_status_map.contains_key(slot) {
                         let write_addr = choose |write_addr: Address|
+                            #![trigger pre.cache.lookup_map.restrict(writes.dom())[write_addr]]
                             pre.cache.lookup_map.restrict(writes.dom()).contains_key(write_addr)
                             && pre.cache.lookup_map.restrict(writes.dom())[write_addr] == slot;
                         assert(pre.cache.lookup_map.contains_key(write_addr));
@@ -2067,6 +2068,7 @@ impl ConcreteBranch::State {
                 assert(post.cache.lookup_map == pre.cache.lookup_map);
                 if slot_addr_map.contains_key(slot) {
                     let resp_addr = choose |resp_addr: Address|
+                        #![trigger pre.cache.lookup_map.restrict(cache_responses.dom())[resp_addr]]
                         pre.cache.lookup_map.restrict(cache_responses.dom()).contains_key(resp_addr)
                         && pre.cache.lookup_map.restrict(cache_responses.dom())[resp_addr] == slot;
                     assert(pre.cache.lookup_map.contains_key(resp_addr));
@@ -2103,7 +2105,9 @@ impl ConcreteBranch::State {
                 assert(post.cache.entries == pre.cache.entries);
                 assert(post.cache.status_map == pre.cache.status_map.union_prefer_right(updated_status_map));
                 if writeback_slots.contains(slot) {
-                    let req = choose |req: DiskRequest| cache_requests.contains(req) && pre.cache.lookup_map[req->to] == slot;
+                    let req = choose |req: DiskRequest|
+                        #![trigger cache_requests.contains(req)]
+                        cache_requests.contains(req) && pre.cache.lookup_map[req->to] == slot;
                     assert(cache_requests.contains(req));
                     assert(pre.cache.lookup_map[req->to] == slot);
                     pre.cache.build_lookup_map_ensures();
@@ -2135,6 +2139,7 @@ impl ConcreteBranch::State {
                 assert(post.cache.status_map == pre.cache.status_map.union_prefer_right(updated_status_map));
                 if resp_slots.contains(slot) {
                     let resp_addr = choose |resp_addr: Address|
+                        #![trigger pre.cache.lookup_map.restrict(cache_responses.dom())[resp_addr]]
                         pre.cache.lookup_map.restrict(cache_responses.dom()).contains_key(resp_addr)
                         && pre.cache.lookup_map.restrict(cache_responses.dom())[resp_addr] == slot;
                     assert(pre.cache.lookup_map.contains_key(resp_addr));
@@ -2307,6 +2312,7 @@ impl ConcreteBranch::State {
                     } else {
                         if slot_addr_map.contains_key(slot) {
                             let resp_addr = choose |resp_addr: Address|
+                                #![trigger pre.cache.lookup_map.restrict(cache_responses.dom())[resp_addr]]
                                 pre.cache.lookup_map.restrict(cache_responses.dom()).contains_key(resp_addr)
                                 && pre.cache.lookup_map.restrict(cache_responses.dom())[resp_addr] == slot;
                             assert(pre.cache.lookup_map.contains_key(resp_addr));
@@ -2412,6 +2418,7 @@ impl ConcreteBranch::State {
                     } else {
                         if resp_slots.contains(slot) {
                             let resp_addr = choose |resp_addr: Address|
+                                #![trigger pre.cache.lookup_map.restrict(cache_responses.dom())[resp_addr]]
                                 pre.cache.lookup_map.restrict(cache_responses.dom()).contains_key(resp_addr)
                                 && pre.cache.lookup_map.restrict(cache_responses.dom())[resp_addr] == slot;
                             assert(pre.cache.lookup_map.contains_key(resp_addr));
@@ -2679,7 +2686,9 @@ impl ConcreteBranch::State {
                 };
                 assert forall |req2: DiskRequest| #[trigger] cache_requests.contains(req2) implies req2.addr() != addr by {
                     assert(cache_requests.contains(req2));
-                    let req_id = choose |req_id: ID| disk_requests.contains_key(req_id) && disk_requests[req_id] == req2;
+                    let req_id = choose |req_id: ID|
+                        #![trigger disk_requests[req_id]]
+                        disk_requests.contains_key(req_id) && disk_requests[req_id] == req2;
                     let request_addr_map = Map::new(
                         |id: ID| disk_requests.contains_key(id),
                         |id: ID| disk_requests[id].addr(),
@@ -2741,7 +2750,9 @@ impl ConcreteBranch::State {
             };
             assert forall |req2: DiskRequest| #[trigger] cache_requests.contains(req2) implies req2.addr() != addr by {
                 assert(cache_requests.contains(req2));
-                let req_id = choose |req_id: ID| disk_requests.contains_key(req_id) && disk_requests[req_id] == req2;
+                let req_id = choose |req_id: ID|
+                    #![trigger disk_requests[req_id]]
+                    disk_requests.contains_key(req_id) && disk_requests[req_id] == req2;
                 let request_addr_map = Map::new(
                     |id: ID| disk_requests.contains_key(id),
                     |id: ID| disk_requests[id].addr(),
@@ -2860,7 +2871,9 @@ impl ConcreteBranch::State {
                     };
                     assert forall |req2: DiskRequest| #[trigger] cache_requests.contains(req2) implies req2.addr() != addr by {
                         if cache_requests.contains(req2) {
-                            let req_id = choose |req_id: ID| disk_requests.contains_key(req_id) && disk_requests[req_id] == req2;
+                            let req_id = choose |req_id: ID|
+                                #![trigger disk_requests[req_id]]
+                                disk_requests.contains_key(req_id) && disk_requests[req_id] == req2;
                             let request_addr_map = Map::new(
                                 |id: ID| disk_requests.contains_key(id),
                                 |id: ID| disk_requests[id].addr(),
@@ -2901,7 +2914,9 @@ impl ConcreteBranch::State {
                 };
                 assert forall |req2: DiskRequest| #[trigger] cache_requests.contains(req2) implies req2.addr() != addr by {
                     if cache_requests.contains(req2) {
-                        let req_id = choose |req_id: ID| disk_requests.contains_key(req_id) && disk_requests[req_id] == req2;
+                        let req_id = choose |req_id: ID|
+                            #![trigger disk_requests[req_id]]
+                            disk_requests.contains_key(req_id) && disk_requests[req_id] == req2;
                         let request_addr_map = Map::new(
                             |id: ID| disk_requests.contains_key(id),
                             |id: ID| disk_requests[id].addr(),
