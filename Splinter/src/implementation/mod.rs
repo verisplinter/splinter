@@ -11,6 +11,12 @@ pub mod ILsnAddrIndex_v;
 pub mod JournalImpl_v; // copy of LikesJournal_v
 pub mod JournalCoordinationSystem_v;
 pub mod JournalCoordinationRefinement_v;
+// pub mod BranchImpl_v;
+// pub mod AllocationBranchImpl_v;
+pub mod CachedBranch_v;
+pub mod ConcreteBranch_v;
+pub mod ConcreteBranchRefinement_v;
+// pub mod ConcreteBranchMapRefinement_v;
 pub mod ConcreteJournal_v;
 pub mod ConcreteJournalRefinement_v;
 pub mod SystemModelTwo_v;

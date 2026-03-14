@@ -1,7 +1,6 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
 use vstd::prelude::*;
-
 //use vstd::prelude_macros::*;
 
 use vstd::prelude::*;
@@ -646,8 +645,34 @@ pub proof fn lemma_interpretation_subset_of_all_keys(node: Node)
         node.i().map.dom().subset_of(node.all_keys()),
     decreases node,
 {
-    if (node is Index) {
-        assume(node.i().map.dom().subset_of(node.all_keys())); // TODO(jonh): repair proof decay with verus version evolution
+    if node is Leaf {
+        let keys = node->keys;
+        assert forall |key: Key|
+            #[trigger] node.i().map.contains_key(key)
+            implies node.all_keys().contains(key)
+        by {
+            assert(keys.contains(key));
+        };
+    } else {
+        let children = node->children;
+        let pivots = node->pivots;
+        lemma_i_unfoldable(node);
+        assert forall |key: Key|
+            #[trigger] node.i().map.contains_key(key)
+            implies node.all_keys().contains(key)
+        by {
+            let r = node.route(key);
+            Node::route_ensures(node, key);
+            assert(0 <= r + 1 < children.len());
+            lemma_i_contains_implies_routed_child_contains(node, key);
+            lemma_interpretation_subset_of_all_keys(children[r+1]);
+            assert(children[r+1].all_keys().contains(key));
+            assert(node.children_keys().contains(key)) by {
+                assert(exists |i| 0 <= i < children.len()
+                    && (#[trigger] children[i]).all_keys().contains(key));
+            };
+            assert(node.all_keys().contains(key));
+        };
     }
 }
 
@@ -697,6 +722,74 @@ pub proof fn query_refines(pre: Node, lbl: QueryLabel)
     }
 }
 
+pub proof fn query_refines_to_routed_child(pre: Node, lbl: QueryLabel)
+    requires
+        pre.wf(),
+        pre is Index,
+        pre.query(lbl.key) == lbl.msg,
+    ensures
+        pre->children[pre.route(lbl.key) + 1].i().query(lbl.key) == lbl.msg,
+    decreases pre,
+{
+    let r = pre.route(lbl.key);
+    if pre is Index {
+        let pivots = pre->pivots;
+        let children = pre->children;
+        assert(children[r+1].wf());
+        assert(children[r+1].query(lbl.key) == lbl.msg);
+        query_refines(children[r+1], lbl);
+    }
+}
+
+pub proof fn lemma_i_unfoldable(node: Node)
+    requires
+        node.wf(),
+        node is Index,
+    ensures
+        forall |key: Key| 0 <= #[trigger] node.route(key) + 1 < node->children.len(),
+{
+    let children = node->children;
+    assert forall |key: Key| 0 <= #[trigger] node.route(key) + 1 < children.len() by {
+        Node::route_ensures(node, key);
+    };
+}
+
+pub proof fn lemma_i_contains_implies_routed_child_contains(node: Node, key: Key)
+    requires
+        node.wf(),
+        node is Index,
+        node.i().map.contains_key(key),
+    ensures
+        node->children[node.route(key) + 1].i().map.contains_key(key),
+{
+    let children = node->children;
+    let pivots = node->pivots;
+    let r = node.route(key);
+    Node::route_ensures(node, key);
+    Key::strictly_sorted_implies_sorted(pivots);
+    assert(0 <= r + 1 < children.len());
+    assert(children[r+1].wf());
+}
+
+pub proof fn contains_refines_to_routed_child(pre: Node, key: Key, result: bool)
+    requires
+        pre.wf(),
+        pre is Index,
+        pre.contains(key) == result,
+    ensures
+        pre->children[pre.route(key) + 1].contains(key) == result,
+    decreases pre,
+{
+    let children = pre->children;
+    let r = pre.route(key);
+    Node::route_ensures(pre, key);
+    assert(0 <= r + 1 < children.len());
+    if children[r+1] is Index {
+        assert(children[r+1].wf());
+        contains_refines_to_routed_child(children[r+1], key, result);
+    }
+}
+
 pub proof fn contains_refines(pre: Node, key: Key, result: bool)
     requires
         pre.wf(),
@@ -705,7 +798,45 @@ pub proof fn contains_refines(pre: Node, key: Key, result: bool)
         pre.i().map.contains_key(key) == result
     decreases pre
 {
-    assume(pre.i().map.contains_key(key) == result); // TODO(jonh): repair proof decay with verus version evolution
+    let r = pre.route(key);
+    if pre is Leaf {
+        let keys = pre->keys;
+        Node::route_ensures(pre, key);
+        assert(pre.i().map.contains_key(key) == keys.contains(key));
+        if result {
+            assert(0 <= r && keys[r] == key);
+            assert(keys.contains(key));
+        } else {
+            assert(!(0 <= r && keys[r] == key));
+            if keys.contains(key) {
+                let i = keys.index_of(key);
+                assert(0 <= i < keys.len());
+                assert(keys[i] == key);
+                Key::largest_lte_is_lemma(keys, key, i);
+                assert(r == i);
+                assert(0 <= r && keys[r] == key);
+            }
+            assert(!keys.contains(key));
+        }
+    } else {
+        let children = pre->children;
+        Node::route_ensures(pre, key);
+        lemma_i_unfoldable(pre);
+        assert(0 <= r + 1 < children.len());
+        contains_refines_to_routed_child(pre, key, result);
+        assert(children[r+1].contains(key) == result);
+        contains_refines(children[r+1], key, result);
+        if result {
+            assert(children[r+1].i().map.contains_key(key));
+            assert(pre.i().map.contains_key(key));
+        } else {
+            assert(!children[r+1].i().map.contains_key(key));
+            if pre.i().map.contains_key(key) {
+                lemma_i_contains_implies_routed_child_contains(pre, key);
+                assert(false);
+            }
+        }
+    }
 }
 
 pub proof fn lemma_insert_inserts_to_all_keys(node: Node, key: Key, msg: Message, path: Path)
@@ -1241,10 +1372,9 @@ ensures
             if (children[r+1] is Leaf) {
                 let c_keys = children[r+1]->keys;
                 let split_index = Key::largest_lt(c_keys, pivot) + 1;
-
-
-                assume(Key::is_strictly_sorted(c_keys)); // TODO(jonh): repair proof decay with verus version evolution
-                assume(Key::is_sorted(c_keys)); // TODO(jonh): repair proof decay with verus version evolution
+                assert(children[r+1].wf());
+                assert(Key::is_strictly_sorted(c_keys));
+                Key::strictly_sorted_implies_sorted(c_keys);
                 Key::largest_lt_ensures(c_keys, pivot, Key::largest_lt(c_keys, pivot));
 
                 // by all_keys_below_bound

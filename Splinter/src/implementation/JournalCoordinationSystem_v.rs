@@ -386,7 +386,7 @@ impl JournalCoordinationSystem::State {
     }
 }
 
-/// Helper: from cache.inv(), lookup_map[addr] gives a Filled slot whose get_addr() == addr.
+/// Helper: from cache.inv(), lookup_map[addr] points to a non-empty slot whose get_addr() == addr.
 /// Derives from cache.inv() => lookup_map == build_lookup_map(), proven via build_lookup_map_ensures.
 proof fn cache_lookup_gets_addr(cache: Cache::State, addr: Address)
     requires
@@ -394,7 +394,6 @@ proof fn cache_lookup_gets_addr(cache: Cache::State, addr: Address)
         cache.lookup_map.contains_key(addr),
     ensures
         cache.entries.contains_key(cache.lookup_map[addr]),
-        cache.entries[cache.lookup_map[addr]] is Filled,
         cache.entries[cache.lookup_map[addr]].get_addr() == addr,
 {
     cache.build_lookup_map_ensures();

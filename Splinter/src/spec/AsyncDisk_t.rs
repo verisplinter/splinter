@@ -254,4 +254,84 @@ state_machine!{ AsyncDisk {
     fn crash_inductive(pre: Self, post: Self, lbl: Label) { }
 }}
 
+pub proof fn inv_next(pre: AsyncDisk::State, post: AsyncDisk::State, lbl: AsyncDisk::Label)
+    requires
+        pre.inv(),
+        AsyncDisk::State::next(pre, post, lbl),
+    ensures
+        post.inv(),
+{
+    reveal(AsyncDisk::State::next);
+    reveal(AsyncDisk::State::next_by);
+    let step = choose |step| AsyncDisk::State::next_by(pre, post, lbl, step);
+    match step {
+        AsyncDisk::Step::disk_ops() => {
+            assert(post.requests == pre.requests.union_prefer_right(lbl->requests));
+            assert(post.responses == pre.responses.remove_keys(lbl->responses.dom()));
+            assert forall |id: ID| #[trigger] post.requests.contains_key(id) implies !post.responses.contains_key(id) by {
+                if pre.requests.contains_key(id) {
+                    assert(!pre.responses.contains_key(id));
+                } else {
+                    assert(lbl is DiskOps);
+                    assert(lbl->requests.contains_key(id));
+                    assert(!pre.responses.contains_key(id));
+                }
+            };
+            assert(post.inv());
+        }
+        AsyncDisk::Step::process_read(id) => {
+            assert(post.requests == pre.requests.remove(id));
+            assert(post.responses == pre.responses.insert(id, post.responses[id]));
+            assert forall |id2: ID| #[trigger] post.requests.contains_key(id2) implies !post.responses.contains_key(id2) by {
+                if id2 == id {
+                    assert(!post.requests.contains_key(id));
+                } else {
+                    vstd::map::axiom_map_remove_different(pre.requests, id2, id);
+                    vstd::map::axiom_map_insert_domain(pre.responses, id, post.responses[id]);
+                    vstd::map::axiom_map_insert_different(pre.responses, id2, id, post.responses[id]);
+                    assert(pre.requests.contains_key(id2));
+                    if post.responses.contains_key(id2) {
+                        assert(post.responses.dom().contains(id2));
+                        assert(pre.responses.dom().insert(id).contains(id2));
+                        vstd::set::axiom_set_insert_different(pre.responses.dom(), id2, id);
+                        assert(pre.responses.dom().contains(id2));
+                        assert(pre.responses.contains_key(id2));
+                    }
+                    assert(!pre.responses.contains_key(id2));
+                }
+            };
+            assert(post.inv());
+        }
+        AsyncDisk::Step::process_write(id) => {
+            assert(post.requests == pre.requests.remove(id));
+            assert(post.responses == pre.responses.insert(id, DiskResponse::WriteResp{}));
+            assert forall |id2: ID| #[trigger] post.requests.contains_key(id2) implies !post.responses.contains_key(id2) by {
+                if id2 == id {
+                    assert(!post.requests.contains_key(id));
+                } else {
+                    vstd::map::axiom_map_remove_different(pre.requests, id2, id);
+                    vstd::map::axiom_map_insert_domain(pre.responses, id, DiskResponse::WriteResp{});
+                    vstd::map::axiom_map_insert_different(pre.responses, id2, id, DiskResponse::WriteResp{});
+                    assert(pre.requests.contains_key(id2));
+                    if post.responses.contains_key(id2) {
+                        assert(post.responses.dom().contains(id2));
+                        assert(pre.responses.dom().insert(id).contains(id2));
+                        vstd::set::axiom_set_insert_different(pre.responses.dom(), id2, id);
+                        assert(pre.responses.dom().contains(id2));
+                        assert(pre.responses.contains_key(id2));
+                    }
+                    assert(!pre.responses.contains_key(id2));
+                }
+            };
+            assert(post.inv());
+        }
+        AsyncDisk::Step::crash() => {
+            assert(post.requests == Map::<ID, DiskRequest>::empty());
+            assert(post.responses == Map::<ID, DiskResponse>::empty());
+            assert(post.inv());
+        }
+        _ => { assert(false); }
+    }
+}
+
 } // end of !verus
