@@ -15,6 +15,9 @@ use crate::betree::LinkedBranch_v::{LinkedBranch, Path as BranchPath, SplitArg};
 use crate::disk::GenericDisk_v::{AU, Address, Pointer};
 use crate::implementation::Cache_v::{Cache, Entry, Status};
 use crate::implementation::CachedBranch_v::{CachedBranch, init_mini_allocator};
+use crate::implementation::IBranchNode_v::branch_node_image;
+use crate::marshalling::IBranchNodeFormat_v::{raw_page_to_branch_node, BranchNodePageFmt};
+use crate::marshalling::Marshalling_v::Marshal;
 use crate::spec::AsyncDisk_t::{AsyncDisk, DiskRequest, DiskResponse, RawPage};
 use crate::spec::KeyType_t::Key;
 use crate::spec::MapSpec_t::ID;
@@ -22,16 +25,20 @@ use crate::spec::Messages_t::Message;
 
 verus! {
 
-// TODO: replace this placeholder with a real branch-page marshaller/parser.
 pub open spec fn encode_branch_page(node: AllocationBranchNode) -> RawPage
 {
-    arbitrary()
+    let fmt = BranchNodePageFmt::spec_new();
+    if fmt.marshallable(branch_node_image(node)) {
+        choose |raw_page: RawPage|
+            fmt.parsable(raw_page) && fmt.parse(raw_page) == branch_node_image(node)
+    } else {
+        arbitrary()
+    }
 }
 
-// TODO: replace this placeholder with a real branch-page marshaller/parser.
 pub open spec fn decode_branch_page(raw_page: RawPage) -> AllocationBranchNode
 {
-    arbitrary()
+    raw_page_to_branch_node(raw_page)
 }
 
 pub open spec fn to_branch_nodes(raw_pages: Map<Address, RawPage>) -> Map<Address, AllocationBranchNode>
@@ -52,13 +59,10 @@ pub proof fn invert_contains_pair<K, V>(map: Map<K, V>, value: V)
         let key = choose |key: K|
             #![trigger map[key]]
             map.contains_key(key) && map[key] == value;
-        assert(map.contains_pair(key, value));
+        assert(map.contains_pair(key, value)); // trigger
     }
     let key = choose |key: K| map.contains_pair(key, value);
-    assert(map.contains_pair(key, value));
     reveal(Map::invert);
-    assert(map.invert()[value] == key);
-    assert(map.contains_pair(map.invert()[value], value));
 }
 
 pub proof fn remove_keys_preserves_unremoved<K, V>(base: Map<K, V>, keys: Set<K>, key: K)
@@ -69,8 +73,6 @@ pub proof fn remove_keys_preserves_unremoved<K, V>(base: Map<K, V>, keys: Set<K>
         base.remove_keys(keys).contains_key(key),
         base.remove_keys(keys)[key] == base[key],
 {
-    assert(base.remove_keys(keys).contains_key(key));
-    assert(base.remove_keys(keys)[key] == base[key]);
 }
 
 pub proof fn remove_keys_removes_removed<K, V>(base: Map<K, V>, keys: Set<K>, key: K)
@@ -79,7 +81,6 @@ pub proof fn remove_keys_removes_removed<K, V>(base: Map<K, V>, keys: Set<K>, ke
     ensures
         !base.remove_keys(keys).contains_key(key),
 {
-    assert(!base.remove_keys(keys).contains_key(key));
 }
 
 pub proof fn remove_keys_preserves_injective<K, V>(base: Map<K, V>, keys: Set<K>)
@@ -95,11 +96,6 @@ pub proof fn remove_keys_preserves_injective<K, V>(base: Map<K, V>, keys: Set<K>
         && reduced.contains_key(k2)
         implies #[trigger] reduced[k1] != #[trigger] reduced[k2]
     by {
-        assert(base.contains_key(k1));
-        assert(base.contains_key(k2));
-        assert(reduced[k1] == base[k1]);
-        assert(reduced[k2] == base[k2]);
-        assert(base[k1] != base[k2]);
     }
 }
 
@@ -111,8 +107,6 @@ pub proof fn union_prefer_right_uses_left<K, V>(left: Map<K, V>, right: Map<K, V
         left.union_prefer_right(right).contains_key(key),
         left.union_prefer_right(right)[key] == left[key],
 {
-    assert(left.union_prefer_right(right).contains_key(key));
-    assert(left.union_prefer_right(right)[key] == left[key]);
 }
 
 pub proof fn union_prefer_right_uses_right<K, V>(left: Map<K, V>, right: Map<K, V>, key: K)
@@ -122,8 +116,6 @@ pub proof fn union_prefer_right_uses_right<K, V>(left: Map<K, V>, right: Map<K, 
         left.union_prefer_right(right).contains_key(key),
         left.union_prefer_right(right)[key] == right[key],
 {
-    assert(left.union_prefer_right(right).contains_key(key));
-    assert(left.union_prefer_right(right)[key] == right[key]);
 }
 
 pub open spec fn init_has_projected_page(disk: AsyncDisk::State, addr: Address) -> bool
@@ -251,6 +243,7 @@ state_machine!{ ConcreteBranch {
     ) {
         require let Label::Grow{new_root_addr} = lbl;
         require pre.wf();
+        require !pre.available_branch_nodes().contains_key(new_root_addr);
         let read_nodes = to_branch_nodes(reads);
         let write_nodes = to_branch_nodes(writes);
         require pre.cached_branch.can_grow(pre.mini_allocator, new_root_addr, read_nodes, write_nodes);
@@ -274,6 +267,7 @@ state_machine!{ ConcreteBranch {
     ) {
         require let Label::Split{new_child_addr, pivot, depth, split_arg} = lbl;
         require pre.wf();
+        require !pre.available_branch_nodes().contains_key(new_child_addr);
         let read_nodes = to_branch_nodes(reads);
         let write_nodes = to_branch_nodes(writes);
         require pre.cached_branch.can_split(pre.mini_allocator, new_child_addr, pivot, depth, split_arg, read_nodes, write_nodes, needed);
@@ -296,6 +290,7 @@ state_machine!{ ConcreteBranch {
     ) {
         require let Label::Seal{aux_ptr} = lbl;
         require pre.wf();
+        require aux_ptr is Some ==> !pre.available_branch_nodes().contains_key(aux_ptr.unwrap());
         let read_nodes = to_branch_nodes(reads);
         let write_nodes = to_branch_nodes(writes);
         require pre.cached_branch.can_seal(pre.mini_allocator, aux_ptr, read_nodes, write_nodes);
@@ -644,6 +639,15 @@ impl ConcreteBranch::State {
         to_branch_nodes(self.available_raw_pages())
     }
 
+    pub open spec fn follow_aux_ptr_at(self, addr: Address, node: AllocationBranchNode) -> bool
+    {
+        &&& self.cached_branch.sealed
+        &&& self.cached_branch.root is Some
+        &&& addr == self.cached_branch.root.unwrap()
+        &&& node is Index
+        &&& node->aux_ptr is Some
+    }
+
     pub open spec(checked) fn reachable_branch_addrs_from_with_fuel_contains(self, addr: Address, fuel: nat, a: Address) -> bool
         decreases fuel, 1nat
     {
@@ -655,7 +659,7 @@ impl ConcreteBranch::State {
                 a == addr
             } else {
                 ||| a == addr
-                ||| node->aux_ptr is Some
+                ||| self.follow_aux_ptr_at(addr, node)
                     && self.reachable_branch_addrs_from_with_fuel_contains(node->aux_ptr.unwrap(), (fuel - 1) as nat, a)
                 ||| exists |i: int|
                     0 <= i < node->children.len()
@@ -670,7 +674,7 @@ impl ConcreteBranch::State {
         Set::new(|a: Address| self.reachable_branch_addrs_from_with_fuel_contains(addr, fuel, a))
     }
 
-    pub open spec fn effective_branch_addrs(self) -> Set<Address>
+    pub open spec fn overlay_branch_addrs(self) -> Set<Address>
     {
         if self.cached_branch.root is Some {
             self.reachable_branch_addrs_from_with_fuel(
@@ -693,7 +697,7 @@ impl ConcreteBranch::State {
                 <==> {
                     let node = self.available_branch_nodes()[addr];
                     ||| a == addr
-                    ||| node->aux_ptr is Some
+                    ||| self.follow_aux_ptr_at(addr, node)
                         && self.reachable_branch_addrs_from_with_fuel_contains(node->aux_ptr.unwrap(), (fuel - 1) as nat, a)
                     ||| exists |i: int|
                         0 <= i < node->children.len()
@@ -706,7 +710,7 @@ impl ConcreteBranch::State {
             <==> {
                 let node = self.available_branch_nodes()[addr];
                 ||| a == addr
-                ||| node->aux_ptr is Some
+                ||| self.follow_aux_ptr_at(addr, node)
                     && self.reachable_branch_addrs_from_with_fuel_contains(node->aux_ptr.unwrap(), (fuel - 1) as nat, a)
                 ||| exists |i: int|
                     0 <= i < node->children.len()
@@ -716,7 +720,7 @@ impl ConcreteBranch::State {
 
     pub open spec fn reserved_branch_addrs(self) -> Set<Address>
     {
-        self.effective_branch_addrs()
+        self.overlay_branch_addrs()
     }
 
     pub open spec fn has_cached_page(self, addr: Address) -> bool
@@ -746,13 +750,13 @@ impl ConcreteBranch::State {
         )
     }
 
-    pub open spec fn has_effective_page(self, addr: Address) -> bool
+    pub open spec fn has_overlay_page(self, addr: Address) -> bool
     {
-        self.effective_branch_addrs().contains(addr)
+        self.overlay_branch_addrs().contains(addr)
     }
 
-    pub open spec fn effective_raw_page(self, addr: Address) -> RawPage
-        recommends self.has_effective_page(addr)
+    pub open spec fn overlay_raw_page(self, addr: Address) -> RawPage
+        recommends self.has_overlay_page(addr)
     {
         if self.has_cached_page(addr) {
             self.cache_raw_page(addr)
@@ -761,20 +765,20 @@ impl ConcreteBranch::State {
         }
     }
 
-    pub open spec fn effective_branch_entries(self) -> Map<Address, AllocationBranchNode>
+    pub open spec fn overlay_branch_entries(self) -> Map<Address, AllocationBranchNode>
     {
         to_branch_nodes(Map::new(
-            |addr: Address| self.has_effective_page(addr),
-            |addr: Address| self.effective_raw_page(addr),
+            |addr: Address| self.has_overlay_page(addr),
+            |addr: Address| self.overlay_raw_page(addr),
         ))
     }
 
-    pub open spec fn effective_branch(self) -> Option<LinkedBranch<Summary>>
+    pub open spec fn overlay_branch(self) -> Option<LinkedBranch<Summary>>
     {
         match self.cached_branch.root {
             Some(root) => Some(LinkedBranch {
                 root,
-                disk_view: crate::betree::LinkedBranch_v::DiskView { entries: self.effective_branch_entries() },
+                disk_view: crate::betree::LinkedBranch_v::DiskView { entries: self.overlay_branch_entries() },
             }),
             None => None,
         }
@@ -940,8 +944,6 @@ impl ConcreteBranch::State {
             mini_allocator.allocate(addr).wf(),
             mini_allocator.allocate(addr).all_aus() == mini_allocator.all_aus(),
     {
-        assert(mini_allocator.allocs.contains_key(addr.au));
-        assert(mini_allocator.allocate(addr).allocs.dom() == mini_allocator.allocs.dom());
     }
 
     proof fn mini_allocator_prune_empty_preserves_wf_and_aus(
@@ -953,7 +955,6 @@ impl ConcreteBranch::State {
             mini_allocator.prune(Set::<AU>::empty()).wf(),
             mini_allocator.prune(Set::<AU>::empty()).all_aus() == mini_allocator.all_aus(),
     {
-        assert(mini_allocator.prune(Set::<AU>::empty()).allocs.dom() == mini_allocator.allocs.dom());
     }
 
     pub proof fn access_preserves_cached_page(
@@ -980,21 +981,10 @@ impl ConcreteBranch::State {
         let step = choose |step| Cache::State::next_by(pre.cache, post.cache, cache_lbl, step);
         match step {
             Cache::Step::access() => {
-                assert(post.cache.lookup_map == pre.cache.lookup_map);
                 let slot = pre.cache.lookup_map[addr];
                 let updated_entries = pre.cache.write_updated_entries(writes);
                 let updated_status_map = pre.cache.write_updated_status(writes);
-                assert(pre.cache.lookup_map.restrict(writes.dom()).contains_key(addr));
-                assert(pre.cache.lookup_map.restrict(writes.dom())[addr] == slot);
-                assert(updated_entries.contains_key(slot));
-                assert(updated_status_map.contains_key(slot));
-                assert(post.cache.entries[slot] == updated_entries[slot]);
-                assert(post.cache.status_map[slot] == updated_status_map[slot]);
-                assert(updated_entries[slot] is Filled);
-                assert(updated_entries[slot].get_addr() == addr);
-                assert(post.has_cached_page(addr));
-                assert(post.cache_raw_page(addr) == writes[addr]);
-                assert(post.cache.status_map[slot] is Dirty);
+                assert(pre.cache.lookup_map.restrict(writes.dom()).contains_key(addr)); // trigger
             }
             _ => { assert(false); }
         }
@@ -1024,24 +1014,16 @@ impl ConcreteBranch::State {
         let step = choose |step| Cache::State::next_by(pre.cache, post.cache, cache_lbl, step);
         match step {
             Cache::Step::access() => {
-                assert(post.cache.lookup_map == pre.cache.lookup_map);
                 let slot = post.cache.lookup_map[addr];
                 let updated_entries = pre.cache.write_updated_entries(writes);
                 let updated_status_map = pre.cache.write_updated_status(writes);
                 pre.cache.build_lookup_map_ensures();
-                assert(pre.cache.build_lookup_map_props(pre.cache.lookup_map));
                 assert(!updated_entries.contains_key(slot)) by {
                     if updated_entries.contains_key(slot) {
                         let write_addr = choose |write_addr: Address|
                             #![trigger pre.cache.lookup_map.restrict(writes.dom())[write_addr]]
                             pre.cache.lookup_map.restrict(writes.dom()).contains_key(write_addr)
                             && pre.cache.lookup_map.restrict(writes.dom())[write_addr] == slot;
-                        assert(pre.cache.lookup_map.contains_key(write_addr));
-                        assert(writes.contains_key(write_addr));
-                        assert(pre.cache.lookup_map[write_addr] == slot);
-                        assert(pre.cache.lookup_map.is_injective());
-                        assert(write_addr == addr);
-                        assert(false);
                     }
                 };
                 assert(!updated_status_map.contains_key(slot)) by {
@@ -1050,19 +1032,8 @@ impl ConcreteBranch::State {
                             #![trigger pre.cache.lookup_map.restrict(writes.dom())[write_addr]]
                             pre.cache.lookup_map.restrict(writes.dom()).contains_key(write_addr)
                             && pre.cache.lookup_map.restrict(writes.dom())[write_addr] == slot;
-                        assert(pre.cache.lookup_map.contains_key(write_addr));
-                        assert(writes.contains_key(write_addr));
-                        assert(pre.cache.lookup_map[write_addr] == slot);
-                        assert(pre.cache.lookup_map.is_injective());
-                        assert(write_addr == addr);
-                        assert(false);
                     }
                 };
-                assert(post.cache.entries[slot] == pre.cache.entries[slot]);
-                assert(post.cache.status_map[slot] == pre.cache.status_map[slot]);
-                assert(pre.cache.entries[slot] is Filled);
-                assert(pre.has_cached_page(addr));
-                assert(post.cache_raw_page(addr) == pre.cache_raw_page(addr));
             }
             _ => { assert(false); }
         }
@@ -1092,25 +1063,16 @@ impl ConcreteBranch::State {
         let step = choose |step| Cache::State::next_by(pre.cache, post.cache, cache_lbl, step);
         match step {
             Cache::Step::access() => {
-                assert(post.cache.lookup_map == pre.cache.lookup_map);
                 let slot = pre.cache.lookup_map[addr];
                 let updated_entries = pre.cache.write_updated_entries(writes);
                 let updated_status_map = pre.cache.write_updated_status(writes);
                 pre.cache.build_lookup_map_ensures();
-                assert(pre.cache.build_lookup_map_props(pre.cache.lookup_map));
                 assert(!updated_entries.contains_key(slot)) by {
                     if updated_entries.contains_key(slot) {
                         let write_addr = choose |write_addr: Address|
                             #![trigger pre.cache.lookup_map.restrict(writes.dom())[write_addr]]
                             pre.cache.lookup_map.restrict(writes.dom()).contains_key(write_addr)
                             && pre.cache.lookup_map.restrict(writes.dom())[write_addr] == slot;
-                        assert(pre.cache.lookup_map.restrict(writes.dom()).contains_key(write_addr));
-                        assert(pre.cache.lookup_map.contains_key(write_addr));
-                        assert(pre.cache.lookup_map[write_addr] == slot);
-                        assert(pre.cache.entries[slot].get_addr() == addr);
-                        assert(pre.cache.entries[slot].get_addr() == write_addr);
-                        assert(write_addr == addr);
-                        assert(false);
                     }
                 };
                 assert(!updated_status_map.contains_key(slot)) by {
@@ -1119,18 +1081,8 @@ impl ConcreteBranch::State {
                             #![trigger pre.cache.lookup_map.restrict(writes.dom())[write_addr]]
                             pre.cache.lookup_map.restrict(writes.dom()).contains_key(write_addr)
                             && pre.cache.lookup_map.restrict(writes.dom())[write_addr] == slot;
-                        assert(pre.cache.lookup_map.restrict(writes.dom()).contains_key(write_addr));
-                        assert(pre.cache.lookup_map.contains_key(write_addr));
-                        assert(pre.cache.lookup_map[write_addr] == slot);
-                        assert(pre.cache.entries[slot].get_addr() == addr);
-                        assert(pre.cache.entries[slot].get_addr() == write_addr);
-                        assert(write_addr == addr);
-                        assert(false);
                     }
                 };
-                assert(post.has_cached_page(addr));
-                assert(post.cache_raw_page(addr) == pre.cache_raw_page(addr));
-                assert(post.cache.status_map[post.cache.lookup_map[addr]] == pre.cache.status_map[pre.cache.lookup_map[addr]]);
             }
             _ => { assert(false); }
         }
@@ -1162,24 +1114,16 @@ impl ConcreteBranch::State {
         let step = choose |step| Cache::State::next_by(pre.cache, post.cache, cache_lbl, step);
         match step {
             Cache::Step::access() => {
-                assert(post.cache.lookup_map == pre.cache.lookup_map);
                 let slot = pre.cache.lookup_map[addr];
                 let updated_entries = pre.cache.write_updated_entries(writes);
                 let updated_status_map = pre.cache.write_updated_status(writes);
                 pre.cache.build_lookup_map_ensures();
-                assert(pre.cache.build_lookup_map_props(pre.cache.lookup_map));
                 assert(!updated_entries.contains_key(slot)) by {
                     if updated_entries.contains_key(slot) {
                         let write_addr = choose |write_addr: Address|
                             #![trigger pre.cache.lookup_map.restrict(writes.dom())[write_addr]]
                             pre.cache.lookup_map.restrict(writes.dom()).contains_key(write_addr)
                             && pre.cache.lookup_map.restrict(writes.dom())[write_addr] == slot;
-                        assert(pre.cache.lookup_map.contains_key(write_addr));
-                        assert(writes.contains_key(write_addr));
-                        assert(pre.cache.lookup_map[write_addr] == slot);
-                        assert(pre.cache.lookup_map.is_injective());
-                        assert(write_addr == addr);
-                        assert(false);
                     }
                 };
                 assert(!updated_status_map.contains_key(slot)) by {
@@ -1188,18 +1132,8 @@ impl ConcreteBranch::State {
                             #![trigger pre.cache.lookup_map.restrict(writes.dom())[write_addr]]
                             pre.cache.lookup_map.restrict(writes.dom()).contains_key(write_addr)
                             && pre.cache.lookup_map.restrict(writes.dom())[write_addr] == slot;
-                        assert(pre.cache.lookup_map.contains_key(write_addr));
-                        assert(writes.contains_key(write_addr));
-                        assert(pre.cache.lookup_map[write_addr] == slot);
-                        assert(pre.cache.lookup_map.is_injective());
-                        assert(write_addr == addr);
-                        assert(false);
                     }
                 };
-                assert(post.cache.lookup_map.contains_key(addr));
-                assert(post.cache.lookup_map[addr] == pre.cache.lookup_map[addr]);
-                assert(post.cache.entries[slot] == pre.cache.entries[slot]);
-                assert(post.cache.status_map[slot] == pre.cache.status_map[slot]);
             }
             _ => { assert(false); }
         }
@@ -1366,9 +1300,6 @@ impl ConcreteBranch::State {
         let step = choose |step| Cache::State::next_by(pre.cache, post.cache, cache_lbl, step);
         match step {
             Cache::Step::access() => {
-                assert(post.cache.lookup_map == pre.cache.lookup_map);
-                assert(post.outstanding_cache_reqs.is_injective());
-                assert(post.disk.requests.dom() + post.disk.responses.dom() == post.outstanding_cache_reqs.dom());
                 assert forall |id: ID| #[trigger] post.disk.requests.contains_key(id) implies {
                     let req = post.disk.requests[id];
                     let addr = post.outstanding_cache_reqs[id];
@@ -1384,19 +1315,12 @@ impl ConcreteBranch::State {
                         &&& post.cache.status_map[slot] is Writeback
                     }
                 } by {
-                    assert(pre.disk.requests.contains_key(id));
                     let req = pre.disk.requests[id];
                     let addr = pre.outstanding_cache_reqs[id];
                     let slot = pre.cache.lookup_map[addr];
                     if writes.contains_key(addr) {
-                        assert(pre.cache.valid_write(addr));
                         if req is ReadReq {
-                            assert(pre.cache.entries[slot] is Loading);
-                            assert(false);
                         }
-                        assert(req is WriteReq);
-                        assert(pre.cache.status_map[slot] is Writeback);
-                        assert(false);
                     }
                     Self::access_preserves_unwritten_lookup_slot(pre, post, reads, writes, addr);
                 };
@@ -1415,44 +1339,25 @@ impl ConcreteBranch::State {
                         &&& post.cache.status_map[slot] is Writeback
                     }
                 } by {
-                    assert(pre.disk.responses.contains_key(id));
                     let resp = pre.disk.responses[id];
                     let addr = pre.outstanding_cache_reqs[id];
                     let slot = pre.cache.lookup_map[addr];
                     if writes.contains_key(addr) {
-                        assert(pre.cache.valid_write(addr));
                         if resp is ReadResp {
-                            assert(pre.cache.entries[slot] is Loading);
-                            assert(false);
                         }
-                        assert(resp is WriteResp);
-                        assert(pre.cache.status_map[slot] is Writeback);
-                        assert(false);
                     }
                     Self::access_preserves_unwritten_lookup_slot(pre, post, reads, writes, addr);
-                    assert(post.disk.content == pre.disk.content);
                 };
                 assert forall |id: ID|
                     #![trigger post.disk.requests.contains_key(id)]
                     #![trigger post.disk.responses.contains_key(id)]
                     (post.disk.requests.contains_key(id) || post.disk.responses.contains_key(id))
                     implies post.io_id_valid(id) by {
-                    assert(pre.io_id_valid(id));
-                    assert(post.disk == pre.disk);
                     let addr = post.outstanding_cache_reqs[id];
-                    assert(post.cache.lookup_map.contains_key(addr));
-                    assert(post.cache.entries.contains_key(post.cache.lookup_map[addr]));
-                    assert(post.cache.status_map.contains_key(post.cache.lookup_map[addr]));
                     if post.disk.responses.contains_key(id) {
-                        assert(pre.disk.responses.contains_key(id));
-                        assert(pre.disk.content.contains_key(addr));
-                        assert(post.disk.content.contains_key(addr));
                     }
                     if post.disk.requests.contains_key(id) {
-                        assert(pre.disk.requests.contains_key(id));
                         if pre.disk.requests[id] is ReadReq {
-                            assert(pre.disk.content.contains_key(addr));
-                            assert(post.disk.content.contains_key(addr));
                         }
                     }
                 };
@@ -1967,19 +1872,9 @@ impl ConcreteBranch::State {
             post.wf(),
     {
         reveal(ConcreteBranch::State::internal_disk);
-        assert(lbl is Internal);
-        assert(post.cached_branch == pre.cached_branch);
-        assert(post.mini_allocator == pre.mini_allocator);
-        assert(post.cache == pre.cache);
-        assert(post.cache.inv());
-        assert(post.disk == new_disk);
         Self::disk_internal_preserves_inv(pre, post.disk);
-        assert(post.disk.inv());
-        assert(post.outstanding_cache_reqs == pre.outstanding_cache_reqs);
         Self::internal_disk_preserves_outstanding_reqs_consistent(pre, post, new_disk);
         Self::internal_disk_preserves_cache_agrees_with_disk(pre, post, new_disk);
-        assert(post.cache_agrees_with_disk());
-        assert(post.wf());
     }
 
     proof fn cache_disk_ops_preserves_unaffected_lookup_slot(
@@ -2976,8 +2871,6 @@ impl ConcreteBranch::State {
         Self::cache_disk_ops_preserves_outstanding_reqs_consistent(
             pre, post, cache_requests, cache_responses, disk_requests, disk_responses,
         );
-        assert(post.cache_agrees_with_disk());
-        assert(post.wf());
     }
 
     proof fn query_preserves_wf(
@@ -2994,12 +2887,6 @@ impl ConcreteBranch::State {
             post.wf(),
     {
         reveal(ConcreteBranch::State::query);
-        assert(post.cached_branch == pre.cached_branch);
-        assert(post.mini_allocator == pre.mini_allocator);
-        assert(post.cache == pre.cache);
-        assert(post.disk == pre.disk);
-        assert(post.outstanding_cache_reqs == pre.outstanding_cache_reqs);
-        assert(post.wf());
     }
 
     proof fn append_preserves_wf(
@@ -3025,21 +2912,9 @@ impl ConcreteBranch::State {
                 assert(post.cached_branch == pre.cached_branch.append(
                     keys, msgs, depth, read_nodes, write_nodes, needed,
                 ));
-                assert(post.cached_branch.wf());
-                assert(post.cached_branch.valid_allocator(post.mini_allocator));
-                assert(post.mini_allocator == pre.mini_allocator);
-                assert(post.mini_allocator.wf());
-                assert(post.cache == new_cache);
                 Self::cache_access_preserves_inv(pre, post.cache, reads, writes);
-                assert(post.cache.inv());
-                assert(post.disk == pre.disk);
-                assert(post.disk.inv());
-                assert(post.outstanding_cache_reqs == pre.outstanding_cache_reqs);
                 Self::access_preserves_outstanding_reqs_consistent(pre, post, reads, writes);
                 Self::access_preserves_cache_agrees_with_disk(pre, post, reads, writes);
-                assert(!post.cached_branch.sealed);
-                assert(post.cache_agrees_with_disk());
-                assert(post.wf());
             }
             _ => { assert(false); }
         }
@@ -3067,22 +2942,10 @@ impl ConcreteBranch::State {
                 assert(post.cached_branch == pre.cached_branch.grow(
                     pre.mini_allocator, new_root_addr, read_nodes, write_nodes,
                 ));
-                assert(post.cached_branch.wf());
-                assert(post.mini_allocator == pre.mini_allocator.allocate(new_root_addr));
                 Self::mini_allocator_allocate_preserves_wf_and_aus(pre.mini_allocator, new_root_addr);
-                assert(post.cached_branch.valid_allocator(post.mini_allocator));
-                assert(post.mini_allocator.wf());
-                assert(post.cache == new_cache);
                 Self::cache_access_preserves_inv(pre, post.cache, reads, writes);
-                assert(post.cache.inv());
-                assert(post.disk == pre.disk);
-                assert(post.disk.inv());
-                assert(post.outstanding_cache_reqs == pre.outstanding_cache_reqs);
                 Self::access_preserves_outstanding_reqs_consistent(pre, post, reads, writes);
                 Self::access_preserves_cache_agrees_with_disk(pre, post, reads, writes);
-                assert(!post.cached_branch.sealed);
-                assert(post.cache_agrees_with_disk());
-                assert(post.wf());
             }
             _ => { assert(false); }
         }
@@ -3111,22 +2974,10 @@ impl ConcreteBranch::State {
                 assert(post.cached_branch == pre.cached_branch.split(
                     pre.mini_allocator, new_child_addr, pivot, depth, split_arg, read_nodes, write_nodes, needed,
                 ));
-                assert(post.cached_branch.wf());
-                assert(post.mini_allocator == pre.mini_allocator.allocate(new_child_addr));
                 Self::mini_allocator_allocate_preserves_wf_and_aus(pre.mini_allocator, new_child_addr);
-                assert(post.cached_branch.valid_allocator(post.mini_allocator));
-                assert(post.mini_allocator.wf());
-                assert(post.cache == new_cache);
                 Self::cache_access_preserves_inv(pre, post.cache, reads, writes);
-                assert(post.cache.inv());
-                assert(post.disk == pre.disk);
-                assert(post.disk.inv());
-                assert(post.outstanding_cache_reqs == pre.outstanding_cache_reqs);
                 Self::access_preserves_outstanding_reqs_consistent(pre, post, reads, writes);
                 Self::access_preserves_cache_agrees_with_disk(pre, post, reads, writes);
-                assert(!post.cached_branch.sealed);
-                assert(post.cache_agrees_with_disk());
-                assert(post.wf());
             }
             _ => { assert(false); }
         }
@@ -3154,26 +3005,15 @@ impl ConcreteBranch::State {
                 assert(post.cached_branch == pre.cached_branch.seal(
                     pre.mini_allocator, aux_ptr, read_nodes, write_nodes,
                 ));
-                assert(post.cached_branch.wf());
                 if aux_ptr is Some {
                     Self::mini_allocator_allocate_preserves_wf_and_aus(pre.mini_allocator, aux_ptr.unwrap());
                     Self::mini_allocator_prune_empty_preserves_wf_and_aus(pre.mini_allocator.allocate(aux_ptr.unwrap()));
-                    assert(post.mini_allocator == pre.mini_allocator.allocate(aux_ptr.unwrap()).prune(Set::<AU>::empty()));
                 } else {
                     Self::mini_allocator_prune_empty_preserves_wf_and_aus(pre.mini_allocator);
-                    assert(post.mini_allocator == pre.mini_allocator.prune(Set::<AU>::empty()));
                 }
-                assert(post.cached_branch.valid_allocator(post.mini_allocator));
-                assert(post.mini_allocator.wf());
-                assert(post.cache == new_cache);
                 Self::cache_access_preserves_inv(pre, post.cache, reads, writes);
-                assert(post.cache.inv());
-                assert(post.disk == pre.disk);
-                assert(post.disk.inv());
-                assert(post.outstanding_cache_reqs == pre.outstanding_cache_reqs);
                 Self::access_preserves_outstanding_reqs_consistent(pre, post, reads, writes);
                 Self::access_preserves_cache_agrees_with_disk(pre, post, reads, writes);
-                assert(post.wf());
             }
             _ => { assert(false); }
         }
@@ -3192,19 +3032,9 @@ impl ConcreteBranch::State {
             post.wf(),
     {
         reveal(ConcreteBranch::State::internal_cache);
-        assert(lbl is Internal);
-        assert(post.cached_branch == pre.cached_branch);
-        assert(post.mini_allocator == pre.mini_allocator);
-        assert(post.cache == new_cache);
         Self::cache_internal_preserves_inv(pre, post.cache);
-        assert(post.cache.inv());
-        assert(post.disk == pre.disk);
-        assert(post.disk.inv());
-        assert(post.outstanding_cache_reqs == pre.outstanding_cache_reqs);
         Self::internal_cache_preserves_outstanding_reqs_consistent(pre, post, new_cache);
         Self::internal_cache_preserves_cache_agrees_with_disk(pre, post, new_cache);
-        assert(post.cache_agrees_with_disk());
-        assert(post.wf());
     }
 }
 

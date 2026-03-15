@@ -598,7 +598,8 @@ proof fn query_step_refines_to_abstract_map(
     match lbl {
         ConcreteBranch::Label::Query{key, msg, depth} => {
             let alloc = pre.i();
-            let branch = alloc.branch.unwrap();
+            let branch = pre.overlay_branch().unwrap();
+            assert(alloc.branch == Some(branch));
             allocation_query_refines_to_kmmap(branch, key);
             assert(post.cached_branch == pre.cached_branch);
             assert(post.abstract_map_i() == pre.abstract_map_i());
@@ -645,11 +646,22 @@ proof fn append_step_refines_to_abstract_map(
     match lbl {
         ConcreteBranch::Label::Append{keys, msgs, depth} => {
             assert(keys.len() > 0);
+            let alloc = pre.i();
             let first_key = keys[0];
-            let path = BranchPath{branch: pre.i().branch.unwrap(), key: first_key, depth};
+            let branch = pre.overlay_branch().unwrap();
+            assert(alloc.branch == Some(branch));
+            let path = BranchPath{branch, key: first_key, depth};
             append_puts_wf(pre.cached_branch.seq_end, keys, msgs);
-            allocation_append_refines_to_abstract_map(pre.i(), post.i(), pre.cached_branch.seq_end, keys, msgs, path);
+            allocation_append_refines_to_abstract_map(alloc, post.i(), pre.cached_branch.seq_end, keys, msgs, path);
             assert(post.cached_branch.seq_end == pre.cached_branch.seq_end + keys.len());
+            MsgHistory::map_plus_history_lemma(
+                pre.abstract_map_i().stamped_map,
+                append_puts(pre.cached_branch.seq_end, keys, msgs),
+            );
+            assert(post.abstract_map_i().stamped_map.value
+                == MsgHistory::map_plus_history(pre.abstract_map_i().stamped_map, append_puts(pre.cached_branch.seq_end, keys, msgs)).value);
+            assert(post.abstract_map_i().stamped_map.seq_end
+                == MsgHistory::map_plus_history(pre.abstract_map_i().stamped_map, append_puts(pre.cached_branch.seq_end, keys, msgs)).seq_end);
             assert(post.abstract_map_i().stamped_map
                 == MsgHistory::map_plus_history(pre.abstract_map_i().stamped_map, append_puts(pre.cached_branch.seq_end, keys, msgs)));
             assert(AbstractMap::State::next_by(
@@ -692,7 +704,10 @@ proof fn grow_step_refines_to_abstract_map(
 
     match lbl {
         ConcreteBranch::Label::Grow{new_root_addr} => {
-            allocation_grow_preserves_kmmap(pre.i(), new_root_addr);
+            let alloc = pre.i();
+            let branch = pre.overlay_branch().unwrap();
+            assert(alloc.branch == Some(branch));
+            allocation_grow_preserves_kmmap(alloc, new_root_addr);
             assert(post.cached_branch.seq_end == pre.cached_branch.seq_end);
             assert(post.abstract_map_i() == pre.abstract_map_i());
             assert(AbstractMap::State::next_by(
@@ -736,8 +751,11 @@ proof fn split_step_refines_to_abstract_map(
 
     match lbl {
         ConcreteBranch::Label::Split{new_child_addr, pivot, depth, split_arg} => {
-            let path = BranchPath{branch: pre.i().branch.unwrap(), key: pivot, depth};
-            allocation_split_preserves_kmmap(pre.i(), new_child_addr, path, split_arg);
+            let alloc = pre.i();
+            let branch = pre.overlay_branch().unwrap();
+            assert(alloc.branch == Some(branch));
+            let path = BranchPath{branch, key: pivot, depth};
+            allocation_split_preserves_kmmap(alloc, new_child_addr, path, split_arg);
             assert(post.cached_branch.seq_end == pre.cached_branch.seq_end);
             assert(post.abstract_map_i() == pre.abstract_map_i());
             assert(AbstractMap::State::next_by(
@@ -780,7 +798,11 @@ proof fn seal_step_refines_to_abstract_map(
 
     match lbl {
         ConcreteBranch::Label::Seal{aux_ptr} => {
-            allocation_seal_preserves_kmmap(pre.i(), aux_ptr);
+            let alloc = pre.i();
+            if alloc.branch is Some {
+                assert(pre.overlay_branch() == alloc.branch);
+            }
+            allocation_seal_preserves_kmmap(alloc, aux_ptr);
             assert(post.cached_branch.seq_end == pre.cached_branch.seq_end);
             assert(post.abstract_map_i() == pre.abstract_map_i());
             assert(AbstractMap::State::next_by(

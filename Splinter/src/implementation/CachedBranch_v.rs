@@ -192,7 +192,7 @@ pub open spec fn loaded_split_write_nodes_at_depth(root: Address, loaded: Loaded
     let new_parent = AllocationBranchNode::Index{
         pivots: parent->pivots.insert(child_idx, pivot),
         children: parent->children.insert(child_idx + 1, new_child_addr),
-        aux_ptr: parent->aux_ptr,
+        aux_ptr: None,
     };
     let (new_left_child, new_right_child) = match split_arg {
         SplitArg::SplitLeaf{pivot} => {
