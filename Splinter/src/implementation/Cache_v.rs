@@ -1376,6 +1376,79 @@ state_machine!{ Cache {
         // Witness the step
         assert( State::next_by(s, s, lbl, Step::access()) ); // step witness
     }
+
+    pub proof fn access_unwritten_addr_unchanged(
+        pre: State,
+        post: State,
+        reads: Map<Address, RawPage>,
+        writes: Map<Address, RawPage>,
+        addr: Address,
+    )
+        requires
+            pre.inv(),
+            State::next(pre, post, Label::Access{reads, writes}),
+            !writes.contains_key(addr),
+        ensures
+            post.lookup_map.contains_key(addr) == pre.lookup_map.contains_key(addr),
+            post.lookup_map.contains_key(addr) ==> {
+                &&& post.lookup_map[addr] == pre.lookup_map[addr]
+                &&& post.entries[post.lookup_map[addr]] == pre.entries[pre.lookup_map[addr]]
+                &&& post.status_map[post.lookup_map[addr]] == pre.status_map[pre.lookup_map[addr]]
+            },
+    {
+        let lbl = Label::Access{reads, writes};
+        reveal(State::next_by);
+        reveal(State::next);
+        assert(State::next_by(pre, post, lbl, Step::access()));
+
+        let updated_entries = pre.write_updated_entries(writes);
+        let updated_status_map = pre.write_updated_status(writes);
+        assert(post.lookup_map == pre.lookup_map);
+        assert(post.lookup_map.contains_key(addr) == pre.lookup_map.contains_key(addr));
+
+        if pre.lookup_map.contains_key(addr) {
+            let slot = pre.lookup_map[addr];
+            pre.build_lookup_map_ensures();
+            assert(pre.lookup_map == pre.build_lookup_map());
+            assert(pre.lookup_map.is_injective()) by {
+                assert(pre.build_lookup_map_props(pre.build_lookup_map()));
+            };
+
+            assert(!updated_entries.contains_key(slot)) by {
+                if updated_entries.contains_key(slot) {
+                    let restricted = pre.lookup_map.restrict(writes.dom());
+                    let write_slots = restricted.values();
+                    assert(write_slots.contains(slot));
+                    let written_addr = choose |a: Address|
+                        restricted.contains_key(a) && #[trigger] restricted[a] == slot;
+                    assert(writes.contains_key(written_addr));
+                    assert(pre.lookup_map.contains_key(written_addr));
+                    assert(pre.lookup_map[written_addr] == slot);
+                    assert(pre.lookup_map[written_addr] == pre.lookup_map[addr]);
+                    assert(written_addr == addr);
+                    assert(false);
+                }
+            };
+            assert(!updated_status_map.contains_key(slot)) by {
+                if updated_status_map.contains_key(slot) {
+                    let restricted = pre.lookup_map.restrict(writes.dom());
+                    let write_slots = restricted.values();
+                    assert(write_slots.contains(slot));
+                    let written_addr = choose |a: Address|
+                        restricted.contains_key(a) && #[trigger] restricted[a] == slot;
+                    assert(writes.contains_key(written_addr));
+                    assert(pre.lookup_map.contains_key(written_addr));
+                    assert(pre.lookup_map[written_addr] == slot);
+                    assert(pre.lookup_map[written_addr] == pre.lookup_map[addr]);
+                    assert(written_addr == addr);
+                    assert(false);
+                }
+            };
+
+            assert(post.entries[slot] == pre.entries[slot]);
+            assert(post.status_map[slot] == pre.status_map[slot]);
+        }
+    }
 }}
 
 pub mod State {

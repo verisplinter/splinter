@@ -14,6 +14,8 @@ pub mod JournalCoordinationRefinement_v;
 // pub mod BranchImpl_v;
 // pub mod AllocationBranchImpl_v;
 pub mod CachedBranch_v;
+pub mod AllocationBranchStack_v;
+pub mod AllocationBranchStackRefinement_v;
 pub mod IBranchNode_v;
 pub mod ConcreteBranch_v;
 pub mod ConcreteBranchRefinement_v;
