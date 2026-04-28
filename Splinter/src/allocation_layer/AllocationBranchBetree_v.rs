@@ -1425,7 +1425,7 @@ impl BufferDisk<BranchNode> {
 }
 
 // imperative operations on branch summary
-proof fn branch_summary_insert_ensures(branch_summary: Map<AU, Set<AU>>, branch: LinkedBranch<Summary>)
+pub proof fn branch_summary_insert_ensures(branch_summary: Map<AU, Set<AU>>, branch: LinkedBranch<Summary>)
     requires
         branch_summary.dom().finite(),
         map_with_disjoint_values(branch_summary),

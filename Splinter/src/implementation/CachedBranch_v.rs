@@ -15,15 +15,9 @@ verus! {
 
 pub type LoadedBranch = Map<Address, AllocationBranchNode>;
 
-pub open spec fn covers(available: Set<Address>, needed: Set<Address>) -> bool
-{
-    needed <= available
-}
-
 pub open spec fn loaded_child_addr(root: Address, loaded: LoadedBranch, key: Key) -> Address
     recommends
-        loaded.contains_key(root),
-        loaded[root].wf(),
+        loaded_line_wf(loaded, root),
         loaded[root] is Index,
 {
     let child_idx = loaded[root].route(key) + 1;
@@ -61,6 +55,15 @@ impl LoadedPathReceiptLine {
     }
 }
 
+pub open spec fn loaded_line_wf(loaded: LoadedBranch, addr: Address) -> bool
+{
+    if loaded.contains_key(addr) {
+        LoadedPathReceiptLine{addr, node: loaded[addr]}.wf()
+    } else {
+        false
+    }
+}
+
 pub struct LoadedPathReceipt {
     pub key: Key,
     pub root: Address,
@@ -91,6 +94,7 @@ impl LoadedPathReceipt {
     {
         &&& self.wf()
         &&& self.root == root
+        &&& self.needed_addrs() <= loaded.dom()
         &&& forall |i: int|
             0 <= i < self.lines.len()
             ==> {
@@ -111,36 +115,18 @@ impl LoadedPathReceipt {
             0 <= i < self.lines.len() && #[trigger] self.lines[i].addr == addr)
     }
 
-    pub open spec fn target_addr(self) -> Address
+    pub open spec fn target(self) -> LoadedPathReceiptLine
         recommends self.lines.len() > 0
     {
-        self.lines.last().addr
-    }
-
-    pub open spec fn target_node(self) -> AllocationBranchNode
-        recommends self.lines.len() > 0
-    {
-        self.lines.last().node
-    }
-
-    pub open spec fn target_is_leaf(self) -> bool
-        recommends self.lines.len() > 0
-    {
-        self.target_node() is Leaf
-    }
-
-    pub open spec fn target_is_index(self) -> bool
-        recommends self.lines.len() > 0
-    {
-        self.target_node() is Index
+        self.lines.last()
     }
 
     pub open spec fn child_addr(self) -> Address
         recommends
             self.lines.len() > 0,
-            self.target_is_index(),
+            self.target().node is Index,
     {
-        let target = self.target_node();
+        let target = self.target().node;
         let child_idx = target.route(self.key) + 1;
         target->children[child_idx]
     }
@@ -165,9 +151,9 @@ impl LoadedPathReceipt {
     pub open spec fn result(self) -> Message
         recommends
             self.lines.len() > 0,
-            self.target_is_leaf(),
+            self.target().node is Leaf,
     {
-        let leaf = self.target_node();
+        let leaf = self.target().node;
         let idx = leaf.route(self.key);
         if 0 <= idx && leaf->keys[idx] == self.key {
             leaf->msgs[idx]
@@ -233,10 +219,7 @@ pub proof fn receipt_valid_implies_tail_valid(receipt: LoadedPathReceipt, loaded
 pub open spec fn loaded_has_route_at_depth(root: Address, loaded: LoadedBranch, key: Key, depth: nat) -> bool
     decreases depth
 {
-    &&& loaded.contains_key(root)
-    &&& loaded[root].wf()
-    &&& !(loaded[root] is Auxiliary)
-    &&& loaded[root].keys_strictly_sorted()
+    &&& loaded_line_wf(loaded, root)
     &&& if depth == 0 {
         loaded[root] is Leaf
     } else {
@@ -316,19 +299,19 @@ pub open spec(checked) fn loaded_append_ready(receipt: LoadedPathReceipt, loaded
     &&& keys.len() == msgs.len()
     &&& Key::is_strictly_sorted(keys)
     &&& receipt.valid_for(receipt.root, loaded)
-    &&& receipt.target_is_leaf()
-    &&& receipt.target_node()->keys.len() > 0
-    &&& Key::lt(receipt.target_node()->keys.last(), first_key)
+    &&& receipt.target().node is Leaf
+    &&& receipt.target().node->keys.len() > 0
+    &&& Key::lt(receipt.target().node->keys.last(), first_key)
     &&& receipt.path_equiv(last_key)
 }
 
 pub open spec fn loaded_append_write_nodes(receipt: LoadedPathReceipt, keys: Seq<Key>, msgs: Seq<Message>) -> LoadedBranch
     recommends
         receipt.lines.len() > 0,
-        receipt.target_is_leaf(),
+        receipt.target().node is Leaf,
 {
-    let leaf_addr = receipt.target_addr();
-    let leaf = receipt.target_node();
+    let leaf_addr = receipt.target().addr;
+    let leaf = receipt.target().node;
     map! {
         leaf_addr => AllocationBranchNode::Leaf{
             keys: leaf->keys + keys,
@@ -337,13 +320,17 @@ pub open spec fn loaded_append_write_nodes(receipt: LoadedPathReceipt, keys: Seq
     }
 }
 
+pub open spec fn loaded_initialize_write_nodes(init_root: Address, keys: Seq<Key>, msgs: Seq<Message>) -> LoadedBranch
+{
+    map! {
+        init_root => AllocationBranchNode::Leaf{keys, msgs}
+    }
+}
+
 pub open spec fn loaded_has_index_route_at_depth(root: Address, loaded: LoadedBranch, key: Key, depth: nat) -> bool
     decreases depth
 {
-    &&& loaded.contains_key(root)
-    &&& loaded[root].wf()
-    &&& !(loaded[root] is Auxiliary)
-    &&& loaded[root].keys_strictly_sorted()
+    &&& loaded_line_wf(loaded, root)
     &&& if depth == 0 {
         loaded[root] is Index
     } else {
@@ -384,20 +371,18 @@ pub open spec fn loaded_split_ready(receipt: LoadedPathReceipt, loaded: LoadedBr
 {
     &&& receipt.key == split_arg.get_pivot()
     &&& receipt.valid_for(receipt.root, loaded)
-    &&& receipt.target_is_index()
+    &&& receipt.target().node is Index
     &&& split_arg.get_pivot() == receipt.key
-    &&& loaded.contains_key(receipt.child_addr())
-    &&& loaded[receipt.child_addr()].wf()
-    &&& !(loaded[receipt.child_addr()] is Auxiliary)
-    &&& loaded[receipt.child_addr()].keys_strictly_sorted()
+    &&& receipt.target().addr != receipt.child_addr()
+    &&& loaded_line_wf(loaded, receipt.child_addr())
     &&& split_arg_matches_child(loaded[receipt.child_addr()], split_arg)
 }
 
 pub open spec fn loaded_split_write_nodes(receipt: LoadedPathReceipt, loaded: LoadedBranch, split_arg: SplitArg, new_child_addr: Address) -> LoadedBranch
     recommends loaded_split_ready(receipt, loaded, split_arg)
 {
-    let parent_addr = receipt.target_addr();
-    let parent = receipt.target_node();
+    let parent_addr = receipt.target().addr;
+    let parent = receipt.target().node;
     let child_addr = receipt.child_addr();
     let child = loaded[child_addr];
     let child_idx = parent.route(receipt.key) + 1;
@@ -455,9 +440,7 @@ pub open spec fn loaded_grow_write_nodes(root: Address, new_root_addr: Address) 
 
 pub open spec fn loaded_seal_write_nodes(root: Address, loaded: LoadedBranch, aux_ptr: Pointer, summary: Set<AU>) -> LoadedBranch
     recommends
-        loaded.contains_key(root),
-        loaded[root].wf(),
-        !(loaded[root] is Auxiliary),
+        loaded_line_wf(loaded, root),
         aux_ptr is Some <==> loaded[root] is Index,
 {
     if aux_ptr is Some {
@@ -506,14 +489,24 @@ impl CachedBranch {
         &&& !self.sealed && self.root is Some ==> mini_allocator.all_aus().contains(self.root.unwrap().au)
     }
 
-    pub open spec fn can_query(self, mini_allocator: MiniAllocator, receipt: LoadedPathReceipt, read_nodes: LoadedBranch) -> bool
+    pub open spec fn ready_for_operation(self, mini_allocator: MiniAllocator) -> bool
     {
         &&& self.wf()
         &&& self.valid_allocator(mini_allocator)
         &&& self.root is Some
+    }
+
+    pub open spec fn ready_for_mutation(self, mini_allocator: MiniAllocator) -> bool
+    {
+        &&& self.ready_for_operation(mini_allocator)
+        &&& !self.sealed
+    }
+
+    pub open spec fn can_query(self, mini_allocator: MiniAllocator, receipt: LoadedPathReceipt, read_nodes: LoadedBranch) -> bool
+    {
+        &&& self.ready_for_operation(mini_allocator)
         &&& receipt.valid_for(self.root.unwrap(), read_nodes)
-        &&& receipt.target_is_leaf()
-        &&& covers(read_nodes.dom(), receipt.needed_addrs())
+        &&& receipt.target().node is Leaf
     }
 
     pub open spec fn query_result(self, receipt: LoadedPathReceipt, read_nodes: LoadedBranch) -> Message
@@ -521,7 +514,7 @@ impl CachedBranch {
             self.wf(),
             self.root is Some,
             receipt.valid_for(self.root.unwrap(), read_nodes),
-            receipt.target_is_leaf(),
+            receipt.target().node is Leaf,
     {
         receipt.result()
     }
@@ -536,15 +529,46 @@ impl CachedBranch {
         write_nodes: LoadedBranch,
     ) -> bool
     {
-        &&& self.wf()
-        &&& self.valid_allocator(mini_allocator)
-        &&& !self.sealed
-        &&& self.root is Some
+        &&& self.ready_for_mutation(mini_allocator)
         &&& keys.len() > 0
         &&& receipt.valid_for(self.root.unwrap(), read_nodes)
         &&& loaded_append_ready(receipt, read_nodes, keys, msgs)
         &&& write_nodes == loaded_append_write_nodes(receipt, keys, msgs)
-        &&& covers(read_nodes.dom(), receipt.needed_addrs())
+    }
+
+    pub open spec fn can_initialize(
+        self,
+        mini_allocator: MiniAllocator,
+        init_root: Address,
+        keys: Seq<Key>,
+        msgs: Seq<Message>,
+        write_nodes: LoadedBranch,
+    ) -> bool
+    {
+        &&& self.is_empty_active()
+        &&& mini_allocator.wf()
+        &&& mini_allocator.reserved_aus() == Set::<AU>::empty()
+        &&& mini_allocator.can_allocate(init_root)
+        &&& keys.len() > 0
+        &&& keys.len() == msgs.len()
+        &&& Key::is_strictly_sorted(keys)
+        &&& write_nodes == loaded_initialize_write_nodes(init_root, keys, msgs)
+    }
+
+    pub open spec fn initialize(
+        self,
+        init_root: Address,
+        keys: Seq<Key>,
+        msgs: Seq<Message>,
+        write_nodes: LoadedBranch,
+    ) -> Self
+        recommends
+            self.wf(),
+    {
+        Self {
+            root: Some(init_root),
+            ..self
+        }
     }
 
     pub open spec fn append(
@@ -569,15 +593,9 @@ impl CachedBranch {
         write_nodes: LoadedBranch,
     ) -> bool
     {
-        &&& self.wf()
-        &&& self.valid_allocator(mini_allocator)
-        &&& !self.sealed
-        &&& self.root is Some
-        &&& read_nodes.contains_key(self.root.unwrap())
-        &&& read_nodes[self.root.unwrap()].wf()
-        &&& !(read_nodes[self.root.unwrap()] is Auxiliary)
+        &&& self.ready_for_mutation(mini_allocator)
+        &&& loaded_line_wf(read_nodes, self.root.unwrap())
         &&& write_nodes == loaded_grow_write_nodes(self.root.unwrap(), new_root_addr)
-        &&& covers(read_nodes.dom(), set! { self.root.unwrap() })
         &&& mini_allocator.wf()
         &&& mini_allocator.can_allocate(new_root_addr)
     }
@@ -608,14 +626,10 @@ impl CachedBranch {
         write_nodes: LoadedBranch,
     ) -> bool
     {
-        &&& self.wf()
-        &&& self.valid_allocator(mini_allocator)
-        &&& !self.sealed
-        &&& self.root is Some
+        &&& self.ready_for_mutation(mini_allocator)
         &&& receipt.valid_for(self.root.unwrap(), read_nodes)
         &&& loaded_split_ready(receipt, read_nodes, split_arg)
         &&& write_nodes == loaded_split_write_nodes(receipt, read_nodes, split_arg, new_child_addr)
-        &&& covers(read_nodes.dom(), receipt.needed_addrs().insert(receipt.child_addr()))
         &&& mini_allocator.wf()
         &&& mini_allocator.can_allocate(new_child_addr)
     }
@@ -645,17 +659,12 @@ impl CachedBranch {
         write_nodes: LoadedBranch,
     ) -> bool
     {
-        &&& self.wf()
-        &&& self.valid_allocator(mini_allocator)
-        &&& !self.sealed
-        &&& self.root is Some
-        &&& read_nodes.contains_key(self.root.unwrap())
-        &&& read_nodes[self.root.unwrap()].wf()
-        &&& !(read_nodes[self.root.unwrap()] is Auxiliary)
-        &&& covers(read_nodes.dom(), set! { self.root.unwrap() })
+        &&& self.ready_for_mutation(mini_allocator)
+        &&& loaded_line_wf(read_nodes, self.root.unwrap())
         &&& (aux_ptr is Some <==> read_nodes[self.root.unwrap()] is Index)
         &&& mini_allocator.wf()
         &&& (aux_ptr is Some ==> mini_allocator.can_allocate(aux_ptr.unwrap()))
+        &&& (aux_ptr is Some ==> mini_allocator.reserved_aus().contains(aux_ptr.unwrap().au))
         &&& write_nodes == loaded_seal_write_nodes(self.root.unwrap(), read_nodes, aux_ptr, mini_allocator.reserved_aus())
     }
 
@@ -679,20 +688,20 @@ impl CachedBranch {
 pub proof fn receipt_valid_implies_loaded_path_at_depth(receipt: LoadedPathReceipt, loaded: LoadedBranch)
     requires
         receipt.valid_for(receipt.root, loaded),
-        receipt.target_is_leaf(),
+        receipt.target().node is Leaf,
     ensures
         loaded_has_route_at_depth(receipt.root, loaded, receipt.key, receipt.depth()),
         loaded_path_addrs_at_depth(receipt.root, loaded, receipt.key, receipt.depth()) == receipt.needed_addrs(),
-        loaded_target_addr_at_depth(receipt.root, loaded, receipt.key, receipt.depth()) == receipt.target_addr(),
-        loaded_target_at_depth(receipt.root, loaded, receipt.key, receipt.depth()) == receipt.target_node(),
+        loaded_target_addr_at_depth(receipt.root, loaded, receipt.key, receipt.depth()) == receipt.target().addr,
+        loaded_target_at_depth(receipt.root, loaded, receipt.key, receipt.depth()) == receipt.target().node,
     decreases receipt.depth(),
 {
     let depth = receipt.depth();
     if depth == 0 {
         assert(receipt.lines.len() == 1);
         assert(receipt.lines[0].node is Leaf);
-        assert(receipt.target_addr() == receipt.root);
-        assert(receipt.target_node() == loaded[receipt.root]);
+        assert(receipt.target().addr == receipt.root);
+        assert(receipt.target().node == loaded[receipt.root]);
         assert(loaded[receipt.root] == receipt.lines[0].node);
         assert(receipt.lines[0].wf());
         assert(loaded.contains_key(receipt.root));
@@ -712,7 +721,7 @@ pub proof fn receipt_valid_implies_loaded_path_at_depth(receipt: LoadedPathRecei
         };
     } else {
         let child_receipt = receipt.tail();
-        assert(child_receipt.target_is_leaf());
+        assert(child_receipt.target().node is Leaf);
         receipt_valid_implies_tail_valid(receipt, loaded);
         receipt_valid_implies_loaded_path_at_depth(child_receipt, loaded);
         assert(loaded[receipt.root] == receipt.lines[0].node);
@@ -729,8 +738,8 @@ pub proof fn receipt_valid_implies_loaded_path_at_depth(receipt: LoadedPathRecei
             == loaded_target_addr_at_depth(child_receipt.root, loaded, receipt.key, (depth - 1) as nat));
         assert(loaded_target_at_depth(receipt.root, loaded, receipt.key, depth)
             == loaded_target_at_depth(child_receipt.root, loaded, receipt.key, (depth - 1) as nat));
-        assert(receipt.target_addr() == child_receipt.target_addr());
-        assert(receipt.target_node() == child_receipt.target_node());
+        assert(receipt.target().addr == child_receipt.target().addr);
+        assert(receipt.target().node == child_receipt.target().node);
         assert(receipt.needed_addrs() == child_receipt.needed_addrs().insert(receipt.root)) by {
             assert forall |addr: Address|
                 #[trigger] receipt.needed_addrs().contains(addr)
@@ -762,20 +771,20 @@ pub proof fn receipt_valid_implies_loaded_path_at_depth(receipt: LoadedPathRecei
 pub proof fn receipt_valid_implies_loaded_index_path_at_depth(receipt: LoadedPathReceipt, loaded: LoadedBranch)
     requires
         receipt.valid_for(receipt.root, loaded),
-        receipt.target_is_index(),
+        receipt.target().node is Index,
     ensures
         loaded_has_index_route_at_depth(receipt.root, loaded, receipt.key, receipt.depth()),
         loaded_index_path_addrs_at_depth(receipt.root, loaded, receipt.key, receipt.depth()) == receipt.needed_addrs(),
-        loaded_index_target_addr_at_depth(receipt.root, loaded, receipt.key, receipt.depth()) == receipt.target_addr(),
-        loaded_index_target_at_depth(receipt.root, loaded, receipt.key, receipt.depth()) == receipt.target_node(),
+        loaded_index_target_addr_at_depth(receipt.root, loaded, receipt.key, receipt.depth()) == receipt.target().addr,
+        loaded_index_target_at_depth(receipt.root, loaded, receipt.key, receipt.depth()) == receipt.target().node,
     decreases receipt.depth(),
 {
     let depth = receipt.depth();
     if depth == 0 {
         assert(receipt.lines.len() == 1);
         assert(receipt.lines[0].node is Index);
-        assert(receipt.target_addr() == receipt.root);
-        assert(receipt.target_node() == loaded[receipt.root]);
+        assert(receipt.target().addr == receipt.root);
+        assert(receipt.target().node == loaded[receipt.root]);
         assert(loaded[receipt.root] == receipt.lines[0].node);
         assert(receipt.lines[0].wf());
         assert(loaded.contains_key(receipt.root));
@@ -795,7 +804,7 @@ pub proof fn receipt_valid_implies_loaded_index_path_at_depth(receipt: LoadedPat
         };
     } else {
         let child_receipt = receipt.tail();
-        assert(child_receipt.target_is_index());
+        assert(child_receipt.target().node is Index);
         receipt_valid_implies_tail_valid(receipt, loaded);
         receipt_valid_implies_loaded_index_path_at_depth(child_receipt, loaded);
         assert(loaded[receipt.root] == receipt.lines[0].node);
@@ -812,8 +821,8 @@ pub proof fn receipt_valid_implies_loaded_index_path_at_depth(receipt: LoadedPat
             == loaded_index_target_addr_at_depth(child_receipt.root, loaded, receipt.key, (depth - 1) as nat));
         assert(loaded_index_target_at_depth(receipt.root, loaded, receipt.key, depth)
             == loaded_index_target_at_depth(child_receipt.root, loaded, receipt.key, (depth - 1) as nat));
-        assert(receipt.target_addr() == child_receipt.target_addr());
-        assert(receipt.target_node() == child_receipt.target_node());
+        assert(receipt.target().addr == child_receipt.target().addr);
+        assert(receipt.target().node == child_receipt.target().node);
         assert(receipt.needed_addrs() == child_receipt.needed_addrs().insert(receipt.root)) by {
             assert forall |addr: Address|
                 #[trigger] receipt.needed_addrs().contains(addr)
@@ -845,7 +854,7 @@ pub proof fn receipt_valid_implies_loaded_index_path_at_depth(receipt: LoadedPat
 pub proof fn receipt_query_matches_loaded_query_result_at_depth(receipt: LoadedPathReceipt, loaded: LoadedBranch)
     requires
         receipt.valid_for(receipt.root, loaded),
-        receipt.target_is_leaf(),
+        receipt.target().node is Leaf,
     ensures
         loaded_query_ready_at_depth(receipt.root, loaded, receipt.key, receipt.depth()),
         loaded_query_result_at_depth(receipt.root, loaded, receipt.key, receipt.depth()) == receipt.result(),
@@ -856,7 +865,7 @@ pub proof fn receipt_query_matches_loaded_query_result_at_depth(receipt: LoadedP
     if depth == 0 {
         let leaf = loaded[receipt.root];
         let idx = leaf.route(receipt.key);
-        assert(receipt.target_node() == leaf);
+        assert(receipt.target().node == leaf);
     } else {
         let child_receipt = receipt.tail();
         receipt_valid_implies_tail_valid(receipt, loaded);

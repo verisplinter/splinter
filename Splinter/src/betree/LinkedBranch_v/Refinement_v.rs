@@ -263,6 +263,9 @@ pub proof fn grow_refines<T>(pre: LinkedBranch<T>, addr: Address)
     ensures
         inv(pre.grow(addr)),
         pre.grow(addr).i() == pre.i().grow(),
+        pre.representation().insert(addr) == pre.grow(addr).representation(),
+        pre.grow(addr).disk_view.same_except(pre.disk_view, set!{addr}),
+        pre.grow(addr).disk_view.entries.dom() =~= pre.disk_view.entries.dom().insert(addr),
 {
     let ranking = pre.the_ranking();
     let post = pre.grow(addr);
@@ -279,6 +282,10 @@ pub proof fn grow_refines_internal<T>(pre: LinkedBranch<T>, ranking: Ranking, po
     ensures
         inv_internal(pre.grow(addr), post_ranking),
         pre.grow(addr).i_internal(post_ranking) == pre.i_internal(ranking).grow(),
+        pre.reachable_addrs_using_ranking(ranking).insert(addr)
+            == pre.grow(addr).reachable_addrs_using_ranking(post_ranking),
+        pre.grow(addr).disk_view.same_except(pre.disk_view, set!{addr}),
+        pre.grow(addr).disk_view.entries.dom() =~= pre.disk_view.entries.dom().insert(addr),
     decreases pre.get_rank(ranking)
 {
     let post = pre.grow(addr);
@@ -302,6 +309,36 @@ pub proof fn grow_refines_internal<T>(pre: LinkedBranch<T>, ranking: Ranking, po
         pre, ranking, post.child_at_idx(0), post_ranking, except);
     assert(post_i->children =~~= i_then_grow->children);
     assert(post_i == i_then_grow);
+    assert(post.children_reachable_addrs_using_ranking(post_ranking)
+        =~= seq![post.child_at_idx(0).reachable_addrs_using_ranking(post_ranking)]);
+    assert(post.reachable_addrs_using_ranking(post_ranking)
+        =~= post.child_at_idx(0).reachable_addrs_using_ranking(post_ranking).insert(addr)) by {
+        let child_reachable = post.child_at_idx(0).reachable_addrs_using_ranking(post_ranking);
+        let child_sets = post.children_reachable_addrs_using_ranking(post_ranking);
+        assert forall |a: Address|
+            #[trigger] post.reachable_addrs_using_ranking(post_ranking).contains(a)
+            <==> child_reachable.insert(addr).contains(a)
+        by {
+            if a == addr {
+                assert(post.reachable_addrs_using_ranking(post_ranking).contains(a));
+            } else {
+                if post.reachable_addrs_using_ranking(post_ranking).contains(a) {
+                    assert(union_seq_of_sets(child_sets).contains(a));
+                    lemma_union_seq_of_sets_contains(child_sets, a);
+                    assert(child_reachable.contains(a));
+                }
+                if child_reachable.contains(a) {
+                    lemma_set_subset_of_union_seq_of_sets(child_sets, a);
+                    assert(union_seq_of_sets(child_sets).contains(a));
+                    assert(post.reachable_addrs_using_ranking(post_ranking).contains(a));
+                }
+            }
+        }
+    }
+    assert(post.reachable_addrs_using_ranking(post_ranking)
+        =~= pre.reachable_addrs_using_ranking(ranking).insert(addr));
+    assert(post.disk_view.same_except(pre.disk_view, except));
+    assert(post.disk_view.entries.dom() =~= pre.disk_view.entries.dom().insert(addr));
 
     assert(post_i.wf());
     lemma_i_wf_implies_inv(post, post_ranking);
@@ -456,6 +493,7 @@ pub proof fn split_refines<T>(pre: LinkedBranch<T>, new_child_addr: Address, pat
 
         &&& inv(post)
         &&& post.i() == pre.i().split(path.i(), split_arg.i())
+        &&& post.i().i() == pre.i().i()
         &&& pre.representation().insert(new_child_addr) == post.representation()
         &&& post.disk_view.same_except(pre.disk_view, except)
         &&& post.disk_view.entries.dom() =~= pre.disk_view.entries.dom().insert(new_child_addr)
@@ -533,6 +571,7 @@ pub proof fn split_refines_internal<T>(pre: LinkedBranch<T>, ranking: Ranking, p
         let post = pre.split(new_child_addr, path, split_arg);
         &&& inv_internal(post, post_ranking)
         &&& post.i_internal(post_ranking) == pre.i_internal(ranking).split(path.i_internal(ranking), split_arg.i())
+        &&& post.i_internal(post_ranking).i() == pre.i_internal(ranking).i()
         &&& post.reachable_addrs_using_ranking(post_ranking) == pre.reachable_addrs_using_ranking(ranking).insert(new_child_addr)
         &&& post.disk_view.entries.dom() =~= pre.disk_view.entries.dom().insert(new_child_addr)
     })
@@ -734,6 +773,7 @@ pub proof fn split_refines_internal<T>(pre: LinkedBranch<T>, ranking: Ranking, p
     assert(post_i->children =~~= i_then_split->children);
     assert(post_i == i_then_split);
     PivotBranchRefinement_v::lemma_split_preserves_wf(pre_i, path_i, split_arg.i());
+    PivotBranchRefinement_v::split_refines(pre_i, path_i, split_arg.i());
     assert(post_i.wf());
     lemma_i_wf_implies_inv(post, post_ranking);
 

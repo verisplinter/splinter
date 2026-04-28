@@ -63,6 +63,7 @@ pub enum BuildEvent {
     Initialize{addr: Address, keys: Seq<Key>, msgs: Seq<Message>},
     // Insert{key: Key, msg: Message, path: Path<Summary>},
     Append{keys: Seq<Key>, msgs: Seq<Message>, path: Path<Summary>},
+    Grow{addr: Address},
     Split{addr: Address, path: Path<Summary>, split_arg: SplitArg},
     AllocFill{},
     Seal{aux_ptr: Pointer},
@@ -127,6 +128,24 @@ impl AllocationBranch {
     {
         AllocationBranch{
             branch: Some(self.branch.unwrap().append(keys, msgs, path)),
+            ..self
+        }
+    }
+
+    pub open spec fn can_grow(self, addr: Address) -> bool
+    {
+        &&& !self.sealed
+        &&& self.branch is Some
+        &&& self.mini_allocator.can_allocate(addr)
+        &&& self.branch.unwrap().can_grow(addr)
+    }
+
+    pub open spec fn branch_grow(self, addr: Address) -> Self
+        recommends self.can_grow(addr)
+    {
+        AllocationBranch{
+            branch: Some(self.branch.unwrap().grow(addr)),
+            mini_allocator: self.mini_allocator.allocate(addr),
             ..self
         }
     }
@@ -218,6 +237,10 @@ impl AllocationBranch {
             BuildEvent::Append{keys, msgs, path} => {
                 &&& pre.can_append(keys, msgs, path)
                 &&& pre.branch_append(keys, msgs, path) == post
+            },
+            BuildEvent::Grow{addr} => {
+                &&& pre.can_grow(addr)
+                &&& pre.branch_grow(addr) == post
             },
             BuildEvent::Split{addr, path, split_arg} => {
                 &&& pre.can_split(addr, path, split_arg)
@@ -472,6 +495,9 @@ impl AllocationBranch {
 
                 Refinement_v::append_refines(pre_branch, keys, msgs, path);
             },
+            BuildEvent::Grow{addr} => {
+                pre.branch_grow_preserves_inv(addr);
+            },
             BuildEvent::Split{addr, path, split_arg} => {
                 let pre_branch = pre.branch.unwrap();
                 let post_branch = post.branch.unwrap();
@@ -489,9 +515,72 @@ impl AllocationBranch {
         }
     }
 
+    pub proof fn branch_grow_preserves_inv(self, addr: Address)
+        requires
+            self.inv(),
+            self.can_grow(addr),
+        ensures
+            self.branch_grow(addr).inv(),
+    {
+        let branch = self.branch.unwrap();
+        let post = self.branch_grow(addr);
+        let post_branch = post.branch.unwrap();
+        let except = set!{addr};
+
+        Refinement_v::grow_refines(branch, addr);
+        assert(post_branch == branch.grow(addr));
+        assert(post_branch.representation() =~= branch.representation().insert(addr));
+        assert(post_branch.disk_view.same_except(branch.disk_view, except));
+        assert(post_branch.disk_view.entries.dom() =~= branch.disk_view.entries.dom().insert(addr));
+        assert(branch.tight_disk_view());
+        assert(post_branch.tight_disk_view()) by {
+            assert(branch.representation() == branch.disk_view.entries.dom());
+            assert(post_branch.representation() == post_branch.disk_view.entries.dom());
+        }
+
+        assert(post.addrs_closed_under_mini_allocator()) by {
+            assert forall |address| #[trigger] post_branch.disk_view.entries.contains_key(address)
+                <==> post.mini_allocator.page_is_reserved(address)
+            by {
+                if address == addr {
+                    assert(post_branch.disk_view.entries.contains_key(address));
+                    assert(post.mini_allocator.page_is_reserved(address));
+                } else {
+                    assert(post_branch.disk_view.entries.contains_key(address)
+                        <==> branch.disk_view.entries.contains_key(address));
+
+                    if address.au == addr.au {
+                        assert(post.mini_allocator.allocs.contains_key(address.au));
+                        assert(post.mini_allocator.allocs[address.au]
+                            == self.mini_allocator.allocs[address.au].reserve(set!{addr}));
+                        assert(post.mini_allocator.page_is_reserved(address)
+                            <==> self.mini_allocator.page_is_reserved(address));
+                    } else {
+                        assert(post.mini_allocator.allocs.contains_key(address.au)
+                            <==> self.mini_allocator.allocs.contains_key(address.au));
+                        if post.mini_allocator.allocs.contains_key(address.au) {
+                            assert(post.mini_allocator.allocs[address.au]
+                                == self.mini_allocator.allocs[address.au]);
+                        }
+                        assert(post.mini_allocator.page_is_reserved(address)
+                            <==> self.mini_allocator.page_is_reserved(address));
+                    }
+
+                    assert(branch.disk_view.entries.contains_key(address)
+                        <==> self.mini_allocator.page_is_reserved(address));
+                }
+            }
+        }
+
+        assert(post.inv());
+    }
+
     pub proof fn branch_seal_preserves_inv(self, aux_ptr: Pointer, deallocs: Set<AU>)
         requires self.inv(), self.can_seal(aux_ptr, deallocs), 
-        ensures self.branch_seal(aux_ptr, deallocs).inv()
+        ensures
+            self.branch_seal(aux_ptr, deallocs).inv(),
+            self.branch_seal(aux_ptr, deallocs).branch.unwrap().i().i()
+                == self.branch.unwrap().i().i(),
     {
         let branch = self.branch.unwrap();
         let post = self.branch_seal(aux_ptr, deallocs);
@@ -560,6 +649,9 @@ impl AllocationBranch {
                 pre_child, ranking, post_child, post_ranking, except);
         }
         assert(post_i->children =~= pre_i->children); // trigger
+        assert(post_i == pre_i);
+        assert(post_branch.i() == branch.i());
+        assert(post_branch.i().i() == branch.i().i());
         Refinement_v::lemma_i_wf_implies_inv(post_branch, post_ranking);
 
         assert(post_branch.representation() =~= branch.representation()) 
