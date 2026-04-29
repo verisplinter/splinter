@@ -45,7 +45,6 @@ pub open spec fn stack_wf(
     &&& active_branch.inv()
     &&& !active_branch.sealed
     &&& summary_aus(branch_summary).disjoint(active_branch.mini_allocator.all_aus())
-    &&& sealed_stack.seq_end <= seq_end
 }
 
 pub proof fn mini_allocator_add_aus_preserves_all_aus(mini_allocator: MiniAllocator, aus: Set<AU>)
@@ -88,7 +87,6 @@ pub proof fn new_branch_inv(free_aus: Set<AU>)
 pub struct SealedAllocationBranchStack {
     pub sealed_roots: Seq<Address>,
     pub sealed_disk: BufferDisk<BranchNode>,
-    pub seq_end: nat,
 }
 
 impl SealedAllocationBranchStack {
@@ -132,14 +130,13 @@ impl SealedAllocationBranchStack {
         self.query_up_to(self.sealed_roots.len() as nat, key)
     }
 
-    pub open spec fn push_branch(self, sealed_branch: LinkedBranch<Summary>, seq_end: nat) -> Self
+    pub open spec fn push_branch(self, sealed_branch: LinkedBranch<Summary>) -> Self
     {
         SealedAllocationBranchStack{
             sealed_roots: self.sealed_roots.push(sealed_branch.root),
             sealed_disk: BufferDisk{
                 entries: self.sealed_disk.entries.union_prefer_right(sealed_branch.disk_view.entries),
             },
-            seq_end,
         }
     }
 
@@ -185,19 +182,19 @@ impl SealedAllocationBranchStack {
         lemma_union_set_of_sets_subset(self.branch_summary().values(), self.branch_summary()[root.au]);
     }
 
-    pub proof fn push_branch_preserves_wf(self, sealed_branch: LinkedBranch<Summary>, seq_end: nat)
+    pub proof fn push_branch_preserves_wf(self, sealed_branch: LinkedBranch<Summary>)
         requires
             self.wf(),
             sealed_branch.valid_sealed_branch(),
             sealed_branch.tight_disk_view_with_summary(),
             summary_aus(self.branch_summary()).disjoint(sealed_branch.get_summary()),
         ensures
-            self.push_branch(sealed_branch, seq_end).wf(),
-            self.push_branch(sealed_branch, seq_end).branch_summary()
+            self.push_branch(sealed_branch).wf(),
+            self.push_branch(sealed_branch).branch_summary()
                 == self.branch_summary().insert(sealed_branch.root.au, sealed_branch.get_summary()),
     {
         let roots = self.sealed_roots.to_set();
-        let post = self.push_branch(sealed_branch, seq_end);
+        let post = self.push_branch(sealed_branch);
         let post_roots = roots + set!{sealed_branch.root};
         let pre_summary = self.branch_summary();
         let post_summary = pre_summary.insert(sealed_branch.root.au, sealed_branch.get_summary());
@@ -385,7 +382,7 @@ state_machine!{ AllocationBranchStack {
         init_aus: Set<AU>,
         seq_end: nat,
     ) {
-        let sealed_stack = SealedAllocationBranchStack{ sealed_roots, sealed_disk, seq_end };
+        let sealed_stack = SealedAllocationBranchStack{ sealed_roots, sealed_disk };
         require sealed_stack.wf();
         require branch_summary == sealed_stack.branch_summary();
         require summary_aus(branch_summary).disjoint(init_aus);
@@ -428,7 +425,6 @@ state_machine!{ AllocationBranchStack {
         require frozen_stack.wf();
         require frozen_stack == pre.freeze_snapshot();
         require pre.active_branch.branch is None;
-        require pre.sealed_stack.seq_end == pre.seq_end;
     }}
 
     transition!{ internal_noop(lbl: Label) {
@@ -457,7 +453,7 @@ state_machine!{ AllocationBranchStack {
         require pre.active_branch.can_seal(aux_ptr, dealloc_aus);
         let sealed_active = pre.active_branch.branch_seal(aux_ptr, dealloc_aus);
         let sealed_branch = sealed_active.branch.unwrap();
-        update sealed_stack = pre.sealed_stack.push_branch(sealed_branch, pre.seq_end);
+        update sealed_stack = pre.sealed_stack.push_branch(sealed_branch);
         update branch_summary = pre.branch_summary.insert(
             sealed_branch.root.au,
             sealed_branch.get_summary(),
@@ -584,7 +580,7 @@ state_machine!{ AllocationBranchStack {
             Set::empty(),
             dealloc_aus,
         );
-        pre.sealed_stack.push_branch_preserves_wf(sealed_branch, pre.seq_end);
+        pre.sealed_stack.push_branch_preserves_wf(sealed_branch);
         new_branch_inv(Set::empty());
         assert(post.wf());
     }

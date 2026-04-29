@@ -775,7 +775,6 @@ impl ConcreteBranch::State {
             sealed_stack: SealedAllocationBranchStack{
                 sealed_roots: self.sealed_roots_i(),
                 sealed_disk: self.sealed_disk_i(),
-                seq_end: self.sealed_seq_end,
             },
             branch_summary: self.branch_summary,
             active_branch: self.active_branch_i(),
@@ -881,7 +880,6 @@ impl ConcreteBranch::State {
             post.refinement_wf(),
             self.cached_branches == post.cached_branches,
             self.branch_summary == post.branch_summary,
-            self.sealed_seq_end == post.sealed_seq_end,
             self.seq_end == post.seq_end,
             self.mini_allocator == post.mini_allocator,
             self.available_raw_pages() == post.available_raw_pages(),
@@ -1852,7 +1850,6 @@ impl ConcreteBranch::State {
                 assert(post.cache == new_cache);
                 assert(post.disk == self.disk);
                 assert(post.branch_summary == self.branch_summary);
-                assert(post.sealed_seq_end == self.sealed_seq_end);
                 assert(post.seq_end == self.seq_end + keys.len());
                 assert(post.mini_allocator == self.mini_allocator);
                 assert(post.cached_branches.len() == self.cached_branches.len());
@@ -2130,7 +2127,6 @@ impl ConcreteBranch::State {
                 assert(post.cache == new_cache);
                 assert(post.disk == self.disk);
                 assert(post.branch_summary == self.branch_summary);
-                assert(post.sealed_seq_end == self.sealed_seq_end);
                 assert(post.seq_end == self.seq_end + keys.len());
                 assert(post.cached_branches.len() == self.cached_branches.len());
                 assert(post.active_idx() == self.active_idx());
@@ -2222,7 +2218,6 @@ impl ConcreteBranch::State {
                 assert(post.cache == new_cache);
                 assert(post.disk == self.disk);
                 assert(post.branch_summary == self.branch_summary);
-                assert(post.sealed_seq_end == self.sealed_seq_end);
                 assert(post.seq_end == self.seq_end);
                 assert(post.cached_branches.len() == self.cached_branches.len());
                 assert(post.active_idx() == self.active_idx());
@@ -2313,7 +2308,6 @@ impl ConcreteBranch::State {
                 assert(post.cache == new_cache);
                 assert(post.disk == self.disk);
                 assert(post.branch_summary == self.branch_summary);
-                assert(post.sealed_seq_end == self.sealed_seq_end);
                 assert(post.seq_end == self.seq_end);
                 assert(post.cached_branches.len() == self.cached_branches.len());
                 assert(post.active_idx() == self.active_idx());
@@ -2435,7 +2429,6 @@ impl ConcreteBranch::State {
                 assert(Cache::State::next(self.cache, new_cache, cache_lbl));
                 assert(post.cache == new_cache);
                 assert(post.disk == self.disk);
-                assert(post.sealed_seq_end == self.seq_end);
                 assert(post.seq_end == self.seq_end);
                 assert(post.cached_branches.len() == self.cached_branches.len() + 1);
                 assert(post.active_cached_branch() == crate::implementation::CachedBranch_v::CachedBranch::empty_active());
@@ -2615,7 +2608,7 @@ impl ConcreteBranch::State {
                 assert(summary_aus(post.branch_summary)
                     == summary_aus(self.branch_summary) + sealed_branch.get_summary());
 
-                let pushed_stack = self.i().sealed_stack.push_branch(sealed_branch, self.seq_end);
+                let pushed_stack = self.i().sealed_stack.push_branch(sealed_branch);
                 assert(post.i().sealed_stack.sealed_disk.entries =~= pushed_stack.sealed_disk.entries) by {
                     let post_entries = post.i().sealed_stack.sealed_disk.entries;
                     let pushed_entries = pushed_stack.sealed_disk.entries;
@@ -2869,11 +2862,9 @@ impl ConcreteBranch::State {
                 }
 
                 assert(post.i().sealed_stack.sealed_roots
-                    == self.i().sealed_stack.push_branch(sealed_branch, self.seq_end).sealed_roots);
-                assert(post.i().sealed_stack.seq_end
-                    == self.i().sealed_stack.push_branch(sealed_branch, self.seq_end).seq_end);
+                    == self.i().sealed_stack.push_branch(sealed_branch).sealed_roots);
 
-                assert(post.i().sealed_stack == self.i().sealed_stack.push_branch(sealed_branch, self.seq_end));
+                assert(post.i().sealed_stack == self.i().sealed_stack.push_branch(sealed_branch));
                 assert(AllocationBranchStack::State::internal_seal(
                     self.i(),
                     post.i(),

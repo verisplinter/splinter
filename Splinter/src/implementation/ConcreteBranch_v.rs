@@ -621,7 +621,6 @@ state_machine!{ ConcreteBranch {
     fields {
         pub cached_branches: Seq<CachedBranch>,
         pub branch_summary: Map<AU, Summary>,
-        pub sealed_seq_end: nat,
         pub seq_end: nat,
         pub mini_allocator: MiniAllocator,
         pub cache: Cache::State,
@@ -659,7 +658,6 @@ state_machine!{ ConcreteBranch {
 
         init cached_branches = cached_branches.push(CachedBranch::empty_active());
         init branch_summary = init_branch_summary(cached_branches, disk);
-        init sealed_seq_end = seq_end;
         init seq_end = seq_end;
         init mini_allocator = init_mini_allocator(init_aus);
         init cache = cache;
@@ -817,7 +815,6 @@ state_machine!{ ConcreteBranch {
             sealed_linked_branch.root.au,
             sealed_linked_branch.get_summary(),
         );
-        update sealed_seq_end = pre.seq_end;
         update mini_allocator = new_mini_allocator;
         update cache = new_cache;
     }}
@@ -885,7 +882,6 @@ state_machine!{ ConcreteBranch {
         let init_state = ConcreteBranch::State{
             cached_branches: cached_branches.push(CachedBranch::empty_active()),
             branch_summary: init_branch_summary(cached_branches, disk),
-            sealed_seq_end: seq_end,
             seq_end,
             mini_allocator: init_mini_allocator(init_aus),
             cache,
@@ -997,10 +993,8 @@ state_machine!{ ConcreteBranch {
                 assert(post.active_cached_branch() == pre.active_cached_branch());
                 assert(post.sealed_roots_i() =~= pre.sealed_roots_i());
                 assert(post.branch_summary == pre.branch_summary);
-                assert(post.sealed_seq_end == pre.sealed_seq_end);
                 assert(post.seq_end == pre.seq_end + keys.len());
                 assert(post.cached_branches.len() > 0);
-                assert(post.sealed_seq_end <= post.seq_end);
                 assert forall |i: int|
                     0 <= i < post.cached_branches.len() - 1
                     implies {
@@ -1133,10 +1127,8 @@ state_machine!{ ConcreteBranch {
                 assert(post.active_cached_branch() == new_active);
                 assert(post.sealed_roots_i() =~= pre.sealed_roots_i());
                 assert(post.branch_summary == pre.branch_summary);
-                assert(post.sealed_seq_end == pre.sealed_seq_end);
                 assert(post.seq_end == pre.seq_end + keys.len());
                 assert(post.cached_branches.len() > 0);
-                assert(post.sealed_seq_end <= post.seq_end);
                 assert forall |i: int|
                     0 <= i < post.cached_branches.len() - 1
                     implies {
@@ -1303,10 +1295,8 @@ state_machine!{ ConcreteBranch {
                 assert(post.active_cached_branch().root == Some(new_root_addr));
                 assert(post.sealed_roots_i() =~= pre.sealed_roots_i());
                 assert(post.branch_summary == pre.branch_summary);
-                assert(post.sealed_seq_end == pre.sealed_seq_end);
                 assert(post.seq_end == pre.seq_end);
                 assert(post.cached_branches.len() > 0);
-                assert(post.sealed_seq_end <= post.seq_end);
                 assert forall |i: int|
                     0 <= i < post.cached_branches.len() - 1
                     implies {
@@ -1512,10 +1502,8 @@ state_machine!{ ConcreteBranch {
                 assert(post.active_cached_branch() == pre.active_cached_branch());
                 assert(post.sealed_roots_i() =~= pre.sealed_roots_i());
                 assert(post.branch_summary == pre.branch_summary);
-                assert(post.sealed_seq_end == pre.sealed_seq_end);
                 assert(post.seq_end == pre.seq_end);
                 assert(post.cached_branches.len() > 0);
-                assert(post.sealed_seq_end <= post.seq_end);
                 assert forall |i: int|
                     0 <= i < post.cached_branches.len() - 1
                     implies {
@@ -1687,7 +1675,6 @@ state_machine!{ ConcreteBranch {
                     sealed_linked_branch.root.au,
                     sealed_linked_branch.get_summary(),
                 ));
-                assert(post.sealed_seq_end == pre.seq_end);
                 assert(post.seq_end == pre.seq_end);
                 assert(post.mini_allocator == new_mini_allocator);
                 assert(post.cache == new_cache);
@@ -1698,7 +1685,6 @@ state_machine!{ ConcreteBranch {
                 assert(post.cached_branches.len() > 0);
                 assert(post.active_idx() == pre.cached_branches.len());
                 assert(post.active_cached_branch() == CachedBranch::empty_active());
-                assert(post.sealed_seq_end <= post.seq_end);
 
                 assert forall |i: int|
                     0 <= i < post.cached_branches.len() - 1
@@ -2015,7 +2001,6 @@ state_machine!{ ConcreteBranch {
             _ => { assert(false); }
         }
         assert(post.cached_branches.len() > 0);
-        assert(post.sealed_seq_end <= post.seq_end);
         assert forall |i: int|
             0 <= i < post.cached_branches.len() - 1
             implies {
@@ -2159,7 +2144,6 @@ state_machine!{ ConcreteBranch {
         assert(post.outstanding_reqs_consistent());
         assert(post.cache_agrees_with_disk());
         assert(post.cached_branches.len() > 0);
-        assert(post.sealed_seq_end <= post.seq_end);
         assert forall |i: int|
             0 <= i < post.cached_branches.len() - 1
             implies {
@@ -2292,7 +2276,6 @@ state_machine!{ ConcreteBranch {
         assert(post.outstanding_reqs_consistent());
         assert(post.cache_agrees_with_disk());
         assert(post.cached_branches.len() > 0);
-        assert(post.sealed_seq_end <= post.seq_end);
         assert forall |i: int|
             0 <= i < post.cached_branches.len() - 1
             implies {
@@ -2671,7 +2654,6 @@ state_machine!{ ConcreteBranch {
         assert(post.outstanding_reqs_consistent());
         assert(post.cache_agrees_with_disk());
         assert(post.cached_branches.len() > 0);
-        assert(post.sealed_seq_end <= post.seq_end);
         assert forall |i: int|
             0 <= i < post.cached_branches.len() - 1
             implies {
@@ -2727,7 +2709,6 @@ pub open spec fn concrete_branch_init_wf(
     ConcreteBranch::State{
         cached_branches: cached_branches.push(CachedBranch::empty_active()),
         branch_summary: init_branch_summary(cached_branches, disk),
-        sealed_seq_end: seq_end,
         seq_end,
         mini_allocator: init_mini_allocator(init_aus),
         cache,
@@ -3253,7 +3234,6 @@ impl ConcreteBranch::State {
     pub open spec fn wf(self) -> bool
     {
         &&& self.cached_branches.len() > 0
-        &&& self.sealed_seq_end <= self.seq_end
         &&& forall |i: int|
             0 <= i < self.cached_branches.len() - 1
             ==> {
@@ -3282,7 +3262,6 @@ impl ConcreteBranch::State {
     pub proof fn wf_from_parts(self)
         requires
             self.cached_branches.len() > 0,
-            self.sealed_seq_end <= self.seq_end,
             forall |i: int|
                 0 <= i < self.cached_branches.len() - 1
                 ==> #[trigger] self.cached_branches[i].wf(),

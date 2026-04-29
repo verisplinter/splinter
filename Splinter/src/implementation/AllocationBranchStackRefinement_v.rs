@@ -606,7 +606,6 @@ pub proof fn sealed_stack_disk_disjoint_from_branch(
 pub proof fn sealed_stack_push_preserves_sparse_map_up_to(
     sealed_stack: SealedAllocationBranchStack,
     sealed_branch: LinkedBranch<Summary>,
-    seq_end: nat,
     end: nat,
 )
     requires
@@ -616,7 +615,7 @@ pub proof fn sealed_stack_push_preserves_sparse_map_up_to(
         summary_aus(sealed_stack.branch_summary()).disjoint(sealed_branch.get_summary()),
         end <= sealed_stack.sealed_roots.len(),
     ensures
-        sealed_sparse_map_up_to(sealed_stack.push_branch(sealed_branch, seq_end), end)
+        sealed_sparse_map_up_to(sealed_stack.push_branch(sealed_branch), end)
             == sealed_sparse_map_up_to(sealed_stack, end),
     decreases end
 {
@@ -625,13 +624,12 @@ pub proof fn sealed_stack_push_preserves_sparse_map_up_to(
         sealed_stack_push_preserves_sparse_map_up_to(
             sealed_stack,
             sealed_branch,
-            seq_end,
             (end - 1) as nat,
         );
-        sealed_stack.push_branch_preserves_wf(sealed_branch, seq_end);
+        sealed_stack.push_branch_preserves_wf(sealed_branch);
         sealed_stack_disk_disjoint_from_branch(sealed_stack, sealed_branch);
 
-        let post_stack = sealed_stack.push_branch(sealed_branch, seq_end);
+        let post_stack = sealed_stack.push_branch(sealed_branch);
         let idx = (end - 1) as nat;
         let pre_branch = sealed_stack.sealed_branch_at(idx);
         let post_branch = post_stack.sealed_branch_at(idx);
@@ -664,7 +662,6 @@ pub proof fn sealed_stack_push_preserves_sparse_map_up_to(
 pub proof fn sealed_stack_push_sparse_map(
     sealed_stack: SealedAllocationBranchStack,
     sealed_branch: LinkedBranch<Summary>,
-    seq_end: nat,
 )
     requires
         sealed_stack.wf(),
@@ -672,19 +669,18 @@ pub proof fn sealed_stack_push_sparse_map(
         sealed_branch.tight_disk_view_with_summary(),
         summary_aus(sealed_stack.branch_summary()).disjoint(sealed_branch.get_summary()),
     ensures
-        sealed_stack.push_branch(sealed_branch, seq_end).sparse_map()
+        sealed_stack.push_branch(sealed_branch).sparse_map()
             == sealed_stack.sparse_map().union_prefer_right(linked_branch_sparse_map(sealed_branch)),
 {
-    sealed_stack.push_branch_preserves_wf(sealed_branch, seq_end);
+    sealed_stack.push_branch_preserves_wf(sealed_branch);
     sealed_stack_disk_disjoint_from_branch(sealed_stack, sealed_branch);
     sealed_stack_push_preserves_sparse_map_up_to(
         sealed_stack,
         sealed_branch,
-        seq_end,
         sealed_stack.sealed_roots.len() as nat,
     );
 
-    let post_stack = sealed_stack.push_branch(sealed_branch, seq_end);
+    let post_stack = sealed_stack.push_branch(sealed_branch);
     let idx = sealed_stack.sealed_roots.len() as nat;
     let post_branch = post_stack.sealed_branch_at(idx);
     assert(post_stack.sealed_roots[idx as int] == sealed_branch.root);
@@ -1003,7 +999,7 @@ impl AllocationBranchStack::State {
             AllocationBranchStack::Label::AppendLabel{keys, msgs} =>
                 AbstractMap::Label::PutLabel{ puts: append_puts(self.seq_end, keys, msgs) },
             AllocationBranchStack::Label::FreezeAsLabel{sealed_stack} =>
-                AbstractMap::Label::FreezeAsLabel{ stamped_map: sealed_stack.abstract_map_i().stamped_map },
+                AbstractMap::Label::FreezeAsLabel{ stamped_map: sealed_stack.abstract_map_i_at(self.seq_end).stamped_map },
             AllocationBranchStack::Label::InternalLabel =>
                 AbstractMap::Label::InternalLabel,
         }
@@ -1066,7 +1062,6 @@ impl AllocationBranchStack::State {
                 self.kmmap_i_wf();
                 sealed_stack.kmmap_i_wf();
                 assert(self.active_branch.branch is None);
-                assert(self.sealed_stack.seq_end == self.seq_end);
                 assert(sealed_stack == self.sealed_stack);
                 assert(self.sparse_map() =~= sealed_stack.sparse_map()) by {
                     assert forall |key: Key| #[trigger] self.sparse_map().contains_key(key)
@@ -1075,7 +1070,7 @@ impl AllocationBranchStack::State {
                         implies self.sparse_map()[key] == sealed_stack.sparse_map()[key] by { }
                 }
                 assert(self.kmmap_i().0 =~= sealed_stack.kmmap_i().0);
-                assert(self.abstract_map_i().stamped_map == sealed_stack.abstract_map_i().stamped_map);
+                assert(self.abstract_map_i().stamped_map == sealed_stack.abstract_map_i_at(self.seq_end).stamped_map);
                 assert(AbstractMap::State::next_by(
                     self.abstract_map_i(),
                     post.abstract_map_i(),
@@ -1346,9 +1341,9 @@ impl AllocationBranchStack::State {
             }
         }
         assert(summary_aus(self.sealed_stack.branch_summary()).disjoint(sealed_branch.get_summary()));
-        sealed_stack_push_sparse_map(self.sealed_stack, sealed_branch, self.seq_end);
+        sealed_stack_push_sparse_map(self.sealed_stack, sealed_branch);
 
-        assert(post.sealed_stack == self.sealed_stack.push_branch(sealed_branch, self.seq_end));
+        assert(post.sealed_stack == self.sealed_stack.push_branch(sealed_branch));
         assert(post.active_branch == AllocationBranch::new(Set::empty()));
         assert(active_branch_sparse_map(post.active_branch) == Map::<Key, Message>::empty());
         assert(active_branch_sparse_map(sealed_active) == active_branch_sparse_map(self.active_branch));
@@ -1442,12 +1437,12 @@ impl SealedAllocationBranchStack {
         kmmap_i_wf(self.sparse_buffer());
     }
 
-    pub open spec fn abstract_map_i(self) -> AbstractMap::State
+    pub open spec fn abstract_map_i_at(self, seq_end: nat) -> AbstractMap::State
     {
         AbstractMap::State {
             stamped_map: Stamped {
                 value: self.kmmap_i(),
-                seq_end: self.seq_end,
+                seq_end,
             }
         }
     }
