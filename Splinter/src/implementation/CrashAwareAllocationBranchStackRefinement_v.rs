@@ -18,11 +18,11 @@ use crate::implementation::AllocationBranchStack_v::{
     AllocationBranchStack, SealedAllocationBranchStack,
 };
 use crate::implementation::AllocationBranchStackRefinement_v::{
-    active_branch_sparse_map, append_puts, buffer_kmmap_i, normalize_value,
+    active_branch_sparse_map, append_puts, buffer_kmmap_i,
 };
 use crate::implementation::CrashAwareAllocationBranchStack_v::{
     empty_sealed_stack, load_stack, CrashAwareAllocationBranchStack,
-    EphemeralAllocationBranchStack, InFlightAllocationBranchStack,
+    EphemeralAllocationBranchStack, FrozenAllocationBranchStack,
 };
 use crate::spec::KeyType_t::Key;
 use crate::spec::Messages_t::Message;
@@ -36,7 +36,7 @@ pub open spec fn sealed_store_i(sealed_stack: SealedAllocationBranchStack, seq_e
 }
 
 pub open spec fn optional_sealed_store_i(
-    sealed_stack: Option<InFlightAllocationBranchStack>,
+    sealed_stack: Option<FrozenAllocationBranchStack>,
 ) -> Option<StampedMap>
 {
     match sealed_stack {
@@ -62,7 +62,7 @@ impl CrashAwareAllocationBranchStack::State {
         AbstractCrashAwareMap::State{
             persistent: sealed_store_i(self.persistent, self.persistent_seq_end),
             ephemeral: self.ephemeral.abstract_i(),
-            in_flight: optional_sealed_store_i(self.in_flight),
+            frozen: optional_sealed_store_i(self.frozen),
         }
     }
 
@@ -70,15 +70,15 @@ impl CrashAwareAllocationBranchStack::State {
         -> AbstractCrashAwareMap::Label
     {
         match lbl {
-            CrashAwareAllocationBranchStack::Label::LoadEphemeral{init_aus} =>
+            CrashAwareAllocationBranchStack::Label::LoadEphemeral{free_aus} =>
                 AbstractCrashAwareMap::Label::LoadEphemeralFromPersistentLabel{
                     end_lsn: self.persistent_seq_end,
                 },
-            CrashAwareAllocationBranchStack::Label::Query{key, msg} =>
+            CrashAwareAllocationBranchStack::Label::Query{key, value} =>
                 AbstractCrashAwareMap::Label::QueryLabel{
                     end_lsn: if self.ephemeral is Known { self.ephemeral->v.seq_end } else { 0 },
                     key,
-                    value: normalize_value(msg),
+                    value,
                 },
             CrashAwareAllocationBranchStack::Label::Append{keys, msgs} =>
                 AbstractCrashAwareMap::Label::PutRecordsLabel{
@@ -90,8 +90,11 @@ impl CrashAwareAllocationBranchStack::State {
                 },
             CrashAwareAllocationBranchStack::Label::Internal =>
                 AbstractCrashAwareMap::Label::InternalLabel,
-            CrashAwareAllocationBranchStack::Label::CommitStart{new_boundary_lsn} =>
-                AbstractCrashAwareMap::Label::CommitStartLabel{ new_boundary_lsn },
+            CrashAwareAllocationBranchStack::Label::CommitStart{new_boundary_lsn, frozen_stack} =>
+                AbstractCrashAwareMap::Label::CommitStartLabel{
+                    new_boundary_lsn,
+                    frozen_map: sealed_store_i(frozen_stack.sealed_stack, frozen_stack.seq_end),
+                },
             CrashAwareAllocationBranchStack::Label::CommitComplete =>
                 AbstractCrashAwareMap::Label::CommitCompleteLabel,
             CrashAwareAllocationBranchStack::Label::Crash{keep_in_flight} =>
@@ -115,14 +118,14 @@ impl CrashAwareAllocationBranchStack::State {
         assert(stack.kmmap_i() == TotalKMMap::empty());
     }
 
-    proof fn load_stack_matches_persistent(persistent: SealedAllocationBranchStack, persistent_seq_end: nat, init_aus: Set<AU>)
+    proof fn load_stack_matches_persistent(persistent: SealedAllocationBranchStack, persistent_seq_end: nat, free_aus: Set<AU>)
         requires
-            load_stack(persistent, persistent_seq_end, init_aus).wf(),
+            load_stack(persistent, persistent_seq_end, free_aus).wf(),
         ensures
-            load_stack(persistent, persistent_seq_end, init_aus).abstract_map_i().stamped_map
+            load_stack(persistent, persistent_seq_end, free_aus).abstract_map_i().stamped_map
                 == persistent.abstract_map_i_at(persistent_seq_end).stamped_map,
     {
-        let stack = load_stack(persistent, persistent_seq_end, init_aus);
+        let stack = load_stack(persistent, persistent_seq_end, free_aus);
         assert(stack.active_branch.branch is None);
         assert(active_branch_sparse_map(stack.active_branch) == Map::<Key, Message>::empty());
         assert(stack.sparse_map() =~= persistent.sparse_map()) by {
@@ -166,9 +169,9 @@ impl CrashAwareAllocationBranchStack::State {
         reveal(AbstractMap::State::init_by);
 
         match lbl {
-            CrashAwareAllocationBranchStack::Label::LoadEphemeral{init_aus} => {
-                Self::load_stack_matches_persistent(self.persistent, self.persistent_seq_end, init_aus);
-                let new_map = load_stack(self.persistent, self.persistent_seq_end, init_aus).abstract_map_i();
+            CrashAwareAllocationBranchStack::Label::LoadEphemeral{free_aus} => {
+                Self::load_stack_matches_persistent(self.persistent, self.persistent_seq_end, free_aus);
+                let new_map = load_stack(self.persistent, self.persistent_seq_end, free_aus).abstract_map_i();
                 assert(new_map.stamped_map == self.abstract_i().persistent);
                 assert(AbstractMap::State::init_by(
                     new_map,
@@ -190,10 +193,11 @@ impl CrashAwareAllocationBranchStack::State {
         post: Self,
         lbl: CrashAwareAllocationBranchStack::Label,
         new_stack: AllocationBranchStack::State,
+        msg: Message,
     )
         requires
             self.inv(),
-            CrashAwareAllocationBranchStack::State::query(self, post, lbl, new_stack),
+            CrashAwareAllocationBranchStack::State::query(self, post, lbl, new_stack, msg),
         ensures
             AbstractCrashAwareMap::State::next(
                 self.abstract_i(),
@@ -205,10 +209,13 @@ impl CrashAwareAllocationBranchStack::State {
         reveal(AbstractCrashAwareMap::State::next_by);
 
         match lbl {
-            CrashAwareAllocationBranchStack::Label::Query{key, msg} => {
+            CrashAwareAllocationBranchStack::Label::Query{key, value} => {
                 let old_stack = self.ephemeral->v;
                 let stack_lbl = AllocationBranchStack::Label::QueryLabel{key, msg};
                 old_stack.query_refines(new_stack, stack_lbl);
+                assert(value == crate::implementation::AllocationBranchStack_v::normalize_value(msg)) by {
+                    reveal(CrashAwareAllocationBranchStack::State::query);
+                }
                 assert(AbstractCrashAwareMap::State::next_by(
                     self.abstract_i(),
                     post.abstract_i(),
@@ -313,7 +320,7 @@ impl CrashAwareAllocationBranchStack::State {
             ),
             post.persistent == self.persistent,
             post.persistent_seq_end == self.persistent_seq_end,
-            post.in_flight == self.in_flight,
+            post.frozen == self.frozen,
         ensures
             AbstractCrashAwareMap::State::next(
                 self.abstract_i(),
@@ -324,7 +331,7 @@ impl CrashAwareAllocationBranchStack::State {
         reveal(AbstractCrashAwareMap::State::next);
         reveal(AbstractCrashAwareMap::State::next_by);
         assert(post.abstract_i().persistent == self.abstract_i().persistent);
-        assert(post.abstract_i().in_flight == self.abstract_i().in_flight);
+        assert(post.abstract_i().frozen == self.abstract_i().frozen);
         assert(AbstractCrashAwareMap::State::next_by(
             self.abstract_i(),
             post.abstract_i(),
@@ -464,39 +471,56 @@ impl CrashAwareAllocationBranchStack::State {
         ));
     }
 
-    pub proof fn freeze_persistent_internal_refines(self, post: Self, lbl: CrashAwareAllocationBranchStack::Label)
+    pub proof fn commit_start_ephemeral_refines(self, post: Self, lbl: CrashAwareAllocationBranchStack::Label)
         requires
             self.inv(),
             post.inv(),
-            CrashAwareAllocationBranchStack::State::freeze_persistent_internal(self, post, lbl),
+            CrashAwareAllocationBranchStack::State::commit_start_ephemeral(self, post, lbl),
         ensures
             AbstractCrashAwareMap::State::next(self.abstract_i(), post.abstract_i(), self.label_to_abstract_map(lbl)),
     {
         reveal(AbstractCrashAwareMap::State::next);
         reveal(AbstractCrashAwareMap::State::next_by);
+        reveal(CrashAwareAllocationBranchStack::State::commit_start_ephemeral);
+        let stack = self.ephemeral->v;
+        let frozen_stack = lbl->frozen_stack;
+        let stack_lbl = AllocationBranchStack::Label::FreezeAsLabel{
+            sealed_stack: frozen_stack.sealed_stack,
+        };
+        assert(AllocationBranchStack::State::freeze_as(stack, stack, stack_lbl));
+        stack.freeze_as_refines(stack, stack_lbl);
+        assert(sealed_store_i(frozen_stack.sealed_stack, frozen_stack.seq_end)
+            == self.label_to_abstract_map(lbl)->frozen_map);
+        assert(stack.abstract_map_i() == self.abstract_i().ephemeral->v);
         assert(AbstractCrashAwareMap::State::next_by(
             self.abstract_i(),
             post.abstract_i(),
             self.label_to_abstract_map(lbl),
-            AbstractCrashAwareMap::Step::freeze_persistent_internal(),
+            AbstractCrashAwareMap::Step::commit_start_ephemeral(),
         ));
     }
 
-    pub proof fn commit_start_refines(self, post: Self, lbl: CrashAwareAllocationBranchStack::Label)
+    pub proof fn commit_start_persistent_refines(self, post: Self, lbl: CrashAwareAllocationBranchStack::Label)
         requires
             self.inv(),
             post.inv(),
-            CrashAwareAllocationBranchStack::State::commit_start(self, post, lbl),
+            CrashAwareAllocationBranchStack::State::commit_start_persistent(self, post, lbl),
         ensures
             AbstractCrashAwareMap::State::next(self.abstract_i(), post.abstract_i(), self.label_to_abstract_map(lbl)),
     {
         reveal(AbstractCrashAwareMap::State::next);
         reveal(AbstractCrashAwareMap::State::next_by);
+        reveal(CrashAwareAllocationBranchStack::State::commit_start_persistent);
+        let frozen_stack = lbl->frozen_stack;
+        assert(sealed_store_i(frozen_stack.sealed_stack, frozen_stack.seq_end)
+            == self.abstract_i().persistent);
+        assert(sealed_store_i(frozen_stack.sealed_stack, frozen_stack.seq_end)
+            == self.label_to_abstract_map(lbl)->frozen_map);
         assert(AbstractCrashAwareMap::State::next_by(
             self.abstract_i(),
             post.abstract_i(),
             self.label_to_abstract_map(lbl),
-            AbstractCrashAwareMap::Step::commit_start(),
+            AbstractCrashAwareMap::Step::commit_start_persistent(),
         ));
     }
 
@@ -552,8 +576,8 @@ impl CrashAwareAllocationBranchStack::State {
             CrashAwareAllocationBranchStack::Step::load_ephemeral() => {
                 self.load_ephemeral_refines(post, lbl);
             }
-            CrashAwareAllocationBranchStack::Step::query(new_stack) => {
-                self.query_refines(post, lbl, new_stack);
+            CrashAwareAllocationBranchStack::Step::query(new_stack, msg) => {
+                self.query_refines(post, lbl, new_stack, msg);
             }
             CrashAwareAllocationBranchStack::Step::append_to_active(new_stack, path) => {
                 self.append_to_active_refines(post, lbl, new_stack, path);
@@ -579,11 +603,11 @@ impl CrashAwareAllocationBranchStack::State {
             CrashAwareAllocationBranchStack::Step::freeze_map_internal() => {
                 self.freeze_map_internal_refines(post, lbl);
             }
-            CrashAwareAllocationBranchStack::Step::freeze_persistent_internal() => {
-                self.freeze_persistent_internal_refines(post, lbl);
+            CrashAwareAllocationBranchStack::Step::commit_start_ephemeral() => {
+                self.commit_start_ephemeral_refines(post, lbl);
             }
-            CrashAwareAllocationBranchStack::Step::commit_start() => {
-                self.commit_start_refines(post, lbl);
+            CrashAwareAllocationBranchStack::Step::commit_start_persistent() => {
+                self.commit_start_persistent_refines(post, lbl);
             }
             CrashAwareAllocationBranchStack::Step::commit_complete() => {
                 self.commit_complete_refines(post, lbl);

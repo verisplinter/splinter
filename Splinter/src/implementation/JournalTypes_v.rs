@@ -1,14 +1,81 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
 use vstd::{prelude::*};
+use vstd::assert_maps_equal;
 use crate::abstract_system::MsgHistory_v::{MsgHistory, KeyedMessage};
 use crate::abstract_system::StampedMap_v::LSN;
-use crate::marshalling::Marshalling_v::Parsedview;
+use crate::implementation::Cache_v::Cache;
+use crate::implementation::CachedJournal_v::CachedJournal;
 use crate::spec::KeyType_t::Key;
 use crate::spec::Messages_t::{Message, Value};
+use crate::spec::AsyncDisk_t::{Address, RawPage};
 use crate::implementation::OverflowFiction_v::convert_overflow_into_liveness_failure;
+use crate::journal::LinkedJournal_v::JournalRecord;
+use crate::marshalling::IJournalRecordFormat_v::IJournalRecordFormat;
+use crate::marshalling::Marshalling_v::{Marshal, Parsedview};
 
 verus! {
+
+// Keep journal page decoding independent of AtomicState so the SM2 proof can
+// evolve in parallel with the atomic-state model.
+pub open spec fn raw_page_to_record(raw_page: RawPage) -> (out: JournalRecord)
+{
+    let fmt = IJournalRecordFormat::spec_new();
+    if fmt.parsable(raw_page) {
+        fmt.parse(raw_page).view()
+    } else {
+        arbitrary()
+    }
+}
+
+pub open spec fn to_journal_records(reads: Map<Address, RawPage>) -> Map<Address, JournalRecord>
+{
+    Map::new(
+        |addr| reads.contains_key(addr),
+        |addr| raw_page_to_record(reads[addr]),
+    )
+}
+
+pub proof fn to_journal_records_restrict(
+    reads: Map<Address, RawPage>,
+    addrs: Set<Address>,
+)
+    ensures
+        to_journal_records(reads.restrict(addrs)) =~=
+            to_journal_records(reads).restrict(addrs),
+{
+    assert_maps_equal!(
+        to_journal_records(reads.restrict(addrs)),
+        to_journal_records(reads).restrict(addrs),
+        addr => {
+            if to_journal_records(reads.restrict(addrs)).contains_key(addr) {
+                assert(reads.restrict(addrs).contains_key(addr));
+                assert(reads.contains_key(addr));
+                assert(addrs.contains(addr));
+                assert(reads.restrict(addrs)[addr] == reads[addr]);
+            }
+            if to_journal_records(reads).restrict(addrs).contains_key(addr) {
+                assert(to_journal_records(reads).contains_key(addr));
+                assert(reads.contains_key(addr));
+                assert(addrs.contains(addr));
+                assert(reads.restrict(addrs).contains_key(addr));
+                assert(reads.restrict(addrs)[addr] == reads[addr]);
+            }
+        }
+    );
+}
+
+pub open spec fn journal_marshall_labels(
+    addr: Address,
+    raw_page: RawPage,
+) -> (CachedJournal::Label, Cache::Label)
+{
+    let writes = Map::<Address, RawPage>::empty().insert(addr, raw_page);
+    (
+        CachedJournal::Label::JournalMarshal{writes: to_journal_records(writes)},
+        Cache::Label::Access{reads: Map::<Address, RawPage>::empty(), writes},
+    )
+}
 
 pub type ILsn = u64;
 

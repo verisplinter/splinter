@@ -9,7 +9,7 @@ use verus_state_machines_macros::state_machine;
 use vstd::prelude::*;
 use vstd::{map::*, map_lib::*, seq::*, set::*};
 
-use crate::spec::AsyncDisk_t::{Address, DiskRequest, DiskResponse, RawPage};
+use crate::spec::AsyncDisk_t::{Address, AU, DiskRequest, DiskResponse, RawPage};
 
 verus!{
 
@@ -62,7 +62,7 @@ state_machine!{ Cache {
 
     pub enum Label {
         Access{reads: Map<Address, RawPage>, writes: Map<Address, RawPage>},
-        EvictableCheck{addrs: Set<Address>},
+        EvictableCheck{aus: Set<AU>},
         DiskOps{requests: Set<DiskRequest>, responses: Map<Address, DiskResponse>},
         Internal,
     }
@@ -292,8 +292,8 @@ state_machine!{ Cache {
 
     transition!{ evictable(lbl: Label) {
         require lbl is EvictableCheck;
-        require forall |addr| lbl->addrs.contains(addr) 
-            &&  #[trigger] pre.lookup_map.contains_key(addr)
+        require forall |addr: Address| lbl->aus.contains(addr.au)
+            && #[trigger] pre.lookup_map.contains_key(addr)
             ==> {
                 &&& pre.entries[pre.lookup_map[addr]] is Filled
                 &&& pre.status_map[pre.lookup_map[addr]] is Clean

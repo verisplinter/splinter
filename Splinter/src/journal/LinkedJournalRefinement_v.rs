@@ -685,17 +685,25 @@ impl LinkedJournal::State {
         let tj = self.truncated_journal;
         let tjd = self.truncated_journal.disk_view;
 
-        tjd.pointer_after_crop_commutes_with_interpretation_no_some(tj.freshest_rec, depth);
-        tj.crop_head_composed_with_discard_old_commutes(new_bdy, depth);
-        let cropped_ptr = tjd.pointer_after_crop(tj.freshest_rec, depth);
-        let cropped_tj = LinkedJournal_v::TruncatedJournal{freshest_rec: cropped_ptr, disk_view: tjd};
-        tjd.pointer_after_crop_ensures(tj.freshest_rec, depth); // another lost spec-ensures that wasted time digging up
-
         fj.iwf();  // another lost spec-ensures that wasted time digging up
-        self.i().truncated_journal.crop_head_records_wf_lemma(depth); // another lost spec-ensures that wasted time digging up
+        self.iwf();
 
-        let post_discard = cropped_tj.discard_old(new_bdy);
-        fj.disk_view.sub_disk_interp(post_discard.disk_view, post_discard.freshest_rec);
+        if fj.freshest_rec is Some {
+            tjd.pointer_after_crop_commutes_with_interpretation_no_some(tj.freshest_rec, depth);
+            tj.crop_head_composed_with_discard_old_commutes(new_bdy, depth);
+            let cropped_ptr = tjd.pointer_after_crop(tj.freshest_rec, depth);
+            let cropped_tj = LinkedJournal_v::TruncatedJournal{freshest_rec: cropped_ptr, disk_view: tjd};
+            tjd.pointer_after_crop_ensures(tj.freshest_rec, depth); // another lost spec-ensures that wasted time digging up
+
+            self.i().truncated_journal.crop_head_records_wf_lemma(depth); // another lost spec-ensures that wasted time digging up
+
+            let post_discard = cropped_tj.discard_old(new_bdy);
+            fj.disk_view.sub_disk_interp(post_discard.disk_view, post_discard.freshest_rec);
+        } else {
+            assert(lbl.i()->frozen_journal.freshest_rec is None);
+            assert(self.i().seq_start() <= lbl.i()->frozen_journal.boundary_lsn);
+            assert(lbl.i()->frozen_journal.boundary_lsn <= self.i().seq_end());
+        }
 
         assert( PagedJournal::State::next_by(self.i(), post.i(), lbl.i(), PagedJournal::Step::freeze_for_commit(depth)) );  // trigger
     }
@@ -741,6 +749,13 @@ impl LinkedJournal::State {
             self.truncated_journal.disk_view.discard_interp(lsn, cropped_tj.disk_view, self.truncated_journal.freshest_rec);
             // DiskView::tight_interp(cropped_tj.disk_view, cropped_tj.freshest_rec, post.truncated_journal.disk_view);
             post.truncated_journal.disk_view.sub_disk_interp(cropped_tj.disk_view, cropped_tj.freshest_rec);
+        } else {
+            assert(post.truncated_journal.freshest_rec is None);
+            assert(post.truncated_journal.disk_view.boundary_lsn == lsn);
+            assert(post.i().truncated_journal == PagedJournal_v::TruncatedJournal{
+                boundary_lsn: lsn,
+                freshest_rec: None,
+            });
         }
         assert( PagedJournal::State::next_by(self.i(), post.i(), lbl.i(), PagedJournal::Step::discard_old()) );  // trigger
     }

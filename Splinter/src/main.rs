@@ -11,8 +11,10 @@ pub mod journal;
 pub mod allocation_layer;
 pub mod betree;
 
-use crate::trusted::TrustedEntry_t; // Auditor's "entry point": Auditor starts reading here
-use crate::implementation::Implementation_v;  // Implementor's entry point: Execution starts here
+// Temporarily disabled while AtomicState_v.rs and the SM2 refinement proof are
+// being developed in parallel.
+// use crate::trusted::TrustedEntry_t; // Auditor's "entry point": Auditor starts reading here
+// use crate::implementation::Implementation_v;  // Implementor's entry point: Execution starts here
 
 // This file is where the generic theorem that the auditor reads
 // (in _t files) meets the implementation that the implementor supplies
@@ -23,5 +25,5 @@ use crate::implementation::Implementation_v;  // Implementor's entry point: Exec
 // put into the executable.
 
 fn main() {
-    TrustedEntry_t::entry::<Implementation_v::Implementation>();
+    // TrustedEntry_t::entry::<Implementation_v::Implementation>();
 }

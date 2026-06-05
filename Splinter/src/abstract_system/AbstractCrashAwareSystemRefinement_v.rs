@@ -18,7 +18,7 @@ use crate::spec::Messages_t::Message;
 use crate::abstract_system::AbstractCrashAwareJournal_v::*;
 use crate::abstract_system::AbstractCrashAwareMap_v;
 use crate::abstract_system::AbstractCrashAwareMap_v::*;
-use crate::abstract_system::AbstractCrashAwareSystem_v::{CoordinationSystem, Known};
+use crate::abstract_system::AbstractCrashAwareSystem_v::CoordinationSystem;
 use crate::abstract_system::AbstractJournal_v::AbstractJournal;
 use crate::abstract_system::AbstractMap_v::AbstractMap;
 use crate::abstract_system::MsgHistory_v::{KeyedMessage, MsgHistory};
@@ -38,7 +38,7 @@ verus! {
         {
             &&& self.persistent.wf()
             &&& self.ephemeral.wf()
-            &&& (self.in_flight is Some ==> self.in_flight->Some_0.wf())
+            &&& (self.frozen is Some ==> self.frozen->Some_0.wf())
         }
     }
 
@@ -60,7 +60,7 @@ verus! {
                     AbstractCrashAwareMap_v::Ephemeral::Known{ v } => v.stamped_map.value.wf(),
                     _ => true,
                 }
-            &&& match self.in_flight {
+            &&& match self.frozen {
                     Some(v) => v.value.wf(),
                     _ => true
                 }
@@ -71,27 +71,28 @@ verus! {
 
     impl CoordinationSystem::State
     {
+        pub open spec(checked) fn components_loaded(self) -> bool
+        {
+            &&& self.journal.ephemeral is Known
+            &&& self.mapadt.ephemeral is Known
+        }
+
         /// Return the "seq_end" of the ephemeral (most up-to-date, not necessarily persisted)
         /// state.
         pub open spec(checked) fn ephemeral_seq_end(self) -> LSN
             recommends
-                self.ephemeral is Some,
-                self.journal.ephemeral is Known,
+                self.components_loaded(),
         {
             self.journal.i().seq_end
         }
 
         pub open spec(checked) fn inflight_is_on_disk(self) -> bool
         {
-            &&& self.ephemeral matches Some(Known{..})
-
-            // self.commit_started
-            &&& self.journal.in_flight is Some
-
-            // the superblock has landed at the disk. That in-flight state should now define the
+            &&& self.components_loaded()
+            // The superblock has landed at the disk. That frozen state should now define the
             // oldest available version in the interpretation (it is indeed persistent), but the
             // program hasn't learned about it yet, so we need to do the indirection in fn i().
-            &&& !self.superblock_in_flight
+            &&& self.superblock_landed
         }
 
         // This is the case where there's data in flight and (at the proof level) we know it has
@@ -105,7 +106,7 @@ verus! {
             // Program thinks a superblock is still in-flight to the disk, but the disk
             // knows it has actually landed. In that case, versions begins at the
             // in-flight map.
-            let in_flight_map = self.mapadt.in_flight.unwrap();
+            let in_flight_map = self.mapadt.frozen.unwrap();
 
             // In that case, the program is still keeping more journal than it needs
             // (because it hasn't yet heard about the write landing), so we need to
@@ -118,7 +119,7 @@ verus! {
 //             let _ = spec_affirm(x.discard_old(y).seq_start == y);
 //             let _ = spec_affirm(remaining_journal.seq_start == in_flight_map.seq_end);
 
-            let stable_lsn = self.journal.in_flight.unwrap().seq_end;
+            let stable_lsn = self.journal.frozen.unwrap().seq_end;
 //             let _ = spec_affirm(self.journal.i().wf());
 //             let _ = spec_affirm(self.journal.i().can_discard_to(in_flight_map.seq_end));
 //             let _ = spec_affirm(self.journal.i().seq_start <= in_flight_map.seq_end);
@@ -143,7 +144,7 @@ verus! {
         pub open spec(checked) fn iversions_known(self) -> (versions: FloatingSeq<Version>)
         recommends
             self.inv(),
-            self.ephemeral matches Some(Known{..}),
+            self.components_loaded(),
         {
             if self.inflight_is_on_disk() {
                 self.iversions_known_inflight()
@@ -165,9 +166,9 @@ verus! {
             assert forall |lsn| self.iversions_known_inflight().start <= lsn < self.iversions_known_inflight().len()
             implies self.iversions_known_landed()[lsn] == self.iversions_known_inflight()[lsn] by {
 
-                let in_flight_map = self.mapadt.in_flight.unwrap();
+                let in_flight_map = self.mapadt.frozen.unwrap();
                 let remaining_journal = self.journal.i().discard_old(in_flight_map.seq_end);
-                let in_flight_journal = self.journal.i().discard_recent(self.mapadt.in_flight->Some_0.seq_end);
+                let in_flight_journal = self.journal.i().discard_recent(self.mapadt.frozen->Some_0.seq_end);
                 let remaining_journal_discarded = remaining_journal.discard_recent(lsn as LSN);
 
                 journal_associativity(self.mapadt.persistent, in_flight_journal, remaining_journal_discarded);
@@ -184,24 +185,22 @@ verus! {
             self.inv(),
         {
             let stable_lsn = self.journal.persistent.seq_end;
-            match self.ephemeral {
-                Some(Known{ progress, sync_reqs, .. }) => {
+            if self.components_loaded() {
                 CrashTolerantAsyncMap::State{
                     versions: self.iversions_known(),
-                    async_ephemeral: progress,
-                    sync_requests: sync_reqs,
-                }},
-                None => {
-                    // This is the case where the program has no ephemeral state, so i() has only a
-                    // single version to consider, whatever's actually on the disk persistently.
-                    let _ = spec_affirm(self.journal.persistent.can_follow(self.mapadt.persistent.seq_end));
-                    CrashTolerantAsyncMap::State{
-                    // This recommends should be provable from the stable_lsn let binding. :v(
-                    // recommends self.journal.persistent.can_discard_to(stable_lsn)
-                    versions: floating_versions(self.mapadt.persistent, self.journal.persistent, stable_lsn),
-                    async_ephemeral: AsyncMap::State::init_ephemeral_state(),
-                    sync_requests: Map::empty(),
+                    async_ephemeral: self.progress,
+                    sync_requests: self.sync_reqs,
                 }
+            } else {
+                // This is the case where the program has no loaded component state, so i() has
+                // only a single version to consider, whatever's actually on the disk persistently.
+                let _ = spec_affirm(self.journal.persistent.can_follow(self.mapadt.persistent.seq_end));
+                CrashTolerantAsyncMap::State{
+                // This recommends should be provable from the stable_lsn let binding. :v(
+                // recommends self.journal.persistent.can_discard_to(stable_lsn)
+                    versions: floating_versions(self.mapadt.persistent, self.journal.persistent, stable_lsn),
+                    async_ephemeral: self.progress,
+                    sync_requests: self.sync_reqs,
                 }
             }
         }
@@ -273,9 +272,8 @@ verus! {
         {
             &&& self.journal.wf()
             &&& self.mapadt.wf()
-            &&& self.ephemeral is Some == self.journal.ephemeral is Known
             &&& self.journal.ephemeral is Known == self.mapadt.ephemeral is Known
-            &&& self.journal.in_flight is Some ==> self.mapadt.in_flight is Some
+            &&& self.superblock_in_flight ==> !self.superblock_landed
         }
 
         // Geometry refers to the boundaries between the journal and
@@ -288,7 +286,7 @@ verus! {
         pub open spec(checked) fn inv_ephemeral_geometry(self) -> bool
             recommends
                 self.wf(),
-                self.ephemeral is Some,
+                self.components_loaded(),
         {
             // Ephemeral journal begins at persistent map
             &&& self.journal.i().can_follow(self.mapadt.persistent.seq_end)
@@ -300,14 +298,12 @@ verus! {
             &&& self.journal.i().can_discard_to(self.mapadt.i().seq_end)
             // Ephemeral journal is no shorter than persistent state
             &&& self.journal.persistent.seq_end <= self.ephemeral_seq_end()
-            // Local snapshot of mapLsn matched actual map state machine
-            &&& self.ephemeral->Some_0.map_lsn == self.mapadt.ephemeral->v.stamped_map.seq_end
         }
 
         pub open spec(checked) fn inv_ephemeral_value_agreement(self) -> bool
             recommends
                 self.wf(),
-                self.ephemeral is Some,
+                self.components_loaded(),
                 self.inv_ephemeral_geometry()
         {
             // Ephemeral journal agrees with persistent journal
@@ -322,40 +318,57 @@ verus! {
 
         pub open spec(checked) fn map_is_frozen(self) -> bool
         {
-            self.mapadt.in_flight is Some
+            self.mapadt.frozen is Some
         }
 
         pub open spec(checked) fn commit_started(self) -> bool
         {
-            self.journal.in_flight is Some
+            self.superblock_in_flight || self.superblock_landed
+        }
+
+        pub open spec(checked) fn journal_is_frozen(self) -> bool
+        {
+            self.journal.frozen is Some
+        }
+
+        pub open spec(checked) fn inv_frozen_journal_value_agreement(self) -> bool
+            recommends
+                self.wf(),
+                self.components_loaded(),
+                self.journal_is_frozen(),
+                self.inv_ephemeral_value_agreement(),
+        {
+            let frozen_journal = self.journal.frozen->Some_0;
+            &&& self.journal.i().includes_subseq(frozen_journal)
+            &&& journal_overlaps_agree(frozen_journal, self.journal.persistent)
         }
         
         pub open spec(checked) fn inv_frozen_map_geometry(self) -> bool
             recommends
                 self.wf(),
-                self.ephemeral is Some,
+                self.components_loaded(),
                 self.map_is_frozen()
         {
             // frozen map hasn't passed ephemeral journal
-            &&& self.mapadt.in_flight->Some_0.seq_end <= self.ephemeral_seq_end()
+            &&& self.mapadt.frozen->Some_0.seq_end <= self.ephemeral_seq_end()
             // Frozen map doesn't regress before persistent map
-            &&& self.mapadt.persistent.seq_end <= self.mapadt.in_flight->Some_0.seq_end
+            &&& self.mapadt.persistent.seq_end <= self.mapadt.frozen->Some_0.seq_end
         }
 
         pub open spec(checked) fn inv_frozen_map_value_agreement(self) -> bool
             recommends
                 self.wf(),
-                self.ephemeral is Some,
+                self.components_loaded(),
                 self.inv_ephemeral_geometry(),
                 self.map_is_frozen(),
                 self.inv_frozen_map_geometry(),
         {
             // invariant: the in_flight map agrees with the persistent map,
             // plus has extra entries from the ephemeral journal.
-            self.mapadt.in_flight->Some_0 ==
+            self.mapadt.frozen->Some_0 ==
                 MsgHistory::map_plus_history(
                     self.mapadt.persistent,
-                    self.journal.i().discard_recent(self.mapadt.in_flight->Some_0.seq_end)
+                    self.journal.i().discard_recent(self.mapadt.frozen->Some_0.seq_end)
                 )
 
             // NB: Frozen Journal agreement comes "for free" because the frozen
@@ -366,12 +379,12 @@ verus! {
         pub open spec(checked) fn inv_commit_started_geometry(self) -> bool
             recommends self.commit_started()
         {
-            let if_map = self.mapadt.in_flight->Some_0;
-            let if_journal = self.journal.in_flight->Some_0;
+            let if_map = self.mapadt.frozen->Some_0;
+            let if_journal = self.journal.frozen->Some_0;
 
             // We need a well-behaved journal to relate in-flight state to.
             &&& self.wf()
-            &&& self.ephemeral is Some
+            &&& self.components_loaded()
             &&& self.inv_ephemeral_geometry()
 
             // Geometry properties
@@ -390,15 +403,17 @@ verus! {
         pub open spec(checked) fn inv_commit_started_value_agreement(self) -> bool
             recommends
                 self.commit_started(),
+                self.wf(),
+                self.components_loaded(),
                 self.inv_commit_started_geometry(),
         {
-            let if_map = self.mapadt.in_flight->Some_0;
-            let if_journal = self.journal.in_flight->Some_0;
+            let if_map = self.mapadt.frozen->Some_0;
+            let if_journal = self.journal.frozen->Some_0;
 
             // in-flight journal is consistent with the persistent journal
             &&& journal_overlaps_agree(if_journal, self.journal.persistent)
             // in-flight journal is consistent with the ephemeral journal
-            &&& journal_overlaps_agree(if_journal, self.journal.i())
+            &&& self.journal.i().includes_subseq(if_journal)
             // in-flight map matches corresponding state in ephemeral world
             // TODO: MsgHistory::map_plus_history should probably be moved out of MsgHistory
             &&& if_map == MsgHistory::map_plus_history(
@@ -413,8 +428,8 @@ verus! {
         {
             &&& self.wf()
             &&& self.inv_persistent_journal_geometry()
-            &&& self.ephemeral is None ==> {!self.map_is_frozen() && !self.commit_started()}
-            &&& self.ephemeral is Some ==>
+            &&& !self.components_loaded() ==> {!self.map_is_frozen() && !self.commit_started()}
+            &&& self.components_loaded() ==>
             {
                 &&& self.inv_ephemeral_geometry()
                 &&& self.inv_ephemeral_value_agreement()
@@ -425,8 +440,10 @@ verus! {
                 }
             }
             &&& self.superblock_in_flight ==> self.commit_started()
+            &&& self.superblock_landed ==> self.commit_started()
             &&& self.commit_started() ==>
             {
+                &&& self.journal.frozen is Some
                 &&& self.map_is_frozen()
                 &&& self.inv_commit_started_geometry()
                 &&& self.inv_commit_started_value_agreement()
@@ -506,16 +523,14 @@ verus! {
             // Dafny's able to figure this out without this line, idk
             // why Verus isn't, because of opaque `next_by` etc.? (But idk how
             // to reveal those for the requires list)
-            // v.ephemeral is Some,
-            // // Same with this,
-            // v.journal.ephemeral is Known,
+            // v.components_loaded(),
             CoordinationSystem::State::next(v, vp, label),
             CoordinationSystem::State::next_by(v, vp, label, step),
             matches!(step, CoordinationSystem::Step::commit_complete(_, _)),
             // What we'd like to do ideally:
             // step.is_commit_complete(),
             v.mapadt.persistent.seq_end <= lsn <= v.ephemeral_seq_end(),
-            v.mapadt.in_flight->Some_0.seq_end <= lsn,
+            v.mapadt.frozen->Some_0.seq_end <= lsn,
         ensures
             v.journal.i().can_discard_to(lsn),
             MsgHistory::map_plus_history(v.mapadt.persistent, v.journal.i().discard_recent(lsn))
@@ -533,7 +548,7 @@ verus! {
         // Passes with the reveal statements, fails without
 
         assert(AbstractCrashAwareJournal::State::next(v.journal, vp.journal, AbstractCrashAwareJournal::Label::CommitCompleteLabel {
-            require_end: v.ephemeral->Some_0.map_lsn,
+            require_end: v.mapadt.i().seq_end,
         }));
 
         // There are six pieces in play here: the persistent and in-flight images and the ephemeral journals:
@@ -552,7 +567,7 @@ verus! {
         // "R" is the "reference LSN" -- that's where we're going to prune ephemeral.journal, since
         // after the commit it is going to be the LSN of the persistent map.
 
-        let ref_lsn = v.mapadt.in_flight->Some_0.seq_end;
+        let ref_lsn = v.mapadt.frozen->Some_0.seq_end;
         let ej = v.journal.i();
 
         // Recommendation fails even though assertion passes.
@@ -650,7 +665,7 @@ verus! {
         reveal(AbstractMap::State::next_by);
 
         if v.map_is_frozen() {
-            let frozen_end = v.mapadt.in_flight->Some_0.seq_end;
+            let frozen_end = v.mapadt.frozen->Some_0.seq_end;
             assert(v.journal.i().discard_recent(frozen_end)
                 == vp.journal.i().discard_recent(frozen_end))
             by
@@ -672,7 +687,7 @@ verus! {
             message: Message::Define { value: value },
         };
 
-        let singleton = MsgHistory::singleton_at(v.ephemeral->Some_0.map_lsn, keyed_message);
+        let singleton = MsgHistory::singleton_at(v.mapadt.i().seq_end, keyed_message);
 
 
         journal_associativity(v.mapadt.persistent, v.journal.i(), singleton);
@@ -711,7 +726,7 @@ verus! {
             v.inv(),
             CoordinationSystem::State::next(v, vp, label),
             CoordinationSystem::State::next_by(v, vp, label, step),
-            matches!(step, CoordinationSystem::Step::commit_start(_)),
+            matches!(step, CoordinationSystem::Step::commit_start(..)),
         ensures
             vp.inv()
     {
@@ -724,8 +739,118 @@ verus! {
         reveal(AbstractJournal::State::next_by);
         reveal(AbstractCrashAwareMap::State::next);
         reveal(AbstractCrashAwareMap::State::next_by);
-        // reveal(AbstractMap::State::next);
-        // reveal(AbstractMap::State::next_by);
+        reveal(AbstractMap::State::next);
+        reveal(AbstractMap::State::next_by);
+
+        match step {
+            CoordinationSystem::Step::commit_start(new_boundary_lsn, frozen_journal, frozen_map, new_journal, new_mapadt) => {
+                assert(vp.journal == new_journal);
+                assert(vp.mapadt == new_mapadt);
+                assert(vp.superblock_in_flight);
+                assert(!vp.superblock_landed);
+
+                let journal_lbl = AbstractCrashAwareJournal::Label::CommitStartLabel{
+                    new_boundary_lsn,
+                    frozen_journal,
+                };
+                let map_lbl = AbstractCrashAwareMap::Label::CommitStartLabel{
+                    new_boundary_lsn,
+                    frozen_map,
+                };
+
+                assert(AbstractCrashAwareJournal::State::next_by(
+                    v.journal,
+                    new_journal,
+                    journal_lbl,
+                    AbstractCrashAwareJournal::Step::commit_start(),
+                ));
+                if frozen_map == v.mapadt.persistent {
+                    assert(AbstractCrashAwareMap::State::next_by(
+                        v.mapadt,
+                        new_mapadt,
+                        map_lbl,
+                        AbstractCrashAwareMap::Step::commit_start_persistent(),
+                    ));
+                    assert(frozen_map.seq_end == v.mapadt.persistent.seq_end);
+                } else {
+                    assert(AbstractCrashAwareMap::State::next_by(
+                        v.mapadt,
+                        new_mapadt,
+                        map_lbl,
+                        AbstractCrashAwareMap::Step::commit_start_ephemeral(),
+                    ));
+                    let amap_lbl = AbstractMap::Label::FreezeAsLabel{ stamped_map: frozen_map };
+                    assert(AbstractMap::State::next(
+                        v.mapadt.ephemeral->v,
+                        v.mapadt.ephemeral->v,
+                        amap_lbl,
+                    ));
+                    let amap_step = choose |s| AbstractMap::State::next_by(
+                        v.mapadt.ephemeral->v,
+                        v.mapadt.ephemeral->v,
+                        amap_lbl,
+                        s,
+                    );
+                    assert(AbstractMap::State::next_by(
+                        v.mapadt.ephemeral->v,
+                        v.mapadt.ephemeral->v,
+                        amap_lbl,
+                        amap_step,
+                    ));
+                    match amap_step {
+                        AbstractMap::Step::freeze_as() => {
+                            reveal(AbstractMap::State::freeze_as);
+                        },
+                        _ => { assert(false); },
+                    }
+                    assert(frozen_map == v.mapadt.i());
+                    assert(frozen_map.seq_end == v.mapadt.i().seq_end);
+                }
+                assert(frozen_map.value.wf());
+
+                assert(vp.journal.frozen == Some(frozen_journal));
+                assert(vp.mapadt.frozen == Some(frozen_map));
+                assert(vp.journal.persistent == v.journal.persistent);
+                assert(vp.mapadt.persistent == v.mapadt.persistent);
+                assert(vp.journal.ephemeral == v.journal.ephemeral);
+                assert(vp.mapadt.ephemeral == v.mapadt.ephemeral);
+
+                let aj_lbl = AbstractJournal::Label::FreezeForCommitLabel{ frozen_journal };
+                assert(AbstractJournal::State::next(
+                    v.journal.ephemeral->v,
+                    v.journal.ephemeral->v,
+                    aj_lbl,
+                ));
+                assert(v.journal.i().includes_subseq(frozen_journal));
+                assert(journal_overlaps_agree(frozen_journal, vp.journal.persistent)) by {
+                    assert forall |lsn| #![auto]
+                        frozen_journal.contains(lsn) && vp.journal.persistent.contains(lsn)
+                    implies frozen_journal.msgs[lsn] == vp.journal.persistent.msgs[lsn] by {
+                        assert(v.inv_ephemeral_value_agreement());
+                        assert(v.journal.i().contains(lsn));
+                        assert(v.journal.i().msgs[lsn] == frozen_journal.msgs[lsn]);
+                        assert(v.journal.persistent.contains(lsn));
+                        assert(v.journal.persistent.msgs[lsn] == v.journal.i().msgs[lsn]);
+                    }
+                }
+
+                MsgHistory::map_plus_history_forall_lemma();
+                if frozen_map == v.mapadt.persistent {
+                    let hist = vp.journal.i().discard_recent(vp.mapadt.frozen->Some_0.seq_end);
+                    assert(vp.mapadt.frozen->Some_0.seq_end == vp.mapadt.persistent.seq_end);
+                    assert(hist.seq_start == hist.seq_end);
+                    assert(hist.is_empty());
+                    assert(MsgHistory::map_plus_history(vp.mapadt.persistent, hist) == vp.mapadt.persistent);
+                }
+                assert(vp.mapadt.frozen->Some_0 ==
+                    MsgHistory::map_plus_history(
+                        vp.mapadt.persistent,
+                        vp.journal.i().discard_recent(vp.mapadt.frozen->Some_0.seq_end),
+                    )
+                );
+            },
+            _ => { assert(false); },
+        }
     }
 
     pub proof fn inv_inductive_commit_complete_step(
@@ -775,7 +900,7 @@ verus! {
         let pm = v.mapadt.persistent;
         let em_end = v.mapadt.i().seq_end;
         let ej = v.journal.i();
-        let im_end = v.mapadt.in_flight->Some_0.seq_end;
+        let im_end = v.mapadt.frozen->Some_0.seq_end;
 
         // Show that ej[:em_end] == ej[:im_end] + ej[im_end:em_end]
         // Needed an extensionality argument... took a while to find
@@ -883,9 +1008,22 @@ verus! {
             CoordinationSystem::Step::put(..) => {
                 inv_inductive_put_step(v, vp, label, step);
             },
+            CoordinationSystem::Step::execute_noop(..) => {
+            },
             CoordinationSystem::Step::deliver_reply(..) => {
             },
             CoordinationSystem::Step::journal_internal(..) => {
+                let jstep = choose |s| AbstractCrashAwareJournal::State::next_by(
+                    v.journal,
+                    vp.journal,
+                    AbstractCrashAwareJournal::Label::InternalLabel,
+                    s,
+                );
+                match jstep {
+                    AbstractCrashAwareJournal::Step::internal(new_journal) => {
+                    }
+                    _ => {}
+                }
             },
             CoordinationSystem::Step::map_internal(..) => {
             },
@@ -985,8 +1123,8 @@ verus! {
 
         // need to tickle some trigger to get extensionality in the inflight case
         if v.inflight_is_on_disk() {
-            let remaining_journal = v.journal.i().discard_old(v.mapadt.in_flight.unwrap().seq_end);
-            let remaining_journal_p = vp.journal.i().discard_old(vp.mapadt.in_flight.unwrap().seq_end);
+            let remaining_journal = v.journal.i().discard_old(v.mapadt.frozen.unwrap().seq_end);
+            let remaining_journal_p = vp.journal.i().discard_old(vp.mapadt.frozen.unwrap().seq_end);
 
             let vpdl = versions_prime.drop_last();
             assert forall |i| vpdl.is_active(i) implies #[trigger] vpdl[i].ext_equal(versions[i]) by {
@@ -1078,7 +1216,7 @@ verus! {
         reveal(CoordinationSystem::State::next_by);
 
         vp.lemma_iversions_known_inflight_landed_relation();
-        let new_stable_index = v.journal.in_flight.unwrap().seq_end as int;
+        let new_stable_index = v.journal.frozen.unwrap().seq_end as int;
 
         // TODO(verus): We need a nice way to expose extensionality for FloatingSeq with elegant
         // syntax.
@@ -1143,7 +1281,7 @@ verus! {
         assert forall |lsn| { vers_p.is_active(lsn) }
             implies { vers_p[lsn] == vers_s[lsn] } by
         {
-            if (v.journal.in_flight->Some_0.seq_end <= lsn) {
+            if (v.journal.frozen->Some_0.seq_end <= lsn) {
                 commit_step_preserves_history(v, vp, label, step, lsn as nat);
             }
         }
@@ -1211,7 +1349,7 @@ verus! {
         reveal(journal_overlaps_agree);
         
         let stable_lsn = vp.journal.persistent.seq_end;
-        if (v.ephemeral is Some)
+        if v.components_loaded()
         {
             // ACCEPTED (necessary): Discarding all indices >= seq_end should
             // result in the same MsgHistory (it wasn't seeing this originally
@@ -1234,7 +1372,7 @@ verus! {
         // GOAL (necessary): vp.i()'s versions should be truncated down to just v.i().versions[..stable_index+1]. (Which
         // by invariant should actually mean that the only index vp.i().versions contains is `stable_index`).
 
-        let keep_in_flight = v.journal.in_flight is Some && !v.superblock_in_flight;
+        let keep_in_flight = v.superblock_landed;
 
         assert( AbstractCrashAwareJournal::State::next(
             v.journal,
@@ -1245,7 +1383,7 @@ verus! {
             vp.mapadt,
             AbstractCrashAwareMap::Label::CrashLabel{ keep_in_flight }) );
 
-        if v.ephemeral is None || !(v.ephemeral.unwrap() is Known) {
+        if !v.components_loaded() {
             assert(vp.i().versions =~~= v.i().versions.get_prefix(v.i().stable_index() + 1)); // trigger
         } else if keep_in_flight {
             // There was something in flight and we're moving it to persistent
@@ -1253,12 +1391,12 @@ verus! {
             assert(
                 vp.journal.persistent.discard_recent(vp.journal.persistent.seq_end)
                 =~=
-                v.journal.i().discard_old(v.mapadt.in_flight.unwrap().seq_end).discard_recent(v.journal.in_flight.unwrap().seq_end)
+                v.journal.i().discard_old(v.mapadt.frozen.unwrap().seq_end).discard_recent(v.journal.frozen.unwrap().seq_end)
             );
 
             assert(vp.i().versions =~~= v.i().versions.get_prefix(v.i().stable_index() + 1)); // trigger
         } else {
-            // Something was in flight but it got discarded (v.journal.in_flight is Some)
+            // Something was in flight but it got discarded (v.journal.frozen is Some)
             // or nothing was in flight
 
             assert( v.journal.persistent.discard_recent(v.journal.persistent.seq_end as LSN)
@@ -1285,6 +1423,7 @@ verus! {
             CoordinationSystem::State::next_by(v, vp, label, step),
             match step {
                 CoordinationSystem::Step::load_ephemeral_from_persistent(..) => true,
+                CoordinationSystem::Step::noop(..) => true,
                 CoordinationSystem::Step::recover(..) => true,
                 CoordinationSystem::Step::journal_internal(..) => true,
                 CoordinationSystem::Step::map_internal(..) => true,
@@ -1434,6 +1573,61 @@ verus! {
         //     v.i(), vp.i(), ctam_label, new_versions, new_async_ephemeral));
         CrashTolerantAsyncMap::show::operate(
             v.i(), vp.i(), ctam_label, new_versions, new_async_ephemeral);
+    }
+
+    pub proof fn execute_noop_step_refines(
+        v: CoordinationSystem::State,
+        vp: CoordinationSystem::State,
+        label: CoordinationSystem::Label,
+        step: CoordinationSystem::Step
+    )
+    requires
+        v.inv(),
+        CoordinationSystem::State::next(v, vp, label),
+        CoordinationSystem::State::next_by(v, vp, label, step),
+        matches!(step, CoordinationSystem::Step::execute_noop(..)),
+    ensures
+        vp.inv(),
+        CrashTolerantAsyncMap::State::next(v.i(), vp.i(), label->ctam_label),
+    {
+        reveal(CoordinationSystem::State::next);
+        reveal(CoordinationSystem::State::next_by);
+        reveal(AbstractCrashAwareJournal::State::next);
+        reveal(AbstractCrashAwareJournal::State::next_by);
+        reveal(AbstractJournal::State::next);
+        reveal(AbstractJournal::State::next_by);
+        reveal(AbstractCrashAwareMap::State::next);
+        reveal(AbstractCrashAwareMap::State::next_by);
+        reveal(AbstractMap::State::next);
+        reveal(AbstractMap::State::next_by);
+        reveal(CrashTolerantAsyncMap::State::next);
+        reveal(CrashTolerantAsyncMap::State::next_by);
+        reveal(AsyncMap::State::next);
+        reveal(AsyncMap::State::next_by);
+        reveal(MapSpec::State::next);
+        reveal(MapSpec::State::next_by);
+
+        inv_inductive(v, vp, label);
+        let ctam_label = label->ctam_label;
+        let ctam_pre = v.i();
+        let ctam_post = vp.i();
+        let async_label = ctam_label->base_op;
+        let async_pre = AsyncMap::State { persistent: ctam_pre.versions.last(), ephemeral: ctam_pre.async_ephemeral };
+        let async_post = AsyncMap::State { persistent: ctam_post.versions.last(), ephemeral: ctam_post.async_ephemeral };
+        let map_pre = async_pre.persistent.appv;
+        let map_post = async_post.persistent.appv;
+        let req = async_label.arrow_ExecuteOp_req();
+        let reply = async_label.arrow_ExecuteOp_reply();
+        let map_label = MapSpec::Label::Noop{ input: req.input, output: reply.output };
+
+        if v.inflight_is_on_disk() {
+            v.lemma_iversions_known_inflight_landed_relation();
+            vp.lemma_iversions_known_inflight_landed_relation();
+        }
+        MapSpec::show::noop(map_pre, map_post, map_label);
+        AsyncMap::show::execute(async_pre, async_post, async_label, map_label, async_post.persistent);
+        CrashTolerantAsyncMap::show::operate(
+            v.i(), vp.i(), ctam_label, vp.i().versions, vp.i().async_ephemeral);
     }
 
     // Prove accept_request refines to a valid operate transition. (In Dafny this was
@@ -1662,6 +1856,8 @@ verus! {
         match step {
             CoordinationSystem::Step::load_ephemeral_from_persistent(..) =>
                 noop_steps_refine(v, vp, label, step),
+            CoordinationSystem::Step::noop(..) =>
+                noop_steps_refine(v, vp, label, step),
             CoordinationSystem::Step::recover(..) =>
                 noop_steps_refine(v, vp, label, step),
             CoordinationSystem::Step::accept_request(..) =>
@@ -1670,6 +1866,8 @@ verus! {
                 query_step_refines(v, vp, label, step),
             CoordinationSystem::Step::put(..) =>
                 put_step_refines(v, vp, label, step),
+            CoordinationSystem::Step::execute_noop(..) =>
+                execute_noop_step_refines(v, vp, label, step),
             CoordinationSystem::Step::deliver_reply(..) =>
                 accept_request_step_and_deliver_reply_step_refine(v, vp, label, step),
             CoordinationSystem::Step::journal_internal(..) =>

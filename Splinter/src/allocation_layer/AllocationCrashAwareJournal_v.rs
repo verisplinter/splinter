@@ -31,15 +31,18 @@ impl JournalImage {
     pub open spec(checked) fn init_by(self, aj: AllocationJournal::State) -> bool 
     {
         &&& self.valid_image()
+        &&& aj.inv()
         &&& aj == AllocationJournal::State{
             journal: LinkedJournal::State{
                 truncated_journal: self.tj,
                 unmarshalled_tail: MsgHistory::empty_history_at(self.tj.seq_end()),
             },
-            lsn_au_index: self.tj.build_lsn_au_index(self.first),
-            first: self.first,
-            mini_allocator: MiniAllocator::empty(),
+            lsn_au_index: self.tj.build_lsn_au_index_from_first(self.first),
+            ..aj
         }
+        &&& aj.mini_allocator.wf()
+        &&& aj.mini_allocator.curr is None
+        &&& aj.mini_allocator.all_aus().disjoint(self.accessible_aus())
     }
 }
 
@@ -48,14 +51,14 @@ state_machine!{AllocationCrashAwareJournal{
     fields {
       pub persistent: JournalImage,
       pub ephemeral: Ephemeral,
-      pub inflight: Option<JournalImage>
+      pub frozen: Option<JournalImage>
     }
 
     init!{
         initialize() {
             init persistent = JournalImage::empty();
             init ephemeral = Ephemeral::Unknown;
-            init inflight = Option::None;
+            init frozen = Option::None;
       }
     }
 
@@ -67,7 +70,7 @@ state_machine!{AllocationCrashAwareJournal{
         Put{ records: MsgHistory },
         Internal{allocs: Set<AU>, deallocs: Set<AU>},
         QueryLsnPersistence{ sync_lsn: LSN },
-        CommitStart{ new_boundary_lsn: LSN, max_lsn: LSN },
+        CommitStart{ new_boundary_lsn: LSN, frozen_journal: JournalImage },
         CommitComplete{ require_end: LSN, discarded: Set<AU> },
         Crash{ keep_in_flight: bool },
     }
@@ -78,7 +81,6 @@ state_machine!{AllocationCrashAwareJournal{
         lbl is Internal ==> {
             &&& lbl->allocs.disjoint(self.persistent.accessible_aus())
             &&& lbl->allocs.disjoint(self.ephemeral->v.accessible_aus())
-            &&& self.inflight is Some ==> lbl->allocs.disjoint(self.inflight.unwrap().accessible_aus())
         }
     }
 
@@ -150,24 +152,21 @@ state_machine!{AllocationCrashAwareJournal{
     }
 
     transition!{
-        commit_start(lbl: Label, frozen_journal: JournalImage) {
+        commit_start(lbl: Label) {
             require lbl is CommitStart;
             require pre.ephemeral is Known;
-            // Can't start a commit if one is in-flight, or we'd forget to maintain the
-            // invariants for the in-flight one.
-            require pre.inflight is None;
-            // Frozen journal stitches to frozen map
-            require frozen_journal.tj.seq_start() == lbl->new_boundary_lsn;
-            // Journal doesn't go backwards
-            require pre.persistent.tj.seq_end() <= frozen_journal.tj.seq_end();
-            // There should be no way for the frozen journal to have passed the ephemeral map!
-            require frozen_journal.tj.seq_start() <= lbl->max_lsn;
+            require pre.frozen is None;
+            let frozen_journal = lbl->frozen_journal;
             require AllocationJournal::State::next(
-                pre.ephemeral->v, 
+                pre.ephemeral->v,
                 pre.ephemeral->v,
                 AllocationJournal::Label::FreezeForCommit{frozen_journal},
             );
-            update inflight = Option::Some(frozen_journal);
+            // Frozen journal stitches to frozen map
+            require frozen_journal.tj.seq_start() == lbl->new_boundary_lsn;
+            // Journal doesn't go backwards
+            require pre.persistent.tj.seq_end() <= lbl->new_boundary_lsn;
+            update frozen = Option::Some(frozen_journal);
         }
     }
 
@@ -175,7 +174,7 @@ state_machine!{AllocationCrashAwareJournal{
         commit_complete(lbl: Label, new_journal: AllocationJournal::State) {
             require lbl is CommitComplete;
             require pre.ephemeral is Known;
-            require pre.inflight is Some;
+            require pre.frozen is Some;
 
             // upon a successful write to super block, we truncate ephemeral 
             // journal to line up with the beginning of the newly persisted journal
@@ -189,7 +188,7 @@ state_machine!{AllocationCrashAwareJournal{
                 pre.ephemeral->v, 
                 new_journal,
                 AllocationJournal::Label::DiscardOld{
-                    start_lsn: pre.inflight.unwrap().tj.seq_start(), 
+                    start_lsn: pre.frozen.unwrap().tj.seq_start(),
                     require_end: lbl->require_end,
                     // where do we specify which aus are in deallocs?
                     deallocs: lbl->discarded,
@@ -197,26 +196,27 @@ state_machine!{AllocationCrashAwareJournal{
             );
             
             // Watch the `update` keyword!
-            update persistent = pre.inflight.unwrap();
+            update persistent = pre.frozen.unwrap();
             update ephemeral = Ephemeral::Known{ v: new_journal };
-            update inflight = Option::None;
+            update frozen = Option::None;
         }
     }
 
     transition!{
         crash(lbl: Label) {
             require lbl is Crash;
+            require lbl->keep_in_flight ==> pre.frozen is Some;
             update ephemeral = Ephemeral::Unknown;
-            update inflight = Option::None;
-            update persistent = if lbl->keep_in_flight && pre.inflight is Some { pre.inflight.unwrap() } else { pre.persistent };
+            update frozen = Option::None;
+            update persistent = if lbl->keep_in_flight { pre.frozen.unwrap() } else { pre.persistent };
         }
     }
 
     #[invariant]
     pub open spec(checked) fn inv(self) -> bool {
-        &&& self.ephemeral is Unknown ==> self.inflight is None
+        &&& self.ephemeral is Unknown ==> self.frozen is None
         &&& self.ephemeral is Known ==> self.ephemeral->v.inv()
-        &&& self.inflight is Some ==> self.inflight.unwrap().valid_image()
+        &&& self.frozen is Some ==> self.frozen.unwrap().valid_image()
         &&& self.persistent.valid_image()
     }
 
@@ -260,10 +260,11 @@ state_machine!{AllocationCrashAwareJournal{
     }
 
     #[inductive(commit_start)]
-    fn commit_start_inductive(pre: Self, post: Self, lbl: Label, frozen_journal: JournalImage)
+    fn commit_start_inductive(pre: Self, post: Self, lbl: Label)
     {
         let pre_ephemeral = pre.ephemeral->v;
-        let aj_lbl = AllocationJournal::Label::FreezeForCommit{frozen_journal};
+        let aj_lbl = AllocationJournal::Label::FreezeForCommit{frozen_journal: lbl->frozen_journal};
+        assert(AllocationJournal::State::next(pre_ephemeral, pre_ephemeral, aj_lbl));
         AllocationJournal::State::frozen_journal_is_valid_image(pre_ephemeral, pre_ephemeral, aj_lbl);
     }
    
@@ -272,7 +273,7 @@ state_machine!{AllocationCrashAwareJournal{
     {
         assert(post.ephemeral is Known ==> post.ephemeral->v.inv()) by {
             let alloc_lbl = AllocationJournal::Label::DiscardOld{ 
-                start_lsn: pre.inflight.unwrap().tj.seq_start(), 
+                start_lsn: pre.frozen.unwrap().tj.seq_start(),
                 require_end: lbl->require_end,
                 deallocs: lbl->discarded,
             };
@@ -284,6 +285,78 @@ state_machine!{AllocationCrashAwareJournal{
     #[inductive(crash)]
     fn crash_inductive(pre: Self, post: Self, lbl: Label) 
     {
+    }
+
+    pub proof fn inv_next(pre: Self, post: Self, lbl: Label)
+        requires
+            pre.inv(),
+            AllocationCrashAwareJournal::State::next(pre, post, lbl),
+        ensures
+            post.inv(),
+    {
+        reveal(AllocationCrashAwareJournal::State::next);
+        reveal(AllocationCrashAwareJournal::State::next_by);
+
+        let step = choose |step| AllocationCrashAwareJournal::State::next_by(pre, post, lbl, step);
+        match step {
+            AllocationCrashAwareJournal::Step::load_ephemeral_from_persistent(new_journal) => {
+                assert(AllocationCrashAwareJournal::State::load_ephemeral_from_persistent(pre, post, lbl, new_journal)) by {
+                    reveal(AllocationCrashAwareJournal::State::load_ephemeral_from_persistent);
+                }
+                AllocationCrashAwareJournal::State::load_ephemeral_from_persistent_inductive(pre, post, lbl, new_journal);
+            },
+            AllocationCrashAwareJournal::Step::read_for_recovery() => {
+                assert(AllocationCrashAwareJournal::State::read_for_recovery(pre, post, lbl)) by {
+                    reveal(AllocationCrashAwareJournal::State::read_for_recovery);
+                }
+                AllocationCrashAwareJournal::State::read_for_recovery_inductive(pre, post, lbl);
+            },
+            AllocationCrashAwareJournal::Step::query_end_lsn() => {
+                assert(AllocationCrashAwareJournal::State::query_end_lsn(pre, post, lbl)) by {
+                    reveal(AllocationCrashAwareJournal::State::query_end_lsn);
+                }
+                AllocationCrashAwareJournal::State::query_end_lsn_inductive(pre, post, lbl);
+            },
+            AllocationCrashAwareJournal::Step::put(new_journal) => {
+                assert(AllocationCrashAwareJournal::State::put(pre, post, lbl, new_journal)) by {
+                    reveal(AllocationCrashAwareJournal::State::put);
+                }
+                AllocationCrashAwareJournal::State::put_inductive(pre, post, lbl, new_journal);
+            },
+            AllocationCrashAwareJournal::Step::internal(new_journal) => {
+                assert(AllocationCrashAwareJournal::State::internal(pre, post, lbl, new_journal)) by {
+                    reveal(AllocationCrashAwareJournal::State::internal);
+                }
+                AllocationCrashAwareJournal::State::internal_inductive(pre, post, lbl, new_journal);
+            },
+            AllocationCrashAwareJournal::Step::query_lsn_persistence() => {
+                assert(AllocationCrashAwareJournal::State::query_lsn_persistence(pre, post, lbl)) by {
+                    reveal(AllocationCrashAwareJournal::State::query_lsn_persistence);
+                }
+                AllocationCrashAwareJournal::State::query_lsn_persistence_inductive(pre, post, lbl);
+            },
+            AllocationCrashAwareJournal::Step::commit_start() => {
+                assert(AllocationCrashAwareJournal::State::commit_start(pre, post, lbl)) by {
+                    reveal(AllocationCrashAwareJournal::State::commit_start);
+                }
+                AllocationCrashAwareJournal::State::commit_start_inductive(pre, post, lbl);
+            },
+            AllocationCrashAwareJournal::Step::commit_complete(new_journal) => {
+                assert(AllocationCrashAwareJournal::State::commit_complete(pre, post, lbl, new_journal)) by {
+                    reveal(AllocationCrashAwareJournal::State::commit_complete);
+                }
+                AllocationCrashAwareJournal::State::commit_complete_inductive(pre, post, lbl, new_journal);
+            },
+            AllocationCrashAwareJournal::Step::crash() => {
+                assert(AllocationCrashAwareJournal::State::crash(pre, post, lbl)) by {
+                    reveal(AllocationCrashAwareJournal::State::crash);
+                }
+                AllocationCrashAwareJournal::State::crash_inductive(pre, post, lbl);
+            },
+            AllocationCrashAwareJournal::Step::dummy_to_use_type_params(_) => {
+                assert(false);
+            },
+        }
     }
 
   }} // state_machine

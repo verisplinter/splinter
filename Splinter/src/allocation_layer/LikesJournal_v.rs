@@ -152,6 +152,65 @@ impl DiskView {
         }
     }
 
+    pub proof fn build_lsn_addr_index_value_has_depth(self, root: Pointer, addr: Address) -> (depth: nat)
+        requires
+            self.buildable(root),
+            self.build_lsn_addr_index(root).values().contains(addr),
+        ensures
+            self.can_crop(root, depth),
+            self.pointer_after_crop(root, depth) == Some(addr),
+        decreases self.the_rank_of(root),
+    {
+        if root is None {
+            assert(self.build_lsn_addr_index(root) == Map::<LSN, Address>::empty());
+            assert(false);
+            0
+        } else if root.unwrap() == addr {
+            0
+        } else {
+            let curr_msgs = self.entries[root.unwrap()].message_seq;
+            let start_lsn = max(self.boundary_lsn as int, curr_msgs.seq_start as int) as nat;
+            let update = singleton_index(start_lsn, curr_msgs.seq_end, root.unwrap());
+            let sub_root = self.next(root);
+            let sub_index = self.build_lsn_addr_index(sub_root);
+            let index = self.build_lsn_addr_index(root);
+
+            assert(index == sub_index.union_prefer_right(update));
+            assert(sub_index.values().contains(addr)) by {
+                if !sub_index.values().contains(addr) {
+                    let lsn = choose |lsn: LSN| #![auto] index.contains_key(lsn) && index[lsn] == addr;
+                    if update.contains_key(lsn) {
+                        assert(update[lsn] == root.unwrap());
+                        assert(false);
+                    } else {
+                        assert(sub_index.contains_key(lsn));
+                        assert(sub_index[lsn] == addr);
+                        assert(false);
+                    }
+                }
+            }
+
+            let sub_depth = self.build_lsn_addr_index_value_has_depth(sub_root, addr);
+            (sub_depth + 1) as nat
+        }
+    }
+
+    pub proof fn build_lsn_addr_index_none_has_depth(self, root: Pointer) -> (depth: nat)
+        requires
+            self.buildable(root),
+        ensures
+            self.can_crop(root, depth),
+            self.pointer_after_crop(root, depth) == None::<Address>,
+        decreases self.the_rank_of(root),
+    {
+        if root is None {
+            0
+        } else {
+            let sub_depth = self.build_lsn_addr_index_none_has_depth(self.next(root));
+            (sub_depth + 1) as nat
+        }
+    }
+
     pub open spec(checked) fn cropped_msg_seq_contains_lsn(
         boundary: LSN,
         message_seq: MsgHistory,
@@ -223,6 +282,92 @@ impl DiskView {
                 if addr != root.unwrap() {
                     assert(sub_index.values().contains(addr)); // trigger
                 }
+            }
+        }
+    }
+
+    pub proof fn build_lsn_addr_index_immediate_prior(self, root: Pointer, addr: Address)
+    requires
+        self.buildable(root),
+        self.build_lsn_addr_index(root).values().contains(addr),
+        self.next(Some(addr)) is Some,
+        self.boundary_lsn < self.entries[addr].message_seq.seq_start,
+    ensures ({
+        let index = self.build_lsn_addr_index(root);
+        let prior = self.next(Some(addr)).unwrap();
+        let prior_lsn = (self.entries[addr].message_seq.seq_start - 1) as nat;
+        &&& index.contains_key(prior_lsn)
+        &&& index[prior_lsn] == prior
+        &&& index.values().contains(prior)
+    })
+    decreases self.the_rank_of(root)
+    {
+        let index = self.build_lsn_addr_index(root);
+        let prior = self.next(Some(addr)).unwrap();
+        let prior_lsn = (self.entries[addr].message_seq.seq_start - 1) as nat;
+
+        assert(root is Some);
+        let root_addr = root.unwrap();
+        let root_msgs = self.entries[root_addr].message_seq;
+        let root_start = max(self.boundary_lsn as int, root_msgs.seq_start as int) as nat;
+        let root_update = singleton_index(root_start, root_msgs.seq_end, root_addr);
+        let sub_root = self.next(root);
+        let sub_index = self.build_lsn_addr_index(sub_root);
+        assert(index =~= sub_index.union_prefer_right(root_update));
+
+        if root_addr == addr {
+            assert(sub_root == Some(prior));
+            let prior_record = self.entries[prior];
+            assert(self.this_block_can_concat(root_addr));
+            assert(prior_record.message_seq.seq_end == self.entries[addr].message_seq.seq_start);
+            assert(self.boundary_lsn <= prior_lsn < prior_record.message_seq.seq_end);
+
+            let prior_root = Some(prior);
+            let prior_start = max(self.boundary_lsn as int, prior_record.message_seq.seq_start as int) as nat;
+            let prior_update = singleton_index(prior_start, prior_record.message_seq.seq_end, prior);
+            let prior_sub_index = self.build_lsn_addr_index(self.next(prior_root));
+            assert(sub_index =~= prior_sub_index.union_prefer_right(prior_update));
+            assert(prior_update.contains_key(prior_lsn));
+            assert(sub_index.contains_key(prior_lsn));
+            assert(sub_index[prior_lsn] == prior);
+            assert(!root_update.contains_key(prior_lsn));
+            assert(index.contains_key(prior_lsn));
+            assert(index[prior_lsn] == prior);
+            assert(index.values().contains(prior)) by {
+                assert(index.contains_key(prior_lsn));
+                assert(index[prior_lsn] == prior);
+            }
+        } else {
+            let witness_lsn: LSN = choose |lsn: LSN| index.contains_key(lsn) && index[lsn] == addr;
+            assert(root_update.contains_key(witness_lsn) ==> index[witness_lsn] == root_addr);
+            assert(!root_update.contains_key(witness_lsn));
+            assert(sub_index.contains_key(witness_lsn));
+            assert(sub_index[witness_lsn] == addr);
+            assert(sub_index.values().contains(addr));
+
+            self.build_lsn_addr_index_immediate_prior(sub_root, addr);
+            assert(sub_index.contains_key(prior_lsn));
+            assert(sub_index[prior_lsn] == prior);
+
+            assert(sub_root is Some);
+            let sub_addr = sub_root.unwrap();
+            assert(self.this_block_can_concat(root_addr));
+            assert(self.entries[sub_addr].message_seq.seq_end == root_msgs.seq_start);
+            assert(self.boundary_lsn < root_msgs.seq_start);
+            assert(root_start == root_msgs.seq_start);
+
+            self.build_lsn_addr_index_domain_valid(sub_root);
+            let sub_tj = self.tj_at(sub_root);
+            reveal(TruncatedJournal::index_domain_valid);
+            assert(sub_tj.index_domain_valid(sub_index));
+            assert(prior_lsn < sub_tj.seq_end());
+            assert(prior_lsn < root_start);
+            assert(!root_update.contains_key(prior_lsn));
+            assert(index.contains_key(prior_lsn));
+            assert(index[prior_lsn] == prior);
+            assert(index.values().contains(prior)) by {
+                assert(index.contains_key(prior_lsn));
+                assert(index[prior_lsn] == prior);
             }
         }
     }
@@ -657,34 +802,34 @@ state_machine!{ LikesJournal {
         &&& self.journal.wf()
     }
 
-    transition!{ read_for_recovery(lbl: Label, depth: nat) {
+    transition!{ read_for_recovery(lbl: Label, addr: Address) {
         require let Label::ReadForRecovery{messages} = lbl;
         require messages.wf();
 
         let tj = pre.journal.truncated_journal;
         let dv = tj.disk_view;
-        require can_crop_index(pre.lsn_addr_index, dv.boundary_lsn, tj.freshest_rec, depth);
-
-        let ptr = pointer_after_crop_index(pre.lsn_addr_index, dv.boundary_lsn, tj.freshest_rec, depth);
-        require ptr is Some;
-        require messages == dv.entries[ptr.unwrap()].message_seq.maybe_discard_old(dv.boundary_lsn);
+        require pre.lsn_addr_index.contains_value(addr);
+        require dv.entries.contains_key(addr);
+        require messages == dv.entries[addr].message_seq.maybe_discard_old(dv.boundary_lsn);
     } }
 
-    transition!{ freeze_for_commit(lbl: Label, depth: nat) {
+    transition!{ freeze_for_commit(lbl: Label) {
         require lbl is FreezeForCommit;
         let tj = pre.journal.truncated_journal;
         let fj = lbl->frozen_journal;
 
-        require can_crop_index(pre.lsn_addr_index, tj.disk_view.boundary_lsn, tj.freshest_rec, depth);
-        require fj.decodable();
-        require fj.disk_view.is_sub_disk_with_newer_lsn(tj.disk_view);
-
         let frozen_bdy = fj.disk_view.boundary_lsn;
-        let cropped_freshest_rec = pointer_after_crop_index(pre.lsn_addr_index, tj.disk_view.boundary_lsn, tj.freshest_rec, depth);
 
-        // TODO: remove the restriction in higher layers to allow for discard then crop 
-        require cropped_freshest_rec is None ==> frozen_bdy == tj.disk_view.boundary_lsn;
-        require fj.freshest_rec == discard_old_ptr_by_index(pre.lsn_addr_index, cropped_freshest_rec, frozen_bdy);
+        require fj.decodable();
+        require fj.disk_view.is_sub_disk_with_newer_lsn(tj.disk_view); // this implies pre.journal.seq_start() <= frozen_bdy
+        require fj.freshest_rec is None ==> {
+            &&& fj.seq_start() == fj.seq_end()
+            &&& frozen_bdy <= pre.journal.seq_end()
+        };
+
+        require fj.freshest_rec is Some ==> {
+            &&& pre.lsn_addr_index.contains_value(fj.freshest_rec.unwrap())
+        };
     } }
 
     transition!{ query_end_lsn(lbl: Label) {
@@ -709,12 +854,19 @@ state_machine!{ LikesJournal {
         let require_end = lbl->require_end;
 
         require require_end == pre.journal.seq_end();
-        require pre.tj().can_discard_to(start_lsn);
+        require pre.journal.seq_start() <= start_lsn <= require_end;
 
         let new_lsn_addr_index = lsn_addr_index_discard_up_to(pre.lsn_addr_index, start_lsn);
 
-        require pre.journal.truncated_journal.discard_old_cond(
-            start_lsn, new_lsn_addr_index.values(), new_journal.truncated_journal);
+        require start_lsn < pre.tj().seq_end() ==>
+            pre.journal.truncated_journal.discard_old_cond(
+                start_lsn, new_lsn_addr_index.values(), new_journal.truncated_journal);
+        require pre.tj().seq_end() <= start_lsn ==> {
+            &&& new_journal.truncated_journal.wf()
+            &&& new_journal.truncated_journal.freshest_rec is None
+            &&& new_journal.truncated_journal.disk_view.is_sub_disk(
+                pre.tj().disk_view.discard_old(start_lsn))
+        };
         require new_journal.unmarshalled_tail == 
             pre.journal.unmarshalled_tail.bounded_discard(start_lsn);
 
@@ -764,11 +916,11 @@ state_machine!{ LikesJournal {
     }
 
     #[inductive(read_for_recovery)]
-    fn read_for_recovery_inductive(pre: Self, post: Self, lbl: Label, depth: nat) {
+    fn read_for_recovery_inductive(pre: Self, post: Self, lbl: Label, addr: Address) {
     }
    
     #[inductive(freeze_for_commit)]
-    fn freeze_for_commit_inductive(pre: Self, post: Self, lbl: Label, depth: nat) {
+    fn freeze_for_commit_inductive(pre: Self, post: Self, lbl: Label) {
     }
 
     #[inductive(query_end_lsn)]
@@ -786,8 +938,24 @@ state_machine!{ LikesJournal {
         let start_lsn = lbl->start_lsn;
 
         let lsn_addr_index_post = lsn_addr_index_discard_up_to(pre.lsn_addr_index, start_lsn);
-        tj.discard_old_preserves_acyclicity(start_lsn, post.lsn_addr_index.values(), post_tj);
-        tj.discard_old_maintains_repr_index(start_lsn, lsn_addr_index_post, post_tj);
+        if start_lsn < tj.seq_end() {
+            tj.discard_old_preserves_acyclicity(start_lsn, post.lsn_addr_index.values(), post_tj);
+            tj.discard_old_maintains_repr_index(start_lsn, lsn_addr_index_post, post_tj);
+        } else {
+            let discarded_disk = tj.disk_view.discard_old(start_lsn);
+            assert(discarded_disk.valid_ranking(tj.disk_view.the_ranking()));
+
+            assert(post_tj.disk_view.acyclic()) by {
+                post_tj.disk_view.sub_disk_ranking(discarded_disk);
+            }
+
+            assert(post_tj.build_lsn_addr_index() == Map::<LSN, Address>::empty());
+            tj.build_lsn_addr_index_ensures();
+            reveal(TruncatedJournal::index_domain_valid);
+            assert(lsn_addr_index_post == Map::<LSN, Address>::empty()) by {
+                assert_maps_equal!(lsn_addr_index_post, Map::<LSN, Address>::empty());
+            }
+        }
     }
 
     #[inductive(internal_journal_marshal)]
@@ -809,7 +977,7 @@ state_machine!{ LikesJournal {
         assert( post.lsn_addr_index == tj_post.build_lsn_addr_index() );
         assert( post.inv() );
     }
-   
+
     #[inductive(internal_no_op)]
     fn internal_no_op_inductive(pre: Self, post: Self, lbl: Label) {
     }

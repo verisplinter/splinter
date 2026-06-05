@@ -53,8 +53,8 @@ impl PageAllocator {
     /// done with / returns a stack reference 
     pub open spec(checked) fn unreserve(self, addrs: Set<Address>) -> (out: Self)
     recommends
-        self.wf(),
-        addrs.subset_of(self.reserved),  // ensures out.wf()
+            self.wf(),
+            addrs.subset_of(self.reserved),  // ensures out.wf()
 
     {
         Self{reserved: self.reserved.difference(addrs), ..self}
@@ -200,6 +200,39 @@ impl MiniAllocator {
         Self{ allocs: self.allocs.insert(addr.au, result), ..self }
     }
 
+    pub proof fn allocate_observe_can_allocate_subset(self, allocated: Address, addr: Address)
+        requires
+            self.wf(),
+            self.can_allocate(allocated),
+            self.allocate(allocated).observe(allocated).can_allocate(addr),
+        ensures
+            self.can_allocate(addr),
+    {
+        let after_allocate = self.allocate(allocated);
+        let after = after_allocate.observe(allocated);
+        assert(after.allocs.contains_key(addr.au));
+        if addr.au == allocated.au {
+            assert(self.allocs.contains_key(addr.au));
+            assert(after.allocs[addr.au]
+                == self.allocs[addr.au].reserve(set![allocated]).observe(set![allocated]));
+            assert(after.allocs[addr.au].is_free_addr(addr));
+            assert(addr.wf());
+            assert(addr.au == self.allocs[addr.au].au);
+            assert(!after.allocs[addr.au].observed.contains(addr));
+            assert(!after.allocs[addr.au].reserved.contains(addr));
+            assert(!self.allocs[addr.au].observed.contains(addr));
+            assert(!self.allocs[addr.au].reserved.contains(addr));
+            assert(self.allocs[addr.au].is_free_addr(addr));
+        } else {
+            assert(after_allocate.allocs[addr.au] == self.allocs[addr.au]);
+            assert(after.allocs[addr.au] == after_allocate.allocs[addr.au]);
+            assert(self.allocs.contains_key(addr.au));
+            assert(after.allocs[addr.au].is_free_addr(addr));
+            assert(self.allocs[addr.au].is_free_addr(addr));
+        }
+        assert(self.can_allocate(addr));
+    }
+
     pub open spec/*(checked)*/ fn prune(self, aus: Set<AU>) -> Self
     recommends
         self.wf(),
@@ -213,6 +246,33 @@ impl MiniAllocator {
                         { None } else { self.curr };
 
         Self{allocs: new_allocs, curr: new_curr}
+    }
+
+    pub proof fn prune_preserves_wf(self, aus: Set<AU>)
+        requires
+            self.wf(),
+        ensures
+            self.prune(aus).wf(),
+            self.prune(aus).all_aus() == self.all_aus().difference(aus),
+    {
+        let post = self.prune(aus);
+        assert(post.all_aus() =~= self.all_aus().difference(aus)) by {
+            assert forall |au: AU| #[trigger] post.all_aus().contains(au)
+                <==> self.all_aus().difference(aus).contains(au) by { }
+        }
+        assert forall |au: AU| #[trigger] post.allocs.contains_key(au)
+            implies post.allocs[au].wf() && post.allocs[au].au == au by {
+            assert(self.allocs.contains_key(au));
+            assert(!aus.contains(au));
+        }
+        if post.curr is Some {
+            assert(self.curr is Some);
+            assert(post.curr.unwrap() == self.curr.unwrap());
+            assert(!aus.contains(post.curr.unwrap()));
+            assert(self.allocs.contains_key(post.curr.unwrap()));
+            assert(post.allocs.contains_key(post.curr.unwrap()));
+        }
+        assert(post.wf());
     }
 
     pub open spec fn page_is_reserved(self, addr: Address) -> bool
@@ -235,6 +295,7 @@ impl MiniAllocator {
     {
         self.allocs.dom()
     }
+
 }
 
 }  // end verus!

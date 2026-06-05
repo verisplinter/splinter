@@ -915,7 +915,7 @@ impl FracCacheImpl {
     requires
         self.wf(),
     ensures
-        out ==> Cache::State::evictable(self@, self@, Cache::Label::EvictableCheck{addrs: set![addr@]}),
+        out ==> Cache::State::evictable(self@, self@, Cache::Label::EvictableCheck{aus: set![addr@.au]}),
     {
         match self.lookup_map.get(addr) {
             None => { true },
@@ -1397,11 +1397,11 @@ impl FracCacheImpl {
                 },
                 WritebackAcquireResult::NotPresent => {
                     &&& *old(self) == *self
-                    &&& Cache::State::next(self@, self@, Cache::Label::EvictableCheck{addrs: set![addr@]})
+                    &&& Cache::State::next(self@, self@, Cache::Label::EvictableCheck{aus: set![addr@.au]})
                 },
                 WritebackAcquireResult::NotDirty => {
                     &&& *old(self) == *self
-                    &&& Cache::State::next(self@, self@, Cache::Label::EvictableCheck{addrs: set![addr@]})
+                    &&& Cache::State::next(self@, self@, Cache::Label::EvictableCheck{aus: set![addr@.au]})
                 },
                 WritebackAcquireResult::Busy => {
                     &&& *old(self) == *self
@@ -1413,7 +1413,7 @@ impl FracCacheImpl {
             proof {
                 reveal(Cache::State::next_by);
                 reveal(Cache::State::next);
-                let lbl = Cache::Label::EvictableCheck{addrs: set![addr@]};
+                let lbl = Cache::Label::EvictableCheck{aus: set![addr@.au]};
                 assert(!self.lookup_map@.contains_key(addr@));
                 assert(Cache::State::next_by(self@, self@, lbl, Cache::Step::evictable()));
                 Self::valid_writeback_handles_preserved_if_same(*old(self), *self);
@@ -1441,7 +1441,7 @@ impl FracCacheImpl {
                         proof {
                             reveal(Cache::State::next_by);
                             reveal(Cache::State::next);
-                            let lbl = Cache::Label::EvictableCheck{addrs: set![addr@]};
+                            let lbl = Cache::Label::EvictableCheck{aus: set![addr@.au]};
                             assert(Cache::State::next_by(self@, self@, lbl, Cache::Step::evictable()));
                             Self::valid_writeback_handles_preserved_if_same(*old(self), *self);
                         }

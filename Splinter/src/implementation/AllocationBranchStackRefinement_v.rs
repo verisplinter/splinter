@@ -21,20 +21,13 @@ use crate::betree::PivotBranchRefinement_v;
 use crate::disk::GenericDisk_v::{AU, Address, Pointer};
 use crate::implementation::AllocationBranchStack_v::{
     active_branch_query_or_nop, AllocationBranchStack, SealedAllocationBranchStack, is_nop_message,
+    normalize_value,
 };
 use crate::spec::KeyType_t::Key;
-use crate::spec::Messages_t::{default_value, Message, Value};
+use crate::spec::Messages_t::{Message, Value};
 use crate::spec::TotalKMMap_t::TotalKMMap;
 
 verus! {
-
-pub open spec fn normalize_value(msg: Message) -> Value
-{
-    match msg {
-        Message::Define{value} => value,
-        Message::Update{delta} => Message::apply_delta(delta, default_value()),
-    }
-}
 
 pub open spec fn normalize_message(msg: Message) -> Message
 {
@@ -43,11 +36,7 @@ pub open spec fn normalize_message(msg: Message) -> Message
 
 pub open spec fn append_put_message(msg: Message) -> Message
 {
-    if is_nop_message(msg) {
-        msg
-    } else {
-        normalize_message(msg)
-    }
+    msg
 }
 
 pub open spec fn buffer_kmmap_i(buffer: SimpleBuffer) -> TotalKMMap
@@ -65,6 +54,37 @@ pub open spec fn linked_branch_sparse_map(branch: LinkedBranch<Summary>) -> Map<
         |k: Key| raw_map.contains_key(k) && !is_nop_message(raw_map[k]),
         |k: Key| raw_map[k],
     )
+}
+
+pub open spec fn buffer_merge_map(older: Map<Key, Message>, newer: Map<Key, Message>) -> Map<Key, Message>
+{
+    SimpleBuffer{map: older}.merge(SimpleBuffer{map: newer}).map
+}
+
+pub proof fn buffer_merge_map_assoc_disjoint_middle_newer(
+    older: Map<Key, Message>,
+    middle: Map<Key, Message>,
+    newer: Map<Key, Message>,
+)
+    requires
+        middle.dom().disjoint(newer.dom()),
+    ensures
+        buffer_merge_map(buffer_merge_map(older, middle), newer)
+            == buffer_merge_map(older, middle.union_prefer_right(newer)),
+{
+    let lhs = buffer_merge_map(buffer_merge_map(older, middle), newer);
+    let rhs = buffer_merge_map(older, middle.union_prefer_right(newer));
+    assert(lhs =~= rhs) by {
+        assert forall |key: Key| #[trigger] lhs.contains_key(key) <==> rhs.contains_key(key) by { }
+        assert forall |key: Key| #[trigger] lhs.contains_key(key)
+            implies lhs[key] == rhs[key] by {
+            if middle.contains_key(key) && newer.contains_key(key) {
+                assert(middle.dom().contains(key));
+                assert(newer.dom().contains(key));
+                assert(false);
+            }
+        }
+    }
 }
 
 pub open spec fn active_branch_sparse_map(active_branch: AllocationBranch) -> Map<Key, Message>
@@ -86,8 +106,9 @@ pub open spec fn sealed_sparse_map_up_to(
     if end == 0 {
         Map::empty()
     } else {
-        sealed_sparse_map_up_to(sealed_stack, (end - 1) as nat).union_prefer_right(
-            linked_branch_sparse_map(sealed_stack.sealed_branch_at((end - 1) as nat))
+        buffer_merge_map(
+            sealed_sparse_map_up_to(sealed_stack, (end - 1) as nat),
+            linked_branch_sparse_map(sealed_stack.sealed_branch_at((end - 1) as nat)),
         )
     }
 }
@@ -97,8 +118,7 @@ pub open spec fn stack_sparse_map(
     active_branch: AllocationBranch,
 ) -> Map<Key, Message>
 {
-    sealed_stack.sparse_map()
-        .union_prefer_right(active_branch_sparse_map(active_branch))
+    buffer_merge_map(sealed_stack.sparse_map(), active_branch_sparse_map(active_branch))
 }
 
 pub open spec fn append_puts_up_to(
@@ -215,16 +235,19 @@ pub proof fn append_put_message_merge(old: Message, msg: Message)
     requires
         old == normalize_message(old),
     ensures
-        old.merge(append_put_message(msg)) == if is_nop_message(msg) {
-            old
-        } else {
-            normalize_message(msg)
-        },
+        old.merge(append_put_message(msg)) == old.merge(msg),
+        old.merge(msg) == normalize_message(old.merge(msg)),
 {
     assert(old is Define);
     if is_nop_message(msg) {
         assert(msg == Message::Update{delta: crate::spec::Messages_t::nop_delta()});
     }
+}
+
+pub proof fn normalize_message_merge_newer(old: Message, newer: Message)
+    ensures
+        normalize_message(old).merge(newer) == normalize_message(old.merge(newer)),
+{
 }
 
 pub proof fn append_puts_up_to_apply_to_sparse_buffer(
@@ -237,13 +260,14 @@ pub proof fn append_puts_up_to_apply_to_sparse_buffer(
     requires
         end <= keys.len(),
         keys.len() == msgs.len(),
+        Key::is_strictly_sorted(keys),
     ensures
         MsgHistory::map_plus_history(
             Stamped{value: buffer_kmmap_i(buffer), seq_end: start_lsn},
             append_puts_up_to(start_lsn, keys, msgs, end),
         ) == (Stamped{
             value: buffer_kmmap_i(SimpleBuffer{
-                map: buffer.map.union_prefer_right(append_sparse_map_up_to(keys, msgs, end)),
+                map: buffer_merge_map(buffer.map, append_sparse_map_up_to(keys, msgs, end)),
             }),
             seq_end: start_lsn + end,
         }),
@@ -255,7 +279,7 @@ pub proof fn append_puts_up_to_apply_to_sparse_buffer(
     kmmap_i_wf(buffer);
 
     if end == 0 {
-        let post_buffer = SimpleBuffer{map: buffer.map.union_prefer_right(append_sparse_map_up_to(keys, msgs, end))};
+        let post_buffer = SimpleBuffer{map: buffer_merge_map(buffer.map, append_sparse_map_up_to(keys, msgs, end))};
         assert(append_sparse_map_up_to(keys, msgs, end) == Map::<Key, Message>::empty());
         assert(post_buffer.map =~= buffer.map) by {
             assert forall |key: Key| #[trigger] post_buffer.map.contains_key(key)
@@ -275,10 +299,10 @@ pub proof fn append_puts_up_to_apply_to_sparse_buffer(
         append_puts_up_to_apply_to_sparse_buffer(buffer, start_lsn, keys, msgs, prev_end);
 
         let prev_sparse = append_sparse_map_up_to(keys, msgs, prev_end);
-        let prev_buffer = SimpleBuffer{map: buffer.map.union_prefer_right(prev_sparse)};
+        let prev_buffer = SimpleBuffer{map: buffer_merge_map(buffer.map, prev_sparse)};
         let prev_stamped = Stamped{value: buffer_kmmap_i(prev_buffer), seq_end: start_lsn + prev_end};
         let final_sparse = append_sparse_map_up_to(keys, msgs, end);
-        let final_buffer = SimpleBuffer{map: buffer.map.union_prefer_right(final_sparse)};
+        let final_buffer = SimpleBuffer{map: buffer_merge_map(buffer.map, final_sparse)};
         let sub_hist = append_puts_up_to(start_lsn, keys, msgs, prev_end);
 
         assert(hist.discard_recent(last_lsn) == sub_hist);
@@ -299,7 +323,21 @@ pub proof fn append_puts_up_to_apply_to_sparse_buffer(
                         assert(final_buffer.map == prev_buffer.map);
                     } else {
                         assert(final_sparse == prev_sparse.insert(last_key, last_msg));
-                        assert(final_buffer.query(key) == last_msg);
+                        append_sparse_map_up_to_contains_iff(keys, msgs, prev_end, last_key);
+                        assert(!prev_sparse.contains_key(last_key)) by {
+                            if prev_sparse.contains_key(last_key) {
+                                let prev_idx = choose |i: int| 0 <= i < prev_end
+                                    && keys[i] == last_key
+                                    && !is_nop_message(msgs[i]);
+                                Key::strictly_sorted_implies_unique(keys);
+                                assert(keys[prev_idx] == keys[last_idx]);
+                                assert(prev_idx == last_idx);
+                                assert(false);
+                            }
+                        }
+                        assert(final_buffer.query(key) == prev_buffer.query(key).merge(last_msg));
+                        normalize_message_merge_newer(prev_buffer.query(key), last_msg);
+                        append_put_message_merge(prev_stamped.value[last_key], last_msg);
                     }
                 } else {
                     if is_nop_message(last_msg) {
@@ -650,11 +688,15 @@ pub proof fn sealed_stack_push_preserves_sparse_map_up_to(
         assert(post_branch.inv());
         linked_branch_sparse_map_preserves_subdisk(pre_branch, post_branch);
         assert(sealed_sparse_map_up_to(post_stack, end)
-            == sealed_sparse_map_up_to(post_stack, (end - 1) as nat)
-                .union_prefer_right(linked_branch_sparse_map(post_branch)));
+            == buffer_merge_map(
+                sealed_sparse_map_up_to(post_stack, (end - 1) as nat),
+                linked_branch_sparse_map(post_branch),
+            ));
         assert(sealed_sparse_map_up_to(sealed_stack, end)
-            == sealed_sparse_map_up_to(sealed_stack, (end - 1) as nat)
-                .union_prefer_right(linked_branch_sparse_map(pre_branch)));
+            == buffer_merge_map(
+                sealed_sparse_map_up_to(sealed_stack, (end - 1) as nat),
+                linked_branch_sparse_map(pre_branch),
+            ));
         assert(sealed_sparse_map_up_to(post_stack, end) =~= sealed_sparse_map_up_to(sealed_stack, end));
     }
 }
@@ -670,7 +712,7 @@ pub proof fn sealed_stack_push_sparse_map(
         summary_aus(sealed_stack.branch_summary()).disjoint(sealed_branch.get_summary()),
     ensures
         sealed_stack.push_branch(sealed_branch).sparse_map()
-            == sealed_stack.sparse_map().union_prefer_right(linked_branch_sparse_map(sealed_branch)),
+            == buffer_merge_map(sealed_stack.sparse_map(), linked_branch_sparse_map(sealed_branch)),
 {
     sealed_stack.push_branch_preserves_wf(sealed_branch);
     sealed_stack_disk_disjoint_from_branch(sealed_stack, sealed_branch);
@@ -698,10 +740,12 @@ pub proof fn sealed_stack_push_sparse_map(
         == sealed_sparse_map_up_to(post_stack, post_stack.sealed_roots.len() as nat));
     assert(post_stack.sealed_roots.len() == sealed_stack.sealed_roots.len() + 1);
     assert(post_stack.sparse_map()
-        == sealed_sparse_map_up_to(post_stack, sealed_stack.sealed_roots.len() as nat)
-            .union_prefer_right(linked_branch_sparse_map(post_branch)));
+        == buffer_merge_map(
+            sealed_sparse_map_up_to(post_stack, sealed_stack.sealed_roots.len() as nat),
+            linked_branch_sparse_map(post_branch),
+        ));
     assert(post_stack.sparse_map() =~=
-        sealed_stack.sparse_map().union_prefer_right(linked_branch_sparse_map(sealed_branch)));
+        buffer_merge_map(sealed_stack.sparse_map(), linked_branch_sparse_map(sealed_branch)));
 }
 
 pub proof fn active_branch_fill_sparse_unchanged(active_branch: AllocationBranch, aus: Set<crate::disk::GenericDisk_v::AU>)
@@ -1115,8 +1159,9 @@ impl AllocationBranchStack::State {
             post.inv(),
             lbl == (AllocationBranchStack::Label::AppendLabel{keys, msgs}),
             keys.len() == msgs.len(),
+            Key::is_strictly_sorted(keys),
             post.seq_end == self.seq_end + keys.len(),
-            post.sparse_map() == self.sparse_map().union_prefer_right(append_sparse_map(keys, msgs)),
+            post.sparse_map() == buffer_merge_map(self.sparse_map(), append_sparse_map(keys, msgs)),
         ensures
             AbstractMap::State::next(self.abstract_map_i(), post.abstract_map_i(), self.label_to_abstract_map(lbl)),
     {
@@ -1137,7 +1182,7 @@ impl AllocationBranchStack::State {
 
         let expected_post = MsgHistory::map_plus_history(self.abstract_map_i().stamped_map, puts);
         let append_buffer = SimpleBuffer{
-            map: self.sparse_map().union_prefer_right(append_sparse_map(keys, msgs)),
+            map: buffer_merge_map(self.sparse_map(), append_sparse_map(keys, msgs)),
         };
         assert(expected_post == Stamped{
             value: buffer_kmmap_i(append_buffer),
@@ -1253,7 +1298,23 @@ impl AllocationBranchStack::State {
                     assert(keys.contains(key));
                 }
                 active_branch_append_sparse_effect(self.active_branch, keys, msgs, path);
-                union_prefer_right_assoc(
+                assert(active_branch_sparse_map(self.active_branch).dom().disjoint(append_sparse_map(keys, msgs).dom())) by {
+                    assert forall |key: Key| active_branch_sparse_map(self.active_branch).dom().contains(key)
+                        implies !append_sparse_map(keys, msgs).dom().contains(key) by {
+                        if append_sparse_map(keys, msgs).dom().contains(key) {
+                            assert(append_sparse_map(keys, msgs).contains_key(key));
+                            append_sparse_map_up_to_contains_iff(keys, msgs, keys.len() as nat, key);
+                            assert(keys.contains(key));
+                            active_branch_sparse_query(self.active_branch, key);
+                            assert(is_nop_message(self.active_branch.branch_query(key)));
+                            assert((SimpleBuffer{map: active_branch_sparse_map(self.active_branch)}).query(key)
+                                == self.active_branch.branch_query(key));
+                            assert(!is_nop_message(active_branch_sparse_map(self.active_branch)[key]));
+                            assert(false);
+                        }
+                    }
+                }
+                buffer_merge_map_assoc_disjoint_middle_newer(
                     self.sealed_stack.sparse_map(),
                     active_branch_sparse_map(self.active_branch),
                     append_sparse_map(keys, msgs),
@@ -1261,14 +1322,16 @@ impl AllocationBranchStack::State {
                 assert(post.sealed_stack == self.sealed_stack);
                 assert(post.active_branch == self.active_branch.branch_append(keys, msgs, path));
                 assert(post.sparse_map()
-                    == self.sealed_stack.sparse_map().union_prefer_right(
-                        active_branch_sparse_map(self.active_branch).union_prefer_right(append_sparse_map(keys, msgs))
+                    == buffer_merge_map(
+                        self.sealed_stack.sparse_map(),
+                        active_branch_sparse_map(self.active_branch).union_prefer_right(append_sparse_map(keys, msgs)),
                     ));
-                assert(self.sparse_map().union_prefer_right(append_sparse_map(keys, msgs))
-                    == self.sealed_stack.sparse_map().union_prefer_right(
-                        active_branch_sparse_map(self.active_branch).union_prefer_right(append_sparse_map(keys, msgs))
+                assert(buffer_merge_map(self.sparse_map(), append_sparse_map(keys, msgs))
+                    == buffer_merge_map(
+                        self.sealed_stack.sparse_map(),
+                        active_branch_sparse_map(self.active_branch).union_prefer_right(append_sparse_map(keys, msgs)),
                     ));
-                assert(post.sparse_map() == self.sparse_map().union_prefer_right(append_sparse_map(keys, msgs)));
+                assert(post.sparse_map() == buffer_merge_map(self.sparse_map(), append_sparse_map(keys, msgs)));
                 self.append_sparse_refines_to_put(post, lbl, keys, msgs);
             }
             _ => { }
@@ -1296,10 +1359,10 @@ impl AllocationBranchStack::State {
                 assert(post.sealed_stack == self.sealed_stack);
                 assert(post.active_branch == self.active_branch.branch_initialize(init_root, keys, msgs));
                 assert(post.sparse_map()
-                    == self.sealed_stack.sparse_map().union_prefer_right(append_sparse_map(keys, msgs)));
-                assert(self.sparse_map().union_prefer_right(append_sparse_map(keys, msgs))
-                    == self.sealed_stack.sparse_map().union_prefer_right(append_sparse_map(keys, msgs)));
-                assert(post.sparse_map() == self.sparse_map().union_prefer_right(append_sparse_map(keys, msgs)));
+                    == buffer_merge_map(self.sealed_stack.sparse_map(), append_sparse_map(keys, msgs)));
+                assert(buffer_merge_map(self.sparse_map(), append_sparse_map(keys, msgs))
+                    == buffer_merge_map(self.sealed_stack.sparse_map(), append_sparse_map(keys, msgs)));
+                assert(post.sparse_map() == buffer_merge_map(self.sparse_map(), append_sparse_map(keys, msgs)));
                 self.append_sparse_refines_to_put(post, lbl, keys, msgs);
             }
             _ => { }
@@ -1344,13 +1407,13 @@ impl AllocationBranchStack::State {
         sealed_stack_push_sparse_map(self.sealed_stack, sealed_branch);
 
         assert(post.sealed_stack == self.sealed_stack.push_branch(sealed_branch));
-        assert(post.active_branch == AllocationBranch::new(Set::empty()));
+        assert(post.active_branch.branch is None);
         assert(active_branch_sparse_map(post.active_branch) == Map::<Key, Message>::empty());
         assert(active_branch_sparse_map(sealed_active) == active_branch_sparse_map(self.active_branch));
         assert(linked_branch_sparse_map(sealed_branch) == active_branch_sparse_map(self.active_branch));
         assert(post.sealed_stack.sparse_map()
-            == self.sealed_stack.sparse_map().union_prefer_right(active_branch_sparse_map(self.active_branch)));
-        assert(self.sparse_map() == self.sealed_stack.sparse_map().union_prefer_right(active_branch_sparse_map(self.active_branch)));
+            == buffer_merge_map(self.sealed_stack.sparse_map(), active_branch_sparse_map(self.active_branch)));
+        assert(self.sparse_map() == buffer_merge_map(self.sealed_stack.sparse_map(), active_branch_sparse_map(self.active_branch)));
         assert(post.sparse_map() == post.sealed_stack.sparse_map());
         assert(self.sparse_map() =~= post.sparse_map()) by {
             assert forall |key: Key| #[trigger] self.sparse_map().contains_key(key)

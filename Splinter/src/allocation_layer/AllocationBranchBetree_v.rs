@@ -1281,12 +1281,12 @@ impl BufferDisk<BranchNode> {
                     pre_branch.valid_subdisk_preserves_valid_sealed_branch(post_branch, summary_aus(pre_summary));
                 }
             }
-        }       
+        }
     }
 
-    proof fn build_branch_summary_remove(self, branch_summary: Map<AU, Set<AU>>, 
+    pub proof fn build_branch_summary_remove(self, branch_summary: Map<AU, Set<AU>>,
             branch_roots: Set<Address>, post_branch_roots: Set<Address>)
-        requires 
+        requires
             branch_roots.finite(),
             post_branch_roots <= branch_roots,
             self.to_branch_disk().wf(),

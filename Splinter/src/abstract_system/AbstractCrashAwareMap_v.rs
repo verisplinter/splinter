@@ -41,19 +41,16 @@ state_machine!{ AbstractCrashAwareMap {
         /// (which just wraps a StampedMap with no extra details). All operations
         /// act on the ephemeral version of the map.
         pub ephemeral: Ephemeral,
-        /// in_flight when `Some` represents a snapshot of the map that is going
-        /// to be persisted but hasn't been switched over to as our persistent state
-        /// yet.
-
-        // rename to frozen, to avoid ambiguity with sending the superblock.
-        pub in_flight: Option<StoreImage>,
+        /// A valid snapshot of the map that may be committed by a later
+        /// coordination-level superblock write.
+        pub frozen: Option<StoreImage>,
     }
 
     init!{
         initialize() {
             init persistent = empty();
             init ephemeral = Ephemeral::Unknown;
-            init in_flight = Option::None;
+            init frozen = Option::None;
         }
     }
 
@@ -62,7 +59,7 @@ state_machine!{ AbstractCrashAwareMap {
         PutRecordsLabel{ records: MsgHistory },
         QueryLabel{ end_lsn: LSN, key: Key, value: Value },
         InternalLabel,
-        CommitStartLabel{ new_boundary_lsn: LSN },
+        CommitStartLabel{ new_boundary_lsn: LSN, frozen_map: StoreImage },
         CommitCompleteLabel,
         CrashLabel{ keep_in_flight: bool },
     }
@@ -129,23 +126,11 @@ state_machine!{ AbstractCrashAwareMap {
         freeze_map_internal(lbl: Label, frozen_map: StampedMap, new_map: AbstractMap::State) {
             require lbl is InternalLabel;
             require pre.ephemeral is Known;
-            require pre.in_flight is None;
             require AbstractMap::State::next(
                 pre.ephemeral->v, 
                 new_map,
                 AbstractMap::Label::FreezeAsLabel{ stamped_map: frozen_map}
             );
-            update ephemeral = Ephemeral::Known{ v: new_map };
-            update in_flight = Option::Some(frozen_map);            
-        }
-    }
-
-    transition!{
-        freeze_persistent_internal(lbl: Label) {
-            require lbl is InternalLabel;
-            require pre.ephemeral is Known;
-            require pre.in_flight is None;
-            update in_flight = Option::Some(pre.persistent);            
         }
     }
 
@@ -163,29 +148,48 @@ state_machine!{ AbstractCrashAwareMap {
     }
 
     transition!{
-        commit_start(lbl: Label) {
+        commit_start_ephemeral(lbl: Label) {
             require lbl is CommitStartLabel;
             require pre.ephemeral is Known;
-            require pre.in_flight is Some;
+            require pre.frozen is None;
             require pre.persistent.seq_end <= lbl->new_boundary_lsn;
-            require lbl->new_boundary_lsn == pre.in_flight.unwrap().seq_end;
+            require lbl->new_boundary_lsn == lbl->frozen_map.seq_end;
+            require AbstractMap::State::next(
+                pre.ephemeral->v,
+                pre.ephemeral->v,
+                AbstractMap::Label::FreezeAsLabel{ stamped_map: lbl->frozen_map },
+            );
+            update frozen = Option::Some(lbl->frozen_map);
+        }
+    }
+
+    transition!{
+        commit_start_persistent(lbl: Label) {
+            require lbl is CommitStartLabel;
+            require pre.ephemeral is Known;
+            require pre.frozen is None;
+            require pre.persistent.seq_end <= lbl->new_boundary_lsn;
+            require lbl->new_boundary_lsn == lbl->frozen_map.seq_end;
+            require lbl->frozen_map == pre.persistent;
+            update frozen = Option::Some(lbl->frozen_map);
         }
     }
 
     transition!{
         commit_complete(lbl: Label) {
             require lbl is CommitCompleteLabel;
-            require pre.in_flight is Some;
-            update persistent = pre.in_flight.unwrap();
-            update in_flight = Option::None;
+            require pre.frozen is Some;
+            update persistent = pre.frozen.unwrap();
+            update frozen = Option::None;
         }
     }
 
     transition!{
         crash(lbl: Label) {
             require lbl is CrashLabel;
+            require lbl->keep_in_flight ==> pre.frozen is Some;
             update ephemeral = Ephemeral::Unknown;
-            update in_flight = Option::None;
+            update frozen = Option::None;
 
             // If the system crashes in the time between when a superblock hit the disk and when
             // the program learned about it, then when the program wakes up again, it's going to
@@ -194,7 +198,7 @@ state_machine!{ AbstractCrashAwareMap {
             // why it's not ridiculous to "peek" at the disk buffer state via keep_in_flight;
             // by the time we get to the bottom layer of the stack, this entire update will apply
             // to only trusted parts of the system.)
-            update persistent = if lbl->keep_in_flight { pre.in_flight.unwrap() } else { pre.persistent };
+            update persistent = if lbl->keep_in_flight { pre.frozen.unwrap() } else { pre.persistent };
         }
     }
 }}

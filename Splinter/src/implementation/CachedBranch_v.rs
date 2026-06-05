@@ -4,7 +4,9 @@
 use vstd::prelude::*;
 use vstd::{map::*, set::*};
 
-use crate::allocation_layer::AllocationBranch_v::BranchNode as AllocationBranchNode;
+use verus_state_machines_macros::state_machine;
+
+use crate::allocation_layer::AllocationBranch_v::{BranchNode as AllocationBranchNode, Summary};
 use crate::allocation_layer::MiniAllocator_v::MiniAllocator;
 use crate::betree::LinkedBranch_v::SplitArg;
 use crate::disk::GenericDisk_v::{AU, Address, Pointer};
@@ -160,6 +162,30 @@ impl LoadedPathReceipt {
         } else {
             Message::Update{delta: nop_delta()}
         }
+    }
+}
+
+pub open spec fn root_summary_read_valid(root: Address, read_nodes: LoadedBranch) -> bool
+{
+    &&& read_nodes.contains_key(root)
+    &&& if read_nodes[root] is Index {
+        let aux_ptr = read_nodes[root]->aux_ptr;
+        &&& aux_ptr is Some
+        &&& read_nodes.contains_key(aux_ptr.unwrap())
+        &&& read_nodes[aux_ptr.unwrap()] is Auxiliary
+    } else {
+        read_nodes[root] is Leaf
+    }
+}
+
+pub open spec fn root_summary_from_read(root: Address, read_nodes: LoadedBranch) -> Summary
+    recommends root_summary_read_valid(root, read_nodes)
+{
+    if read_nodes[root] is Index {
+        let aux_ptr = read_nodes[root]->aux_ptr.unwrap();
+        read_nodes[aux_ptr]->0
+    } else {
+        set![root.au]
     }
 }
 
@@ -458,20 +484,146 @@ pub open spec fn loaded_seal_write_nodes(root: Address, loaded: LoadedBranch, au
     }
 }
 
-pub struct CachedBranch {
-    pub sealed: bool,
-    pub root: Pointer,
-}
+state_machine!{ CachedBranch {
+    fields {
+        pub root: Pointer,
+    }
+
+    pub enum Label {
+        Query{
+            mini_allocator: MiniAllocator,
+            receipt: LoadedPathReceipt,
+            read_nodes: LoadedBranch,
+            msg: Message,
+        },
+        Append{
+            mini_allocator: MiniAllocator,
+            receipt: LoadedPathReceipt,
+            keys: Seq<Key>,
+            msgs: Seq<Message>,
+            read_nodes: LoadedBranch,
+            write_nodes: LoadedBranch,
+        },
+        Initialize{
+            mini_allocator: MiniAllocator,
+            init_root: Address,
+            keys: Seq<Key>,
+            msgs: Seq<Message>,
+            write_nodes: LoadedBranch,
+        },
+        Grow{
+            mini_allocator: MiniAllocator,
+            new_root_addr: Address,
+            read_nodes: LoadedBranch,
+            write_nodes: LoadedBranch,
+        },
+        Split{
+            mini_allocator: MiniAllocator,
+            new_child_addr: Address,
+            receipt: LoadedPathReceipt,
+            split_arg: SplitArg,
+            read_nodes: LoadedBranch,
+            write_nodes: LoadedBranch,
+        },
+        Seal{
+            mini_allocator: MiniAllocator,
+            aux_ptr: Pointer,
+            read_nodes: LoadedBranch,
+            write_nodes: LoadedBranch,
+        },
+        ResetEmpty,
+        Internal,
+    }
+
+    init!{ init_state(root: Pointer) {
+        init root = root;
+    }}
+
+    transition!{ query(lbl: Label) {
+        require let Label::Query{mini_allocator, receipt, read_nodes, msg} = lbl;
+        require pre.can_query(mini_allocator, receipt, read_nodes);
+        require msg == pre.query_result(receipt, read_nodes);
+    }}
+
+    transition!{ append_step(lbl: Label) {
+        require let Label::Append{mini_allocator, receipt, keys, msgs, read_nodes, write_nodes} = lbl;
+        require pre.can_append(mini_allocator, receipt, keys, msgs, read_nodes, write_nodes);
+    }}
+
+    transition!{ initialize_branch(lbl: Label) {
+        require let Label::Initialize{mini_allocator, init_root, keys, msgs, write_nodes} = lbl;
+        require pre.can_initialize(mini_allocator, init_root, keys, msgs, write_nodes);
+        update root = Some(init_root);
+    }}
+
+    transition!{ grow_step(lbl: Label) {
+        require let Label::Grow{mini_allocator, new_root_addr, read_nodes, write_nodes} = lbl;
+        require pre.can_grow(mini_allocator, new_root_addr, read_nodes, write_nodes);
+        update root = Some(new_root_addr);
+    }}
+
+    transition!{ split_step(lbl: Label) {
+        require let Label::Split{mini_allocator, new_child_addr, receipt, split_arg, read_nodes, write_nodes} = lbl;
+        require pre.can_split(mini_allocator, new_child_addr, receipt, split_arg, read_nodes, write_nodes);
+    }}
+
+    transition!{ seal_step(lbl: Label) {
+        require let Label::Seal{mini_allocator, aux_ptr, read_nodes, write_nodes} = lbl;
+        require pre.can_seal(mini_allocator, aux_ptr, read_nodes, write_nodes);
+    }}
+
+    transition!{ reset_empty(lbl: Label) {
+        require lbl is ResetEmpty;
+        update root = None;
+    }}
+
+    transition!{ internal(lbl: Label) {
+        require lbl is Internal;
+    }}
+
+    #[invariant]
+    pub open spec fn inv(self) -> bool
+    {
+        self.wf()
+    }
+
+    #[inductive(init_state)]
+    fn init_state_inductive(post: Self, root: Pointer) { }
+
+    #[inductive(query)]
+    fn query_inductive(pre: Self, post: Self, lbl: Label) { }
+
+    #[inductive(append_step)]
+    fn append_step_inductive(pre: Self, post: Self, lbl: Label) { }
+
+    #[inductive(initialize_branch)]
+    fn initialize_branch_inductive(pre: Self, post: Self, lbl: Label) { }
+
+    #[inductive(grow_step)]
+    fn grow_step_inductive(pre: Self, post: Self, lbl: Label) { }
+
+    #[inductive(split_step)]
+    fn split_step_inductive(pre: Self, post: Self, lbl: Label) { }
+
+    #[inductive(seal_step)]
+    fn seal_step_inductive(pre: Self, post: Self, lbl: Label) { }
+
+    #[inductive(reset_empty)]
+    fn reset_empty_inductive(pre: Self, post: Self, lbl: Label) { }
+
+    #[inductive(internal)]
+    fn internal_inductive(pre: Self, post: Self, lbl: Label) { }
+}}
 
 pub open spec fn init_mini_allocator(aus: Set<AU>) -> MiniAllocator
 {
     MiniAllocator::empty().add_aus(aus)
 }
 
-impl CachedBranch {
+impl CachedBranch::State {
     pub open spec fn empty_active() -> Self
     {
-        Self { sealed: false, root: None }
+        Self { root: None }
     }
 
     pub open spec fn is_empty_active(self) -> bool
@@ -481,12 +633,12 @@ impl CachedBranch {
 
     pub open spec fn wf(self) -> bool
     {
-        &&& self.sealed ==> self.root is Some
+        true
     }
 
     pub open spec fn valid_allocator(self, mini_allocator: MiniAllocator) -> bool
     {
-        &&& !self.sealed && self.root is Some ==> mini_allocator.all_aus().contains(self.root.unwrap().au)
+        self.root is Some ==> mini_allocator.all_aus().contains(self.root.unwrap().au)
     }
 
     pub open spec fn ready_for_operation(self, mini_allocator: MiniAllocator) -> bool
@@ -498,8 +650,7 @@ impl CachedBranch {
 
     pub open spec fn ready_for_mutation(self, mini_allocator: MiniAllocator) -> bool
     {
-        &&& self.ready_for_operation(mini_allocator)
-        &&& !self.sealed
+        self.ready_for_operation(mini_allocator)
     }
 
     pub open spec fn can_query(self, mini_allocator: MiniAllocator, receipt: LoadedPathReceipt, read_nodes: LoadedBranch) -> bool
@@ -678,10 +829,7 @@ impl CachedBranch {
         recommends
             self.can_seal(mini_allocator, aux_ptr, read_nodes, write_nodes),
     {
-        Self {
-            sealed: true,
-            ..self
-        }
+        self
     }
 }
 

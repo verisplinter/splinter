@@ -630,15 +630,18 @@ state_machine!{ LinkedJournal {
         require pre.truncated_journal.decodable(); // Shown by invariant, not runtime-checked
 
         let dv = pre.truncated_journal.disk_view;
-        require dv.can_crop(pre.truncated_journal.freshest_rec, depth);
-
-        let cropped_tj = pre.truncated_journal.crop(depth);
         let label_fj = lbl->frozen_journal;
         let new_bdy = label_fj.seq_start();
-        require dv.boundary_lsn <= new_bdy;
 
-        require cropped_tj.can_discard_to(new_bdy);
-        require cropped_tj.valid_discard_old(new_bdy, label_fj);
+        require label_fj.freshest_rec is None ==> {
+            &&& pre.seq_start() <= new_bdy <= pre.seq_end()
+        };
+        require label_fj.freshest_rec is Some ==> {
+            &&& dv.can_crop(pre.truncated_journal.freshest_rec, depth)
+            &&& dv.boundary_lsn <= new_bdy
+            &&& pre.truncated_journal.crop(depth).can_discard_to(new_bdy)
+            &&& pre.truncated_journal.crop(depth).valid_discard_old(new_bdy, label_fj)
+        };
         // require label_fj == cropped_tj.discard_old(new_bdy);
     }}
 
@@ -667,11 +670,17 @@ state_machine!{ LinkedJournal {
         let require_end = lbl->require_end;
 
         require require_end == pre.seq_end();
-        require pre.truncated_journal.can_discard_to(start_lsn);
+        require pre.seq_start() <= start_lsn <= pre.seq_end();
 
         // leaving the amount of garbage collection to new_tj.disk_view
         // as long as all reachable pages are still in scope
-        require pre.truncated_journal.valid_discard_old(start_lsn, new_tj);
+        require start_lsn < pre.truncated_journal.seq_end() ==>
+            pre.truncated_journal.valid_discard_old(start_lsn, new_tj);
+        require pre.truncated_journal.seq_end() <= start_lsn ==> {
+            &&& new_tj.wf()
+            &&& new_tj.freshest_rec is None
+            &&& new_tj.disk_view.is_sub_disk(pre.truncated_journal.disk_view.discard_old(start_lsn))
+        };
 
         update truncated_journal = new_tj;
         update unmarshalled_tail = pre.unmarshalled_tail.bounded_discard(start_lsn);
@@ -733,8 +742,14 @@ state_machine!{ LinkedJournal {
         let lsn = lbl->start_lsn;
         let post_discard = pre.truncated_journal.discard_old(lsn);
 
-        pre.truncated_journal.discard_old_decodable(lsn);
-        new_tj.disk_view.sub_disk_ranking(post_discard.disk_view); // lemma that triggers
+        if lsn < pre.truncated_journal.seq_end() {
+            pre.truncated_journal.discard_old_decodable(lsn);
+            new_tj.disk_view.sub_disk_ranking(post_discard.disk_view); // lemma that triggers
+        } else {
+            let discarded_disk = pre.truncated_journal.disk_view.discard_old(lsn);
+            assert(discarded_disk.valid_ranking(pre.truncated_journal.disk_view.the_ranking()));
+            new_tj.disk_view.sub_disk_ranking(discarded_disk); // lemma that triggers
+        }
     }
 
     #[inductive(internal_journal_marshal)]

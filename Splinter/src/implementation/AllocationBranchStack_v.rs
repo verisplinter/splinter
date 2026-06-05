@@ -12,16 +12,31 @@ use crate::allocation_layer::AllocationBranchBetree_v::{
 use crate::allocation_layer::MiniAllocator_v::MiniAllocator;
 use crate::betree::BufferDisk_v::BufferDisk;
 use crate::betree::LinkedBranch_v::{LinkedBranch, Path, SplitArg};
-use crate::betree::Utils_v::lemma_union_set_of_sets_subset;
+use crate::betree::Utils_v::{
+    lemma_union_set_of_sets_contains, lemma_union_set_of_sets_subset,
+};
 use crate::disk::GenericDisk_v::{addrs_closed, set_addrs_disjoint_aus, AU, Address, Pointer};
 use crate::spec::KeyType_t::Key;
-use crate::spec::Messages_t::{nop_delta, Message};
+use crate::spec::Messages_t::{default_value, nop_delta, Message, Value};
 
 verus! {
 
 pub open spec fn is_nop_message(msg: Message) -> bool
 {
     msg == Message::Update{delta: nop_delta()}
+}
+
+pub open spec fn normalize_value(msg: Message) -> Value
+{
+    match msg {
+        Message::Define{value} => value,
+        Message::Update{delta} => Message::apply_delta(delta, default_value()),
+    }
+}
+
+pub open spec fn query_message_merge(older: Message, newer: Message) -> Message
+{
+    older.merge(newer)
 }
 
 pub open spec fn active_branch_query_or_nop(active_branch: AllocationBranch, key: Key) -> Message
@@ -103,6 +118,44 @@ impl SealedAllocationBranchStack {
         &&& addrs_closed(self.sealed_disk.entries.dom(), summary_aus(self.branch_summary()))
     }
 
+    pub proof fn sealed_disk_wf(self)
+        requires
+            self.wf(),
+        ensures
+            self.sealed_disk.to_branch_disk().wf(),
+    {
+        if self.sealed_disk.entries.dom() =~= Set::<Address>::empty() {
+            assert(self.sealed_disk.to_branch_disk().wf()) by {
+                assert forall |addr: Address| #[trigger] self.sealed_disk.to_branch_disk().entries.dom().contains(addr)
+                    implies self.sealed_disk.to_branch_disk().entries[addr].wf() by {
+                    assert(false);
+                }
+                assert forall |addr: Address| #[trigger] self.sealed_disk.to_branch_disk().entries.dom().contains(addr)
+                    implies self.sealed_disk.to_branch_disk().node_has_valid_child_address(
+                        self.sealed_disk.to_branch_disk().entries[addr],
+                    ) by {
+                    assert(false);
+                }
+            }
+        } else {
+            let addr = choose |addr: Address| self.sealed_disk.entries.dom().contains(addr);
+            assert(summary_aus(self.branch_summary()).contains(addr.au));
+            let summary = lemma_union_set_of_sets_contains(self.branch_summary().values(), addr.au);
+            let root_au = choose |root_au: AU|
+                self.branch_summary().contains_key(root_au)
+                && self.branch_summary()[root_au] == summary;
+            let root = self.sealed_disk.build_branch_summary_get_addr(
+                self.sealed_roots.to_set(),
+                root_au,
+            );
+            assert(self.sealed_roots.to_set().contains(root));
+            assert(self.sealed_disk.sealed_branch_roots(self.sealed_roots.to_set()));
+            assert(self.sealed_disk.get_branch(root).valid_sealed_branch());
+            assert(self.sealed_disk.get_branch(root).wf());
+            assert(self.sealed_disk.get_branch(root).disk_view == self.sealed_disk.to_branch_disk());
+        }
+    }
+
     pub open spec fn sealed_branch_at(self, idx: nat) -> LinkedBranch<Summary>
         recommends idx < self.sealed_roots.len()
     {
@@ -117,11 +170,7 @@ impl SealedAllocationBranchStack {
             Message::Update{delta: nop_delta()}
         } else {
             let msg = self.sealed_branch_at((end - 1) as nat).query(key);
-            if is_nop_message(msg) {
-                self.query_up_to((end - 1) as nat, key)
-            } else {
-                msg
-            }
+            query_message_merge(self.query_up_to((end - 1) as nat, key), msg)
         }
     }
 
@@ -393,13 +442,11 @@ state_machine!{ AllocationBranchStack {
     }}
 
     transition!{ query_step(lbl: Label) {
-        require pre.wf();
         require let Label::QueryLabel{key, msg} = lbl;
         require msg == pre.query(key);
     }}
 
     transition!{ append_to_active(lbl: Label, path: Path<Summary>) {
-        require pre.wf();
         require lbl is AppendLabel;
         require pre.active_branch.branch is Some;
         require pre.active_branch.can_append(lbl->keys, lbl->msgs, path);
@@ -410,7 +457,6 @@ state_machine!{ AllocationBranchStack {
     }}
 
     transition!{ append_to_empty(lbl: Label, init_root: Address) {
-        require pre.wf();
         require lbl is AppendLabel;
         require pre.active_branch.branch is None;
         require pre.active_branch.mini_allocator.can_allocate(init_root);
@@ -420,7 +466,6 @@ state_machine!{ AllocationBranchStack {
     }}
 
     transition!{ freeze_as(lbl: Label) {
-        require pre.wf();
         require let Label::FreezeAsLabel{sealed_stack: frozen_stack} = lbl;
         require frozen_stack.wf();
         require frozen_stack == pre.freeze_snapshot();
@@ -428,41 +473,42 @@ state_machine!{ AllocationBranchStack {
     }}
 
     transition!{ internal_noop(lbl: Label) {
-        require pre.wf();
         require lbl is InternalLabel;
     }}
 
     transition!{ internal_grow(lbl: Label, new_root_addr: Address) {
-        require pre.wf();
         require lbl is InternalLabel;
         require pre.active_branch.can_grow(new_root_addr);
         update active_branch = pre.active_branch.branch_grow(new_root_addr);
     }}
 
     transition!{ internal_split(lbl: Label, new_child_addr: Address, path: Path<Summary>, split_arg: SplitArg) {
-        require pre.wf();
         require lbl is InternalLabel;
         require pre.active_branch.can_split(new_child_addr, path, split_arg);
         update active_branch = pre.active_branch.branch_split(new_child_addr, path, split_arg);
     }}
 
     transition!{ internal_seal(lbl: Label, aux_ptr: Pointer) {
-        require pre.wf();
         require lbl is InternalLabel;
         let dealloc_aus = pre.active_branch.mini_allocator.removable_aus();
         require pre.active_branch.can_seal(aux_ptr, dealloc_aus);
         let sealed_active = pre.active_branch.branch_seal(aux_ptr, dealloc_aus);
         let sealed_branch = sealed_active.branch.unwrap();
+        let next_active_allocator = pre.active_branch.mini_allocator
+            .prune(sealed_branch.get_summary());
         update sealed_stack = pre.sealed_stack.push_branch(sealed_branch);
         update branch_summary = pre.branch_summary.insert(
             sealed_branch.root.au,
             sealed_branch.get_summary(),
         );
-        update active_branch = AllocationBranch::new(Set::empty());
+        update active_branch = AllocationBranch{
+            sealed: false,
+            branch: None,
+            mini_allocator: next_active_allocator,
+        };
     }}
 
     transition!{ internal_fill_au(lbl: Label, aus: Set<AU>) {
-        require pre.wf();
         require lbl is InternalLabel;
         require pre.active_branch.can_fill(aus);
         require summary_aus(pre.branch_summary).disjoint(aus);
@@ -581,7 +627,40 @@ state_machine!{ AllocationBranchStack {
             dealloc_aus,
         );
         pre.sealed_stack.push_branch_preserves_wf(sealed_branch);
-        new_branch_inv(Set::empty());
+        let roots = pre.sealed_stack.sealed_roots.to_set();
+        pre.sealed_stack.sealed_disk.build_branch_summary_finite(roots);
+        assert(pre.branch_summary.dom().finite());
+        assert(sealed_branch.get_summary().contains(sealed_branch.root.au)) by {
+            assert(sealed_branch.full_repr().contains(sealed_branch.root));
+            assert(addrs_closed(sealed_branch.full_repr(), sealed_branch.get_summary()));
+        }
+        assert(!pre.branch_summary.contains_key(sealed_branch.root.au)) by {
+            if pre.branch_summary.contains_key(sealed_branch.root.au) {
+                let old_root = pre.sealed_stack.sealed_disk.build_branch_summary_get_addr(
+                    roots,
+                    sealed_branch.root.au,
+                );
+                pre.sealed_stack.root_au_in_summary(old_root);
+                assert(summary_aus(pre.branch_summary).contains(sealed_branch.root.au));
+                assert(!sealed_branch.get_summary().contains(sealed_branch.root.au));
+            }
+        }
+        branch_summary_insert_ensures(pre.branch_summary, sealed_branch);
+        pre.active_branch.mini_allocator.prune_preserves_wf(sealed_branch.get_summary());
+        assert(post.active_branch.mini_allocator.all_aus()
+            == pre.active_branch.mini_allocator.all_aus().difference(sealed_branch.get_summary()));
+        assert(summary_aus(post.branch_summary)
+            == summary_aus(pre.branch_summary) + sealed_branch.get_summary());
+        assert(summary_aus(post.branch_summary).disjoint(post.active_branch.mini_allocator.all_aus())) by {
+            assert forall |au: AU| #[trigger] summary_aus(post.branch_summary).contains(au)
+                implies !post.active_branch.mini_allocator.all_aus().contains(au) by {
+                if summary_aus(pre.branch_summary).contains(au) {
+                    assert(!pre.active_branch.mini_allocator.all_aus().contains(au));
+                } else {
+                    assert(sealed_branch.get_summary().contains(au));
+                }
+            }
+        }
         assert(post.wf());
     }
 
@@ -597,17 +676,85 @@ state_machine!{ AllocationBranchStack {
         mini_allocator_add_aus_preserves_all_aus(pre.active_branch.mini_allocator, aus);
         assert(post.wf());
     }
+
+    pub proof fn inv_next(pre: Self, post: Self, lbl: Label)
+        requires
+            pre.inv(),
+            AllocationBranchStack::State::next(pre, post, lbl),
+        ensures
+            post.inv(),
+    {
+        reveal(AllocationBranchStack::State::next);
+        reveal(AllocationBranchStack::State::next_by);
+
+        let step = choose |step| AllocationBranchStack::State::next_by(pre, post, lbl, step);
+        match step {
+            AllocationBranchStack::Step::query_step() => {
+                assert(AllocationBranchStack::State::query_step(pre, post, lbl)) by {
+                    reveal(AllocationBranchStack::State::query_step);
+                }
+                AllocationBranchStack::State::query_step_inductive(pre, post, lbl);
+            },
+            AllocationBranchStack::Step::append_to_active(path) => {
+                assert(AllocationBranchStack::State::append_to_active(pre, post, lbl, path)) by {
+                    reveal(AllocationBranchStack::State::append_to_active);
+                }
+                AllocationBranchStack::State::append_to_active_inductive(pre, post, lbl, path);
+            },
+            AllocationBranchStack::Step::append_to_empty(init_root) => {
+                assert(AllocationBranchStack::State::append_to_empty(pre, post, lbl, init_root)) by {
+                    reveal(AllocationBranchStack::State::append_to_empty);
+                }
+                AllocationBranchStack::State::append_to_empty_inductive(pre, post, lbl, init_root);
+            },
+            AllocationBranchStack::Step::freeze_as() => {
+                assert(AllocationBranchStack::State::freeze_as(pre, post, lbl)) by {
+                    reveal(AllocationBranchStack::State::freeze_as);
+                }
+                AllocationBranchStack::State::freeze_as_inductive(pre, post, lbl);
+            },
+            AllocationBranchStack::Step::internal_noop() => {
+                assert(AllocationBranchStack::State::internal_noop(pre, post, lbl)) by {
+                    reveal(AllocationBranchStack::State::internal_noop);
+                }
+                AllocationBranchStack::State::internal_noop_inductive(pre, post, lbl);
+            },
+            AllocationBranchStack::Step::internal_grow(new_root_addr) => {
+                assert(AllocationBranchStack::State::internal_grow(pre, post, lbl, new_root_addr)) by {
+                    reveal(AllocationBranchStack::State::internal_grow);
+                }
+                AllocationBranchStack::State::internal_grow_inductive(pre, post, lbl, new_root_addr);
+            },
+            AllocationBranchStack::Step::internal_split(new_child_addr, path, split_arg) => {
+                assert(AllocationBranchStack::State::internal_split(pre, post, lbl, new_child_addr, path, split_arg)) by {
+                    reveal(AllocationBranchStack::State::internal_split);
+                }
+                AllocationBranchStack::State::internal_split_inductive(pre, post, lbl, new_child_addr, path, split_arg);
+            },
+            AllocationBranchStack::Step::internal_seal(aux_ptr) => {
+                assert(AllocationBranchStack::State::internal_seal(pre, post, lbl, aux_ptr)) by {
+                    reveal(AllocationBranchStack::State::internal_seal);
+                }
+                AllocationBranchStack::State::internal_seal_inductive(pre, post, lbl, aux_ptr);
+            },
+            AllocationBranchStack::Step::internal_fill_au(aus) => {
+                assert(AllocationBranchStack::State::internal_fill_au(pre, post, lbl, aus)) by {
+                    reveal(AllocationBranchStack::State::internal_fill_au);
+                }
+                AllocationBranchStack::State::internal_fill_au_inductive(pre, post, lbl, aus);
+            },
+            _ => {
+                assert(post.inv());
+            },
+        }
+    }
 }}
 
 impl AllocationBranchStack::State {
     pub open spec fn query(self, key: Key) -> Message
     {
         let active_msg = active_branch_query_or_nop(self.active_branch, key);
-        if is_nop_message(active_msg) {
-            self.sealed_stack.query(key)
-        } else {
-            active_msg
-        }
+        query_message_merge(self.sealed_stack.query(key), active_msg)
     }
 
     pub open spec fn freeze_snapshot(self) -> SealedAllocationBranchStack

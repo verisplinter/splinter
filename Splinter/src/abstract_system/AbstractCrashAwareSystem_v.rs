@@ -17,7 +17,7 @@ use crate::spec::MapSpec_t::{AsyncMap, CrashTolerantAsyncMap, EphemeralState, ID
 
 use crate::abstract_system::AbstractCrashAwareJournal_v::*;
 use crate::abstract_system::AbstractCrashAwareMap_v::*;
-use crate::abstract_system::StampedMap_v::{LSN, empty};
+use crate::abstract_system::StampedMap_v::{LSN, StampedMap, empty};
 use crate::abstract_system::MsgHistory_v::{MsgHistory, KeyedMessage};
 
 // TODO (jonh): Rename all of the labels in all files to exclude "Op" or "Label" since it's redundant
@@ -30,24 +30,9 @@ verus! {
 // type SyncReqId = nat;
 
 /// SyncReqs represents a set of outstanding sync requests. Sync requests are stored as key-value
-/// pairs: (key, map_lsn), where "key" is the sync request ID, and "map_lsn" was the last executed
+/// pairs: (key, lsn), where "key" is the sync request ID, and "lsn" was the last executed
 /// LSN on the map at the time the sync request was made.
 type SyncReqs = Map<SyncReqId, LSN>;
-
-/// The ephemeral state of the Coordination Layer (when known).
-pub struct Known {
-  /// Tracks the set of outstanding client requests and undelivered replies. See MapSpec_t::EphemeralState.
-  pub progress: MapSpec_t::EphemeralState,
-  /// The set of outstanding sync requests.
-  pub sync_reqs: SyncReqs,
-  /// The LSN one past the end of 
-  pub map_lsn: LSN  // invariant: agrees with mapadt.stampedMap.seqEnd
-}
-
-/// Ephemeral state for coordination layer can be known or unknown. The ephemeral
-/// state is known if the Option type is Some, and unknown if the Option type is
-/// None.
-type Ephemeral = Option<Known>;
 
 state_machine!{ CoordinationSystem {
   fields {
@@ -57,12 +42,11 @@ state_machine!{ CoordinationSystem {
     /// State of the map backing our system.
     pub mapadt: AbstractCrashAwareMap::State,
 
-    /// The ephemeral state of the coordination system tracks the outstanding
-    /// requests and replies for map operations, as well as the set of outstanding
-    /// sync requests. Invariant: if not Known, then we cannot accept new requests
-    /// (represents that our in-memory state has crashed and isn't fully up to date
-    /// with persistent information yet).
-    pub ephemeral: Ephemeral,
+    /// Tracks the set of outstanding client requests and undelivered replies.
+    pub progress: MapSpec_t::EphemeralState,
+
+    /// The set of outstanding sync requests.
+    pub sync_reqs: SyncReqs,
 
     /// The state of the async disk buffer: is there a superblock write in-flight,
     /// or has it landed on the disk? Used to refine when a spec Sync event occurs.
@@ -89,6 +73,10 @@ state_machine!{ CoordinationSystem {
     // apologizing for the fact that we were justifying the intuitive "real" execution with an
     // "equally acceptable but not really the right" other execution.
     pub superblock_in_flight: bool,
+
+    /// The commit superblock write has landed, but the program has not yet
+    /// completed the commit protocol and cleared the frozen component images.
+    pub superblock_landed: bool,
   }
 
   // Labels of coordinationsystem should directly be the labels of the
@@ -119,19 +107,29 @@ state_machine!{ CoordinationSystem {
       require AbstractCrashAwareMap::State::init(state.mapadt);
       init journal = state.journal;
       init mapadt = state.mapadt;
-      init ephemeral = None;
+      init progress = AsyncMap::State::init_ephemeral_state();
+      init sync_reqs = Map::empty();
       init superblock_in_flight = false;
+      init superblock_landed = false;
     }
   }
 
-  transition! {
-    // Load the state of the ephemeral journal and map from the persistent
-    // state (just a direct copy)
-    load_ephemeral_from_persistent(
+	  transition! {
+	    noop(
+	      label: Label,
+	    ) {
+	      let ctam_label = label->ctam_label;
+	      require ctam_label is Noop;
+	    }
+	  }
+
+	  transition! {
+	    // Load the state of the ephemeral journal and map from the persistent
+	    // state (just a direct copy)
+	    load_ephemeral_from_persistent(
       label: Label,
       new_journal: AbstractCrashAwareJournal::State,
       new_mapadt: AbstractCrashAwareMap::State,
-      map_lsn: LSN,
     ) {
       require let Label::Label{ ctam_label: CrashTolerantAsyncMap::Label::Noop } = label;
       
@@ -144,19 +142,7 @@ state_machine!{ CoordinationSystem {
       require AbstractCrashAwareMap::State::next(
         pre.mapadt,
         new_mapadt,
-        AbstractCrashAwareMap::Label::LoadEphemeralFromPersistentLabel{ end_lsn: map_lsn }
-      );
-
-      // Solving the "initial" state problem is weird. Inherently we want a function
-      // that returns a non-deterministic value, but as we've noted: not really possible
-      // What would that primitive even be? An amorphous blob?
-
-      update ephemeral = Some(
-        Known {
-          progress: AsyncMap::State::init_ephemeral_state(),
-          sync_reqs: Map::empty(),
-          map_lsn: map_lsn,
-        }
+        AbstractCrashAwareMap::Label::LoadEphemeralFromPersistentLabel{ end_lsn: pre.mapadt.persistent.seq_end }
       );
 
       update journal = new_journal;
@@ -175,7 +161,6 @@ state_machine!{ CoordinationSystem {
     ) {
       require let Label::Label{ ctam_label: CrashTolerantAsyncMap::Label::Noop } = label;
 
-      require pre.ephemeral is Some;
       require records.wf();
 
       require AbstractCrashAwareJournal::State::next(
@@ -188,13 +173,6 @@ state_machine!{ CoordinationSystem {
         pre.mapadt,
         new_mapadt,
         AbstractCrashAwareMap::Label::PutRecordsLabel{ records }
-      );
-
-      update ephemeral = Some(
-        Known {
-          map_lsn: records.seq_end,
-          ..pre.ephemeral->Some_0
-        }
       );
 
       update journal = new_journal;
@@ -210,8 +188,6 @@ state_machine!{ CoordinationSystem {
     accept_request(
       label: Label,
     ) {
-      require pre.ephemeral is Some;
-
       // Tenzin: Each of these destructurings requires looking
       // up in another file what the fully qualified name of the type
       // is and that's annoying. Good intellisense would save us here
@@ -226,32 +202,17 @@ state_machine!{ CoordinationSystem {
       let Label::Label{ ctam_label } = label;
 
       // Alternative syntax for destructuring and matching enum type
-      // require pre.ephemeral is Some;
-      // let pre_ephemeral = pre.ephemeral->Some_0;
       // require ctam_label is OperateOp;
       // let base_op = ctam_label->base_op;
       // require base_op is RequestOp;
       // let req = base_op->req;
 
-      require !pre.ephemeral->Some_0.progress.requests.contains(req);
+      require !pre.progress.requests.contains(req);
 
-      // Wanted to do something like this but not available
-      // let mut new_ephemeral = pre.ephemeral;
-      // new_ephemeral->Some_0.progress.requests =
-      //   new_ephemeral->Some_0.progress.requests + req;
-
-      // This is ugly
-      // IDEAL SYNTAX:
-      // update ephemeral.unwrap().progress.requests = @.insert(req);
-      update ephemeral = Some(
-        Known{
-          progress: MapSpec_t::EphemeralState{
-            requests: pre.ephemeral->Some_0.progress.requests.insert(req),
-            ..pre.ephemeral->Some_0.progress
-          },
-          ..pre.ephemeral->Some_0
-        }
-      );
+      update progress = MapSpec_t::EphemeralState{
+        requests: pre.progress.requests.insert(req),
+        ..pre.progress
+      };
     }
   }
 
@@ -262,9 +223,7 @@ state_machine!{ CoordinationSystem {
       new_journal: AbstractCrashAwareJournal::State,
       new_mapadt: AbstractCrashAwareMap::State,
     ) {
-      // State must be known
-      require pre.ephemeral is Some;
-      let pre_ephemeral = pre.ephemeral->Some_0;
+      let current_lsn = pre.mapadt.i().seq_end;
 
       // The query transition label is labeled with the input and output of the
       // query operation. We want to dissect that information out so that we can
@@ -284,22 +243,22 @@ state_machine!{ CoordinationSystem {
       let key = req.input.arrow_QueryInput_key();
       let value = reply.output->value;
 
-      require pre_ephemeral.progress.requests.contains(req);
+      require pre.progress.requests.contains(req);
       require req.id == reply.id;
 
-      require !pre_ephemeral.progress.replies.contains(reply);
+      require !pre.progress.replies.contains(reply);
 
       require AbstractCrashAwareJournal::State::next(
         pre.journal,
         new_journal,
-        AbstractCrashAwareJournal::Label::QueryEndLsnLabel{end_lsn: pre_ephemeral.map_lsn},
+        AbstractCrashAwareJournal::Label::QueryEndLsnLabel{end_lsn: current_lsn},
       );
 
       require AbstractCrashAwareMap::State::next(
         pre.mapadt,
         new_mapadt,
         AbstractCrashAwareMap::Label::QueryLabel{
-          end_lsn: pre_ephemeral.map_lsn,
+          end_lsn: current_lsn,
           key: key,
           value: value,
         },
@@ -307,15 +266,10 @@ state_machine!{ CoordinationSystem {
 
       // Remove the request from outstanding requests, and add corresponding
       // response to set of undelivered replies.
-      update ephemeral = Some(
-        Known{
-          progress: MapSpec_t::EphemeralState{
-            requests: pre_ephemeral.progress.requests.remove(req),
-            replies: pre_ephemeral.progress.replies.insert(reply),
-          },
-          ..pre_ephemeral
-        }
-      );
+      update progress = MapSpec_t::EphemeralState{
+        requests: pre.progress.requests.remove(req),
+        replies: pre.progress.replies.insert(reply),
+      };
       update journal = new_journal;
       update mapadt = new_mapadt;
     }
@@ -327,8 +281,7 @@ state_machine!{ CoordinationSystem {
       new_journal: AbstractCrashAwareJournal::State,
       new_mapadt: AbstractCrashAwareMap::State,
     ) {
-      require pre.ephemeral is Some;
-      let pre_ephemeral = pre.ephemeral->Some_0;
+      let current_lsn = pre.mapadt.i().seq_end;
 
       // Destructuring and label checking boilerplate
       require let Label::Label{
@@ -353,9 +306,9 @@ state_machine!{ CoordinationSystem {
         id: reply_id,
       } = reply;
 
-      require pre_ephemeral.progress.requests.contains(req);
+      require pre.progress.requests.contains(req);
       require req.id == reply.id;
-      require !pre_ephemeral.progress.replies.contains(reply);
+      require !pre.progress.replies.contains(reply);
 
       // TODO: let keyed_message = 
       let keyed_message = KeyedMessage{
@@ -363,7 +316,7 @@ state_machine!{ CoordinationSystem {
         message: Message::Define { value: value },
       };
       // TODO: let singleton: MsgHistory = <something>;
-      let singleton = MsgHistory::singleton_at(pre_ephemeral.map_lsn, keyed_message);
+      let singleton = MsgHistory::singleton_at(current_lsn, keyed_message);
 
       require AbstractCrashAwareJournal::State::next(
         pre.journal,
@@ -377,26 +330,40 @@ state_machine!{ CoordinationSystem {
         AbstractCrashAwareMap::Label::PutRecordsLabel{ records: singleton },
       );
 
-      update ephemeral = Some(
-        Known {
-          map_lsn: pre_ephemeral.map_lsn + 1,
-          progress: MapSpec_t::EphemeralState{
-            requests: pre_ephemeral.progress.requests.remove(req),
-            replies: pre_ephemeral.progress.replies.insert(reply),
-          },
-          ..pre_ephemeral
-        }
-      );
+      update progress = MapSpec_t::EphemeralState{
+        requests: pre.progress.requests.remove(req),
+        replies: pre.progress.replies.insert(reply),
+      };
       update journal = new_journal;
       update mapadt = new_mapadt;
     }
   }
 
   transition! {
+    execute_noop(label: Label) {
+      let ctam_label = label->ctam_label;
+
+      require ctam_label is OperateOp;
+      let base_op = ctam_label->base_op;
+      require base_op is ExecuteOp;
+      let req = base_op.arrow_ExecuteOp_req();
+      let reply = base_op.arrow_ExecuteOp_reply();
+      require req.input is NoopInput;
+      require reply.output is NoopOutput;
+
+      require pre.progress.requests.contains(req);
+      require req.id == reply.id;
+      require !pre.progress.replies.contains(reply);
+
+      update progress = MapSpec_t::EphemeralState{
+        requests: pre.progress.requests.remove(req),
+        replies: pre.progress.replies.insert(reply),
+      };
+    }
+  }
+
+  transition! {
     deliver_reply(label: Label) {
-      require pre.ephemeral is Some;
-      let pre_ephemeral = pre.ephemeral->Some_0;
-      
       let ctam_label = label->ctam_label;
 
       require ctam_label is OperateOp;
@@ -406,16 +373,11 @@ state_machine!{ CoordinationSystem {
 
       let reply = base_op.arrow_ReplyOp_reply();
 
-      require pre_ephemeral.progress.replies.contains(reply);
-      update ephemeral = Some(
-        Known {
-          progress: MapSpec_t::EphemeralState {
-            replies: pre_ephemeral.progress.replies.remove(reply),
-            ..pre_ephemeral.progress
-          },
-          ..pre_ephemeral
-        }
-      );
+      require pre.progress.replies.contains(reply);
+      update progress = MapSpec_t::EphemeralState {
+        replies: pre.progress.replies.remove(reply),
+        ..pre.progress
+      };
     }
   }
 
@@ -424,9 +386,6 @@ state_machine!{ CoordinationSystem {
       label: Label,
       new_journal: AbstractCrashAwareJournal::State,
     ) {
-      require pre.ephemeral is Some;
-      let pre_ephemeral = pre.ephemeral->Some_0;
-
       let ctam_label = label->ctam_label;
       require ctam_label is Noop;
 
@@ -445,9 +404,6 @@ state_machine!{ CoordinationSystem {
       label: Label,
       new_mapadt: AbstractCrashAwareMap::State,
     ) {
-      require pre.ephemeral is Some;
-      let pre_ephemeral = pre.ephemeral->Some_0;
-
       let ctam_label = label->ctam_label;
       require ctam_label is Noop;
 
@@ -466,28 +422,22 @@ state_machine!{ CoordinationSystem {
       label: Label,
       new_journal: AbstractCrashAwareJournal::State,
     ) {
-      require pre.ephemeral is Some;
-      let pre_ephemeral = pre.ephemeral->Some_0;
+      let current_lsn = pre.mapadt.i().seq_end;
 
       let ctam_label = label->ctam_label;
       require ctam_label is ReqSyncOp;
 
       let sync_req_id = ctam_label.arrow_ReqSyncOp_sync_req_id();
-      require !pre_ephemeral.sync_reqs.dom().contains(sync_req_id);
+      require !pre.sync_reqs.dom().contains(sync_req_id);
       
       require AbstractCrashAwareJournal::State::next(
         pre.journal,
         new_journal,
-        AbstractCrashAwareJournal::Label::QueryEndLsnLabel{ end_lsn: pre_ephemeral.map_lsn },
+        AbstractCrashAwareJournal::Label::QueryEndLsnLabel{ end_lsn: current_lsn },
       );
 
       update journal = new_journal;
-      update ephemeral = Some(
-        Known {
-          sync_reqs: pre_ephemeral.sync_reqs.insert(sync_req_id, pre_ephemeral.map_lsn),
-          ..pre_ephemeral
-        }
-      );
+      update sync_reqs = pre.sync_reqs.insert(sync_req_id, current_lsn);
     }
   }
 
@@ -496,30 +446,22 @@ state_machine!{ CoordinationSystem {
       label: Label,
       new_journal: AbstractCrashAwareJournal::State,
     ) {
-      require pre.ephemeral is Some;
-      let pre_ephemeral = pre.ephemeral->Some_0;
-
       let ctam_label = label->ctam_label;
       require ctam_label is ReplySyncOp;
 
       let sync_req_id = ctam_label.arrow_ReplySyncOp_sync_req_id();
-      require pre_ephemeral.sync_reqs.dom().contains(sync_req_id);
+      require pre.sync_reqs.dom().contains(sync_req_id);
 
       require AbstractCrashAwareJournal::State::next(
         pre.journal,
         new_journal,
         AbstractCrashAwareJournal::Label::QueryLsnPersistenceLabel{
-          sync_lsn: pre_ephemeral.sync_reqs[sync_req_id],
+          sync_lsn: pre.sync_reqs[sync_req_id],
         }
       );
 
       update journal = new_journal;
-      update ephemeral = Some(
-        Known {
-          sync_reqs: pre_ephemeral.sync_reqs.remove(sync_req_id),
-          ..pre_ephemeral
-        }
-      );
+      update sync_reqs = pre.sync_reqs.remove(sync_req_id);
     }
   }
 
@@ -527,33 +469,39 @@ state_machine!{ CoordinationSystem {
     commit_start(
       label: Label,
       new_boundary_lsn: LSN,
+      frozen_journal: MsgHistory,
+      frozen_map: StampedMap,
+      new_journal: AbstractCrashAwareJournal::State,
+      new_mapadt: AbstractCrashAwareMap::State,
     ) {
-      require pre.ephemeral is Some;
-      let pre_ephemeral = pre.ephemeral->Some_0;
-
       let ctam_label = label->ctam_label;
       require ctam_label is Noop;
+      require !pre.superblock_in_flight;
+      require !pre.superblock_landed;
 
       require AbstractCrashAwareJournal::State::next(
         pre.journal,
-        pre.journal,
+        new_journal,
         AbstractCrashAwareJournal::Label::CommitStartLabel {
           new_boundary_lsn: new_boundary_lsn,
-          max_lsn: pre_ephemeral.map_lsn,
+          frozen_journal,
         }
       );
 
       require AbstractCrashAwareMap::State::next(
         pre.mapadt,
-        pre.mapadt,
+        new_mapadt,
         AbstractCrashAwareMap::Label::CommitStartLabel {
           new_boundary_lsn: new_boundary_lsn,
+          frozen_map,
         }
       );
 
+      update journal = new_journal;
+      update mapadt = new_mapadt;
       update superblock_in_flight = true;
+      update superblock_landed = false;
 
-      // ephemeral unchanged
     }
   }
 
@@ -569,6 +517,7 @@ state_machine!{ CoordinationSystem {
       require ctam_label is SyncOp;
       require pre.superblock_in_flight;
       update superblock_in_flight = false;
+      update superblock_landed = true;
     }
   }
 
@@ -581,9 +530,9 @@ state_machine!{ CoordinationSystem {
       // The only way we could possibly learn that a commit has completed is if the superblock that
       // was in-flight to the disk landed, since that write reply is the commit-complete
       // notification.
+      require pre.superblock_landed;
       require !pre.superblock_in_flight;
-      require pre.ephemeral is Some;
-      let pre_ephemeral = pre.ephemeral->Some_0;
+      let current_lsn = pre.mapadt.i().seq_end;
 
       let ctam_label = label->ctam_label;
       require ctam_label is Noop;
@@ -594,7 +543,7 @@ state_machine!{ CoordinationSystem {
         pre.journal,
         new_journal,
         AbstractCrashAwareJournal::Label::CommitCompleteLabel {
-          require_end: pre_ephemeral.map_lsn,
+          require_end: current_lsn,
         },
       );
 
@@ -606,7 +555,7 @@ state_machine!{ CoordinationSystem {
 
       update journal = new_journal;
       update mapadt = new_mapadt;
-      // ephemeral unchanged
+      update superblock_landed = false;
     }
   }
 
@@ -625,16 +574,12 @@ state_machine!{ CoordinationSystem {
 
       require let Label::Label{ ctam_label: CrashTolerantAsyncMap::Label::CrashOp } = label;
 
-      // Tell journal/map whether any in-flight state, if present, should be recorded as persistent
+      // Tell journal/map whether any frozen state, if present, should be recorded as persistent
       // (because it actually landed on the disk, so the program will find it after recovery) or
       // discarded (because the crash occurred when the superblock was in-flight, so it's lost, so
       // the program will, upon recovery, discover the thing it thought was persistent before the
       // crash step).
-      // Note that keep_in_flight means "the system thinks there IS a superblock in flight" (because the journal
-      // is in flight) and also "the disk thinks it has landed" (!pre.superblock_in_flight).
-      // Note also that pre.mapadt.in_flight is Some happens before there's actually a superblock
-      // in flight, so don't let that case confuse you.
-      let keep_in_flight = pre.journal.in_flight is Some && !pre.superblock_in_flight;
+      let keep_in_flight = pre.superblock_landed;
 
       require AbstractCrashAwareJournal::State::next(
         pre.journal,
@@ -650,12 +595,14 @@ state_machine!{ CoordinationSystem {
 
       update journal = new_journal;
       update mapadt = new_mapadt;
-      update ephemeral = None;
+      update progress = AsyncMap::State::init_ephemeral_state();
+      update sync_reqs = Map::empty();
 
       // The disk I/O buffers are cleared on a crash, which would include any in-flight superblock
       // writes. We must be able to assume this; otherwise, ancient zombie writes could rise from
       // the earth to corrupt future behavior.
       update superblock_in_flight = false;
+      update superblock_landed = false;
     }
   }
 }

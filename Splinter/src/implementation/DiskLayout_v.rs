@@ -123,7 +123,7 @@ impl DiskLayout {
             store_ptr: None,
             journal: JournalSnapshot{
                 boundary_lsn: 0,
-                freshest_rec: None,
+                root: None,
             },
             } == self.spec_parse(disk[spec_superblock_addr()])
     }
@@ -134,6 +134,7 @@ impl DiskLayout {
         let journal_snapshot = JournalImpl_v::IJournalSnapshot {
             boundary_lsn: 0,
             freshest_rec: None,
+            first: 0,
         };
         let sb = ISuperblock { journal_snapshot, store_ptr: None };
         self.marshall(&sb)

@@ -41,17 +41,16 @@ state_machine!{ AbstractCrashAwareJournal {
         /// The in-memory view of the journal. If Known, it just wraps an
         /// AbstractJournal::State (which just contains a MsgHistory). 
         pub ephemeral: Ephemeral,
-        /// A new snapshot of the journal to persist (but which hasn't been
-        /// set as our persistent image yet). If None, then we aren't in
-        /// the process of saving a new snapshot.
-        pub in_flight: Option<StoreImage>
+        /// A valid snapshot of the journal that may be committed by a later
+        /// coordination-level superblock write.
+        pub frozen: Option<StoreImage>
     }
 
     init!{
         initialize() {  // mkfs -- notice empty persistent
             init persistent = MsgHistory{ msgs: Map::empty(), seq_start: 0, seq_end: 0};
             init ephemeral = Ephemeral::Unknown;
-            init in_flight = Option::None;
+            init frozen = Option::None;
         }
     }
 
@@ -62,7 +61,7 @@ state_machine!{ AbstractCrashAwareJournal {
         PutLabel{ records: MsgHistory },
         InternalLabel,
         QueryLsnPersistenceLabel{ sync_lsn: LSN },
-        CommitStartLabel{ new_boundary_lsn: LSN, max_lsn: LSN },
+        CommitStartLabel{ new_boundary_lsn: LSN, frozen_journal: StoreImage },
         // TODO(remove require_end)???
         CommitCompleteLabel{ require_end: LSN },
 
@@ -156,30 +155,25 @@ state_machine!{ AbstractCrashAwareJournal {
     }
 
     transition!{
-        commit_start(lbl: Label, frozen_journal: StoreImage) {
+        commit_start(lbl: Label) {
             require lbl is CommitStartLabel;
             require pre.ephemeral is Known;
-            // Can't start a commit if one is in-flight, or we'd forget to maintain the
-            // invariants for the in-flight one.
-            require pre.in_flight is None;
-            
-            // The frozen_journal should be well formed
+            require pre.frozen is None;
+
+            let frozen_journal = lbl->frozen_journal;
             require frozen_journal.wf();
 
             // Frozen journal stitches to frozen map
             require frozen_journal.seq_start == lbl->new_boundary_lsn;
 
             // Journal doesn't go backwards
-            require pre.persistent.seq_end <= frozen_journal.seq_end;
-
-            // There should be no way for the frozen journal to have passed the ephemeral map!
-            require frozen_journal.seq_start <= lbl->max_lsn;
+            require pre.persistent.seq_end <= lbl->new_boundary_lsn;
             require AbstractJournal::State::next(
-                pre.ephemeral->v, 
-                pre.ephemeral->v, 
-                AbstractJournal::Label::FreezeForCommitLabel{ frozen_journal: frozen_journal},
+                pre.ephemeral->v,
+                pre.ephemeral->v,
+                AbstractJournal::Label::FreezeForCommitLabel{ frozen_journal },
             );
-            update in_flight = Option::Some(frozen_journal);
+            update frozen = Option::Some(frozen_journal);
         }
     }
 
@@ -187,30 +181,31 @@ state_machine!{ AbstractCrashAwareJournal {
         commit_complete(lbl: Label, new_journal: AbstractJournal::State) {
             require lbl is CommitCompleteLabel;
             require pre.ephemeral is Known;
-            require pre.in_flight is Some;
+            require pre.frozen is Some;
 
             require AbstractJournal::State::next(
                 pre.ephemeral->v, 
                 new_journal, 
                 AbstractJournal::Label::DiscardOldLabel{ 
-                    start_lsn: pre.in_flight.unwrap().seq_start, 
+                    start_lsn: pre.frozen.unwrap().seq_start,
                     require_end: lbl->require_end
                 },
             );
             
             // Watch the `update` keyword!
-            update persistent = pre.in_flight.unwrap();
+            update persistent = pre.frozen.unwrap();
             update ephemeral = Ephemeral::Known{ v: new_journal };
-            update in_flight = Option::None;
+            update frozen = Option::None;
         }
     }
 
     transition!{
         crash(lbl: Label) {
             require lbl is CrashLabel;
+            require lbl->keep_in_flight ==> pre.frozen is Some;
             update ephemeral = Ephemeral::Unknown;
-            update in_flight = Option::None;
-            update persistent = if lbl->keep_in_flight && pre.in_flight is Some { pre.in_flight.unwrap() } else { pre.persistent };
+            update frozen = Option::None;
+            update persistent = if lbl->keep_in_flight { pre.frozen.unwrap() } else { pre.persistent };
         }
     }
 }}

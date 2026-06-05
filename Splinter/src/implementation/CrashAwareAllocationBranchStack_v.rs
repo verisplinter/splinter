@@ -12,10 +12,10 @@ use crate::betree::LinkedBranch_v::{Path, SplitArg};
 use crate::disk::GenericDisk_v::{AU, Address, Pointer};
 use crate::implementation::AllocationBranchStack_v::{
     mini_allocator_add_aus_preserves_all_aus, mini_allocator_allocate_preserves_all_aus,
-    new_branch_inv, AllocationBranchStack, SealedAllocationBranchStack,
+    new_branch_inv, normalize_value, AllocationBranchStack, SealedAllocationBranchStack,
 };
 use crate::spec::KeyType_t::Key;
-use crate::spec::Messages_t::Message;
+use crate::spec::Messages_t::{Message, Value};
 
 verus! {
 
@@ -24,7 +24,7 @@ pub enum EphemeralAllocationBranchStack {
     Known{ v: AllocationBranchStack::State },
 }
 
-pub struct InFlightAllocationBranchStack {
+pub struct FrozenAllocationBranchStack {
     pub sealed_stack: SealedAllocationBranchStack,
     pub seq_end: nat,
 }
@@ -40,13 +40,13 @@ pub open spec fn empty_sealed_stack() -> SealedAllocationBranchStack
 pub open spec fn load_stack(
     persistent: SealedAllocationBranchStack,
     persistent_seq_end: nat,
-    init_aus: Set<AU>,
+    free_aus: Set<AU>,
 ) -> AllocationBranchStack::State
 {
     AllocationBranchStack::State{
         sealed_stack: persistent,
         branch_summary: persistent.branch_summary(),
-        active_branch: AllocationBranch::new(init_aus),
+        active_branch: AllocationBranch::new(free_aus),
         seq_end: persistent_seq_end,
     }
 }
@@ -56,15 +56,15 @@ state_machine!{ CrashAwareAllocationBranchStack {
         pub persistent: SealedAllocationBranchStack,
         pub persistent_seq_end: nat,
         pub ephemeral: EphemeralAllocationBranchStack,
-        pub in_flight: Option<InFlightAllocationBranchStack>,
+        pub frozen: Option<FrozenAllocationBranchStack>,
     }
 
     pub enum Label {
-        LoadEphemeral{ init_aus: Set<AU> },
-        Query{ key: Key, msg: Message },
+        LoadEphemeral{ free_aus: Set<AU> },
+        Query{ key: Key, value: Value },
         Append{ keys: Seq<Key>, msgs: Seq<Message> },
         Internal,
-        CommitStart{ new_boundary_lsn: nat },
+        CommitStart{ new_boundary_lsn: nat, frozen_stack: FrozenAllocationBranchStack },
         CommitComplete,
         Crash{ keep_in_flight: bool },
     }
@@ -73,24 +73,23 @@ state_machine!{ CrashAwareAllocationBranchStack {
         init persistent = empty_sealed_stack();
         init persistent_seq_end = 0;
         init ephemeral = EphemeralAllocationBranchStack::Unknown;
-        init in_flight = Option::None;
+        init frozen = Option::None;
     }}
 
     transition!{ load_ephemeral(lbl: Label) {
-        require pre.wf();
-        require let Label::LoadEphemeral{init_aus} = lbl;
+        require let Label::LoadEphemeral{free_aus} = lbl;
         require pre.ephemeral is Unknown;
-        require pre.in_flight is None;
-        let stack = load_stack(pre.persistent, pre.persistent_seq_end, init_aus);
+        require pre.frozen is None;
+        let stack = load_stack(pre.persistent, pre.persistent_seq_end, free_aus);
         require stack.wf();
         update ephemeral = EphemeralAllocationBranchStack::Known{ v: stack };
     }}
 
-    transition!{ query(lbl: Label, new_stack: AllocationBranchStack::State) {
-        require pre.wf();
-        require let Label::Query{key, msg} = lbl;
+    transition!{ query(lbl: Label, new_stack: AllocationBranchStack::State, msg: Message) {
+        require let Label::Query{key, value} = lbl;
         require pre.ephemeral is Known;
         let old_stack = pre.ephemeral->v;
+        require normalize_value(msg) == value;
         let stack_lbl = AllocationBranchStack::Label::QueryLabel{key, msg};
         require AllocationBranchStack::State::query_step(old_stack, new_stack, stack_lbl);
         update ephemeral = EphemeralAllocationBranchStack::Known{ v: new_stack };
@@ -101,7 +100,6 @@ state_machine!{ CrashAwareAllocationBranchStack {
         new_stack: AllocationBranchStack::State,
         path: Path<Summary>,
     ) {
-        require pre.wf();
         require let Label::Append{keys, msgs} = lbl;
         require pre.ephemeral is Known;
         let old_stack = pre.ephemeral->v;
@@ -115,7 +113,6 @@ state_machine!{ CrashAwareAllocationBranchStack {
         new_stack: AllocationBranchStack::State,
         init_root: Address,
     ) {
-        require pre.wf();
         require let Label::Append{keys, msgs} = lbl;
         require pre.ephemeral is Known;
         let old_stack = pre.ephemeral->v;
@@ -125,7 +122,6 @@ state_machine!{ CrashAwareAllocationBranchStack {
     }}
 
     transition!{ ephemeral_internal_noop(lbl: Label, new_stack: AllocationBranchStack::State) {
-        require pre.wf();
         require lbl is Internal;
         require pre.ephemeral is Known;
         let old_stack = pre.ephemeral->v;
@@ -142,7 +138,6 @@ state_machine!{ CrashAwareAllocationBranchStack {
         new_stack: AllocationBranchStack::State,
         new_root_addr: Address,
     ) {
-        require pre.wf();
         require lbl is Internal;
         require pre.ephemeral is Known;
         let old_stack = pre.ephemeral->v;
@@ -162,7 +157,6 @@ state_machine!{ CrashAwareAllocationBranchStack {
         path: Path<Summary>,
         split_arg: SplitArg,
     ) {
-        require pre.wf();
         require lbl is Internal;
         require pre.ephemeral is Known;
         let old_stack = pre.ephemeral->v;
@@ -182,7 +176,6 @@ state_machine!{ CrashAwareAllocationBranchStack {
         new_stack: AllocationBranchStack::State,
         aux_ptr: Pointer,
     ) {
-        require pre.wf();
         require lbl is Internal;
         require pre.ephemeral is Known;
         let old_stack = pre.ephemeral->v;
@@ -200,7 +193,6 @@ state_machine!{ CrashAwareAllocationBranchStack {
         new_stack: AllocationBranchStack::State,
         aus: Set<AU>,
     ) {
-        require pre.wf();
         require lbl is Internal;
         require pre.ephemeral is Known;
         let old_stack = pre.ephemeral->v;
@@ -214,10 +206,8 @@ state_machine!{ CrashAwareAllocationBranchStack {
     }}
 
     transition!{ freeze_map_internal(lbl: Label) {
-        require pre.wf();
         require lbl is Internal;
         require pre.ephemeral is Known;
-        require pre.in_flight is None;
         let stack = pre.ephemeral->v;
         let sealed_stack = stack.freeze_snapshot();
         require AllocationBranchStack::State::freeze_as(
@@ -225,50 +215,52 @@ state_machine!{ CrashAwareAllocationBranchStack {
             stack,
             AllocationBranchStack::Label::FreezeAsLabel{ sealed_stack },
         );
-        update in_flight = Option::Some(InFlightAllocationBranchStack{ sealed_stack, seq_end: stack.seq_end });
     }}
 
-    transition!{ freeze_persistent_internal(lbl: Label) {
-        require pre.wf();
-        require lbl is Internal;
+    transition!{ commit_start_ephemeral(lbl: Label) {
+        require let Label::CommitStart{new_boundary_lsn, frozen_stack} = lbl;
         require pre.ephemeral is Known;
-        require pre.in_flight is None;
-        update in_flight = Option::Some(InFlightAllocationBranchStack{
-            sealed_stack: pre.persistent,
-            seq_end: pre.persistent_seq_end,
-        });
+        require pre.frozen is None;
+        require new_boundary_lsn == frozen_stack.seq_end;
+        require frozen_stack.seq_end == pre.ephemeral->v.seq_end;
+        require AllocationBranchStack::State::freeze_as(
+            pre.ephemeral->v,
+            pre.ephemeral->v,
+            AllocationBranchStack::Label::FreezeAsLabel{ sealed_stack: frozen_stack.sealed_stack },
+        );
+        update frozen = Option::Some(frozen_stack);
     }}
 
-    transition!{ commit_start(lbl: Label) {
-        require pre.wf();
-        require let Label::CommitStart{new_boundary_lsn} = lbl;
+    transition!{ commit_start_persistent(lbl: Label) {
+        require let Label::CommitStart{new_boundary_lsn, frozen_stack} = lbl;
         require pre.ephemeral is Known;
-        require pre.in_flight is Some;
-        require new_boundary_lsn == pre.in_flight.unwrap().seq_end;
+        require pre.frozen is None;
+        require new_boundary_lsn == frozen_stack.seq_end;
+        require frozen_stack.sealed_stack == pre.persistent;
+        require frozen_stack.seq_end == pre.persistent_seq_end;
+        update frozen = Option::Some(frozen_stack);
     }}
 
     transition!{ commit_complete(lbl: Label) {
-        require pre.wf();
         require lbl is CommitComplete;
-        require pre.in_flight is Some;
-        update persistent = pre.in_flight.unwrap().sealed_stack;
-        update persistent_seq_end = pre.in_flight.unwrap().seq_end;
-        update in_flight = Option::None;
+        require pre.frozen is Some;
+        update persistent = pre.frozen.unwrap().sealed_stack;
+        update persistent_seq_end = pre.frozen.unwrap().seq_end;
+        update frozen = Option::None;
     }}
 
     transition!{ crash(lbl: Label) {
-        require pre.wf();
         require let Label::Crash{keep_in_flight} = lbl;
-        require keep_in_flight ==> pre.in_flight is Some;
+        require keep_in_flight ==> pre.frozen is Some;
         update ephemeral = EphemeralAllocationBranchStack::Unknown;
-        update in_flight = Option::None;
+        update frozen = Option::None;
         update persistent = if keep_in_flight {
-            pre.in_flight.unwrap().sealed_stack
+            pre.frozen.unwrap().sealed_stack
         } else {
             pre.persistent
         };
         update persistent_seq_end = if keep_in_flight {
-            pre.in_flight.unwrap().seq_end
+            pre.frozen.unwrap().seq_end
         } else {
             pre.persistent_seq_end
         };
@@ -282,10 +274,10 @@ state_machine!{ CrashAwareAllocationBranchStack {
 
     #[invariant]
     pub open spec(checked) fn stack_compatible(self) -> bool {
-        &&& self.in_flight is Some ==> self.persistent_seq_end <= self.in_flight.unwrap().seq_end
+        &&& self.frozen is Some ==> self.persistent_seq_end <= self.frozen.unwrap().seq_end
         &&& self.ephemeral is Known ==> self.persistent_seq_end <= self.ephemeral->v.seq_end
-        &&& self.ephemeral is Known && self.in_flight is Some
-            ==> self.in_flight.unwrap().seq_end <= self.ephemeral->v.seq_end
+        &&& self.ephemeral is Known && self.frozen is Some
+            ==> self.frozen.unwrap().seq_end <= self.ephemeral->v.seq_end
     }
 
     #[inductive(initialize)]
@@ -302,9 +294,9 @@ state_machine!{ CrashAwareAllocationBranchStack {
     }
 
     #[inductive(query)]
-    fn query_inductive(pre: Self, post: Self, lbl: Label, new_stack: AllocationBranchStack::State) {
+    fn query_inductive(pre: Self, post: Self, lbl: Label, new_stack: AllocationBranchStack::State, msg: Message) {
         match lbl {
-            Label::Query{key, msg} => {
+            Label::Query{key, value} => {
                 reveal(AllocationBranchStack::State::query_step);
                 assert(new_stack == pre.ephemeral->v);
             }
@@ -451,18 +443,24 @@ state_machine!{ CrashAwareAllocationBranchStack {
     ) {
         let old_stack = pre.ephemeral->v;
         reveal(AllocationBranchStack::State::internal_seal);
-        let dealloc_aus = old_stack.active_branch.mini_allocator.removable_aus();
-        let sealed_active = old_stack.active_branch.branch_seal(aux_ptr, dealloc_aus);
-        let sealed_branch = sealed_active.branch.unwrap();
-        AllocationBranch::build_next_preserves_inv(
-            old_stack.active_branch,
-            sealed_active,
-            crate::allocation_layer::AllocationBranch_v::BuildEvent::Seal{aux_ptr},
-            Set::empty(),
-            dealloc_aus,
+        reveal(AllocationBranchStack::State::next);
+        reveal(AllocationBranchStack::State::next_by);
+        assert(AllocationBranchStack::State::next_by(
+            old_stack,
+            new_stack,
+            AllocationBranchStack::Label::InternalLabel,
+            AllocationBranchStack::Step::internal_seal(aux_ptr),
+        ));
+        assert(AllocationBranchStack::State::next(
+            old_stack,
+            new_stack,
+            AllocationBranchStack::Label::InternalLabel,
+        ));
+        AllocationBranchStack::State::inv_next(
+            old_stack,
+            new_stack,
+            AllocationBranchStack::Label::InternalLabel,
         );
-        old_stack.sealed_stack.push_branch_preserves_wf(sealed_branch);
-        new_branch_inv(Set::empty());
         assert(new_stack.wf());
         assert(post.wf());
         assert(post.stack_compatible());
@@ -498,14 +496,14 @@ state_machine!{ CrashAwareAllocationBranchStack {
         assert(post.stack_compatible());
     }
 
-    #[inductive(freeze_persistent_internal)]
-    fn freeze_persistent_internal_inductive(pre: Self, post: Self, lbl: Label) {
+    #[inductive(commit_start_ephemeral)]
+    fn commit_start_ephemeral_inductive(pre: Self, post: Self, lbl: Label) {
         assert(post.wf());
         assert(post.stack_compatible());
     }
 
-    #[inductive(commit_start)]
-    fn commit_start_inductive(pre: Self, post: Self, lbl: Label) {
+    #[inductive(commit_start_persistent)]
+    fn commit_start_persistent_inductive(pre: Self, post: Self, lbl: Label) {
         assert(post.wf());
         assert(post.stack_compatible());
     }
@@ -521,16 +519,119 @@ state_machine!{ CrashAwareAllocationBranchStack {
         assert(post.wf());
         assert(post.stack_compatible());
     }
+
+    pub proof fn inv_next(pre: Self, post: Self, lbl: Label)
+        requires
+            pre.inv(),
+            CrashAwareAllocationBranchStack::State::next(pre, post, lbl),
+        ensures
+            post.inv(),
+    {
+        reveal(CrashAwareAllocationBranchStack::State::next);
+        reveal(CrashAwareAllocationBranchStack::State::next_by);
+
+        let step = choose |step| CrashAwareAllocationBranchStack::State::next_by(pre, post, lbl, step);
+        match step {
+            CrashAwareAllocationBranchStack::Step::load_ephemeral() => {
+                assert(CrashAwareAllocationBranchStack::State::load_ephemeral(pre, post, lbl)) by {
+                    reveal(CrashAwareAllocationBranchStack::State::load_ephemeral);
+                }
+                CrashAwareAllocationBranchStack::State::load_ephemeral_inductive(pre, post, lbl);
+            },
+            CrashAwareAllocationBranchStack::Step::query(new_stack, msg) => {
+                assert(CrashAwareAllocationBranchStack::State::query(pre, post, lbl, new_stack, msg)) by {
+                    reveal(CrashAwareAllocationBranchStack::State::query);
+                }
+                CrashAwareAllocationBranchStack::State::query_inductive(pre, post, lbl, new_stack, msg);
+            },
+            CrashAwareAllocationBranchStack::Step::append_to_active(new_stack, path) => {
+                assert(CrashAwareAllocationBranchStack::State::append_to_active(pre, post, lbl, new_stack, path)) by {
+                    reveal(CrashAwareAllocationBranchStack::State::append_to_active);
+                }
+                CrashAwareAllocationBranchStack::State::append_to_active_inductive(pre, post, lbl, new_stack, path);
+            },
+            CrashAwareAllocationBranchStack::Step::append_to_empty(new_stack, init_root) => {
+                assert(CrashAwareAllocationBranchStack::State::append_to_empty(pre, post, lbl, new_stack, init_root)) by {
+                    reveal(CrashAwareAllocationBranchStack::State::append_to_empty);
+                }
+                CrashAwareAllocationBranchStack::State::append_to_empty_inductive(pre, post, lbl, new_stack, init_root);
+            },
+            CrashAwareAllocationBranchStack::Step::ephemeral_internal_noop(new_stack) => {
+                assert(CrashAwareAllocationBranchStack::State::ephemeral_internal_noop(pre, post, lbl, new_stack)) by {
+                    reveal(CrashAwareAllocationBranchStack::State::ephemeral_internal_noop);
+                }
+                CrashAwareAllocationBranchStack::State::ephemeral_internal_noop_inductive(pre, post, lbl, new_stack);
+            },
+            CrashAwareAllocationBranchStack::Step::ephemeral_internal_grow(new_stack, new_root_addr) => {
+                assert(CrashAwareAllocationBranchStack::State::ephemeral_internal_grow(pre, post, lbl, new_stack, new_root_addr)) by {
+                    reveal(CrashAwareAllocationBranchStack::State::ephemeral_internal_grow);
+                }
+                CrashAwareAllocationBranchStack::State::ephemeral_internal_grow_inductive(pre, post, lbl, new_stack, new_root_addr);
+            },
+            CrashAwareAllocationBranchStack::Step::ephemeral_internal_split(new_stack, new_child_addr, path, split_arg) => {
+                assert(CrashAwareAllocationBranchStack::State::ephemeral_internal_split(pre, post, lbl, new_stack, new_child_addr, path, split_arg)) by {
+                    reveal(CrashAwareAllocationBranchStack::State::ephemeral_internal_split);
+                }
+                CrashAwareAllocationBranchStack::State::ephemeral_internal_split_inductive(pre, post, lbl, new_stack, new_child_addr, path, split_arg);
+            },
+            CrashAwareAllocationBranchStack::Step::ephemeral_internal_seal(new_stack, aux_ptr) => {
+                assert(CrashAwareAllocationBranchStack::State::ephemeral_internal_seal(pre, post, lbl, new_stack, aux_ptr)) by {
+                    reveal(CrashAwareAllocationBranchStack::State::ephemeral_internal_seal);
+                }
+                CrashAwareAllocationBranchStack::State::ephemeral_internal_seal_inductive(pre, post, lbl, new_stack, aux_ptr);
+            },
+            CrashAwareAllocationBranchStack::Step::ephemeral_internal_fill_au(new_stack, aus) => {
+                assert(CrashAwareAllocationBranchStack::State::ephemeral_internal_fill_au(pre, post, lbl, new_stack, aus)) by {
+                    reveal(CrashAwareAllocationBranchStack::State::ephemeral_internal_fill_au);
+                }
+                CrashAwareAllocationBranchStack::State::ephemeral_internal_fill_au_inductive(pre, post, lbl, new_stack, aus);
+            },
+            CrashAwareAllocationBranchStack::Step::freeze_map_internal() => {
+                assert(CrashAwareAllocationBranchStack::State::freeze_map_internal(pre, post, lbl)) by {
+                    reveal(CrashAwareAllocationBranchStack::State::freeze_map_internal);
+                }
+                CrashAwareAllocationBranchStack::State::freeze_map_internal_inductive(pre, post, lbl);
+            },
+            CrashAwareAllocationBranchStack::Step::commit_start_ephemeral() => {
+                assert(CrashAwareAllocationBranchStack::State::commit_start_ephemeral(pre, post, lbl)) by {
+                    reveal(CrashAwareAllocationBranchStack::State::commit_start_ephemeral);
+                }
+                CrashAwareAllocationBranchStack::State::commit_start_ephemeral_inductive(pre, post, lbl);
+            },
+            CrashAwareAllocationBranchStack::Step::commit_start_persistent() => {
+                assert(CrashAwareAllocationBranchStack::State::commit_start_persistent(pre, post, lbl)) by {
+                    reveal(CrashAwareAllocationBranchStack::State::commit_start_persistent);
+                }
+                CrashAwareAllocationBranchStack::State::commit_start_persistent_inductive(pre, post, lbl);
+            },
+            CrashAwareAllocationBranchStack::Step::commit_complete() => {
+                assert(CrashAwareAllocationBranchStack::State::commit_complete(pre, post, lbl)) by {
+                    reveal(CrashAwareAllocationBranchStack::State::commit_complete);
+                }
+                CrashAwareAllocationBranchStack::State::commit_complete_inductive(pre, post, lbl);
+            },
+            CrashAwareAllocationBranchStack::Step::crash() => {
+                assert(CrashAwareAllocationBranchStack::State::crash(pre, post, lbl)) by {
+                    reveal(CrashAwareAllocationBranchStack::State::crash);
+                }
+                CrashAwareAllocationBranchStack::State::crash_inductive(pre, post, lbl);
+            },
+            CrashAwareAllocationBranchStack::Step::dummy_to_use_type_params(_) => {
+                assert(false);
+            },
+        }
+    }
 }}
 
 impl CrashAwareAllocationBranchStack::State {
     pub open spec fn wf(self) -> bool
     {
         &&& self.persistent.wf()
-        &&& self.in_flight is Some ==> self.in_flight.unwrap().sealed_stack.wf()
-        &&& self.ephemeral is Unknown ==> self.in_flight is None
+        &&& self.frozen is Some ==> self.frozen.unwrap().sealed_stack.wf()
+        &&& self.ephemeral is Unknown ==> self.frozen is None
         &&& self.ephemeral is Known ==> self.ephemeral->v.wf()
     }
+
 }
 
 }

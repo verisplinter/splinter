@@ -453,7 +453,14 @@ state_machine!{ PagedJournal {
 
     transition!{ freeze_for_commit(lbl: Label, depth: nat) {
         require lbl is FreezeForCommit;
-        require pre.truncated_journal.freeze_for_commit(lbl->frozen_journal, depth);
+        let frozen_journal = lbl->frozen_journal;
+        require frozen_journal.wf();
+        require frozen_journal.freshest_rec is None ==> {
+            &&& pre.wf()
+            &&& pre.seq_start() <= frozen_journal.boundary_lsn <= pre.seq_end()
+        };
+        require frozen_journal.freshest_rec is Some ==>
+            pre.truncated_journal.freeze_for_commit(frozen_journal, depth);
     }}
 
     transition!{ query_end_lsn(lbl: Label) {

@@ -5,7 +5,7 @@ use vstd::prelude::*;
 //use vstd::prelude_macros::*;
 
 use vstd::prelude::*;
-use crate::disk::GenericDisk_v::Pointer;
+use crate::disk::GenericDisk_v::{Address, Pointer};
 use crate::abstract_system::StampedMap_v::LSN;
 use crate::journal::LinkedJournal_v;
 use crate::journal::LinkedJournal_v::{LinkedJournal, TruncatedJournal};
@@ -55,10 +55,12 @@ impl LikesJournal::State {
         reveal(LinkedJournal_v::DiskView::index_keys_map_to_valid_entries);
 
         let tight_tj = self.tj().build_tight();
+        assert(index == self.tj().build_lsn_addr_index());
         self.tj().disk_view.build_tight_ensures(self.tj().freshest_rec);
         tight_tj.disk_view.sub_disk_repr_index(self.tj().disk_view, self.tj().freshest_rec);
-        assert(tight_tj.build_lsn_addr_index() == index);
         self.tj().disk_view.build_tight_domain_is_build_lsn_addr_index_range(self.tj().freshest_rec);
+        assert(self.tj().disk_view.build_lsn_addr_index(self.tj().freshest_rec).values()
+            =~= tight_tj.disk_view.entries.dom());
         assert(index.values() == tight_tj.disk_view.entries.dom());
 
         let start = record.message_seq.seq_start;
@@ -147,6 +149,9 @@ impl LikesJournal::State {
         let msgs = tj.disk_view.entries[addr].message_seq;
 
         tj.build_lsn_addr_index_ensures();
+        assert(index == tj.build_lsn_addr_index());
+        assert(tj.disk_view.index_keys_map_to_valid_entries(tj.build_lsn_addr_index()));
+        assert(tj.disk_view.index_keys_map_to_valid_entries(index));
         reveal(TruncatedJournal::index_domain_valid);
 
 
@@ -180,22 +185,22 @@ impl LikesJournal::State {
         }
     }
 
-    pub proof fn read_for_recovery_refines(self, post: Self, lbl: LikesJournal::Label, depth: nat)
+    pub proof fn read_for_recovery_refines(self, post: Self, lbl: LikesJournal::Label, addr: Address)
     requires 
         self.inv(), 
         post.inv(),
-        Self::read_for_recovery(self, post, lbl, depth)
+        Self::read_for_recovery(self, post, lbl, addr)
     ensures 
-        LinkedJournal::State::next_by(self.i(), post.i(), Self::lbl_i(lbl), 
-            LinkedJournal::Step::read_for_recovery(depth))
+        LinkedJournal::State::next(self.i(), post.i(), Self::lbl_i(lbl))
     {
+        reveal(LinkedJournal::State::next);
         reveal(LinkedJournal::State::next_by);
 
         let i_lbl = Self::lbl_i(lbl);
         let messages = i_lbl.arrow_ReadForRecovery_messages();
         let tj = self.tj();
+        let depth = tj.disk_view.build_lsn_addr_index_value_has_depth(tj.freshest_rec, addr);
 
-        self.can_crop_ptr_after_index_refines(tj.freshest_rec, depth);
         tj.disk_view.pointer_after_crop_ensures(tj.freshest_rec, depth);
         let ptr = tj.disk_view.pointer_after_crop(tj.freshest_rec, depth);
 
@@ -204,77 +209,64 @@ impl LikesJournal::State {
             LinkedJournal::Step::read_for_recovery(depth)));
     }
 
-    pub proof fn freeze_for_commit_refines(self, post: Self, lbl: LikesJournal::Label, depth: nat)
+    pub proof fn freeze_for_commit_refines(self, post: Self, lbl: LikesJournal::Label)
     requires 
         self.inv(), 
         post.inv(),
-        Self::freeze_for_commit(self, post, lbl, depth)
+        Self::freeze_for_commit(self, post, lbl)
     ensures 
-        LinkedJournal::State::next_by(self.i(), post.i(), Self::lbl_i(lbl), 
-            LinkedJournal::Step::freeze_for_commit(depth))
+        LinkedJournal::State::next(self.i(), post.i(), Self::lbl_i(lbl))
     {
+        reveal(LinkedJournal::State::next);
         reveal(LinkedJournal::State::next_by);
 
         let fj = lbl->frozen_journal;
         let tj = self.journal.truncated_journal;
         let frozen_bdy = fj.seq_start();
-        let cropped_ptr = pointer_after_crop_index(self.lsn_addr_index, tj.seq_start(), tj.freshest_rec, depth);
+        let cropped_ptr = fj.freshest_rec;
+        let depth = if fj.freshest_rec is Some {
+            tj.disk_view.build_lsn_addr_index_value_has_depth(tj.freshest_rec, fj.freshest_rec.unwrap())
+        } else {
+            0
+        };
 
-        self.can_crop_ptr_after_index_refines(tj.freshest_rec, depth);
         tj.build_lsn_addr_index_ensures();
         if tj.freshest_rec is Some {
         }
-        self.cropped_ptr_in_index_values(tj.freshest_rec, depth);
-
-        let cropped_tj = tj.crop(depth);
-        tj.crop_ensures(depth);
 
         if fj.freshest_rec is Some {
+            assert(tj.disk_view.pointer_after_crop(tj.freshest_rec, depth) == cropped_ptr);
+
+            let cropped_tj = tj.crop(depth);
+            tj.crop_ensures(depth);
+
             let addr = fj.freshest_rec.unwrap();
             assert(self.lsn_addr_index.contains_value(cropped_ptr.unwrap())) by {
             }
+            assert(fj.disk_view.entries.contains_key(addr));
+            assert(fj.disk_view.entries[addr] == tj.disk_view.entries[addr]);
+            assert(frozen_bdy < tj.disk_view.entries[addr].message_seq.seq_end);
             if largest_lsn_plus_one(self.lsn_addr_index, cropped_ptr) == frozen_bdy {
             }
 
-        } else {
-            if cropped_ptr is Some {
-                assert(self.lsn_addr_index.contains_value(cropped_ptr.unwrap())) by {
-                }
-                assert(largest_lsn_plus_one(self.lsn_addr_index, cropped_ptr) == frozen_bdy) by {
-                    if largest_lsn_plus_one(self.lsn_addr_index, cropped_ptr) != frozen_bdy {
-                    }
-                }
-                self.largest_lsn_plus_one_matches_seq_end(cropped_ptr);
-                let addr = cropped_ptr.unwrap();
-            } else {
-            }
-        }
+            let post_discard = cropped_tj.discard_old(frozen_bdy);
+            cropped_tj.discard_old_decodable(frozen_bdy);
+            let post_tight = post_discard.build_tight();
 
-        let post_discard = cropped_tj.discard_old(frozen_bdy);
-        cropped_tj.discard_old_decodable(frozen_bdy);
-        let post_tight = post_discard.build_tight();
+            post_discard.disk_view.build_tight_ensures(post_discard.freshest_rec);
+            post_discard.disk_view.build_tight_domain_is_build_lsn_addr_index_range(post_discard.freshest_rec);
 
-        if fj.freshest_rec is Some {
-        } else {
-            if cropped_tj.freshest_rec is Some {
-            } else {
-            }
-        }
+            let tj_sub_index = tj.disk_view.build_lsn_addr_index(post_discard.freshest_rec);
+            let post_discard_repr = post_discard.disk_view.build_lsn_addr_index(post_discard.freshest_rec);
 
-        post_discard.disk_view.build_tight_ensures(post_discard.freshest_rec);
-        post_discard.disk_view.build_tight_domain_is_build_lsn_addr_index_range(post_discard.freshest_rec);
+            assert(post_discard_repr.values() == post_tight.disk_view.entries.dom());  // trigger
 
-        let tj_sub_index = tj.disk_view.build_lsn_addr_index(post_discard.freshest_rec);
-        let post_discard_repr = post_discard.disk_view.build_lsn_addr_index(post_discard.freshest_rec);
+            let fj_index = fj.build_lsn_addr_index();
+            assert(fj.disk_view.is_sub_disk(post_discard.disk_view)); // trigger
 
-        assert(post_discard_repr.values() == post_tight.disk_view.entries.dom());  // trigger
+            fj.disk_view.sub_disk_repr_index(post_discard.disk_view, fj.freshest_rec);
 
-        let fj_index = fj.build_lsn_addr_index();
-        assert(fj.disk_view.is_sub_disk(post_discard.disk_view)); // trigger
-
-        fj.disk_view.sub_disk_repr_index(post_discard.disk_view, fj.freshest_rec);
-
-        if post_discard.freshest_rec is Some {
+            assert(post_discard.freshest_rec is Some);
             tj.disk_view.pointer_after_crop_seq_end(tj.freshest_rec, depth);
             reveal(TruncatedJournal::index_domain_valid);
 
@@ -290,7 +282,14 @@ impl LikesJournal::State {
             assert(post_discard_repr.values() <= fj.disk_view.entries.dom()) by {
                 reveal(LinkedJournal_v::DiskView::index_keys_map_to_valid_entries);
             }
+        } else {
+            assert(Self::lbl_i(lbl)->frozen_journal.freshest_rec is None);
+            assert(self.i().seq_start() <= Self::lbl_i(lbl)->frozen_journal.seq_start());
+            assert(Self::lbl_i(lbl)->frozen_journal.seq_start() <= self.i().seq_end());
         }
+
+        assert(LinkedJournal::State::next_by(
+            self.i(), post.i(), Self::lbl_i(lbl), LinkedJournal::Step::freeze_for_commit(depth)));
     }
 
     pub proof fn discard_old_refines(self, post: Self, lbl: LikesJournal::Label, new_journal: LinkedJournal_v::LinkedJournal::State)
@@ -310,20 +309,24 @@ impl LikesJournal::State {
         let start_lsn = lbl->start_lsn;
         let require_end = lbl->require_end;
 
-        let post_discard = tj_pre.discard_old(start_lsn);
-        let post_tight = post_discard.build_tight();
+        if start_lsn < tj_pre.seq_end() {
+            let post_discard = tj_pre.discard_old(start_lsn);
+            let post_tight = post_discard.build_tight();
 
+            tj_pre.discard_old_decodable(start_lsn);
 
-        tj_pre.discard_old_decodable(start_lsn);
+            post_discard.disk_view.build_tight_ensures(post_discard.freshest_rec);
+            post_discard.disk_view.tight_sub_disk(post_discard.freshest_rec, post_tight.disk_view);
 
-        post_discard.disk_view.build_tight_ensures(post_discard.freshest_rec);
-        post_discard.disk_view.tight_sub_disk(post_discard.freshest_rec, post_tight.disk_view);
+            // post_tight has the same build_lsn_addr_index as post_discard and as tj_post
+            post_tight.disk_view.sub_disk_repr_index(post_discard.disk_view, post_discard.freshest_rec);
+            tj_post.disk_view.sub_disk_repr_index(post_discard.disk_view, post_discard.freshest_rec);
 
-        // post_tight has the same build_lsn_addr_index as post_discard and as tj_post
-        post_tight.disk_view.sub_disk_repr_index(post_discard.disk_view, post_discard.freshest_rec);
-        tj_post.disk_view.sub_disk_repr_index(post_discard.disk_view, post_discard.freshest_rec);
+            post_discard.disk_view.build_tight_domain_is_build_lsn_addr_index_range(post_discard.freshest_rec);
+        }
 
-        post_discard.disk_view.build_tight_domain_is_build_lsn_addr_index_range(post_discard.freshest_rec);
+        assert(LinkedJournal::State::next_by(self.i(), post.i(), Self::lbl_i(lbl),
+            LinkedJournal::Step::discard_old(new_journal.truncated_journal)));
 
     }
 
@@ -343,11 +346,11 @@ impl LikesJournal::State {
 
         let step = choose |step| LikesJournal::State::next_by(self, post, lbl, step);
         match step {
-            LikesJournal::Step::read_for_recovery(depth) => {
-                self.read_for_recovery_refines(post, lbl, depth);
+            LikesJournal::Step::read_for_recovery(addr) => {
+                self.read_for_recovery_refines(post, lbl, addr);
             },
-            LikesJournal::Step::freeze_for_commit(depth) => {
-                self.freeze_for_commit_refines(post, lbl, depth);
+            LikesJournal::Step::freeze_for_commit() => {
+                self.freeze_for_commit_refines(post, lbl);
             },
             LikesJournal::Step::query_end_lsn() => {
                 assert(LinkedJournal::State::next_by(self.i(), post.i(), Self::lbl_i(lbl), LinkedJournal::Step::query_end_lsn())); // trigger

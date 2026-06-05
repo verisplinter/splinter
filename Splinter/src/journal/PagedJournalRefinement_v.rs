@@ -428,10 +428,26 @@ impl PagedJournal::State {
         reveal(AbstractJournal::State::next_by);    // newly required; unfortunate macro defaults
         reveal(AbstractJournal::State::next);    // newly required; unfortunate macro defaults
 
-        self.truncated_journal.tj_freeze_for_commit(lbl->frozen_journal, depth);
+        let frozen_journal = lbl->frozen_journal;
 
         JournalRecord::i_lemma_forall(); // newly required call
         self.truncated_journal.i().concat_lemma(self.unmarshalled_tail);    // newly required call
+
+        if frozen_journal.freshest_rec is Some {
+            self.truncated_journal.tj_freeze_for_commit(frozen_journal, depth);
+        } else {
+            let frozen_i = frozen_journal.i();
+            let pre_i = self.i().journal;
+            assert(frozen_i == MsgHistory::empty_history_at(frozen_journal.boundary_lsn));
+            assert(pre_i.includes_subseq(frozen_i)) by {
+                assert(pre_i.seq_start <= frozen_i.seq_start);
+                assert(frozen_i.seq_end <= pre_i.seq_end);
+                assert forall |lsn| #![auto] frozen_i.contains(lsn) implies
+                    pre_i.contains(lsn) && pre_i.msgs[lsn] === frozen_i.msgs[lsn] by {
+                    assert(!frozen_i.contains(lsn));
+                }
+            }
+        }
 
         assert(AbstractJournal::State::next_by(self.i(), post.i(), lbl.i(), AbstractJournal::Step::freeze_for_commit())); // new witness
     }
