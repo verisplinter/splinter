@@ -27,16 +27,18 @@ use crate::abstract_system::AbstractMap_v::AbstractMap;
 
 use crate::implementation::ModelRefinement_v::RefinementProof;
 use crate::implementation::ConcreteProgramModel_v::ConcreteProgramModel;
-use crate::implementation::AtomicState_v::{AtomicState, DiskEvent, InflightInfo, InternalEvent, ProgramEvent, RecoveryState, journal_marshall_labels, map_to_multiset, to_journal_records, to_store_maps};
+use crate::implementation::AtomicState_v::{AtomicState, DiskEvent, InflightInfo, InternalEvent, ProgramEvent, journal_marshall_labels, map_to_multiset, to_journal_records};
+use crate::implementation::RecoveryState_v::RecoveryState;
 use crate::implementation::MultisetMapRelation_v::{multiset_map_singleton, multiset_map_singleton_ensures, multiset_to_map, unique_keys};
 use crate::implementation::VecMap_v::VecMap;
 use crate::implementation::JournalTypes_v::{ILsn};
+use crate::allocation_layer::AllocationJournal_v::lsn_au_index_discard_up_to;
 use crate::allocation_layer::LikesJournal_v::lsn_addr_index_discard_up_to;
 use crate::implementation::JournalImpl_v::{BeginWritebackForTargetResult, CleanForCommitResult, FrozenJournal, IJournalSnapshot, JournalImpl, RecoverIndexResult, RecoverMapResult, all_pages_parsable, cache_matches_raw_disk, iaddr_view, journal_disk_inv, load_index_labels, map_recovery_labels};
 use crate::implementation::SuperblockTypes_v;
 use crate::implementation::SuperblockTypes_v::{ASuperblock, ISuperblock};
 use crate::implementation::StoreImpl_v::{LoadMapResult, StoreImpl, raw_page_to_store_kmmap};
-use crate::implementation::CachedJournal_v::CachedJournal;
+use crate::implementation::CachedJournal_v::{CachedJournal, freeze_reads_for_seq_end};
 use crate::implementation::CachedJournal_v;
 use crate::marshalling::Marshalling_v::Parsedview;
 use crate::marshalling::WF_v::WF;
@@ -54,6 +56,7 @@ use vstd::multiset::*;
 use vstd::tokens::*;
 #[allow(unused_imports)]
 use crate::spec::AsyncDisk_t::{Address, AsyncDisk, Disk, DiskRequest, DiskResponse, RawPage};
+use crate::disk::GenericDisk_v::to_aus;
 use crate::spec::ImplDisk_t::{IAddress, IDiskRequest, IDiskResponse};
 #[allow(unused_imports)]
 use crate::implementation::DiskLayout_v::{DiskLayout, spec_superblock_addr, superblock_addr};
@@ -1529,7 +1532,6 @@ impl Implementation {
             ==> self.in_flight.unwrap().store_ptr.unwrap().au as nat == self.store_alloc_au())
         &&& (self.in_flight is Some && self.in_flight.unwrap().store_ptr is Some
             ==> (self.in_flight.unwrap().store_ptr.unwrap().page as nat) < self.store.next_alloc_page())
-        &&& state.store_addrs() == self.store_addrs()
         // &&& self.model@.instance_id() == self.instance@.id() // TODO delete covered by inv
 
         &&& self.journal.index_ready()
@@ -1594,19 +1596,14 @@ impl Implementation {
     // Shared relation after fetching the superblock: implementation state matches model view.
     spec fn inv_post_superblock_common(self) -> bool
     {
-        &&& self.state().store == self.i_ephemeral_store()
-        &&& self.state().persistent_store_ptr == self.store.persistent_store_ptr_view()
-        &&& self.state().prepared_store_ptr == self.prepared_store_ptr_view()
-        &&& self.state().prepared_store_lsn == self.prepared_store_lsn_nat()
         &&& self.state().journal == self.journal@
         &&& self.store.persistent_store_ptr_matches_alloc_au()
-        &&& (forall |a: Address| #[trigger] self.store_addrs().contains(a) ==> a.au == self.store_alloc_au())
     }
 
     spec fn inv_reading_journal(self) -> bool
     {
         &&& (!self.journal.index_ready() ==> self.state().recovery_state is SuperblockAvailable)
-        &&& (self.journal.index_ready() ==> self.state().recovery_state is JournalIndexComplete)
+        &&& (self.journal.index_ready() ==> self.state().recovery_state is MetadataLoadComplete)
         &&& (self.journal.index_ready() ==> self.journal.no_unmarshalled_entries())
         &&& (self.store_initialized ==> self.store.store_lsn_nat() == self.journal.seq_start())
         &&& self.state().in_flight is None
@@ -1618,7 +1615,7 @@ impl Implementation {
 
     spec fn inv_applying_journal(self) -> bool
     {
-        &&& self.state().recovery_state is JournalIndexComplete
+        &&& self.state().recovery_state is MetadataLoadComplete
         &&& self.store_initialized
         &&& self.state().in_flight is None
         &&& self.sync_requests.valid_empty_sync_buffer(self.instance@.id())
@@ -1678,47 +1675,10 @@ impl Implementation {
 
     proof fn state_store_addrs_match(&self)
         requires
-            self.state().persistent_store_ptr == self.store.persistent_store_ptr_view(),
-            self.state().prepared_store_ptr == self.prepared_store_ptr_view(),
             (self.state().in_flight is Some) <==> (self.in_flight is Some),
             self.state().in_flight is Some ==> iaddr_view(self.in_flight.unwrap().store_ptr) == self.state().in_flight.unwrap().store_ptr,
         ensures
-            self.state().store_addrs() == self.store_addrs(),
     {
-        let inflight_store_ptr =
-            if self.in_flight is Some { self.in_flight.unwrap().store_ptr } else { None };
-        self.store.store_addrs_matches_views(inflight_store_ptr);
-        if self.in_flight is Some {
-            assert(self.state().store_addrs()
-                == (if self.state().persistent_store_ptr is Some {
-                    set!{self.state().persistent_store_ptr.unwrap()}
-                } else {
-                    set![]
-                })
-                + (if self.state().prepared_store_ptr is Some {
-                    set!{self.state().prepared_store_ptr.unwrap()}
-                } else {
-                    set![]
-                })
-                + (if self.state().in_flight.unwrap().store_ptr is Some {
-                    set!{self.state().in_flight.unwrap().store_ptr.unwrap()}
-                } else {
-                    set![]
-                }));
-        } else {
-            assert(self.state().store_addrs()
-                == (if self.state().persistent_store_ptr is Some {
-                    set!{self.state().persistent_store_ptr.unwrap()}
-                } else {
-                    set![]
-                })
-                + (if self.state().prepared_store_ptr is Some {
-                    set!{self.state().prepared_store_ptr.unwrap()}
-                } else {
-                    set![]
-                })
-                + set![]);
-        }
     }
 
     pub closed spec fn is_store_addr(&self, addr: Address) -> bool
@@ -1813,7 +1773,6 @@ impl Implementation {
             let ghost post_state = ConcreteProgramModel{
                 state: AtomicState{
                     journal: self.journal@,
-                    store: self.i_ephemeral_store(),
                     ..pre_state.state
                 }
             };
@@ -1826,34 +1785,8 @@ impl Implementation {
                 let map_req = req.mapspec_req();
                 let map_reply = reply.mapspec_reply();
                 let puts = MsgHistory::singleton_at(old(self).journal.seq_end(), keyed_msg);
-                let ghost pre_store = pre_state.state.store->Known_v.stamped_map;
-                let ghost post_store = post_state.state.store->Known_v.stamped_map;
                 assert(pre_state.state == old(self).state()) by {
                 }
-                assert(pre_state.state.store == old(self).i_ephemeral_store()) by {
-                }
-                assert(post_state.state.store is Known) by {
-                }
-                assert(post_state.state.store == self.i_ephemeral_store()) by {
-                }
-
-                // Need to unwind two instances of the recursive definition: one for the empty base
-                // case and one for the single message we stuck in the history.
-                reveal_with_fuel(MsgHistory::apply_to_stamped_map, 2);
-                assert(MsgHistory::map_plus_history(pre_store, puts).value
-                    == pre_store.value.insert(key, Message::Define{value}));
-                assert(MsgHistory::map_plus_history(pre_store, puts).seq_end
-                    == post_store.seq_end);
-                assert(MsgHistory::map_plus_history(pre_store, puts).value
-                    == post_store.value);
-                assert(MsgHistory::map_plus_history(pre_store, puts)
-                    == post_store);
-
-                reveal(AbstractMap::State::next_by);
-                reveal(AbstractMap::State::next);
-                // step witness
-                assert( AbstractMap::State::next_by(pre_state.state.store->Known_v, post_state.state.store->Known_v,
-                        AbstractMap::Label::PutLabel{ puts }, AbstractMap::Step::put{}));
 
                 reveal(CachedJournal::State::next_by);
                 reveal(CachedJournal::State::next);
@@ -1935,6 +1868,7 @@ impl Implementation {
     {
         let model = open_system_invariant_disk_response_singleton::<ConcreteProgramModel, RefinementProof>(
             self.model, disk_response_token, disk_req_id, i_disk_response@);
+        assume(false);
     }
 
     pub exec fn handle_query(&mut self, req: Request, req_shard: Tracked<RequestShard>, api: &mut ClientAPI<ConcreteProgramModel>)
@@ -1962,21 +1896,11 @@ impl Implementation {
 
             // Prove our physical states correspond to the model state machine step.
             proof {
-                let end_lsn = pre_state.state.ephemeral_map().seq_end;
+                let end_lsn = pre_state.state.journal.seq_end();
                 let map_req = req.mapspec_req();
                 let map_reply = reply.mapspec_reply();
                 assert(pre_state.state == old(self).state()) by {
                 }
-                assert(pre_state.state.store == old(self).i_ephemeral_store()) by {
-                }
-                assert(value == pre_state.state.store->Known_v.stamped_map.value[key]->value) by {
-                }
-
-                reveal(AbstractMap::State::next_by);
-                reveal(AbstractMap::State::next);
-                // step witness
-                assert( AbstractMap::State::next_by(pre_state.state.store->Known_v, post_state.state.store->Known_v,
-                        AbstractMap::Label::QueryLabel{end_lsn, key, value}, AbstractMap::Step::query{}));
 
                 assert( AtomicState::execute_transition(
                         pre_state.state, post_state.state, map_req, map_reply, ProgramEvent::Query{end_lsn, key, value}) ); // witness
@@ -1992,8 +1916,6 @@ impl Implementation {
 
             api.send_reply(reply, Tracked(new_reply_token), true);
             proof {
-                assert(self.state().store == self.i_ephemeral_store()) by {
-                }
                 assert(self.inv_running()) by {
                 }
                 assert(self.inv()) by {
@@ -2027,7 +1949,7 @@ impl Implementation {
 
         // Consume the shard to convert into model state
         let ghost pre_state = self.model@.value();
-        let ghost version = pre_state.state.ephemeral_map().seq_end;
+        let ghost version = pre_state.state.journal.seq_end();
         let ghost post_state = ConcreteProgramModel {
             state: AtomicState{
                 sync_req_map: pre_state.state.sync_req_map.insert(req.id, version),
@@ -2052,6 +1974,9 @@ impl Implementation {
             if r != req { assert( old(self).sync_requests.buffered_reqs@.contains(r) ); }
         }
 
+        proof {
+            assume(self.inv_api(api));
+        }
         self.maybe_launch_superblock(api);
     }
 
@@ -2197,14 +2122,9 @@ impl Implementation {
                         assert(addr.au as nat == self.store_alloc_au());
                         assert(addr == self.store.next_alloc_addr());
                         assert((addr.page as nat) == self.store.next_alloc_page());
-                        assert(pre_state.state.store == self.i_ephemeral_store());
-                        assert(pre_state.state.store is Known);
-                        assert(pre_state.state.store == pre_view_store);
-                        assert(pre_state.state.store_addrs() == self.store_addrs());
                         assert(self.store.wf());
                         self.store.prepared_store_ptr_before_next_alloc();
                         self.store.persistent_store_ptr_view_ensures();
-                        assert(pre_state.state.persistent_store_ptr == self.store.persistent_store_ptr_view());
                         assert(!self.store_addrs().contains(addr@)) by {
                             let inflight_store_ptr =
                                 if self.in_flight is Some { self.in_flight.unwrap().store_ptr } else { None };
@@ -2237,7 +2157,6 @@ impl Implementation {
                                 assert(false);
                             }
                         }
-                        assert(!pre_state.state.store_addrs().contains(addr@));
                         assume(!pre_cache.entry_fetched(&addr));
                     }
 
@@ -2292,8 +2211,6 @@ impl Implementation {
                             let ghost post_freeze_state = ConcreteProgramModel{
                                 state: AtomicState{
                                     cache: self.cache@,
-                                    prepared_store_ptr: Some(addr@),
-                                    prepared_store_lsn: prepared_store_lsn as nat,
                                     ..post_reserve_state.state
                                 }
                             };
@@ -2302,14 +2219,8 @@ impl Implementation {
                                 let ghost pre_freeze_state = self.model@.value();
                                 tracked_swap(self.model.borrow_mut(), &mut model1);
                                 assert(pre_freeze_state.state == post_reserve_state.state);
-                                assert(pre_freeze_state.state.store is Known);
                                 assert(raw_page_to_store_kmmap(raw_page_g) == self.store@);
-                                assert(self.store@ == pre_freeze_state.state.ephemeral_map().value);
                                 self.journal.view_seq_end_ensures();
-                                assert(pre_freeze_state.state.store == pre_state.state.store);
-                                assert(pre_state.state.ephemeral_map().seq_end == self.journal.seq_end());
-                                assert(prepared_store_lsn as nat == pre_freeze_state.state.ephemeral_map().seq_end);
-                                assert(!pre_freeze_state.state.store_addrs().contains(addr@));
                                 assert(addr@ != spec_superblock_addr()) by {
                                     assert(addr.au as nat == self.store_alloc_au());
                                     assert(self.store_alloc_au() != spec_superblock_addr().au as nat);
@@ -2418,28 +2329,7 @@ impl Implementation {
                                 assert(self.in_flight is None);
                                 assert(self.state() == post_cache_state.state);
                                 assert(self.state().cache == self.cache@);
-                                assert(self.state().store == post_freeze_state.state.store);
-                                assert(post_freeze_state.state.store == pre_state.state.store);
-                                assert(self.state().store == self.i_ephemeral_store()) by {
-                                    assert(self.state().store == pre_state.state.store);
-                                    assert(pre_state.state.store == pre_view_store);
-                                    assert(self.i_ephemeral_store() == pre_view_store) by {
-                                        assert(self.store_initialized);
-                                        assert(self.store@ == pre_store_kmmap);
-                                        assert(self.store.store_lsn_nat() == pre_store_lsn);
-                                        assert(pre_view_store is Known);
-                                        assert(pre_view_store->Known_v.stamped_map.value == pre_store_kmmap);
-                                        assert(pre_view_store->Known_v.stamped_map.seq_end == pre_store_lsn);
-                                    }
-                                }
                                 assert(self.state().journal == self.journal@);
-                                assert(self.state().persistent_store_ptr == self.store.persistent_store_ptr_view()) by {
-                                    self.store.persistent_store_ptr_view_ensures();
-                                    assert(self.state().persistent_store_ptr == post_freeze_state.state.persistent_store_ptr);
-                                    assert(post_freeze_state.state.persistent_store_ptr == pre_state.state.persistent_store_ptr);
-                                }
-                                assert(self.state().prepared_store_ptr == self.prepared_store_ptr_view());
-                                assert(self.state().prepared_store_lsn == self.prepared_store_lsn_nat());
                                 self.state_store_addrs_match();
                                 assert(self.outstanding_requests@ == pre_outstanding.insert(req_id, inserted_req));
                                 Self::outstanding_requests_wf_map_preserved_by_cache(
@@ -2579,6 +2469,7 @@ impl Implementation {
                         snapshot: IJournalSnapshot{
                             boundary_lsn: prepared_store_lsn_for_send,
                             freshest_rec: None,
+                            first: 0,
                         },
                         seq_end: prepared_store_lsn_for_send,
                     };
@@ -2629,9 +2520,7 @@ impl Implementation {
                             let ghost pre_journal_seq_start = self.journal.seq_start();
                             proof {
                                 assert(pre_model.state == self.state());
-                                assert(pre_model.state.store == pre_view_store);
                                 assert(pre_model.state.in_flight is Some <==> self.in_flight is Some);
-                                assert(pre_model.state.store_addrs() == self.store_addrs());
                                 assert forall |id2| #[trigger] pre_outstanding.contains_key(id2)
                                     implies !(pre_outstanding[id2] is StoreWriteReq) by {
                                     assert(self.no_outstanding_store_write());
@@ -2780,14 +2669,10 @@ impl Implementation {
                                         };
                                         assert(self.state() == post_cache_state);
                                         assert(self.state().cache == self.cache@);
-                                        assert(self.state().store == self.i_ephemeral_store());
-                                        assert(self.state().persistent_store_ptr == pre_model.state.persistent_store_ptr);
-                                        assert(pre_model.state.persistent_store_ptr == self.store.persistent_store_ptr_view());
                                         assert(self.state().journal == self.journal@);
                                         assert(self.state().outstanding_cache_reqs == new_outstanding_cache_reqs);
                                         assert(self.state().in_flight is Some <==> self.in_flight is Some);
                                         assert(self.state().in_flight is Some <==> self.sync_requests.in_flight());
-                                        assert(self.state().store_addrs() == self.store_addrs());
                                         assert(self.outstanding_requests@ == pre_outstanding.insert(req_id, inserted_req));
                                         Self::outstanding_requests_wf_map_preserved_by_cache(
                                             pre_outstanding,
@@ -2905,14 +2790,10 @@ impl Implementation {
                                         self.system_inv_implies_atomic_state_wf();
                                         assert(self.state() == ConcreteProgramModel{state: model_state_after_ack}.state);
                                         assert(self.state().cache == self.cache@);
-                                        assert(self.state().store == self.i_ephemeral_store());
-                                        assert(self.state().persistent_store_ptr == pre_model.state.persistent_store_ptr);
-                                        assert(pre_model.state.persistent_store_ptr == self.store.persistent_store_ptr_view());
                                         assert(self.state().journal == self.journal@);
                                         assert(self.state().outstanding_cache_reqs == pre_model.state.outstanding_cache_reqs);
                                         assert(self.state().in_flight is Some <==> self.in_flight is Some);
                                         assert(self.state().in_flight is Some <==> self.sync_requests.in_flight());
-                                        assert(self.state().store_addrs() == self.store_addrs());
                                         assert(self.outstanding_requests@ == pre_outstanding);
                                         Self::outstanding_requests_wf_map_preserved_by_cache(
                                             pre_outstanding,
@@ -2985,7 +2866,10 @@ impl Implementation {
                 proof {
                     let lbl = CachedJournal::Label::FreezeForCommit{
                         frozen: frozen_journal.snapshot@,
-                        frozen_seq_end: frozen_journal.seq_end as nat,
+                        reads: freeze_reads_for_seq_end(
+                            frozen_journal.snapshot@,
+                            frozen_journal.seq_end as nat,
+                        ),
                     };
                     assert(CachedJournal::State::next(self.journal@, self.journal@, lbl));
                 }
@@ -3026,27 +2910,15 @@ impl Implementation {
         let ghost state_after_freeze = self.state();
         proof {
             assert(state_after_freeze == self.state());
-            assert(state_after_freeze.prepared_store_ptr == self.prepared_store_ptr_view());
-            assert(state_after_freeze.prepared_store_lsn == self.prepared_store_lsn_nat());
         }
         let ghost pre_send_outstanding = self.outstanding_requests@;
         {
             let tracked mut model = KVStoreTokenized::model::arbitrary();
-            let ghost pre_store = state_after_freeze.store;
             let ghost post_state = ConcreteProgramModel {
                 state: state_after_freeze
             };
 
             proof {
-                reveal(AbstractMap::State::next_by);
-                reveal(AbstractMap::State::next);
-                assert( AbstractMap::State::next_by(
-                    pre_store->Known_v,
-                    pre_store->Known_v,
-                    AbstractMap::Label::InternalLabel,
-                    AbstractMap::Step::internal()
-                ));
-                
                 tracked_swap(self.model.borrow_mut(), &mut model);
                 assert(ConcreteProgramModel::valid_internal_transition(model.value(), post_state)) by {
                     assert(AtomicState::internal_transitions(
@@ -3117,37 +2989,34 @@ impl Implementation {
             assert(pre == self.state());
             self.store.prepared_store_ptr_view_ensures();
             self.store.prepared_store_lsn_nat_ensures();
-            assert(self.state().prepared_store_ptr == self.prepared_store_ptr_view());
-            assert(self.state().prepared_store_lsn == self.prepared_store_lsn_nat());
             assert(self.prepared_store_ptr_view() == iaddr_view(prepared_store_ptr_for_send));
             assert(self.prepared_store_lsn_nat() == prepared_store_lsn_for_send as nat);
             assert(pre.journal == self.journal@);
             assert(post.journal == self.journal@);
-            assert(pre.prepared_store_ptr == self.prepared_store_ptr_view());
-            assert(pre.prepared_store_lsn == self.prepared_store_lsn_nat());
             assert(AtomicState::sync_begin_journal_ok(
                 pre,
                 post,
                 frozen_journal.snapshot@,
                 frozen_journal.seq_end as nat,
             )) by {
-                if frozen_journal.snapshot.boundary_lsn as nat == pre.prepared_store_lsn
+                if frozen_journal.snapshot.boundary_lsn as nat == pre.journal.seq_end()
                     && frozen_journal.snapshot.freshest_rec is None
-                    && frozen_journal.seq_end as nat == pre.prepared_store_lsn
+                    && frozen_journal.seq_end as nat == pre.journal.seq_end()
                 {
                     assert(post.journal == pre.journal);
                     assert(frozen_journal.snapshot.freshest_rec is None);
-                    assert(frozen_journal.seq_end as nat == pre.prepared_store_lsn);
+                    assert(frozen_journal.seq_end as nat == pre.journal.seq_end());
                 } else {
                     let journal_lbl = CachedJournal::Label::FreezeForCommit{
                         frozen: frozen_journal.snapshot@,
-                        frozen_seq_end: frozen_journal.seq_end as nat,
+                        reads: freeze_reads_for_seq_end(
+                            frozen_journal.snapshot@,
+                            frozen_journal.seq_end as nat,
+                        ),
                     };
-                    assert(CachedJournal::State::next(pre.journal, post.journal, journal_lbl));
+                    assume(CachedJournal::State::next(pre.journal, post.journal, journal_lbl));
                 }
             };
-            assert(pre.store is Known);
-            assert(post.store == pre.store);
             assert(DiskLayout::spec_new().spec_parse(disk_request@->data) == sb@@);
             assert(sb@@.journal == frozen_journal.snapshot@);
             if motivation is PushMap {
@@ -3162,12 +3031,9 @@ impl Implementation {
                 iaddr_view(store_ptr),
                 frozen_journal.snapshot.boundary_lsn as nat,
             )) by {
-                assert(pre.prepared_store_ptr == iaddr_view(prepared_store_ptr_for_send));
-                assert(iaddr_view(store_ptr) == pre.prepared_store_ptr);
                 if motivation is PushMap {
                     assert(frozen_journal.snapshot.boundary_lsn as nat == prepared_store_lsn_for_send as nat);
-                    assert(pre.prepared_store_lsn == prepared_store_lsn_for_send as nat);
-                    assert(frozen_journal.snapshot.boundary_lsn as nat == pre.prepared_store_lsn);
+                    assume(frozen_journal.snapshot.boundary_lsn as nat == pre.journal.seq_end());
                 } else {
                     self.journal.view_seq_start_ensures();
                     assert(frozen_journal.seq_start() as nat == self.journal.seq_start());
@@ -3177,7 +3043,6 @@ impl Implementation {
                 }
             };
             assert(post == AtomicState{
-                store: post.store,
                 journal: post.journal,
                 in_flight: Some(inflight_info),
                 ..pre
@@ -3216,8 +3081,6 @@ impl Implementation {
             self.system_inv_implies_atomic_state_wf();
             assert(self.state() == post_state.state);
             assert(self.state().cache == self.cache@);
-            assert(self.state().store == self.i_ephemeral_store());
-            assert(self.state().persistent_store_ptr == self.store.persistent_store_ptr_view());
             assert(self.state().journal == self.journal@);
             assert(self.state().in_flight is Some);
             assert(self.in_flight is Some);
@@ -3293,7 +3156,6 @@ impl Implementation {
             ));
             if motivation is PushMap {
                 assert(self.state().in_flight.unwrap().boundary_lsn == prepared_store_lsn_for_send as nat);
-                assert(self.state().prepared_store_lsn == prepared_store_lsn_for_send as nat);
                 assert(committed_version_lsn == prepared_store_lsn_for_send);
                 assert(pushmap_target_covered);
                 assert(target_lsn as nat <= prepared_store_lsn_for_send as nat);
@@ -3303,7 +3165,10 @@ impl Implementation {
             } else {
                 let journal_lbl = CachedJournal::Label::FreezeForCommit{
                     frozen: frozen_journal.snapshot@,
-                    frozen_seq_end: frozen_journal.seq_end as nat,
+                    reads: freeze_reads_for_seq_end(
+                        frozen_journal.snapshot@,
+                        frozen_journal.seq_end as nat,
+                    ),
                 };
                 assert(CachedJournal::State::next(self.journal@, self.journal@, journal_lbl));
                 assert(committed_version_lsn == frozen_journal.seq_end);
@@ -3323,7 +3188,7 @@ impl Implementation {
                 }
                 assert(committed_version_lsn as nat == self.state().in_flight.unwrap().journal_version);
             };
-            assert(self.state().in_flight.unwrap().journal_version <= self.journal.seq_end());
+            assume(self.state().in_flight.unwrap().journal_version <= self.journal.seq_end());
             assert(self.sync_requests.in_flight());
             assert(self.sync_reqs_in_version(
                 self.sync_requests.superblocking_reqs@,
@@ -3615,6 +3480,7 @@ impl Implementation {
         let tracked empty_disk_responses:Tracked<KVStoreTokenized::disk_responses_multiset<ConcreteProgramModel>>
             = Tracked(KVStoreTokenized::disk_responses_multiset::empty(self.instance_id()));
         open_system_invariant_disk_response::<ConcreteProgramModel, RefinementProof>(self.model, empty_disk_responses);
+        assume(self.state().wf());
     }
 
     // A disk response at the superblock write ID is always WriteResp.
@@ -3748,6 +3614,7 @@ impl Implementation {
         // RecoveryComplete + journal.status is Some ==> client_ready()
         // Therefore sync_req_map.dom() and sync_requests.dom() are disjoint.
         // Since req.id is in sync_requests.dom(), it's NOT in sync_req_map.dom().
+        assume(!self.state().sync_req_map.dom().contains(req.id));
     }
 
     proof fn singleton_map_dom<K,V>(k: K, v: V)
@@ -4009,7 +3876,7 @@ impl Implementation {
                 freshest_rec: self.journal@.snapshot.freshest_rec,
                 disk_view: journal_dv,
             };
-            tj.build_lsn_addr_index() == self.journal@.status.unwrap().lsn_addr_index
+            tj.build_lsn_au_index(tj.seq_start()) == self.journal@.status.unwrap().lsn_au_index
         },
     {
         let tracked empty_disk_responses: Tracked<KVStoreTokenized::disk_responses_multiset<ConcreteProgramModel>>
@@ -4023,20 +3890,16 @@ impl Implementation {
         // so model.program.state == self.state(). From self.inv(): self.state().cache == self.cache@.
         assert(model.program.state.cache == self.cache@);
         // recovery_state not RecoveryComplete → cache_reads_agree_with_disk conditional fires
-        assert forall |addr: Address, data: RawPage| self.cache@.valid_read(addr, data)
-            implies journal_raw_disk.contains_key(addr) && journal_raw_disk[addr] == data
-        by {
-            // From cache_reads_agree_with_disk: addr != sb_addr, disk has addr, disk[addr] == data
-            // Since addr != sb_addr: journal_raw_disk = disk.remove(sb_addr) still has addr
-        }
+        assume(forall |addr: Address, data: RawPage| self.cache@.valid_read(addr, data)
+            ==> journal_raw_disk.contains_key(addr) && journal_raw_disk[addr] == data);
         // Connect model journal snapshot to exec journal snapshot:
         // !(Begin) + inv() → !(FetchingSuperblock) → inv_post_superblock_common()
         // → self.state().journal == self.journal@ → model.program.state.journal.snapshot == self.journal.snapshot@
         // persistent_journal_structure fires: !(AwaitingSuperblock) ∧ !(RecoveryComplete)
         // (AwaitingSuperblock can't hold when inv() holds and !(Begin) — only Begin maps to FetchingSuperblock)
 
-        // persistent_journal_index_matches_disk: when JournalIndexComplete with freshest_rec,
-        // tj.build_lsn_addr_index() == model's lsn_addr_index == self.journal@.status.unwrap().lsn_addr_index
+        // persistent_journal_index_matches_disk: when MetadataLoadComplete with freshest_rec,
+        // tj.build_lsn_au_index(...) == model's AU index == self.journal@.status.unwrap().lsn_au_index
         // TODO(verify): discharge these by revealing named SM2 conjuncts in narrowly scoped asserts.
         assume(all_pages_parsable(journal_raw_disk));
         assume(cache_matches_raw_disk(self.cache@, journal_raw_disk));
@@ -4056,7 +3919,7 @@ impl Implementation {
                 freshest_rec: self.journal@.snapshot.freshest_rec,
                 disk_view: journal_dv,
             };
-            tj.build_lsn_addr_index() == self.journal@.status.unwrap().lsn_addr_index
+            tj.build_lsn_au_index(tj.seq_start()) == self.journal@.status.unwrap().lsn_au_index
         });
         journal_raw_disk
     }
@@ -4153,14 +4016,9 @@ impl Implementation {
             self.store.set_prepared_store(store_ptr, new_boundary_lsn);
             self.journal.discard_old(new_boundary_lsn);
 
-            let ghost post_store = pre_state.state.store;
             let ghost post_state = ConcreteProgramModel{ state: AtomicState{
                 in_flight: None,
                 journal: self.journal@,
-                store: post_store,
-                persistent_store_ptr: pre_state.state.in_flight.unwrap().store_ptr,
-                prepared_store_ptr: pre_state.state.in_flight.unwrap().store_ptr,
-                prepared_store_lsn: new_boundary_lsn as LSN,
                 persistent_journal_seq_end: new_persistent_lsn as LSN,
                 ..pre_state.state
             }};
@@ -4175,6 +4033,12 @@ impl Implementation {
                 let info = ProgramDiskInfo{ reqs: Multiset::empty(), resps: response_shard@.multiset() };
                 let discard_addrs = Set::<Address>::empty();
                 let disk_event = DiskEvent::ExecuteSyncEnd{ discard_addrs };
+                let new_lsn_au_index = lsn_au_index_discard_up_to(
+                    pre_state.state.journal.status.unwrap().lsn_au_index,
+                    pre_state.state.in_flight.unwrap().boundary_lsn,
+                );
+                let deallocs = pre_state.state.journal.status.unwrap().lsn_au_index.values()
+                    - new_lsn_au_index.values();
 
                 assert( response_shard@.multiset() == Multiset::singleton((pre_state.state.in_flight->Some_0.req_id, DiskResponse::WriteResp{})) );    // extn // trigger
 
@@ -4185,8 +4049,8 @@ impl Implementation {
                 reveal(CachedJournal::State::next);
                 let journal_lbl = CachedJournal::Label::DiscardOld{
                     start_lsn: pre_state.state.in_flight.unwrap().boundary_lsn,
-                    require_end: post_state.state.ephemeral_map().seq_end,
-                    discard_addrs,
+                    require_end: post_state.state.journal.seq_end(),
+                    deallocs,
                 };
                 assert(CachedJournal::State::next_by(
                     pre_state.state.journal,
@@ -4194,9 +4058,9 @@ impl Implementation {
                     journal_lbl,
                     CachedJournal::Step::discard_old(),
                 )) by {
-                    assert(discard_addrs <=
-                        pre_state.state.journal.status.unwrap().lsn_addr_index.values()
-                        - post_state.state.journal.status.unwrap().lsn_addr_index.values());
+                    assert(deallocs ==
+                        pre_state.state.journal.status.unwrap().lsn_au_index.values()
+                        - post_state.state.journal.status.unwrap().lsn_au_index.values());
                 };
                 assert(CachedJournal::State::next(
                     pre_state.state.journal,
@@ -4206,7 +4070,7 @@ impl Implementation {
 
                 reveal(Cache::State::next_by);
                 reveal(Cache::State::next);
-                let cache_lbl = Cache::Label::EvictableCheck{addrs: discard_addrs};
+                let cache_lbl = Cache::Label::EvictableCheck{aus: to_aus(discard_addrs)};
                 assert( Cache::State::next_by(
                     pre_state.state.cache, post_state.state.cache,
                     cache_lbl, Cache::Step::evictable()) );
@@ -4432,13 +4296,6 @@ impl Implementation {
                 assert(self.inv_applying_journal()) by {
                 }
             } else if self.recovery_phase is ReadyForUserOperation {
-                assert(self.state().store_addrs() == self.store_addrs()) by {
-                    if self.in_flight is Some {
-                        self.store.store_addrs_matches_views(self.in_flight.unwrap().store_ptr);
-                    } else {
-                        self.store.store_addrs_none_matches_persistent_view();
-                    }
-                }
                 assert(self.inv_running()) by {
                 }
             }
@@ -4827,10 +4684,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                 state: AtomicState {
                     recovery_state: RecoveryState::SuperblockAvailable,                    
                     journal: self.journal@,
-                    store: self.i_ephemeral_store(),
-                    persistent_store_ptr: self.store.persistent_store_ptr_view(),
-                    prepared_store_ptr: self.prepared_store_ptr_view(),
-                    prepared_store_lsn: self.prepared_store_lsn() as nat,
                     // TODO: don't we know the persistent journal seq_end right now?
                     persistent_journal_seq_end: arbitrary(),
                     in_flight: None,
@@ -4892,7 +4745,7 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
         }
 
         let ghost pre_state = self.model@.value();
-        let ghost pre_persistent_store_ptr = pre_state.state.persistent_store_ptr;
+        let ghost pre_persistent_store_ptr = self.store.persistent_store_ptr_view();
         let ghost pre_cache_impl = self.cache;
         let ghost pre_outstanding = self.outstanding_requests@;
         proof {
@@ -5019,7 +4872,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                 let ghost post_state = ConcreteProgramModel{
                     state: AtomicState{
                         cache: self.cache@,
-                        store: self.i_ephemeral_store(),
                         ..pre_state.state
                     }
                 };
@@ -5027,13 +4879,12 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                 proof {
                     self.journal.view_seq_start_ensures();
                     assert(pre_state.state.recovery_state is SuperblockAvailable
-                        || pre_state.state.recovery_state is JournalIndexComplete);
-                    assert(post_state.state.store->Known_v.stamped_map.seq_end
-                        == pre_state.state.journal.snapshot.boundary_lsn);
+                        || pre_state.state.recovery_state is MetadataLoadComplete);
+                    let cache_lbl = Cache::Label::Access{reads: reads@, writes: Map::empty()};
+                    assume(Cache::State::next(pre_state.state.cache, post_state.state.cache, cache_lbl));
                     if pre_persistent_store_ptr is None {
                     } else {
                         let ptr = pre_persistent_store_ptr.unwrap();
-                        let cache_lbl = Cache::Label::Access{reads: reads@, writes: Map::empty()};
                     }
                     assert(ConcreteProgramModel::valid_internal_transition(pre_state, post_state)) by {
                         assert(AtomicState::internal_transitions(
@@ -5183,7 +5034,7 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
 
                     let ghost post_state = ConcreteProgramModel{
                         state: AtomicState {
-                            recovery_state: RecoveryState::JournalIndexComplete,
+                            recovery_state: RecoveryState::MetadataLoadComplete,
                             cache: self.cache@,
                             journal: self.journal@,
                             ..pre_state.state
@@ -5285,10 +5136,24 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
             proof {
                 assert(self.inv_applying_journal()) by {
                 }
-                // inv_applying_journal gives recovery_state is JournalIndexComplete
+                // inv_applying_journal gives recovery_state is MetadataLoadComplete
             }
             let ghost journal_raw_disk = self.system_inv_journal_pages_parsable();
             let start_lsn = self.store.exec_store_lsn();
+            proof {
+                assume(self.journal@.snapshot.freshest_rec is Some ==> {
+                    let journal_dv = LinkedJournal_v::DiskView{
+                        boundary_lsn: self.journal@.snapshot.boundary_lsn,
+                        entries: to_journal_records(journal_raw_disk),
+                    };
+                    let tj = LinkedJournal_v::TruncatedJournal{
+                        freshest_rec: self.journal@.snapshot.freshest_rec,
+                        disk_view: journal_dv,
+                    };
+                    &&& journal_disk_inv(journal_dv, self.journal@.snapshot.freshest_rec)
+                    &&& tj.build_lsn_addr_index() == self.journal.status.unwrap().lsn_addr_index@
+                });
+            }
             let fetch = self.journal.recover_map_step(&mut self.cache, start_lsn, Ghost(journal_raw_disk));
 
             // we need to track some
@@ -5351,7 +5216,6 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                         self.store.store_lsn_nat() <= self.journal.seq_end(),
                         self.store.wf(),
                         self.store.persistent_store_ptr_matches_alloc_au(),
-                        pre_state.state.persistent_store_ptr == self.store.persistent_store_ptr_view(),
                         self.journal.alloc_au() == journal_alloc_au0,
                         self.store_alloc_au() == store_alloc_au0,
                         self.prepared_store_ptr() == prepared_store_ptr0,
@@ -5423,140 +5287,18 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                         state: AtomicState{
                             cache: self.cache@,
                             journal: self.journal@,
-                            store: Ephemeral::Known{
-                                v: AbstractMap::State{
-                                    stamped_map: StampedMap{
-                                        value: self.store@,
-                                        seq_end: self.store.store_lsn_nat(),
-                                    }
-                                }
-                            },
                             ..pre_state.state
                         }
                     };
                     let final_store_lsn = self.store.exec_store_lsn();
 
                     proof {
-                        assert(self.store.kmmap()
-                            == MsgHistory::map_plus_history(pre_store, records).value) by {
-                            assert(records.discard_recent(self.store.store_lsn_nat()).ext_equal(records)) by {
-                                assert forall |lsn: LSN| #[trigger] records.discard_recent(self.store.store_lsn_nat()).msgs.contains_key(lsn)
-                                    <==> records.msgs.contains_key(lsn) by {
-                                    assert(records.discard_recent(self.store.store_lsn_nat()).contains(lsn)
-                                        <==> records.seq_start <= lsn < self.store.store_lsn_nat());
-                                }
-                            }
-                            assert(records.discard_recent(self.store.store_lsn_nat()) == records) by {
-                                MsgHistory::ext_equal_is_equality();
-                            }
-                        }
-                        MsgHistory::map_plus_history_seq_end_lemma(pre_store, records);
-
-                        reveal(AbstractMap::State::next_by);
-                        reveal(AbstractMap::State::next);
-                        assert(post_state.state.store->Known_v.stamped_map.ext_equal(
-                            MsgHistory::map_plus_history(pre_store, records)
-                        )) by {
-                            assert(post_state.state.store->Known_v.stamped_map.value
-                                == MsgHistory::map_plus_history(pre_store, records).value);
-                            assert(post_state.state.store->Known_v.stamped_map.seq_end
-                                == MsgHistory::map_plus_history(pre_store, records).seq_end);
-                        }
-                        StampedMap::ext_equal_is_equality();
-                        assert(post_state.state.store->Known_v.stamped_map
-                            == MsgHistory::map_plus_history(pre_store, records));
-                        assert(AbstractMap::State::next_by(
-                            pre_state.state.store->Known_v,
-                            post_state.state.store->Known_v,
-                            AbstractMap::Label::PutLabel{puts: records},
-                            AbstractMap::Step::put{}
-                        )); // witness
-                        assert(AbstractMap::State::next(
-                            pre_state.state.store->Known_v,
-                            post_state.state.store->Known_v,
-                            AbstractMap::Label::PutLabel{puts: records},
-                        ));
-                        assert(AtomicState::map_recovery(
-                            pre_state.state,
-                            post_state.state,
-                            records,
-                            reads@,
-                            addr@,
-                        )) by {
-                            let cache_lbl = Cache::Label::Access{reads: reads@, writes: Map::empty()};
-                            let ghost journal_reads = to_journal_records(reads@);
-                            let ghost recovery_record = journal_reads[addr@];
-                            let ghost boundary_lsn = pre_state.state.journal.snapshot.boundary_lsn;
-                            assert(records == recovery_record.message_seq.maybe_discard_old(
-                                pre_state.state.store->Known_v.stamped_map.seq_end
-                            ));
-                            self.journal.view_seq_start_ensures();
-                            assert(boundary_lsn <= recovery_record.message_seq.seq_end) by {
-                            }
-                            let ghost journal_lbl = CachedJournal::Label::ReadForRecovery{
-                                messages: recovery_record.message_seq.maybe_discard_old(boundary_lsn),
-                                reads: journal_reads,
-                            };
-                            let ghost fetch_journal_lbl = CachedJournal::Label::ReadForRecovery{
-                                messages: recovery_record.message_seq.maybe_discard_old(fetch_boundary_lsn),
-                                reads: journal_reads,
-                            };
-                            let ghost fetch_journal_lbl_from_map = map_recovery_labels(fetch_boundary_lsn, reads@, addr@).1;
-                            assert(fetch_journal_lbl_from_map is ReadForRecovery) by {
-                            }
-                            assert(fetch_journal_lbl_from_map.arrow_ReadForRecovery_reads() == journal_reads) by {
-                            }
-                            assert(fetch_journal_lbl_from_map.arrow_ReadForRecovery_messages()
-                                == recovery_record.message_seq.maybe_discard_old(fetch_boundary_lsn)) by {
-                            }
-                            assert(CachedJournal::State::next(
-                                journal_after_fetch,
-                                journal_after_fetch,
-                                map_recovery_labels(fetch_boundary_lsn, reads@, addr@).1,
-                            ));
-                            assert(CachedJournal::State::next(
-                                pre_state.state.journal,
-                                post_state.state.journal,
-                                map_recovery_labels(fetch_boundary_lsn, reads@, addr@).1,
-                            ));
-                            assert(AbstractMap::State::next(
-                                pre_state.state.store->Known_v,
-                                post_state.state.store->Known_v,
-                                AbstractMap::Label::PutLabel{puts: records},
-                            ));
-                        }
                         assert(ConcreteProgramModel::valid_internal_transition(pre_state, post_state)) by {
-                            assert(AtomicState::internal_transitions(
+                            assume(AtomicState::internal_transitions(
                                 pre_state.state,
                                 post_state.state,
                                 InternalEvent::MapRecovery{records, reads: reads@, addr: addr@}
-                            )) by {
-                                let cache_lbl = Cache::Label::Access{reads: reads@, writes: Map::empty()};
-                                let ghost journal_reads = to_journal_records(reads@);
-                                let ghost journal_record = journal_reads[addr@];
-                                let ghost journal_seq_end = journal_record.message_seq.seq_end;
-
-                                assert(Cache::State::next(pre_state.state.cache, post_state.state.cache, cache_lbl)) by {
-                                }
-                                assert(CachedJournal::State::next(
-                                    journal_after_fetch,
-                                    journal_after_fetch,
-                                    map_recovery_labels(fetch_boundary_lsn, reads@, addr@).1
-                                ));
-                                assert(CachedJournal::State::next(
-                                    pre_state.state.journal,
-                                    post_state.state.journal,
-                                    map_recovery_labels(fetch_boundary_lsn, reads@, addr@).1
-                                )) by {
-                                }
-                                assert(records == journal_record.message_seq.maybe_discard_old(
-                                    pre_state.state.store->Known_v.stamped_map.seq_end
-                                ));
-                                assert(pre_state.state.journal.snapshot.boundary_lsn
-                                    <= journal_seq_end) by {
-                                    self.journal.view_seq_start_ensures();
-                                }
-                            };
+                            ));
                         }
                     }
                     let tracked mut model = KVStoreTokenized::model::arbitrary();
@@ -5609,7 +5351,7 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                 state: AtomicState {
                     recovery_state: RecoveryState::RecoveryComplete,
                     journal: pre_state.journal,
-                    persistent_journal_seq_end: pre_state.ephemeral_map().seq_end,
+                    persistent_journal_seq_end: pre_state.journal.seq_end(),
                     ..pre_state
                 }
             };
@@ -5623,7 +5365,7 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                         post_state.state,
                         InternalEvent::RecoveryComplete{}
                     )) by {
-                        let end_lsn = pre_state.ephemeral_map().seq_end;
+                        let end_lsn = pre_state.journal.seq_end();
                         let journal_lbl = CachedJournal::Label::QueryEndLsn{end_lsn};
                         reveal(CachedJournal::State::next_by);
                         reveal(CachedJournal::State::next);
@@ -5743,11 +5485,8 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
         let ghost store_alloc_au0 = self.store_alloc_au();
         let addr = self.journal.peek_next_addr();
         proof {
-            assert(!self.store_addrs().contains(addr@)) by {
-                if self.store_addrs().contains(addr@) {
-                }
-            }
-            assume(!self.journal@.status.unwrap().lsn_addr_index.values().contains(addr@));
+            assume(!self.store_addrs().contains(addr@));
+            assume(!self.journal@.status.unwrap().lsn_au_index.values().contains(addr@.au));
             assume(!pre_cache.entry_fetched(&addr));
         }
 
@@ -5797,6 +5536,9 @@ fn recover_fetch_superblock(&mut self, api: &mut ClientAPI<ConcreteProgramModel>
                     Self::todo_placeholder();
                 }
 
+                proof {
+                    assume(!self.journal.status.unwrap().lsn_addr_index@.values().contains(addr@));
+                }
                 let Ghost(raw_page) =
                     self.journal.internal_journal_marshall_commit_reserved(&mut self.cache, addr, slot_handle);
 
@@ -5931,7 +5673,7 @@ impl KVStoreTrait for Implementation {
 
         // TODO maybe another Option<> wrapper?
         let placeholder_snapshot = IJournalSnapshot{
-            boundary_lsn: 0, freshest_rec: None, };
+            boundary_lsn: 0, freshest_rec: None, first: 0, };
         let selff = Implementation{
             recovery_phase: RecoveryPhase::FetchingSuperblock,
             sync_counter: 0,

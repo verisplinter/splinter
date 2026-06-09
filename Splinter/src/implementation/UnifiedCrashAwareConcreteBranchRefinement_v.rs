@@ -16,15 +16,17 @@ use crate::implementation::CrashAwareConcreteBranch_v::{
     CrashAwareConcreteBranch, EphemeralConcreteBranch,
 };
 use crate::implementation::CrashAwareConcreteBranchRefinement_v::*;
+use crate::implementation::CrashAwareAllocationBranchStackRefinement_v::*;
 use crate::implementation::UnifiedCrashAwareConcreteBranch_v::{
     empty_unified_sealed_branch_stack_image, UnifiedCrashAwareConcreteBranch,
-    InFlightUnifiedSealedBranchStackImage, UnifiedConcreteBranchState,
+    FrozenUnifiedSealedBranchStackImage, UnifiedConcreteBranchState,
     UnifiedEphemeralConcreteBranch, UnifiedSealedBranchStackImage,
 };
 use crate::spec::AsyncDisk_t::{AsyncDisk, DiskRequest, DiskResponse, RawPage};
 use crate::spec::KeyType_t::Key;
 use crate::spec::MapSpec_t::ID;
 use crate::spec::Messages_t::Message;
+use crate::abstract_system::AbstractCrashAwareMap_v::AbstractCrashAwareMap;
 
 verus! {
 
@@ -40,16 +42,16 @@ impl UnifiedEphemeralConcreteBranch {
 }
 
 pub open spec fn option_unified_image_i(
-    image: Option<InFlightUnifiedSealedBranchStackImage>,
+    image: Option<FrozenUnifiedSealedBranchStackImage>,
     cache: Cache::State,
     disk: AsyncDisk::State,
-) -> Option<crate::implementation::CrashAwareConcreteBranch_v::InFlightConcreteSealedBranchStackImage>
+) -> Option<crate::implementation::CrashAwareConcreteBranch_v::FrozenConcreteSealedBranchStackImage>
 {
     match image {
         Option::None => Option::None,
         Option::Some{0: img} => Option::Some(
-            crate::implementation::CrashAwareConcreteBranch_v::InFlightConcreteSealedBranchStackImage{
-                image: img.image.i(cache, disk),
+            crate::implementation::CrashAwareConcreteBranch_v::FrozenConcreteSealedBranchStackImage{
+                image: img.image.i_disk(disk),
                 seq_end: img.seq_end,
             },
         ),
@@ -66,27 +68,44 @@ impl UnifiedCrashAwareConcreteBranch::State {
     pub open spec fn i(self) -> CrashAwareConcreteBranch::State
     {
         CrashAwareConcreteBranch::State{
-            persistent: self.persistent.i(self.cache, self.disk),
+            persistent: self.persistent.i_disk(self.disk),
             persistent_seq_end: self.persistent_seq_end,
-            ephemeral: self.ephemeral.i(self.cache, self.disk),
-            in_flight: option_unified_image_i(self.in_flight, self.cache, self.disk),
+            ephemeral: self.ephemeral.i(self.concrete_cache(), self.disk),
+            frozen: option_unified_image_i(self.frozen, self.concrete_cache(), self.disk),
         }
+    }
+
+    pub open spec fn abstract_i(self) -> AbstractCrashAwareMap::State
+    {
+        self.i().i().abstract_i()
+    }
+
+    pub open spec fn label_to_abstract_map(self, lbl: UnifiedCrashAwareConcreteBranch::Label)
+        -> AbstractCrashAwareMap::Label
+    {
+        self.i().i().label_to_abstract_map(self.i().label_to_stack(self.label_to_concrete(lbl)))
     }
 
     pub open spec fn label_to_concrete(self, lbl: UnifiedCrashAwareConcreteBranch::Label)
         -> CrashAwareConcreteBranch::Label
     {
         match lbl {
-            UnifiedCrashAwareConcreteBranch::Label::LoadEphemeral{init_aus} =>
-                CrashAwareConcreteBranch::Label::LoadEphemeral{init_aus},
+            UnifiedCrashAwareConcreteBranch::Label::LoadEphemeral{free_aus} =>
+                CrashAwareConcreteBranch::Label::LoadEphemeral{free_aus},
             UnifiedCrashAwareConcreteBranch::Label::Query{branch_idx, key, msg} =>
                 CrashAwareConcreteBranch::Label::Query{branch_idx, key, msg},
             UnifiedCrashAwareConcreteBranch::Label::Append{keys, msgs} =>
                 CrashAwareConcreteBranch::Label::Append{keys, msgs},
-            UnifiedCrashAwareConcreteBranch::Label::Internal =>
+            UnifiedCrashAwareConcreteBranch::Label::Internal{allocs, deallocs} =>
                 CrashAwareConcreteBranch::Label::Internal,
-            UnifiedCrashAwareConcreteBranch::Label::CommitStart{new_boundary_lsn} =>
-                CrashAwareConcreteBranch::Label::CommitStart{new_boundary_lsn},
+            UnifiedCrashAwareConcreteBranch::Label::CommitStart{new_boundary_lsn, frozen_image} =>
+                CrashAwareConcreteBranch::Label::CommitStart{
+                    new_boundary_lsn,
+                    frozen_image: crate::implementation::CrashAwareConcreteBranch_v::FrozenConcreteSealedBranchStackImage{
+                        image: frozen_image.image.i_disk(self.disk),
+                        seq_end: frozen_image.seq_end,
+                    },
+                },
             UnifiedCrashAwareConcreteBranch::Label::CommitComplete =>
                 CrashAwareConcreteBranch::Label::CommitComplete,
             UnifiedCrashAwareConcreteBranch::Label::Crash{keep_in_flight} =>
@@ -101,9 +120,9 @@ impl UnifiedCrashAwareConcreteBranch::State {
             self.i().inv(),
     {
         if self.ephemeral is Known {
-            let concrete = self.ephemeral->v.to_concrete(self.cache, self.disk);
+            let concrete = self.ephemeral->v.to_concrete(self.concrete_cache(), self.disk);
             assert(concrete.sealed_image()
-                == self.ephemeral->v.unified_sealed_image().i(self.cache, self.disk));
+                == self.ephemeral->v.unified_sealed_image().i(self.concrete_cache(), self.disk));
         }
         assert(self.i().wf());
         assert(self.i().image_compatible());
@@ -114,13 +133,13 @@ impl UnifiedCrashAwareConcreteBranch::State {
         requires
             self.images_stable_with(cache, disk),
         ensures
-            self.persistent.i(self.cache, self.disk) == self.persistent.i(cache, disk),
-            option_unified_image_i(self.in_flight, self.cache, self.disk)
-                == option_unified_image_i(self.in_flight, cache, disk),
+            self.persistent.i_disk(self.disk) == self.persistent.i_disk(disk),
+            option_unified_image_i(self.frozen, self.concrete_cache(), self.disk)
+                == option_unified_image_i(self.frozen, cache, disk),
     {
-        if self.in_flight is Some {
-            assert(self.in_flight.unwrap().image.i(self.cache, self.disk)
-                == self.in_flight.unwrap().image.i(cache, disk));
+        if self.frozen is Some {
+            assert(self.frozen.unwrap().image.i_disk(self.disk)
+                == self.frozen.unwrap().image.i_disk(disk));
         }
     }
 
@@ -131,7 +150,7 @@ impl UnifiedCrashAwareConcreteBranch::State {
             CrashAwareConcreteBranch::State::initialize(self.i()),
     {
         reveal(CrashAwareConcreteBranch::State::init_by);
-        assert(empty_unified_sealed_branch_stack_image().i(self.cache, self.disk)
+        assert(empty_unified_sealed_branch_stack_image().i_disk(self.disk)
             == empty_concrete_sealed_branch_stack_image());
         assert(CrashAwareConcreteBranch::State::init_by(
             self.i(),
@@ -144,11 +163,13 @@ impl UnifiedCrashAwareConcreteBranch::State {
         post: Self,
         lbl: UnifiedCrashAwareConcreteBranch::Label,
         new_ephemeral: UnifiedConcreteBranchState,
+        new_cache: Cache::State,
+        cache_slots: nat,
     )
         requires
             self.inv(),
             post.inv(),
-            UnifiedCrashAwareConcreteBranch::State::load_ephemeral(self, post, lbl, new_ephemeral),
+            UnifiedCrashAwareConcreteBranch::State::load_ephemeral(self, post, lbl, new_ephemeral, new_cache, cache_slots),
         ensures
             CrashAwareConcreteBranch::State::next(self.i(), post.i(), self.label_to_concrete(lbl)),
     {
@@ -158,8 +179,8 @@ impl UnifiedCrashAwareConcreteBranch::State {
         reveal(CrashAwareConcreteBranch::State::next);
         reveal(CrashAwareConcreteBranch::State::next_by);
         match lbl {
-            UnifiedCrashAwareConcreteBranch::Label::LoadEphemeral{init_aus} => {
-                let new_concrete = new_ephemeral.to_concrete(self.cache, self.disk);
+            UnifiedCrashAwareConcreteBranch::Label::LoadEphemeral{free_aus} => {
+                let new_concrete = new_ephemeral.to_concrete(new_cache, self.disk);
                 self.state_wf_refines();
                 assert(CrashAwareConcreteBranch::State::load_ephemeral(
                     self.i(),
@@ -200,7 +221,7 @@ impl UnifiedCrashAwareConcreteBranch::State {
         reveal(CrashAwareConcreteBranch::State::next_by);
         match lbl {
             UnifiedCrashAwareConcreteBranch::Label::Query{branch_idx, key, msg} => {
-                let old_concrete = self.ephemeral->v.to_concrete(self.cache, self.disk);
+                let old_concrete = self.ephemeral->v.to_concrete(self.concrete_cache(), self.disk);
                 let concrete_lbl = ConcreteBranch::Label::Query{branch_idx, key, msg};
                 assert(ConcreteBranch::State::query(
                     old_concrete,
@@ -256,7 +277,7 @@ impl UnifiedCrashAwareConcreteBranch::State {
         reveal(CrashAwareConcreteBranch::State::next_by);
         match lbl {
             UnifiedCrashAwareConcreteBranch::Label::Append{keys, msgs} => {
-                let old_concrete = self.ephemeral->v.to_concrete(self.cache, self.disk);
+                let old_concrete = self.ephemeral->v.to_concrete(self.concrete_cache(), self.disk);
                 let new_concrete = new_ephemeral.to_concrete(new_cache, self.disk);
                 let concrete_lbl = ConcreteBranch::Label::Append{keys, msgs};
                 self.interpreted_images_stable_with(new_cache, self.disk);
@@ -471,7 +492,7 @@ impl UnifiedCrashAwareConcreteBranch::State {
             }
             UnifiedCrashAwareConcreteBranch::Step::fill_au(new_ephemeral, aus) => {
                 reveal(UnifiedCrashAwareConcreteBranch::State::fill_au);
-                let new_concrete = new_ephemeral.to_concrete(self.cache, self.disk);
+                let new_concrete = new_ephemeral.to_concrete(self.concrete_cache(), self.disk);
                 assert(CrashAwareConcreteBranch::State::fill_au(
                     self.i(),
                     post.i(),
@@ -506,8 +527,8 @@ impl UnifiedCrashAwareConcreteBranch::State {
             }
             UnifiedCrashAwareConcreteBranch::Step::internal_disk(new_ephemeral, new_disk) => {
                 reveal(UnifiedCrashAwareConcreteBranch::State::internal_disk);
-                let new_concrete = new_ephemeral.to_concrete(self.cache, new_disk);
-                self.interpreted_images_stable_with(self.cache, new_disk);
+                let new_concrete = new_ephemeral.to_concrete(self.concrete_cache(), new_disk);
+                self.interpreted_images_stable_with(self.concrete_cache(), new_disk);
                 assert(CrashAwareConcreteBranch::State::internal_disk(
                     self.i(),
                     post.i(),
@@ -563,9 +584,13 @@ impl UnifiedCrashAwareConcreteBranch::State {
             }
             UnifiedCrashAwareConcreteBranch::Step::freeze_map_internal() => {
                 reveal(UnifiedCrashAwareConcreteBranch::State::freeze_map_internal);
-                let concrete = self.ephemeral->v.to_concrete(self.cache, self.disk);
+                let concrete = self.ephemeral->v.to_concrete(self.concrete_cache(), self.disk);
                 assert(concrete.sealed_image()
-                    == concrete.unified_sealed_image().i(self.cache, self.disk));
+                    == concrete.unified_sealed_image().i(self.concrete_cache(), self.disk));
+                assert(concrete.unified_sealed_image().i(self.concrete_cache(), self.disk)
+                    == concrete.unified_sealed_image().i_disk(self.disk));
+                assert(concrete.sealed_image()
+                    == concrete.unified_sealed_image().i_disk(self.disk));
                 assert(CrashAwareConcreteBranch::State::freeze_map_internal(
                     self.i(),
                     post.i(),
@@ -578,39 +603,25 @@ impl UnifiedCrashAwareConcreteBranch::State {
                     CrashAwareConcreteBranch::Step::freeze_map_internal(),
                 ));
             }
-            UnifiedCrashAwareConcreteBranch::Step::freeze_persistent_internal() => {
-                reveal(UnifiedCrashAwareConcreteBranch::State::freeze_persistent_internal);
-                assert(CrashAwareConcreteBranch::State::freeze_persistent_internal(
-                    self.i(),
-                    post.i(),
-                    self.label_to_concrete(lbl),
-                ));
-                assert(CrashAwareConcreteBranch::State::next_by(
-                    self.i(),
-                    post.i(),
-                    self.label_to_concrete(lbl),
-                    CrashAwareConcreteBranch::Step::freeze_persistent_internal(),
-                ));
-            }
             _ => { assert(false); }
         }
         assert(CrashAwareConcreteBranch::State::next(self.i(), post.i(), self.label_to_concrete(lbl)));
     }
 
-    pub proof fn commit_start_refines(self, post: Self, lbl: UnifiedCrashAwareConcreteBranch::Label)
+    pub proof fn commit_start_ephemeral_refines(self, post: Self, lbl: UnifiedCrashAwareConcreteBranch::Label)
         requires
             self.inv(),
             post.inv(),
-            UnifiedCrashAwareConcreteBranch::State::commit_start(self, post, lbl),
+            UnifiedCrashAwareConcreteBranch::State::commit_start_ephemeral(self, post, lbl),
         ensures
             CrashAwareConcreteBranch::State::next(self.i(), post.i(), self.label_to_concrete(lbl)),
     {
         reveal(UnifiedCrashAwareConcreteBranch::State::next);
         reveal(UnifiedCrashAwareConcreteBranch::State::next_by);
-        reveal(UnifiedCrashAwareConcreteBranch::State::commit_start);
+        reveal(UnifiedCrashAwareConcreteBranch::State::commit_start_ephemeral);
         reveal(CrashAwareConcreteBranch::State::next);
         reveal(CrashAwareConcreteBranch::State::next_by);
-        assert(CrashAwareConcreteBranch::State::commit_start(
+        assert(CrashAwareConcreteBranch::State::commit_start_ephemeral(
             self.i(),
             post.i(),
             self.label_to_concrete(lbl),
@@ -619,7 +630,34 @@ impl UnifiedCrashAwareConcreteBranch::State {
             self.i(),
             post.i(),
             self.label_to_concrete(lbl),
-            CrashAwareConcreteBranch::Step::commit_start(),
+            CrashAwareConcreteBranch::Step::commit_start_ephemeral(),
+        ));
+        assert(CrashAwareConcreteBranch::State::next(self.i(), post.i(), self.label_to_concrete(lbl)));
+    }
+
+    pub proof fn commit_start_persistent_refines(self, post: Self, lbl: UnifiedCrashAwareConcreteBranch::Label)
+        requires
+            self.inv(),
+            post.inv(),
+            UnifiedCrashAwareConcreteBranch::State::commit_start_persistent(self, post, lbl),
+        ensures
+            CrashAwareConcreteBranch::State::next(self.i(), post.i(), self.label_to_concrete(lbl)),
+    {
+        reveal(UnifiedCrashAwareConcreteBranch::State::next);
+        reveal(UnifiedCrashAwareConcreteBranch::State::next_by);
+        reveal(UnifiedCrashAwareConcreteBranch::State::commit_start_persistent);
+        reveal(CrashAwareConcreteBranch::State::next);
+        reveal(CrashAwareConcreteBranch::State::next_by);
+        assert(CrashAwareConcreteBranch::State::commit_start_persistent(
+            self.i(),
+            post.i(),
+            self.label_to_concrete(lbl),
+        ));
+        assert(CrashAwareConcreteBranch::State::next_by(
+            self.i(),
+            post.i(),
+            self.label_to_concrete(lbl),
+            CrashAwareConcreteBranch::Step::commit_start_persistent(),
         ));
         assert(CrashAwareConcreteBranch::State::next(self.i(), post.i(), self.label_to_concrete(lbl)));
     }
@@ -655,14 +693,12 @@ impl UnifiedCrashAwareConcreteBranch::State {
         self,
         post: Self,
         lbl: UnifiedCrashAwareConcreteBranch::Label,
-        new_cache: Cache::State,
-        cache_slots: nat,
         new_disk: AsyncDisk::State,
     )
         requires
             self.inv(),
             post.inv(),
-            UnifiedCrashAwareConcreteBranch::State::crash(self, post, lbl, new_cache, cache_slots, new_disk),
+            UnifiedCrashAwareConcreteBranch::State::crash(self, post, lbl, new_disk),
         ensures
             CrashAwareConcreteBranch::State::next(self.i(), post.i(), self.label_to_concrete(lbl)),
     {
@@ -674,12 +710,12 @@ impl UnifiedCrashAwareConcreteBranch::State {
         match lbl {
             UnifiedCrashAwareConcreteBranch::Label::Crash{keep_in_flight} => {
                 if keep_in_flight {
-                    assert(self.in_flight is Some);
-                    assert(self.in_flight.unwrap().image.i(self.cache, self.disk)
-                        == self.in_flight.unwrap().image.i(new_cache, new_disk));
+                    assert(self.frozen is Some);
+                    assert(self.frozen.unwrap().image.i_disk(self.disk)
+                        == self.frozen.unwrap().image.i_disk(new_disk));
                 } else {
-                    assert(self.persistent.i(self.cache, self.disk)
-                        == self.persistent.i(new_cache, new_disk));
+                    assert(self.persistent.i_disk(self.disk)
+                        == self.persistent.i_disk(new_disk));
                 }
                 assert(CrashAwareConcreteBranch::State::crash(
                     self.i(),
@@ -711,8 +747,8 @@ impl UnifiedCrashAwareConcreteBranch::State {
 
         let step = choose |step| UnifiedCrashAwareConcreteBranch::State::next_by(self, post, lbl, step);
         match step {
-            UnifiedCrashAwareConcreteBranch::Step::load_ephemeral(new_ephemeral) => {
-                self.load_ephemeral_refines(post, lbl, new_ephemeral);
+            UnifiedCrashAwareConcreteBranch::Step::load_ephemeral(new_ephemeral, new_cache, cache_slots) => {
+                self.load_ephemeral_refines(post, lbl, new_ephemeral, new_cache, cache_slots);
             }
             UnifiedCrashAwareConcreteBranch::Step::query(reads, query_receipts) => {
                 self.query_refines(post, lbl, reads, query_receipts);
@@ -723,19 +759,39 @@ impl UnifiedCrashAwareConcreteBranch::State {
             UnifiedCrashAwareConcreteBranch::Step::append_to_empty(new_ephemeral, writes, init_root, new_cache) => {
                 self.append_to_empty_refines(post, lbl, new_ephemeral, writes, init_root, new_cache);
             }
-            UnifiedCrashAwareConcreteBranch::Step::commit_start() => {
-                self.commit_start_refines(post, lbl);
+            UnifiedCrashAwareConcreteBranch::Step::commit_start_ephemeral() => {
+                self.commit_start_ephemeral_refines(post, lbl);
+            }
+            UnifiedCrashAwareConcreteBranch::Step::commit_start_persistent() => {
+                self.commit_start_persistent_refines(post, lbl);
             }
             UnifiedCrashAwareConcreteBranch::Step::commit_complete() => {
                 self.commit_complete_refines(post, lbl);
             }
-            UnifiedCrashAwareConcreteBranch::Step::crash(new_cache, cache_slots, new_disk) => {
-                self.crash_refines(post, lbl, new_cache, cache_slots, new_disk);
+            UnifiedCrashAwareConcreteBranch::Step::crash(new_disk) => {
+                self.crash_refines(post, lbl, new_disk);
             }
             _ => {
                 self.internal_refines(post, lbl);
             }
         }
+    }
+
+    pub proof fn next_refines_abstract(self, post: Self, lbl: UnifiedCrashAwareConcreteBranch::Label)
+        requires
+            self.refinement_wf(),
+            post.refinement_wf(),
+            UnifiedCrashAwareConcreteBranch::State::next(self, post, lbl),
+        ensures
+            AbstractCrashAwareMap::State::next(
+                self.abstract_i(),
+                post.abstract_i(),
+                self.label_to_abstract_map(lbl),
+            ),
+    {
+        self.next_refines(post, lbl);
+        self.i().next_refines(post.i(), self.label_to_concrete(lbl));
+        self.i().i().next_refines(post.i().i(), self.i().label_to_stack(self.label_to_concrete(lbl)));
     }
 }
 

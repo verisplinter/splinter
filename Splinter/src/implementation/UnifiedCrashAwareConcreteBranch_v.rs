@@ -39,7 +39,7 @@ pub open spec fn empty_unified_sealed_branch_stack_image() -> UnifiedSealedBranc
     }
 }
 
-pub struct InFlightUnifiedSealedBranchStackImage {
+pub struct FrozenUnifiedSealedBranchStackImage {
     pub image: UnifiedSealedBranchStackImage,
     pub seq_end: nat,
 }
@@ -63,6 +63,11 @@ pub open spec fn projected_branch_nodes(cache: Cache::State, disk: AsyncDisk::St
     to_branch_nodes(projected_raw_pages(cache, disk))
 }
 
+pub open spec fn projected_branch_nodes_from_disk(disk: AsyncDisk::State) -> Map<Address, BranchNode>
+{
+    to_branch_nodes(disk.content)
+}
+
 pub open spec fn projected_sealed_disk(
     sealed_roots: Seq<Address>,
     cache: Cache::State,
@@ -70,6 +75,18 @@ pub open spec fn projected_sealed_disk(
 ) -> BufferDisk<BranchNode>
 {
     let nodes = projected_branch_nodes(cache, disk);
+    let full_disk = BufferDisk{ entries: nodes };
+    let branch_summary = full_disk.build_branch_summary(sealed_roots.to_set());
+    let sealed_domain = restrict_domain_au(nodes, summary_aus(branch_summary));
+    BufferDisk{ entries: nodes.restrict(sealed_domain) }
+}
+
+pub open spec fn projected_sealed_disk_from_disk(
+    sealed_roots: Seq<Address>,
+    disk: AsyncDisk::State,
+) -> BufferDisk<BranchNode>
+{
+    let nodes = projected_branch_nodes_from_disk(disk);
     let full_disk = BufferDisk{ entries: nodes };
     let branch_summary = full_disk.build_branch_summary(sealed_roots.to_set());
     let sealed_domain = restrict_domain_au(nodes, summary_aus(branch_summary));
@@ -89,10 +106,23 @@ impl UnifiedSealedBranchStackImage {
     {
         self.i(cache, disk).wf()
     }
+
+    pub open spec fn i_disk(self, disk: AsyncDisk::State) -> ConcreteSealedBranchStackImage
+    {
+        ConcreteSealedBranchStackImage{
+            sealed_roots: self.sealed_roots,
+            sealed_disk: projected_sealed_disk_from_disk(self.sealed_roots, disk),
+        }
+    }
+
+    pub open spec fn wf_disk(self, disk: AsyncDisk::State) -> bool
+    {
+        self.i_disk(disk).wf()
+    }
 }
 
 pub struct UnifiedConcreteBranchState {
-    pub cached_branches: Seq<CachedBranch>,
+    pub cached_branches: Seq<CachedBranch::State>,
     pub branch_summary: Map<AU, Summary>,
     pub seq_end: nat,
     pub mini_allocator: MiniAllocator,
@@ -168,17 +198,17 @@ state_machine!{ UnifiedCrashAwareConcreteBranch {
         pub persistent: UnifiedSealedBranchStackImage,
         pub persistent_seq_end: nat,
         pub ephemeral: UnifiedEphemeralConcreteBranch,
-        pub in_flight: Option<InFlightUnifiedSealedBranchStackImage>,
-        pub cache: Cache::State,
+        pub frozen: Option<FrozenUnifiedSealedBranchStackImage>,
+        pub cache: Option<Cache::State>,
         pub disk: AsyncDisk::State,
     }
 
     pub enum Label {
-        LoadEphemeral{ init_aus: Set<AU> },
+        LoadEphemeral{ free_aus: Set<AU> },
         Query{ branch_idx: nat, key: Key, msg: Message },
         Append{ keys: Seq<Key>, msgs: Seq<Message> },
-        Internal,
-        CommitStart{ new_boundary_lsn: nat },
+        Internal{allocs: Set<AU>, deallocs: Set<AU>},
+        CommitStart{ new_boundary_lsn: nat, frozen_image: FrozenUnifiedSealedBranchStackImage },
         CommitComplete,
         Crash{ keep_in_flight: bool },
     }
@@ -188,6 +218,12 @@ state_machine!{ UnifiedCrashAwareConcreteBranch {
         require disk.inv();
         require disk.requests.is_empty();
         require disk.responses.is_empty();
+        require empty_unified_sealed_branch_stack_image().wf_disk(disk);
+        require empty_unified_sealed_branch_stack_image().i_disk(disk)
+            == ConcreteSealedBranchStackImage{
+                sealed_roots: Seq::empty(),
+                sealed_disk: BufferDisk{ entries: Map::empty() },
+            };
         require empty_unified_sealed_branch_stack_image().wf(cache, disk);
         require empty_unified_sealed_branch_stack_image().i(cache, disk)
             == ConcreteSealedBranchStackImage{
@@ -198,21 +234,23 @@ state_machine!{ UnifiedCrashAwareConcreteBranch {
         init persistent = empty_unified_sealed_branch_stack_image();
         init persistent_seq_end = 0;
         init ephemeral = UnifiedEphemeralConcreteBranch::Unknown;
-        init in_flight = Option::None;
-        init cache = cache;
+        init frozen = Option::None;
+        init cache = Option::None;
         init disk = disk;
     }}
 
-    transition!{ load_ephemeral(lbl: Label, new_ephemeral: UnifiedConcreteBranchState) {
-        require pre.inv();
-        require let Label::LoadEphemeral{init_aus} = lbl;
+    transition!{ load_ephemeral(lbl: Label, new_ephemeral: UnifiedConcreteBranchState, new_cache: Cache::State, cache_slots: nat) {
+        require let Label::LoadEphemeral{free_aus} = lbl;
         require pre.ephemeral is Unknown;
-        require pre.in_flight is None;
-        let new_concrete = new_ephemeral.to_concrete(pre.cache, pre.disk);
-        require new_concrete.loads_from_image(pre.persistent.i(pre.cache, pre.disk), pre.persistent_seq_end, init_aus);
+        require pre.cache is None;
+        require pre.frozen is None;
+        require Cache::State::initialize(new_cache, cache_slots);
+        let new_concrete = new_ephemeral.to_concrete(new_cache, pre.disk);
+        require new_concrete.loads_from_image(pre.persistent.i_disk(pre.disk), pre.persistent_seq_end, free_aus);
         require new_concrete.unified_image_consistent();
 
         update ephemeral = UnifiedEphemeralConcreteBranch::Known{ v: new_ephemeral };
+        update cache = Option::Some(new_cache);
     }}
 
     transition!{ query(
@@ -220,10 +258,9 @@ state_machine!{ UnifiedCrashAwareConcreteBranch {
         reads: Map<Address, RawPage>,
         query_receipts: Seq<Option<LoadedPathReceipt>>,
     ) {
-        require pre.inv();
         require let Label::Query{branch_idx, key, msg} = lbl;
         require pre.ephemeral is Known;
-        let old_concrete = pre.ephemeral->v.to_concrete(pre.cache, pre.disk);
+        let old_concrete = pre.ephemeral->v.to_concrete(pre.cache.unwrap(), pre.disk);
         let concrete_lbl = ConcreteBranch::Label::Query{branch_idx, key, msg};
         require ConcreteBranch::State::query(old_concrete, old_concrete, concrete_lbl, reads, query_receipts);
     }}
@@ -236,10 +273,9 @@ state_machine!{ UnifiedCrashAwareConcreteBranch {
         receipt: LoadedPathReceipt,
         new_cache: Cache::State,
     ) {
-        require pre.inv();
         require let Label::Append{keys, msgs} = lbl;
         require pre.ephemeral is Known;
-        let old_concrete = pre.ephemeral->v.to_concrete(pre.cache, pre.disk);
+        let old_concrete = pre.ephemeral->v.to_concrete(pre.cache.unwrap(), pre.disk);
         let new_concrete = new_ephemeral.to_concrete(new_cache, pre.disk);
         let concrete_lbl = ConcreteBranch::Label::Append{keys, msgs};
         require ConcreteBranch::State::append(
@@ -257,7 +293,7 @@ state_machine!{ UnifiedCrashAwareConcreteBranch {
         require pre.images_stable_with(new_cache, pre.disk);
 
         update ephemeral = UnifiedEphemeralConcreteBranch::Known{ v: new_ephemeral };
-        update cache = new_cache;
+        update cache = Option::Some(new_cache);
     }}
 
     transition!{ append_to_empty(
@@ -267,10 +303,9 @@ state_machine!{ UnifiedCrashAwareConcreteBranch {
         init_root: Address,
         new_cache: Cache::State,
     ) {
-        require pre.inv();
         require let Label::Append{keys, msgs} = lbl;
         require pre.ephemeral is Known;
-        let old_concrete = pre.ephemeral->v.to_concrete(pre.cache, pre.disk);
+        let old_concrete = pre.ephemeral->v.to_concrete(pre.cache.unwrap(), pre.disk);
         let new_concrete = new_ephemeral.to_concrete(new_cache, pre.disk);
         let concrete_lbl = ConcreteBranch::Label::Append{keys, msgs};
         require ConcreteBranch::State::append_to_empty(
@@ -287,7 +322,7 @@ state_machine!{ UnifiedCrashAwareConcreteBranch {
         require pre.images_stable_with(new_cache, pre.disk);
 
         update ephemeral = UnifiedEphemeralConcreteBranch::Known{ v: new_ephemeral };
-        update cache = new_cache;
+        update cache = Option::Some(new_cache);
     }}
 
     transition!{ grow(
@@ -298,10 +333,11 @@ state_machine!{ UnifiedCrashAwareConcreteBranch {
         new_root_addr: Address,
         new_cache: Cache::State,
     ) {
-        require pre.inv();
-        require lbl is Internal;
+        require let Label::Internal{allocs, deallocs} = lbl;
+        require allocs == Set::<AU>::empty();
+        require deallocs == Set::<AU>::empty();
         require pre.ephemeral is Known;
-        let old_concrete = pre.ephemeral->v.to_concrete(pre.cache, pre.disk);
+        let old_concrete = pre.ephemeral->v.to_concrete(pre.cache.unwrap(), pre.disk);
         let new_concrete = new_ephemeral.to_concrete(new_cache, pre.disk);
         let concrete_lbl = ConcreteBranch::Label::Grow{new_root_addr};
         require ConcreteBranch::State::grow(
@@ -318,7 +354,7 @@ state_machine!{ UnifiedCrashAwareConcreteBranch {
         require pre.images_stable_with(new_cache, pre.disk);
 
         update ephemeral = UnifiedEphemeralConcreteBranch::Known{ v: new_ephemeral };
-        update cache = new_cache;
+        update cache = Option::Some(new_cache);
     }}
 
     transition!{ split(
@@ -332,10 +368,11 @@ state_machine!{ UnifiedCrashAwareConcreteBranch {
         split_arg: SplitArg,
         new_cache: Cache::State,
     ) {
-        require pre.inv();
-        require lbl is Internal;
+        require let Label::Internal{allocs, deallocs} = lbl;
+        require allocs == Set::<AU>::empty();
+        require deallocs == Set::<AU>::empty();
         require pre.ephemeral is Known;
-        let old_concrete = pre.ephemeral->v.to_concrete(pre.cache, pre.disk);
+        let old_concrete = pre.ephemeral->v.to_concrete(pre.cache.unwrap(), pre.disk);
         let new_concrete = new_ephemeral.to_concrete(new_cache, pre.disk);
         let concrete_lbl = ConcreteBranch::Label::Split{new_child_addr, pivot, split_arg};
         require ConcreteBranch::State::split(
@@ -353,7 +390,7 @@ state_machine!{ UnifiedCrashAwareConcreteBranch {
         require pre.images_stable_with(new_cache, pre.disk);
 
         update ephemeral = UnifiedEphemeralConcreteBranch::Known{ v: new_ephemeral };
-        update cache = new_cache;
+        update cache = Option::Some(new_cache);
     }}
 
     transition!{ seal(
@@ -364,10 +401,11 @@ state_machine!{ UnifiedCrashAwareConcreteBranch {
         aux_ptr: Pointer,
         new_cache: Cache::State,
     ) {
-        require pre.inv();
-        require lbl is Internal;
+        require let Label::Internal{allocs, deallocs} = lbl;
+        require allocs == Set::<AU>::empty();
         require pre.ephemeral is Known;
-        let old_concrete = pre.ephemeral->v.to_concrete(pre.cache, pre.disk);
+        require deallocs == pre.ephemeral->v.mini_allocator.removable_aus();
+        let old_concrete = pre.ephemeral->v.to_concrete(pre.cache.unwrap(), pre.disk);
         let new_concrete = new_ephemeral.to_concrete(new_cache, pre.disk);
         let concrete_lbl = ConcreteBranch::Label::Seal{aux_ptr};
         require ConcreteBranch::State::seal(
@@ -384,15 +422,16 @@ state_machine!{ UnifiedCrashAwareConcreteBranch {
         require pre.images_stable_with(new_cache, pre.disk);
 
         update ephemeral = UnifiedEphemeralConcreteBranch::Known{ v: new_ephemeral };
-        update cache = new_cache;
+        update cache = Option::Some(new_cache);
     }}
 
     transition!{ fill_au(lbl: Label, new_ephemeral: UnifiedConcreteBranchState, aus: Set<AU>) {
-        require pre.inv();
-        require lbl is Internal;
+        require let Label::Internal{allocs, deallocs} = lbl;
+        require allocs == aus;
+        require deallocs == Set::<AU>::empty();
         require pre.ephemeral is Known;
-        let old_concrete = pre.ephemeral->v.to_concrete(pre.cache, pre.disk);
-        let new_concrete = new_ephemeral.to_concrete(pre.cache, pre.disk);
+        let old_concrete = pre.ephemeral->v.to_concrete(pre.cache.unwrap(), pre.disk);
+        let new_concrete = new_ephemeral.to_concrete(pre.cache.unwrap(), pre.disk);
         let concrete_lbl = ConcreteBranch::Label::FillAU{aus};
         require ConcreteBranch::State::fill_au(old_concrete, new_concrete, concrete_lbl);
         require new_concrete.wf();
@@ -402,10 +441,11 @@ state_machine!{ UnifiedCrashAwareConcreteBranch {
     }}
 
     transition!{ internal_cache(lbl: Label, new_ephemeral: UnifiedConcreteBranchState, new_cache: Cache::State) {
-        require pre.inv();
-        require lbl is Internal;
+        require let Label::Internal{allocs, deallocs} = lbl;
+        require allocs == Set::<AU>::empty();
+        require deallocs == Set::<AU>::empty();
         require pre.ephemeral is Known;
-        let old_concrete = pre.ephemeral->v.to_concrete(pre.cache, pre.disk);
+        let old_concrete = pre.ephemeral->v.to_concrete(pre.cache.unwrap(), pre.disk);
         let new_concrete = new_ephemeral.to_concrete(new_cache, pre.disk);
         require ConcreteBranch::State::internal_cache(
             old_concrete,
@@ -419,15 +459,16 @@ state_machine!{ UnifiedCrashAwareConcreteBranch {
         require pre.images_stable_with(new_cache, pre.disk);
 
         update ephemeral = UnifiedEphemeralConcreteBranch::Known{ v: new_ephemeral };
-        update cache = new_cache;
+        update cache = Option::Some(new_cache);
     }}
 
     transition!{ internal_disk(lbl: Label, new_ephemeral: UnifiedConcreteBranchState, new_disk: AsyncDisk::State) {
-        require pre.inv();
-        require lbl is Internal;
+        require let Label::Internal{allocs, deallocs} = lbl;
+        require allocs == Set::<AU>::empty();
+        require deallocs == Set::<AU>::empty();
         require pre.ephemeral is Known;
-        let old_concrete = pre.ephemeral->v.to_concrete(pre.cache, pre.disk);
-        let new_concrete = new_ephemeral.to_concrete(pre.cache, new_disk);
+        let old_concrete = pre.ephemeral->v.to_concrete(pre.cache.unwrap(), pre.disk);
+        let new_concrete = new_ephemeral.to_concrete(pre.cache.unwrap(), new_disk);
         require ConcreteBranch::State::internal_disk(
             old_concrete,
             new_concrete,
@@ -436,8 +477,8 @@ state_machine!{ UnifiedCrashAwareConcreteBranch {
         );
         require new_concrete.wf();
         require new_concrete.unified_image_consistent();
-        require pre.images_wf_with(pre.cache, new_disk);
-        require pre.images_stable_with(pre.cache, new_disk);
+        require pre.images_wf_with(pre.cache.unwrap(), new_disk);
+        require pre.images_stable_with(pre.cache.unwrap(), new_disk);
 
         update ephemeral = UnifiedEphemeralConcreteBranch::Known{ v: new_ephemeral };
         update disk = new_disk;
@@ -453,10 +494,11 @@ state_machine!{ UnifiedCrashAwareConcreteBranch {
         disk_requests: Map<ID, DiskRequest>,
         disk_responses: Map<ID, DiskResponse>,
     ) {
-        require pre.inv();
-        require lbl is Internal;
+        require let Label::Internal{allocs, deallocs} = lbl;
+        require allocs == Set::<AU>::empty();
+        require deallocs == Set::<AU>::empty();
         require pre.ephemeral is Known;
-        let old_concrete = pre.ephemeral->v.to_concrete(pre.cache, pre.disk);
+        let old_concrete = pre.ephemeral->v.to_concrete(pre.cache.unwrap(), pre.disk);
         let new_concrete = new_ephemeral.to_concrete(new_cache, new_disk);
         require ConcreteBranch::State::cache_disk_ops(
             old_concrete,
@@ -475,110 +517,107 @@ state_machine!{ UnifiedCrashAwareConcreteBranch {
         require pre.images_stable_with(new_cache, new_disk);
 
         update ephemeral = UnifiedEphemeralConcreteBranch::Known{ v: new_ephemeral };
-        update cache = new_cache;
+        update cache = Option::Some(new_cache);
         update disk = new_disk;
     }}
 
     transition!{ freeze_map_internal(lbl: Label) {
-        require pre.inv();
-        require lbl is Internal;
+        require let Label::Internal{allocs, deallocs} = lbl;
+        require allocs == Set::<AU>::empty();
+        require deallocs == Set::<AU>::empty();
         require pre.ephemeral is Known;
-        require pre.in_flight is None;
-        let concrete = pre.ephemeral->v.to_concrete(pre.cache, pre.disk);
+        let concrete = pre.ephemeral->v.to_concrete(pre.cache.unwrap(), pre.disk);
         require concrete.active_cached_branch().root is None;
         require concrete.sealed_image().wf();
-        require concrete.unified_sealed_image().wf(pre.cache, pre.disk);
-
-        update in_flight = Option::Some(InFlightUnifiedSealedBranchStackImage{
-            image: concrete.unified_sealed_image(),
-            seq_end: concrete.seq_end,
-        });
+        require concrete.unified_sealed_image().wf_disk(pre.disk);
+        require concrete.unified_sealed_image().i(pre.cache.unwrap(), pre.disk)
+            == concrete.unified_sealed_image().i_disk(pre.disk);
     }}
 
-    transition!{ freeze_persistent_internal(lbl: Label) {
-        require pre.inv();
-        require lbl is Internal;
+    transition!{ commit_start_ephemeral(lbl: Label) {
+        require let Label::CommitStart{new_boundary_lsn, frozen_image} = lbl;
         require pre.ephemeral is Known;
-        require pre.in_flight is None;
-
-        update in_flight = Option::Some(InFlightUnifiedSealedBranchStackImage{
-            image: pre.persistent,
-            seq_end: pre.persistent_seq_end,
-        });
+        require pre.frozen is None;
+        let concrete = pre.ephemeral->v.to_concrete(pre.cache.unwrap(), pre.disk);
+        require new_boundary_lsn == frozen_image.seq_end;
+        require concrete.active_cached_branch().root is None;
+        require concrete.sealed_image().wf();
+        require concrete.unified_sealed_image().wf_disk(pre.disk);
+        require concrete.unified_sealed_image().i(pre.cache.unwrap(), pre.disk)
+            == concrete.unified_sealed_image().i_disk(pre.disk);
+        require frozen_image.image == concrete.unified_sealed_image();
+        require frozen_image.seq_end == concrete.seq_end;
+        update frozen = Option::Some(frozen_image);
     }}
 
-    transition!{ commit_start(lbl: Label) {
-        require pre.inv();
-        require let Label::CommitStart{new_boundary_lsn} = lbl;
+    transition!{ commit_start_persistent(lbl: Label) {
+        require let Label::CommitStart{new_boundary_lsn, frozen_image} = lbl;
         require pre.ephemeral is Known;
-        require pre.in_flight is Some;
-        require new_boundary_lsn == pre.in_flight.unwrap().seq_end;
+        require pre.frozen is None;
+        require new_boundary_lsn == frozen_image.seq_end;
+        require frozen_image.image == pre.persistent;
+        require frozen_image.seq_end == pre.persistent_seq_end;
+        update frozen = Option::Some(frozen_image);
     }}
 
     transition!{ commit_complete(lbl: Label) {
-        require pre.inv();
         require lbl is CommitComplete;
-        require pre.in_flight is Some;
+        require pre.frozen is Some;
 
-        update persistent = pre.in_flight.unwrap().image;
-        update persistent_seq_end = pre.in_flight.unwrap().seq_end;
-        update in_flight = Option::None;
+        update persistent = pre.frozen.unwrap().image;
+        update persistent_seq_end = pre.frozen.unwrap().seq_end;
+        update frozen = Option::None;
     }}
 
     transition!{ crash(
         lbl: Label,
-        new_cache: Cache::State,
-        cache_slots: nat,
         new_disk: AsyncDisk::State,
     ) {
-        require pre.inv();
         require let Label::Crash{keep_in_flight} = lbl;
-        require keep_in_flight ==> pre.in_flight is Some;
-        require Cache::State::initialize(new_cache, cache_slots);
-        require new_cache.inv();
+        require keep_in_flight ==> pre.frozen is Some;
         require AsyncDisk::State::next(pre.disk, new_disk, AsyncDisk::Label::Crash{});
         let new_persistent = if keep_in_flight {
-            pre.in_flight.unwrap().image
+            pre.frozen.unwrap().image
         } else {
             pre.persistent
         };
-        require new_persistent.wf(new_cache, new_disk);
+        require new_persistent.wf_disk(new_disk);
         require if keep_in_flight {
-            pre.in_flight.unwrap().image.i(pre.cache, pre.disk)
-                == pre.in_flight.unwrap().image.i(new_cache, new_disk)
+            pre.frozen.unwrap().image.i_disk(pre.disk)
+                == pre.frozen.unwrap().image.i_disk(new_disk)
         } else {
-            pre.persistent.i(pre.cache, pre.disk) == pre.persistent.i(new_cache, new_disk)
+            pre.persistent.i_disk(pre.disk) == pre.persistent.i_disk(new_disk)
         };
 
         update ephemeral = UnifiedEphemeralConcreteBranch::Unknown;
-        update in_flight = Option::None;
+        update frozen = Option::None;
         update persistent = new_persistent;
         update persistent_seq_end = if keep_in_flight {
-            pre.in_flight.unwrap().seq_end
+            pre.frozen.unwrap().seq_end
         } else {
             pre.persistent_seq_end
         };
-        update cache = new_cache;
+        update cache = Option::None;
         update disk = new_disk;
     }}
 
     pub open spec(checked) fn images_wf_with(self, cache: Cache::State, disk: AsyncDisk::State) -> bool
     {
-        &&& self.persistent.wf(cache, disk)
-        &&& self.in_flight is Some ==> self.in_flight.unwrap().image.wf(cache, disk)
+        &&& self.persistent.wf_disk(disk)
+        &&& self.frozen is Some ==> self.frozen.unwrap().image.wf_disk(disk)
     }
 
     pub open spec(checked) fn images_stable_with(self, cache: Cache::State, disk: AsyncDisk::State) -> bool
     {
-        &&& self.persistent.i(self.cache, self.disk) == self.persistent.i(cache, disk)
-        &&& self.in_flight is Some ==> self.in_flight.unwrap().image.i(self.cache, self.disk)
-            == self.in_flight.unwrap().image.i(cache, disk)
+        &&& self.persistent.i_disk(self.disk) == self.persistent.i_disk(disk)
+        &&& self.frozen is Some ==> self.frozen.unwrap().image.i_disk(self.disk)
+            == self.frozen.unwrap().image.i_disk(disk)
     }
 
     pub open spec(checked) fn known_stack_compatible(self) -> bool
     {
-        self.ephemeral is Known ==> {
-            let concrete = self.ephemeral->v.to_concrete(self.cache, self.disk);
+        self.ephemeral is Known ==> self.cache is Some && {
+            let concrete = self.ephemeral->v.to_concrete(self.cache.unwrap(), self.disk);
             &&& concrete.wf()
             &&& concrete.unified_image_consistent()
         }
@@ -586,10 +625,10 @@ state_machine!{ UnifiedCrashAwareConcreteBranch {
 
     pub open spec(checked) fn image_compatible(self) -> bool
     {
-        &&& self.in_flight is Some ==> self.persistent_seq_end <= self.in_flight.unwrap().seq_end
+        &&& self.frozen is Some ==> self.persistent_seq_end <= self.frozen.unwrap().seq_end
         &&& self.ephemeral is Known ==> self.persistent_seq_end <= self.ephemeral->v.seq_end
-        &&& self.ephemeral is Known && self.in_flight is Some
-            ==> self.in_flight.unwrap().seq_end <= self.ephemeral->v.seq_end
+        &&& self.ephemeral is Known && self.frozen is Some
+            ==> self.frozen.unwrap().seq_end <= self.ephemeral->v.seq_end
     }
 
     #[invariant]
@@ -601,13 +640,19 @@ state_machine!{ UnifiedCrashAwareConcreteBranch {
 
     #[inductive(initialize)]
     fn initialize_inductive(post: Self, cache: Cache::State, disk: AsyncDisk::State) {
+        assert(empty_unified_sealed_branch_stack_image().i_disk(disk)
+            == ConcreteSealedBranchStackImage{
+                sealed_roots: Seq::empty(),
+                sealed_disk: BufferDisk{ entries: Map::empty() },
+            });
         assert(post.wf());
         assert(post.known_stack_compatible());
         assert(post.image_compatible());
     }
 
     #[inductive(load_ephemeral)]
-    fn load_ephemeral_inductive(pre: Self, post: Self, lbl: Label, new_ephemeral: UnifiedConcreteBranchState) {
+    fn load_ephemeral_inductive(pre: Self, post: Self, lbl: Label, new_ephemeral: UnifiedConcreteBranchState, new_cache: Cache::State, cache_slots: nat) {
+        Cache::State::initialize_inductive(new_cache, cache_slots);
         assert(post.wf());
         assert(post.known_stack_compatible());
         assert(post.image_compatible());
@@ -670,7 +715,7 @@ state_machine!{ UnifiedCrashAwareConcreteBranch {
     #[inductive(fill_au)]
     fn fill_au_inductive(pre: Self, post: Self, lbl: Label, new_ephemeral: UnifiedConcreteBranchState, aus: Set<AU>) {
         reveal(ConcreteBranch::State::fill_au);
-        let new_concrete = new_ephemeral.to_concrete(pre.cache, pre.disk);
+        let new_concrete = new_ephemeral.to_concrete(pre.cache.unwrap(), pre.disk);
         assert(post.wf());
         assert(post.known_stack_compatible());
         assert(post.image_compatible());
@@ -688,7 +733,7 @@ state_machine!{ UnifiedCrashAwareConcreteBranch {
     #[inductive(internal_disk)]
     fn internal_disk_inductive(pre: Self, post: Self, lbl: Label, new_ephemeral: UnifiedConcreteBranchState, new_disk: AsyncDisk::State) {
         reveal(ConcreteBranch::State::internal_disk);
-        let new_concrete = new_ephemeral.to_concrete(pre.cache, new_disk);
+        let new_concrete = new_ephemeral.to_concrete(pre.cache.unwrap(), new_disk);
         assert(post.wf());
         assert(post.known_stack_compatible());
         assert(post.image_compatible());
@@ -710,15 +755,15 @@ state_machine!{ UnifiedCrashAwareConcreteBranch {
         assert(post.image_compatible());
     }
 
-    #[inductive(freeze_persistent_internal)]
-    fn freeze_persistent_internal_inductive(pre: Self, post: Self, lbl: Label) {
+    #[inductive(commit_start_ephemeral)]
+    fn commit_start_ephemeral_inductive(pre: Self, post: Self, lbl: Label) {
         assert(post.wf());
         assert(post.known_stack_compatible());
         assert(post.image_compatible());
     }
 
-    #[inductive(commit_start)]
-    fn commit_start_inductive(pre: Self, post: Self, lbl: Label) {
+    #[inductive(commit_start_persistent)]
+    fn commit_start_persistent_inductive(pre: Self, post: Self, lbl: Label) {
         assert(post.wf());
         assert(post.known_stack_compatible());
         assert(post.image_compatible());
@@ -732,21 +777,171 @@ state_machine!{ UnifiedCrashAwareConcreteBranch {
     }
 
     #[inductive(crash)]
-    fn crash_inductive(pre: Self, post: Self, lbl: Label, new_cache: Cache::State, cache_slots: nat, new_disk: AsyncDisk::State) {
+    fn crash_inductive(pre: Self, post: Self, lbl: Label, new_disk: AsyncDisk::State) {
         crate::spec::AsyncDisk_t::inv_next(pre.disk, new_disk, AsyncDisk::Label::Crash{});
         assert(post.wf());
         assert(post.known_stack_compatible());
         assert(post.image_compatible());
     }
+
+    pub proof fn inv_next(pre: Self, post: Self, lbl: Label)
+        requires
+            pre.inv(),
+            Self::next(pre, post, lbl),
+        ensures
+            post.inv(),
+    {
+        reveal(UnifiedCrashAwareConcreteBranch::State::next);
+        reveal(UnifiedCrashAwareConcreteBranch::State::next_by);
+        let step = choose |step| UnifiedCrashAwareConcreteBranch::State::next_by(pre, post, lbl, step);
+        match step {
+            Step::load_ephemeral(new_ephemeral, new_cache, cache_slots) => {
+                Self::load_ephemeral_inductive(pre, post, lbl, new_ephemeral, new_cache, cache_slots);
+            }
+            Step::query(reads, query_receipts) => {
+                Self::query_inductive(pre, post, lbl, reads, query_receipts);
+            }
+            Step::append_to_active(new_ephemeral, reads, writes, receipt, new_cache) => {
+                Self::append_to_active_inductive(
+                    pre,
+                    post,
+                    lbl,
+                    new_ephemeral,
+                    reads,
+                    writes,
+                    receipt,
+                    new_cache,
+                );
+            }
+            Step::append_to_empty(new_ephemeral, writes, init_root, new_cache) => {
+                Self::append_to_empty_inductive(
+                    pre,
+                    post,
+                    lbl,
+                    new_ephemeral,
+                    writes,
+                    init_root,
+                    new_cache,
+                );
+            }
+            Step::grow(new_ephemeral, reads, writes, new_root_addr, new_cache) => {
+                Self::grow_inductive(
+                    pre,
+                    post,
+                    lbl,
+                    new_ephemeral,
+                    reads,
+                    writes,
+                    new_root_addr,
+                    new_cache,
+                );
+            }
+            Step::split(
+                new_ephemeral,
+                reads,
+                writes,
+                receipt,
+                new_child_addr,
+                pivot,
+                split_arg,
+                new_cache,
+            ) => {
+                Self::split_inductive(
+                    pre,
+                    post,
+                    lbl,
+                    new_ephemeral,
+                    reads,
+                    writes,
+                    receipt,
+                    new_child_addr,
+                    pivot,
+                    split_arg,
+                    new_cache,
+                );
+            }
+            Step::seal(new_ephemeral, reads, writes, aux_ptr, new_cache) => {
+                Self::seal_inductive(
+                    pre,
+                    post,
+                    lbl,
+                    new_ephemeral,
+                    reads,
+                    writes,
+                    aux_ptr,
+                    new_cache,
+                );
+            }
+            Step::fill_au(new_ephemeral, aus) => {
+                Self::fill_au_inductive(pre, post, lbl, new_ephemeral, aus);
+            }
+            Step::internal_cache(new_ephemeral, new_cache) => {
+                Self::internal_cache_inductive(pre, post, lbl, new_ephemeral, new_cache);
+            }
+            Step::internal_disk(new_ephemeral, new_disk) => {
+                Self::internal_disk_inductive(pre, post, lbl, new_ephemeral, new_disk);
+            }
+            Step::cache_disk_ops(
+                new_ephemeral,
+                new_cache,
+                new_disk,
+                cache_requests,
+                cache_responses,
+                disk_requests,
+                disk_responses,
+            ) => {
+                Self::cache_disk_ops_inductive(
+                    pre,
+                    post,
+                    lbl,
+                    new_ephemeral,
+                    new_cache,
+                    new_disk,
+                    cache_requests,
+                    cache_responses,
+                    disk_requests,
+                    disk_responses,
+                );
+            }
+            Step::freeze_map_internal() => {
+                Self::freeze_map_internal_inductive(pre, post, lbl);
+            }
+            Step::commit_start_ephemeral() => {
+                Self::commit_start_ephemeral_inductive(pre, post, lbl);
+            }
+            Step::commit_start_persistent() => {
+                Self::commit_start_persistent_inductive(pre, post, lbl);
+            }
+            Step::commit_complete() => {
+                Self::commit_complete_inductive(pre, post, lbl);
+            }
+            Step::crash(new_disk) => {
+                Self::crash_inductive(pre, post, lbl, new_disk);
+            }
+            Step::dummy_to_use_type_params(_) => {
+                assert(false);
+            }
+        }
+    }
 }}
 
 impl UnifiedCrashAwareConcreteBranch::State {
+    pub open spec fn concrete_cache(self) -> Cache::State
+    {
+        if self.cache is Some {
+            self.cache.unwrap()
+        } else {
+            arbitrary()
+        }
+    }
+
     pub open spec fn wf(self) -> bool
     {
-        &&& self.cache.inv()
+        &&& self.cache is Some ==> self.cache.unwrap().inv()
         &&& self.disk.inv()
-        &&& self.images_wf_with(self.cache, self.disk)
-        &&& self.ephemeral is Unknown ==> self.in_flight is None
+        &&& self.images_wf_with(if self.cache is Some { self.cache.unwrap() } else { arbitrary() }, self.disk)
+        &&& self.ephemeral is Unknown ==> self.cache is None && self.frozen is None
+        &&& self.ephemeral is Known ==> self.cache is Some
     }
 }
 

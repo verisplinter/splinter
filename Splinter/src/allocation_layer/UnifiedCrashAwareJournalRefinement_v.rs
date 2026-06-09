@@ -271,11 +271,11 @@ impl UnifiedCrashAwareJournal::State {
 
         assert(i_frozen_index.dom() =~= frozen_index.dom());
         assert(cropped_tj.discard_old_cond(new_bdy, frozen_addrs, i_frozen.tj));
-        assert(cropped_tj.discard_old_tight(new_bdy, frozen_addrs, i_frozen.tj));
+        assert(frozen_addrs =~= i_frozen.tj.disk_view.entries.dom());
 
         assert(AllocationJournal::State::next_by(aj, aj,
             AllocationJournal::Label::FreezeForCommit{frozen_journal: i_frozen},
-            AllocationJournal::Step::freeze_for_commit(depth),
+            AllocationJournal::Step::freeze_for_commit(),
         )); // witness
     }
 

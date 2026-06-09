@@ -16,11 +16,11 @@ use crate::implementation::ConcreteBranch_v::ConcreteBranch;
 use crate::implementation::ConcreteBranchMapRefinement_v::*;
 use crate::implementation::CrashAwareAllocationBranchStack_v::{
     load_stack, CrashAwareAllocationBranchStack, EphemeralAllocationBranchStack,
-    InFlightAllocationBranchStack,
+    FrozenAllocationBranchStack,
 };
 use crate::implementation::CrashAwareConcreteBranch_v::{
     empty_concrete_sealed_branch_stack_image, ConcreteSealedBranchStackImage,
-    CrashAwareConcreteBranch, EphemeralConcreteBranch, InFlightConcreteSealedBranchStackImage,
+    CrashAwareConcreteBranch, EphemeralConcreteBranch, FrozenConcreteSealedBranchStackImage,
 };
 use crate::implementation::AllocationBranchStack_v::{
     AllocationBranchStack, SealedAllocationBranchStack,
@@ -68,14 +68,14 @@ impl ConcreteBranch::State {
         self,
         image: ConcreteSealedBranchStackImage,
         image_seq_end: nat,
-        init_aus: Set<AU>,
+        free_aus: Set<AU>,
     )
         requires
             image.wf(),
-            self.loads_from_image(image, image_seq_end, init_aus),
+            self.loads_from_image(image, image_seq_end, free_aus),
             self.refinement_wf(),
         ensures
-            self.i() == load_stack(image.i(), image_seq_end, init_aus),
+            self.i() == load_stack(image.i(), image_seq_end, free_aus),
     {
         assert(self.sealed_image().i() == image.i());
         assert(self.i().sealed_stack == image.i());
@@ -88,8 +88,8 @@ impl ConcreteBranch::State {
             branch: None,
             mini_allocator: self.mini_allocator,
         });
-        assert(self.active_branch_i() == AllocationBranch::new(init_aus));
-        assert(self.i() == load_stack(image.i(), image_seq_end, init_aus));
+        assert(self.active_branch_i() == AllocationBranch::new(free_aus));
+        assert(self.i() == load_stack(image.i(), image_seq_end, free_aus));
     }
 }
 
@@ -105,12 +105,12 @@ impl EphemeralConcreteBranch {
 }
 
 pub open spec fn option_image_i(
-    image: Option<InFlightConcreteSealedBranchStackImage>,
-) -> Option<InFlightAllocationBranchStack>
+    image: Option<FrozenConcreteSealedBranchStackImage>,
+) -> Option<FrozenAllocationBranchStack>
 {
     match image {
         Option::None => Option::None,
-        Option::Some{0: img} => Option::Some(InFlightAllocationBranchStack{
+        Option::Some{0: img} => Option::Some(FrozenAllocationBranchStack{
             sealed_stack: img.image.i(),
             seq_end: img.seq_end,
         }),
@@ -130,7 +130,7 @@ impl CrashAwareConcreteBranch::State {
             persistent: self.persistent.i(),
             persistent_seq_end: self.persistent_seq_end,
             ephemeral: self.ephemeral.i(),
-            in_flight: option_image_i(self.in_flight),
+            frozen: option_image_i(self.frozen),
         }
     }
 
@@ -138,16 +138,22 @@ impl CrashAwareConcreteBranch::State {
         -> CrashAwareAllocationBranchStack::Label
     {
         match lbl {
-            CrashAwareConcreteBranch::Label::LoadEphemeral{init_aus} =>
-                CrashAwareAllocationBranchStack::Label::LoadEphemeral{init_aus},
+            CrashAwareConcreteBranch::Label::LoadEphemeral{free_aus} =>
+                CrashAwareAllocationBranchStack::Label::LoadEphemeral{free_aus},
             CrashAwareConcreteBranch::Label::Query{branch_idx, key, msg} =>
                 CrashAwareAllocationBranchStack::Label::Query{key, msg},
             CrashAwareConcreteBranch::Label::Append{keys, msgs} =>
                 CrashAwareAllocationBranchStack::Label::Append{keys, msgs},
             CrashAwareConcreteBranch::Label::Internal =>
                 CrashAwareAllocationBranchStack::Label::Internal,
-            CrashAwareConcreteBranch::Label::CommitStart{new_boundary_lsn} =>
-                CrashAwareAllocationBranchStack::Label::CommitStart{new_boundary_lsn},
+            CrashAwareConcreteBranch::Label::CommitStart{new_boundary_lsn, frozen_image} =>
+                CrashAwareAllocationBranchStack::Label::CommitStart{
+                    new_boundary_lsn,
+                    frozen_stack: FrozenAllocationBranchStack{
+                        sealed_stack: frozen_image.image.i(),
+                        seq_end: frozen_image.seq_end,
+                    },
+                },
             CrashAwareConcreteBranch::Label::CommitComplete =>
                 CrashAwareAllocationBranchStack::Label::CommitComplete,
             CrashAwareConcreteBranch::Label::Crash{keep_in_flight} =>
@@ -162,8 +168,8 @@ impl CrashAwareConcreteBranch::State {
             self.i().wf(),
     {
         self.persistent.image_i_wf();
-        if self.in_flight is Some {
-            self.in_flight.unwrap().image.image_i_wf();
+        if self.frozen is Some {
+            self.frozen.unwrap().image.image_i_wf();
         }
         if self.ephemeral is Known {
             assert(self.ephemeral->v.i().wf());
@@ -202,16 +208,16 @@ impl CrashAwareConcreteBranch::State {
         reveal(CrashAwareAllocationBranchStack::State::next);
         reveal(CrashAwareAllocationBranchStack::State::next_by);
         match lbl {
-            CrashAwareConcreteBranch::Label::LoadEphemeral{init_aus} => {
+            CrashAwareConcreteBranch::Label::LoadEphemeral{free_aus} => {
                 self.image_wf_refines_to_stack_wf();
                 post.image_wf_refines_to_stack_wf();
                 new_concrete.load_from_image_matches_stack(
                     self.persistent,
                     self.persistent_seq_end,
-                    init_aus,
+                    free_aus,
                 );
                 assert(post.i().ephemeral == EphemeralAllocationBranchStack::Known{ v: new_concrete.i() });
-                assert(new_concrete.i() == load_stack(self.persistent.i(), self.persistent_seq_end, init_aus));
+                assert(new_concrete.i() == load_stack(self.persistent.i(), self.persistent_seq_end, free_aus));
                 assert(CrashAwareAllocationBranchStack::State::load_ephemeral(
                     self.i(),
                     post.i(),
@@ -465,7 +471,7 @@ impl CrashAwareConcreteBranch::State {
             post.ephemeral == (EphemeralConcreteBranch::Known{ v: new_concrete }),
             post.persistent == self.persistent,
             post.persistent_seq_end == self.persistent_seq_end,
-            post.in_flight == self.in_flight,
+            post.frozen == self.frozen,
             AllocationBranchStack::State::next(
                 old_concrete.i(),
                 new_concrete.i(),
@@ -629,31 +635,6 @@ impl CrashAwareConcreteBranch::State {
         assert(CrashAwareAllocationBranchStack::State::next(self.i(), post.i(), self.label_to_stack(lbl)));
     }
 
-    proof fn freeze_persistent_internal_refines(self, post: Self, lbl: CrashAwareConcreteBranch::Label)
-        requires
-            self.refinement_wf(),
-            post.refinement_wf(),
-            CrashAwareConcreteBranch::State::freeze_persistent_internal(self, post, lbl),
-        ensures
-            CrashAwareAllocationBranchStack::State::next(self.i(), post.i(), self.label_to_stack(lbl)),
-    {
-        reveal(CrashAwareConcreteBranch::State::freeze_persistent_internal);
-        reveal(CrashAwareAllocationBranchStack::State::next);
-        reveal(CrashAwareAllocationBranchStack::State::next_by);
-        assert(CrashAwareAllocationBranchStack::State::freeze_persistent_internal(
-            self.i(),
-            post.i(),
-            self.label_to_stack(lbl),
-        ));
-        assert(CrashAwareAllocationBranchStack::State::next_by(
-            self.i(),
-            post.i(),
-            self.label_to_stack(lbl),
-            CrashAwareAllocationBranchStack::Step::freeze_persistent_internal(),
-        ));
-        assert(CrashAwareAllocationBranchStack::State::next(self.i(), post.i(), self.label_to_stack(lbl)));
-    }
-
     pub proof fn internal_refines(
         self,
         post: Self,
@@ -745,26 +726,23 @@ impl CrashAwareConcreteBranch::State {
             CrashAwareConcreteBranch::Step::freeze_map_internal() => {
                 self.freeze_map_internal_refines(post, lbl);
             }
-            CrashAwareConcreteBranch::Step::freeze_persistent_internal() => {
-                self.freeze_persistent_internal_refines(post, lbl);
-            }
             _ => { assert(false); }
         }
         assert(CrashAwareAllocationBranchStack::State::next(self.i(), post.i(), self.label_to_stack(lbl)));
     }
 
-    pub proof fn commit_start_refines(self, post: Self, lbl: CrashAwareConcreteBranch::Label)
+    pub proof fn commit_start_ephemeral_refines(self, post: Self, lbl: CrashAwareConcreteBranch::Label)
         requires
             self.refinement_wf(),
             post.refinement_wf(),
-            CrashAwareConcreteBranch::State::commit_start(self, post, lbl),
+            CrashAwareConcreteBranch::State::commit_start_ephemeral(self, post, lbl),
         ensures
             CrashAwareAllocationBranchStack::State::next(self.i(), post.i(), self.label_to_stack(lbl)),
     {
-        reveal(CrashAwareConcreteBranch::State::commit_start);
+        reveal(CrashAwareConcreteBranch::State::commit_start_ephemeral);
         reveal(CrashAwareAllocationBranchStack::State::next);
         reveal(CrashAwareAllocationBranchStack::State::next_by);
-        assert(CrashAwareAllocationBranchStack::State::commit_start(
+        assert(CrashAwareAllocationBranchStack::State::commit_start_ephemeral(
             self.i(),
             post.i(),
             self.label_to_stack(lbl),
@@ -773,7 +751,32 @@ impl CrashAwareConcreteBranch::State {
             self.i(),
             post.i(),
             self.label_to_stack(lbl),
-            CrashAwareAllocationBranchStack::Step::commit_start(),
+            CrashAwareAllocationBranchStack::Step::commit_start_ephemeral(),
+        ));
+        assert(CrashAwareAllocationBranchStack::State::next(self.i(), post.i(), self.label_to_stack(lbl)));
+    }
+
+    pub proof fn commit_start_persistent_refines(self, post: Self, lbl: CrashAwareConcreteBranch::Label)
+        requires
+            self.refinement_wf(),
+            post.refinement_wf(),
+            CrashAwareConcreteBranch::State::commit_start_persistent(self, post, lbl),
+        ensures
+            CrashAwareAllocationBranchStack::State::next(self.i(), post.i(), self.label_to_stack(lbl)),
+    {
+        reveal(CrashAwareConcreteBranch::State::commit_start_persistent);
+        reveal(CrashAwareAllocationBranchStack::State::next);
+        reveal(CrashAwareAllocationBranchStack::State::next_by);
+        assert(CrashAwareAllocationBranchStack::State::commit_start_persistent(
+            self.i(),
+            post.i(),
+            self.label_to_stack(lbl),
+        ));
+        assert(CrashAwareAllocationBranchStack::State::next_by(
+            self.i(),
+            post.i(),
+            self.label_to_stack(lbl),
+            CrashAwareAllocationBranchStack::Step::commit_start_persistent(),
         ));
         assert(CrashAwareAllocationBranchStack::State::next(self.i(), post.i(), self.label_to_stack(lbl)));
     }
@@ -853,8 +856,11 @@ impl CrashAwareConcreteBranch::State {
             CrashAwareConcreteBranch::Step::append_to_empty(new_concrete, writes, init_root, new_cache) => {
                 self.append_to_empty_refines(post, lbl, new_concrete, writes, init_root, new_cache);
             }
-            CrashAwareConcreteBranch::Step::commit_start() => {
-                self.commit_start_refines(post, lbl);
+            CrashAwareConcreteBranch::Step::commit_start_ephemeral() => {
+                self.commit_start_ephemeral_refines(post, lbl);
+            }
+            CrashAwareConcreteBranch::Step::commit_start_persistent() => {
+                self.commit_start_persistent_refines(post, lbl);
             }
             CrashAwareConcreteBranch::Step::commit_complete() => {
                 self.commit_complete_refines(post, lbl);

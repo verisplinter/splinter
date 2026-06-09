@@ -111,7 +111,7 @@ state_machine!{ CachingDiskJournal {
         Put{messages: MsgHistory},
         DiscardOld{start_lsn: LSN, require_end: LSN},
         ObserveCleanAUs{aus: Set<AU>},
-        CommitPrepared{frozen: JournalSnapshot, seq_end: LSN, persistent: Map<Address, RawPage>},
+        CommitPrepared{frozen: JournalSnapshot, seq_end: LSN},
         LoadIndex{discovered_aus: Set<AU>},
         Internal,
         InternalAlloc{allocs: Set<AU>, deallocs: Set<AU>, prune_aus: Set<AU>},
@@ -245,7 +245,7 @@ state_machine!{ CachingDiskJournal {
 
         update journal = new_journal;
         update disk = new_disk;
-        update mini_allocator = pre.mini_allocator.allocate(addr);
+        update mini_allocator = pre.mini_allocator.allocate(addr).observe(addr);
     }}
 
     transition!{ observe_clean_aus(
@@ -269,9 +269,8 @@ state_machine!{ CachingDiskJournal {
     }}
 
     transition!{ commit_prepared(lbl: Label) {
-        require let Label::CommitPrepared{frozen, seq_end, persistent} = lbl;
+        require let Label::CommitPrepared{frozen, seq_end} = lbl;
         require pre.journal.status is Some;
-        require persistent == pre.disk.persistent;
         require frozen.freshest_rec() is Some ==> seq_end <= pre.journal.clean_watermark();
     }}
 
@@ -322,6 +321,8 @@ state_machine!{ CachingDiskJournal {
         require lbl->deallocs <= lbl->prune_aus;
         require forall |au: AU| #[trigger] lbl->prune_aus.contains(au)
             ==> pre.mini_allocator.can_remove(au);
+        require forall |au: AU| #[trigger] lbl->deallocs.contains(au)
+            ==> pre.mini_allocator.allocs[au].all_pages_free();
 
         update mini_allocator = pre.mini_allocator.prune(lbl->prune_aus);
     }}
@@ -2018,6 +2019,7 @@ impl CachingDiskJournal::State {
         ensures
             post.accessible_aus() <= pre.accessible_aus() + allocs,
             deallocs <= pre.accessible_aus(),
+            deallocs.disjoint(post.accessible_aus()),
     {
         let lbl = CachingDiskJournal::Label::InternalAlloc{allocs, deallocs, prune_aus};
         reveal(CachingDiskJournal::State::next);
@@ -2072,6 +2074,52 @@ impl CachingDiskJournal::State {
                         } else {
                             assert(post.lsn_au_index_or_empty() == pre.lsn_au_index_or_empty());
                             assert(pre.accessible_aus().contains(au));
+                        }
+                    }
+                };
+                assert(deallocs.disjoint(post.accessible_aus())) by {
+                    assert forall |au: AU| #[trigger] deallocs.contains(au)
+                        implies !post.accessible_aus().contains(au) by {
+                        if post.accessible_aus().contains(au) {
+                            if post.mini_allocator.all_aus().contains(au) {
+                                assert(post.mini_allocator.all_aus()
+                                    == pre.mini_allocator.all_aus().difference(prune_aus));
+                                assert(!post.mini_allocator.all_aus().contains(au));
+                                assert(false);
+                            } else {
+                                assert(post.lsn_au_index_or_empty().values().contains(au));
+                                assert(post.journal == pre.journal);
+                                assert(post.journal_disk_view() == pre.journal_disk_view());
+                                assert(post.lsn_au_index_or_empty()
+                                    == pre.lsn_au_index_or_empty());
+                                assert(pre.lsn_au_index_or_empty().values().contains(au));
+                                pre.journal_disk_aus_match_index_values();
+                                assert(to_aus(pre.journal_disk_view().entries.dom()).contains(au));
+                                let addr = choose |addr: Address|
+                                    pre.journal_disk_view().entries.dom().contains(addr)
+                                        && addr.au == au;
+                                assert(pre.journal_disk_view().entries.dom().contains(addr));
+                                assert(addr.wf()) by {
+                                    assert(pre.visible_journal_structure());
+                                    assert(pre.journal_tj().disk_view.wf_addrs());
+                                }
+                                assert(!pre.mini_allocator.can_allocate(addr)) by {
+                                    assert(AllocationJournal::State::disk_domain_not_free(
+                                        pre.journal_tj().disk_view,
+                                        pre.mini_allocator,
+                                    ));
+                                }
+                                assert(pre.mini_allocator.can_allocate(addr)) by {
+                                    assert(pre.mini_allocator.allocs.contains_key(au));
+                                    assert(pre.mini_allocator.allocs[au].all_pages_free());
+                                    assert(pre.mini_allocator.allocs[au].has_no_observed_pages());
+                                    assert(pre.mini_allocator.allocs[au].has_no_outstanding_refs());
+                                    assert(!pre.mini_allocator.allocs[au].observed.contains(addr));
+                                    assert(!pre.mini_allocator.allocs[au].reserved.contains(addr));
+                                    assert(pre.mini_allocator.allocs[au].is_free_addr(addr));
+                                }
+                                assert(false);
+                            }
                         }
                     }
                 };

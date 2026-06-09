@@ -1449,6 +1449,32 @@ state_machine!{ Cache {
             assert(post.status_map[slot] == pre.status_map[slot]);
         }
     }
+
+    pub proof fn access_read_valid(
+        pre: State,
+        post: State,
+        reads: Map<Address, RawPage>,
+        writes: Map<Address, RawPage>,
+        addr: Address,
+    )
+        requires
+            State::next(pre, post, Label::Access{reads, writes}),
+            reads.contains_key(addr),
+        ensures
+            pre.valid_read(addr, reads[addr]),
+    {
+        let lbl = Label::Access{reads, writes};
+        reveal(State::next);
+        reveal(State::next_by);
+        assert(State::next_by(pre, post, lbl, Step::access()));
+        reveal(State::access);
+        assert(State::access(pre, post, lbl));
+        assert(lbl is Access);
+        assert(lbl.arrow_Access_reads() == reads);
+        assert(lbl.arrow_Access_writes() == writes);
+        assert(forall |a: Address| #[trigger] reads.contains_key(a) ==> pre.valid_read(a, reads[a]));
+        assert(pre.valid_read(addr, reads[addr]));
+    }
 }}
 
 pub mod State {

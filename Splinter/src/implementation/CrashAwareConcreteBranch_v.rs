@@ -45,7 +45,7 @@ pub open spec fn empty_concrete_sealed_branch_stack_image() -> ConcreteSealedBra
     }
 }
 
-pub struct InFlightConcreteSealedBranchStackImage {
+pub struct FrozenConcreteSealedBranchStackImage {
     pub image: ConcreteSealedBranchStackImage,
     pub seq_end: nat,
 }
@@ -68,14 +68,14 @@ impl ConcreteBranch::State {
         self,
         image: ConcreteSealedBranchStackImage,
         image_seq_end: nat,
-        init_aus: Set<AU>,
+        free_aus: Set<AU>,
     ) -> bool
     {
         &&& self.wf()
         &&& self.sealed_image() == image
         &&& self.seq_end == image_seq_end
-        &&& self.active_cached_branch() == CachedBranch::empty_active()
-        &&& self.mini_allocator == init_mini_allocator(init_aus)
+        &&& self.active_cached_branch() == CachedBranch::State::empty_active()
+        &&& self.mini_allocator == init_mini_allocator(free_aus)
     }
 }
 
@@ -84,15 +84,15 @@ state_machine!{ CrashAwareConcreteBranch {
         pub persistent: ConcreteSealedBranchStackImage,
         pub persistent_seq_end: nat,
         pub ephemeral: EphemeralConcreteBranch,
-        pub in_flight: Option<InFlightConcreteSealedBranchStackImage>,
+        pub frozen: Option<FrozenConcreteSealedBranchStackImage>,
     }
 
     pub enum Label {
-        LoadEphemeral{ init_aus: Set<AU> },
+        LoadEphemeral{ free_aus: Set<AU> },
         Query{ branch_idx: nat, key: Key, msg: Message },
         Append{ keys: Seq<Key>, msgs: Seq<Message> },
         Internal,
-        CommitStart{ new_boundary_lsn: nat },
+        CommitStart{ new_boundary_lsn: nat, frozen_image: FrozenConcreteSealedBranchStackImage },
         CommitComplete,
         Crash{ keep_in_flight: bool },
     }
@@ -101,15 +101,14 @@ state_machine!{ CrashAwareConcreteBranch {
         init persistent = empty_concrete_sealed_branch_stack_image();
         init persistent_seq_end = 0;
         init ephemeral = EphemeralConcreteBranch::Unknown;
-        init in_flight = Option::None;
+        init frozen = Option::None;
     }}
 
     transition!{ load_ephemeral(lbl: Label, new_concrete: ConcreteBranch::State) {
-        require pre.inv();
-        require let Label::LoadEphemeral{init_aus} = lbl;
+        require let Label::LoadEphemeral{free_aus} = lbl;
         require pre.ephemeral is Unknown;
-        require pre.in_flight is None;
-        require new_concrete.loads_from_image(pre.persistent, pre.persistent_seq_end, init_aus);
+        require pre.frozen is None;
+        require new_concrete.loads_from_image(pre.persistent, pre.persistent_seq_end, free_aus);
         update ephemeral = EphemeralConcreteBranch::Known{ v: new_concrete };
     }}
 
@@ -119,7 +118,6 @@ state_machine!{ CrashAwareConcreteBranch {
         reads: Map<Address, RawPage>,
         query_receipts: Seq<Option<LoadedPathReceipt>>,
     ) {
-        require pre.inv();
         require let Label::Query{branch_idx, key, msg} = lbl;
         require pre.ephemeral is Known;
         let old_concrete = pre.ephemeral->v;
@@ -137,7 +135,6 @@ state_machine!{ CrashAwareConcreteBranch {
         receipt: LoadedPathReceipt,
         new_cache: Cache::State,
     ) {
-        require pre.inv();
         require let Label::Append{keys, msgs} = lbl;
         require pre.ephemeral is Known;
         let old_concrete = pre.ephemeral->v;
@@ -162,7 +159,6 @@ state_machine!{ CrashAwareConcreteBranch {
         init_root: Address,
         new_cache: Cache::State,
     ) {
-        require pre.inv();
         require let Label::Append{keys, msgs} = lbl;
         require pre.ephemeral is Known;
         let old_concrete = pre.ephemeral->v;
@@ -187,7 +183,6 @@ state_machine!{ CrashAwareConcreteBranch {
         new_root_addr: Address,
         new_cache: Cache::State,
     ) {
-        require pre.inv();
         require lbl is Internal;
         require pre.ephemeral is Known;
         let old_concrete = pre.ephemeral->v;
@@ -215,7 +210,6 @@ state_machine!{ CrashAwareConcreteBranch {
         split_arg: SplitArg,
         new_cache: Cache::State,
     ) {
-        require pre.inv();
         require lbl is Internal;
         require pre.ephemeral is Known;
         let old_concrete = pre.ephemeral->v;
@@ -241,7 +235,6 @@ state_machine!{ CrashAwareConcreteBranch {
         aux_ptr: Pointer,
         new_cache: Cache::State,
     ) {
-        require pre.inv();
         require lbl is Internal;
         require pre.ephemeral is Known;
         let old_concrete = pre.ephemeral->v;
@@ -259,7 +252,6 @@ state_machine!{ CrashAwareConcreteBranch {
     }}
 
     transition!{ fill_au(lbl: Label, new_concrete: ConcreteBranch::State, aus: Set<AU>) {
-        require pre.inv();
         require lbl is Internal;
         require pre.ephemeral is Known;
         let old_concrete = pre.ephemeral->v;
@@ -270,7 +262,6 @@ state_machine!{ CrashAwareConcreteBranch {
     }}
 
     transition!{ internal_cache(lbl: Label, new_concrete: ConcreteBranch::State, new_cache: Cache::State) {
-        require pre.inv();
         require lbl is Internal;
         require pre.ephemeral is Known;
         let old_concrete = pre.ephemeral->v;
@@ -285,7 +276,6 @@ state_machine!{ CrashAwareConcreteBranch {
     }}
 
     transition!{ internal_disk(lbl: Label, new_concrete: ConcreteBranch::State, new_disk: AsyncDisk::State) {
-        require pre.inv();
         require lbl is Internal;
         require pre.ephemeral is Known;
         let old_concrete = pre.ephemeral->v;
@@ -309,7 +299,6 @@ state_machine!{ CrashAwareConcreteBranch {
         disk_requests: Map<ID, DiskRequest>,
         disk_responses: Map<ID, DiskResponse>,
     ) {
-        require pre.inv();
         require lbl is Internal;
         require pre.ephemeral is Known;
         let old_concrete = pre.ephemeral->v;
@@ -329,60 +318,56 @@ state_machine!{ CrashAwareConcreteBranch {
     }}
 
     transition!{ freeze_map_internal(lbl: Label) {
-        require pre.inv();
         require lbl is Internal;
         require pre.ephemeral is Known;
-        require pre.in_flight is None;
         let concrete = pre.ephemeral->v;
         require concrete.active_cached_branch().root is None;
         require concrete.sealed_image().wf();
-        update in_flight = Option::Some(InFlightConcreteSealedBranchStackImage{
-            image: concrete.sealed_image(),
-            seq_end: concrete.seq_end,
-        });
     }}
 
-    transition!{ freeze_persistent_internal(lbl: Label) {
-        require pre.inv();
-        require lbl is Internal;
+    transition!{ commit_start_ephemeral(lbl: Label) {
+        require let Label::CommitStart{new_boundary_lsn, frozen_image} = lbl;
         require pre.ephemeral is Known;
-        require pre.in_flight is None;
-        update in_flight = Option::Some(InFlightConcreteSealedBranchStackImage{
-            image: pre.persistent,
-            seq_end: pre.persistent_seq_end,
-        });
+        require pre.frozen is None;
+        let concrete = pre.ephemeral->v;
+        require new_boundary_lsn == frozen_image.seq_end;
+        require concrete.active_cached_branch().root is None;
+        require concrete.sealed_image().wf();
+        require frozen_image.image == concrete.sealed_image();
+        require frozen_image.seq_end == concrete.seq_end;
+        update frozen = Option::Some(frozen_image);
     }}
 
-    transition!{ commit_start(lbl: Label) {
-        require pre.inv();
-        require let Label::CommitStart{new_boundary_lsn} = lbl;
+    transition!{ commit_start_persistent(lbl: Label) {
+        require let Label::CommitStart{new_boundary_lsn, frozen_image} = lbl;
         require pre.ephemeral is Known;
-        require pre.in_flight is Some;
-        require new_boundary_lsn == pre.in_flight.unwrap().seq_end;
+        require pre.frozen is None;
+        require new_boundary_lsn == frozen_image.seq_end;
+        require frozen_image.image == pre.persistent;
+        require frozen_image.seq_end == pre.persistent_seq_end;
+        update frozen = Option::Some(frozen_image);
     }}
 
     transition!{ commit_complete(lbl: Label) {
-        require pre.inv();
         require lbl is CommitComplete;
-        require pre.in_flight is Some;
-        update persistent = pre.in_flight.unwrap().image;
-        update persistent_seq_end = pre.in_flight.unwrap().seq_end;
-        update in_flight = Option::None;
+        require pre.frozen is Some;
+        update persistent = pre.frozen.unwrap().image;
+        update persistent_seq_end = pre.frozen.unwrap().seq_end;
+        update frozen = Option::None;
     }}
 
     transition!{ crash(lbl: Label) {
-        require pre.inv();
         require let Label::Crash{keep_in_flight} = lbl;
-        require keep_in_flight ==> pre.in_flight is Some;
+        require keep_in_flight ==> pre.frozen is Some;
         update ephemeral = EphemeralConcreteBranch::Unknown;
-        update in_flight = Option::None;
+        update frozen = Option::None;
         update persistent = if keep_in_flight {
-            pre.in_flight.unwrap().image
+            pre.frozen.unwrap().image
         } else {
             pre.persistent
         };
         update persistent_seq_end = if keep_in_flight {
-            pre.in_flight.unwrap().seq_end
+            pre.frozen.unwrap().seq_end
         } else {
             pre.persistent_seq_end
         };
@@ -390,10 +375,10 @@ state_machine!{ CrashAwareConcreteBranch {
 
     pub open spec(checked) fn image_compatible(self) -> bool
     {
-        &&& self.in_flight is Some ==> self.persistent_seq_end <= self.in_flight.unwrap().seq_end
+        &&& self.frozen is Some ==> self.persistent_seq_end <= self.frozen.unwrap().seq_end
         &&& self.ephemeral is Known ==> self.persistent_seq_end <= self.ephemeral->v.seq_end
-        &&& self.ephemeral is Known && self.in_flight is Some
-            ==> self.in_flight.unwrap().seq_end <= self.ephemeral->v.seq_end
+        &&& self.ephemeral is Known && self.frozen is Some
+            ==> self.frozen.unwrap().seq_end <= self.ephemeral->v.seq_end
     }
 
     #[invariant]
@@ -491,14 +476,14 @@ state_machine!{ CrashAwareConcreteBranch {
         assert(post.image_compatible());
     }
 
-    #[inductive(freeze_persistent_internal)]
-    fn freeze_persistent_internal_inductive(pre: Self, post: Self, lbl: Label) {
+    #[inductive(commit_start_ephemeral)]
+    fn commit_start_ephemeral_inductive(pre: Self, post: Self, lbl: Label) {
         assert(post.wf());
         assert(post.image_compatible());
     }
 
-    #[inductive(commit_start)]
-    fn commit_start_inductive(pre: Self, post: Self, lbl: Label) {
+    #[inductive(commit_start_persistent)]
+    fn commit_start_persistent_inductive(pre: Self, post: Self, lbl: Label) {
         assert(post.wf());
         assert(post.image_compatible());
     }
@@ -520,8 +505,8 @@ impl CrashAwareConcreteBranch::State {
     pub open spec fn wf(self) -> bool
     {
         &&& self.persistent.wf()
-        &&& self.in_flight is Some ==> self.in_flight.unwrap().image.wf()
-        &&& self.ephemeral is Unknown ==> self.in_flight is None
+        &&& self.frozen is Some ==> self.frozen.unwrap().image.wf()
+        &&& self.ephemeral is Unknown ==> self.frozen is None
         &&& self.ephemeral is Known ==> self.ephemeral->v.wf()
     }
 }

@@ -555,7 +555,7 @@ pub open spec fn to_branch_nodes(raw_pages: Map<Address, RawPage>) -> Map<Addres
     )
 }
 
-pub open spec fn init_projected_branch(cached_branch: CachedBranch, disk: AsyncDisk::State) -> LinkedBranch<Summary>
+pub open spec fn init_projected_branch(cached_branch: CachedBranch::State, disk: AsyncDisk::State) -> LinkedBranch<Summary>
     recommends
         cached_branch.sealed,
         cached_branch.root is Some,
@@ -572,7 +572,7 @@ pub open spec fn init_projected_branch(cached_branch: CachedBranch, disk: AsyncD
 }
 
 pub open spec fn init_projection_valid_at(
-    cached_branches: Seq<CachedBranch>,
+    cached_branches: Seq<CachedBranch::State>,
     disk: AsyncDisk::State,
     idx: int,
 ) -> bool
@@ -585,7 +585,7 @@ pub open spec fn init_projection_valid_at(
     &&& init_projected_branch(cached_branch, disk).valid_sealed_branch()
 }
 
-pub open spec fn init_projection_valid(cached_branches: Seq<CachedBranch>, disk: AsyncDisk::State) -> bool
+pub open spec fn init_projection_valid(cached_branches: Seq<CachedBranch::State>, disk: AsyncDisk::State) -> bool
 {
     forall |idx: int|
         0 <= idx < cached_branches.len()
@@ -593,7 +593,7 @@ pub open spec fn init_projection_valid(cached_branches: Seq<CachedBranch>, disk:
 }
 
 pub open spec fn init_branch_summary_up_to(
-    cached_branches: Seq<CachedBranch>,
+    cached_branches: Seq<CachedBranch::State>,
     disk: AsyncDisk::State,
     end: nat,
 ) -> Map<AU, Summary>
@@ -612,14 +612,14 @@ pub open spec fn init_branch_summary_up_to(
     }
 }
 
-pub open spec fn init_branch_summary(cached_branches: Seq<CachedBranch>, disk: AsyncDisk::State) -> Map<AU, Summary>
+pub open spec fn init_branch_summary(cached_branches: Seq<CachedBranch::State>, disk: AsyncDisk::State) -> Map<AU, Summary>
 {
     init_branch_summary_up_to(cached_branches, disk, cached_branches.len() as nat)
 }
 
 state_machine!{ ConcreteBranch {
     fields {
-        pub cached_branches: Seq<CachedBranch>,
+        pub cached_branches: Seq<CachedBranch::State>,
         pub branch_summary: Map<AU, Summary>,
         pub seq_end: nat,
         pub mini_allocator: MiniAllocator,
@@ -645,7 +645,7 @@ state_machine!{ ConcreteBranch {
         Internal{},
     }
 
-    init!{ initialize(cached_branches: Seq<CachedBranch>, seq_end: nat, init_aus: Set<AU>, cache: Cache::State, cache_slots: nat, disk: AsyncDisk::State) {
+    init!{ initialize(cached_branches: Seq<CachedBranch::State>, seq_end: nat, init_aus: Set<AU>, cache: Cache::State, cache_slots: nat, disk: AsyncDisk::State) {
         require Cache::State::initialize(cache, cache_slots);
         require disk.inv();
         require disk.requests.is_empty();
@@ -656,7 +656,7 @@ state_machine!{ ConcreteBranch {
         require summary_aus(init_branch_summary(cached_branches, disk)).disjoint(init_aus);
         require concrete_branch_init_wf(cached_branches, seq_end, init_aus, cache, disk);
 
-        init cached_branches = cached_branches.push(CachedBranch::empty_active());
+        init cached_branches = cached_branches.push(CachedBranch::State::empty_active());
         init branch_summary = init_branch_summary(cached_branches, disk);
         init seq_end = seq_end;
         init mini_allocator = init_mini_allocator(init_aus);
@@ -671,7 +671,6 @@ state_machine!{ ConcreteBranch {
         query_receipts: Seq<Option<LoadedPathReceipt>>,
     ) {
         require let Label::Query{branch_idx, key, msg} = lbl;
-        require pre.wf();
         require query_receipts.len() == pre.cached_branches.len();
         require branch_idx < pre.cached_branches.len();
         let read_nodes = to_branch_nodes(reads);
@@ -689,7 +688,6 @@ state_machine!{ ConcreteBranch {
         new_cache: Cache::State,
     ) {
         require let Label::Append{keys, msgs} = lbl;
-        require pre.wf();
         let read_nodes = to_branch_nodes(reads);
         let write_nodes = to_branch_nodes(writes);
         require pre.active_cached_branch().can_append(pre.mini_allocator, receipt, keys, msgs, read_nodes, write_nodes);
@@ -711,7 +709,6 @@ state_machine!{ ConcreteBranch {
         new_cache: Cache::State,
     ) {
         require let Label::Append{keys, msgs} = lbl;
-        require pre.wf();
         let write_nodes = to_branch_nodes(writes);
         require pre.active_cached_branch().can_initialize(pre.mini_allocator, init_root, keys, msgs, write_nodes);
         let new_active = pre.active_cached_branch().initialize(init_root, keys, msgs, write_nodes);
@@ -733,7 +730,6 @@ state_machine!{ ConcreteBranch {
         new_cache: Cache::State,
     ) {
         require let Label::Grow{new_root_addr} = lbl;
-        require pre.wf();
         let read_nodes = to_branch_nodes(reads);
         let write_nodes = to_branch_nodes(writes);
         require pre.active_cached_branch().can_grow(pre.mini_allocator, new_root_addr, read_nodes, write_nodes);
@@ -760,7 +756,6 @@ state_machine!{ ConcreteBranch {
         new_cache: Cache::State,
     ) {
         require let Label::Split{new_child_addr, pivot, split_arg} = lbl;
-        require pre.wf();
         let read_nodes = to_branch_nodes(reads);
         let write_nodes = to_branch_nodes(writes);
         require pivot == split_arg.get_pivot();
@@ -784,7 +779,6 @@ state_machine!{ ConcreteBranch {
         new_cache: Cache::State,
     ) {
         require let Label::Seal{aux_ptr} = lbl;
-        require pre.wf();
         let read_nodes = to_branch_nodes(reads);
         let write_nodes = to_branch_nodes(writes);
         require pre.active_cached_branch().can_seal(pre.mini_allocator, aux_ptr, read_nodes, write_nodes);
@@ -810,7 +804,7 @@ state_machine!{ ConcreteBranch {
         let cache_lbl = Self::cache_access_label(reads, writes);
         require Cache::State::next(pre.cache, new_cache, cache_lbl);
 
-        update cached_branches = pre.cached_branches.update(pre.active_idx(), sealed_active).push(CachedBranch::empty_active());
+        update cached_branches = pre.cached_branches.update(pre.active_idx(), sealed_active).push(CachedBranch::State::empty_active());
         update branch_summary = pre.branch_summary.insert(
             sealed_linked_branch.root.au,
             sealed_linked_branch.get_summary(),
@@ -821,7 +815,6 @@ state_machine!{ ConcreteBranch {
 
     transition!{ fill_au(lbl: Label) {
         require let Label::FillAU{aus} = lbl;
-        require pre.wf();
         require pre.fresh_aus_for_active(aus);
         require summary_aus(pre.branch_summary).disjoint(aus);
 
@@ -830,7 +823,6 @@ state_machine!{ ConcreteBranch {
 
     transition!{ internal_cache(lbl: Label, new_cache: Cache::State) {
         require lbl is Internal;
-        require pre.wf();
         require Cache::State::next(pre.cache, new_cache, Cache::Label::Internal{});
         require Self::available_raw_pages_from(new_cache, pre.disk) == pre.available_raw_pages();
 
@@ -839,7 +831,6 @@ state_machine!{ ConcreteBranch {
 
     transition!{ internal_disk(lbl: Label, new_disk: AsyncDisk::State) {
         require lbl is Internal;
-        require pre.wf();
         require AsyncDisk::State::next(pre.disk, new_disk, AsyncDisk::Label::Internal{});
         require Self::available_raw_pages_from(pre.cache, new_disk) == pre.available_raw_pages();
 
@@ -856,7 +847,6 @@ state_machine!{ ConcreteBranch {
         disk_responses: Map<ID, DiskResponse>,
     ) {
         require lbl is Internal;
-        require pre.wf();
         require pre.disk_requests_match_cache_requests(cache_requests, disk_requests);
         require pre.disk_responses_match_cache_responses(cache_responses, disk_responses);
 
@@ -878,9 +868,9 @@ state_machine!{ ConcreteBranch {
     }
 
     #[inductive(initialize)]
-    fn initialize_inductive(post: Self, cached_branches: Seq<CachedBranch>, seq_end: nat, init_aus: Set<AU>, cache: Cache::State, cache_slots: nat, disk: AsyncDisk::State) {
+    fn initialize_inductive(post: Self, cached_branches: Seq<CachedBranch::State>, seq_end: nat, init_aus: Set<AU>, cache: Cache::State, cache_slots: nat, disk: AsyncDisk::State) {
         let init_state = ConcreteBranch::State{
-            cached_branches: cached_branches.push(CachedBranch::empty_active()),
+            cached_branches: cached_branches.push(CachedBranch::State::empty_active()),
             branch_summary: init_branch_summary(cached_branches, disk),
             seq_end,
             mini_allocator: init_mini_allocator(init_aus),
@@ -1670,7 +1660,7 @@ state_machine!{ ConcreteBranch {
                 }
                 assert(new_mini_allocator.reserved_aus() == Set::<AU>::empty());
 
-                assert(post.cached_branches == pre.cached_branches.update(pre.active_idx(), sealed_active).push(CachedBranch::empty_active()));
+                assert(post.cached_branches == pre.cached_branches.update(pre.active_idx(), sealed_active).push(CachedBranch::State::empty_active()));
                 assert(post.branch_summary == pre.branch_summary.insert(
                     sealed_linked_branch.root.au,
                     sealed_linked_branch.get_summary(),
@@ -1684,7 +1674,7 @@ state_machine!{ ConcreteBranch {
                 assert(post.cached_branches.len() == pre.cached_branches.len() + 1);
                 assert(post.cached_branches.len() > 0);
                 assert(post.active_idx() == pre.cached_branches.len());
-                assert(post.active_cached_branch() == CachedBranch::empty_active());
+                assert(post.active_cached_branch() == CachedBranch::State::empty_active());
 
                 assert forall |i: int|
                     0 <= i < post.cached_branches.len() - 1
@@ -2699,7 +2689,7 @@ state_machine!{ ConcreteBranch {
 }}
 
 pub open spec fn concrete_branch_init_wf(
-    cached_branches: Seq<CachedBranch>,
+    cached_branches: Seq<CachedBranch::State>,
     seq_end: nat,
     init_aus: Set<AU>,
     cache: Cache::State,
@@ -2707,7 +2697,7 @@ pub open spec fn concrete_branch_init_wf(
 ) -> bool
 {
     ConcreteBranch::State{
-        cached_branches: cached_branches.push(CachedBranch::empty_active()),
+        cached_branches: cached_branches.push(CachedBranch::State::empty_active()),
         branch_summary: init_branch_summary(cached_branches, disk),
         seq_end,
         mini_allocator: init_mini_allocator(init_aus),
@@ -2724,7 +2714,7 @@ impl ConcreteBranch::State {
         self.cached_branches.len() - 1
     }
 
-    pub open spec fn active_cached_branch(self) -> CachedBranch
+    pub open spec fn active_cached_branch(self) -> CachedBranch::State
         recommends self.cached_branches.len() > 0
     {
         self.cached_branches[self.active_idx()]

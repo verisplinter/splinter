@@ -151,7 +151,7 @@ proof fn journal_step_preserves_frozen(
         CrashAwareCachingDiskJournal::Step::internal_alloc(new_ephemeral) => {
             reveal(CrashAwareCachingDiskJournal::State::internal_alloc);
         },
-        CrashAwareCachingDiskJournal::Step::commit_prepared(prepared_image) => {
+        CrashAwareCachingDiskJournal::Step::commit_prepared() => {
             reveal(CrashAwareCachingDiskJournal::State::commit_prepared);
         },
         _ => { assert(false); },
@@ -187,7 +187,7 @@ proof fn branch_step_preserves_frozen(
         CrashAwareCachingDiskBranch::Step::internal_alloc(new_ephemeral) => {
             reveal(CrashAwareCachingDiskBranch::State::internal_alloc);
         },
-        CrashAwareCachingDiskBranch::Step::freeze_prepared(prepared_image) => {
+        CrashAwareCachingDiskBranch::Step::freeze_prepared() => {
             reveal(CrashAwareCachingDiskBranch::State::freeze_prepared);
         },
         _ => { assert(false); },
@@ -785,13 +785,14 @@ proof fn journal_next_crash_is_crash(
         CrashAwareCachingDiskJournal::State::next(pre, post, lbl),
         lbl is Crash,
     ensures
-        CrashAwareCachingDiskJournal::State::crash(pre, post, lbl),
+        exists |prepared_image: CachingDiskJournalImage|
+            CrashAwareCachingDiskJournal::State::crash(pre, post, lbl, prepared_image),
 {
     reveal(CrashAwareCachingDiskJournal::State::next);
     reveal(CrashAwareCachingDiskJournal::State::next_by);
     let step = choose |step| CrashAwareCachingDiskJournal::State::next_by(pre, post, lbl, step);
     match step {
-        CrashAwareCachingDiskJournal::Step::crash() => {
+        CrashAwareCachingDiskJournal::Step::crash(prepared_image) => {
             reveal(CrashAwareCachingDiskJournal::State::crash);
         },
         _ => { assert(false); },
@@ -807,13 +808,14 @@ proof fn branch_next_crash_is_crash(
         CrashAwareCachingDiskBranch::State::next(pre, post, lbl),
         lbl is Crash,
     ensures
-        CrashAwareCachingDiskBranch::State::crash(pre, post, lbl),
+        exists |prepared_image: CachingDiskBranchImage|
+            CrashAwareCachingDiskBranch::State::crash(pre, post, lbl, prepared_image),
 {
     reveal(CrashAwareCachingDiskBranch::State::next);
     reveal(CrashAwareCachingDiskBranch::State::next_by);
     let step = choose |step| CrashAwareCachingDiskBranch::State::next_by(pre, post, lbl, step);
     match step {
-        CrashAwareCachingDiskBranch::Step::crash() => {
+        CrashAwareCachingDiskBranch::Step::crash(prepared_image) => {
             reveal(CrashAwareCachingDiskBranch::State::crash);
         },
         _ => { assert(false); },
@@ -824,12 +826,15 @@ proof fn journal_crash_refines_abstract_light(
     pre: CrashAwareCachingDiskJournal::State,
     post: CrashAwareCachingDiskJournal::State,
     keep_in_flight: bool,
+    prepared_image: CachingDiskJournalImage,
 )
     requires
+        pre.inv(),
         CrashAwareCachingDiskJournal::State::crash(
             pre,
             post,
             CrashAwareCachingDiskJournal::Label::Crash{keep_in_flight},
+            prepared_image,
         ),
     ensures
         AbstractCrashAwareJournal::State::next(
@@ -838,35 +843,34 @@ proof fn journal_crash_refines_abstract_light(
             AbstractCrashAwareJournal::Label::CrashLabel{keep_in_flight},
         ),
 {
-    reveal(CrashAwareCachingDiskJournal::State::crash);
-    assert(AbstractCrashAwareJournal::State::crash(
-        pre.i_abstract(),
-        post.i_abstract(),
-        AbstractCrashAwareJournal::Label::CrashLabel{keep_in_flight},
+    let lbl = CrashAwareCachingDiskJournal::Label::Crash{keep_in_flight};
+    assert(CrashAwareCachingDiskJournal::State::next_by(
+        pre,
+        post,
+        lbl,
+        CrashAwareCachingDiskJournal::Step::crash(prepared_image),
     )) by {
-        reveal(AbstractCrashAwareJournal::State::crash);
+        reveal(CrashAwareCachingDiskJournal::State::next_by);
     }
-    assert(AbstractCrashAwareJournal::State::next_by(
-        pre.i_abstract(),
-        post.i_abstract(),
-        AbstractCrashAwareJournal::Label::CrashLabel{keep_in_flight},
-        AbstractCrashAwareJournal::Step::crash(),
-    )) by {
-        reveal(AbstractCrashAwareJournal::State::next_by);
+    assert(CrashAwareCachingDiskJournal::State::next(pre, post, lbl)) by {
+        reveal(CrashAwareCachingDiskJournal::State::next);
     }
-    reveal(AbstractCrashAwareJournal::State::next);
+    pre.next_refines_abstract(post, lbl);
 }
 
 proof fn branch_crash_refines_abstract_light(
     pre: CrashAwareCachingDiskBranch::State,
     post: CrashAwareCachingDiskBranch::State,
     keep_in_flight: bool,
+    prepared_image: CachingDiskBranchImage,
 )
     requires
+        pre.inv(),
         CrashAwareCachingDiskBranch::State::crash(
             pre,
             post,
             CrashAwareCachingDiskBranch::Label::Crash{keep_in_flight},
+            prepared_image,
         ),
     ensures
         AbstractCrashAwareMap::State::next(
@@ -875,23 +879,19 @@ proof fn branch_crash_refines_abstract_light(
             AbstractCrashAwareMap::Label::CrashLabel{keep_in_flight},
         ),
 {
-    reveal(CrashAwareCachingDiskBranch::State::crash);
-    assert(AbstractCrashAwareMap::State::crash(
-        pre.abstract_i(),
-        post.abstract_i(),
-        AbstractCrashAwareMap::Label::CrashLabel{keep_in_flight},
+    let lbl = CrashAwareCachingDiskBranch::Label::Crash{keep_in_flight};
+    assert(CrashAwareCachingDiskBranch::State::next_by(
+        pre,
+        post,
+        lbl,
+        CrashAwareCachingDiskBranch::Step::crash(prepared_image),
     )) by {
-        reveal(AbstractCrashAwareMap::State::crash);
+        reveal(CrashAwareCachingDiskBranch::State::next_by);
     }
-    assert(AbstractCrashAwareMap::State::next_by(
-        pre.abstract_i(),
-        post.abstract_i(),
-        AbstractCrashAwareMap::Label::CrashLabel{keep_in_flight},
-        AbstractCrashAwareMap::Step::crash(),
-    )) by {
-        reveal(AbstractCrashAwareMap::State::next_by);
+    assert(CrashAwareCachingDiskBranch::State::next(pre, post, lbl)) by {
+        reveal(CrashAwareCachingDiskBranch::State::next);
     }
-    reveal(AbstractCrashAwareMap::State::next);
+    pre.next_refines_to_abstract_map(post, lbl);
 }
 
 proof fn crash_refines_coordination(
@@ -925,8 +925,32 @@ proof fn crash_refines_coordination(
     let branch_lbl = CrashAwareCachingDiskBranch::Label::Crash{keep_in_flight};
     journal_next_crash_is_crash(pre.journal, new_journal, journal_lbl);
     branch_next_crash_is_crash(pre.branch, new_branch, branch_lbl);
-    journal_crash_refines_abstract_light(pre.journal, new_journal, keep_in_flight);
-    branch_crash_refines_abstract_light(pre.branch, new_branch, keep_in_flight);
+    let prepared_journal_image = choose |prepared_image: CachingDiskJournalImage|
+        CrashAwareCachingDiskJournal::State::crash(
+            pre.journal,
+            new_journal,
+            journal_lbl,
+            prepared_image,
+        );
+    let prepared_branch_image = choose |prepared_image: CachingDiskBranchImage|
+        CrashAwareCachingDiskBranch::State::crash(
+            pre.branch,
+            new_branch,
+            branch_lbl,
+            prepared_image,
+        );
+    journal_crash_refines_abstract_light(
+        pre.journal,
+        new_journal,
+        keep_in_flight,
+        prepared_journal_image,
+    );
+    branch_crash_refines_abstract_light(
+        pre.branch,
+        new_branch,
+        keep_in_flight,
+        prepared_branch_image,
+    );
     assert(new_superblock.in_flight is None && !new_superblock.landed) by {
         reveal(SuperblockStore::State::next);
         reveal(SuperblockStore::State::next_by);
@@ -1530,18 +1554,10 @@ proof fn commit_prepared_refines_coordination(
     assert(post.journal == new_journal);
     assert(post.branch == new_branch);
     assert(post.commit_started() == pre.commit_started());
-    let prepared_journal_image = choose |prepared_image: CachingDiskJournalImage|
-        CrashAwareCachingDiskJournal::State::commit_prepared(
-            pre.journal,
-            new_journal,
-            CrashAwareCachingDiskJournal::Label::CommitPrepared,
-            prepared_image,
-        );
     assert(CrashAwareCachingDiskJournal::State::commit_prepared(
         pre.journal,
         new_journal,
         CrashAwareCachingDiskJournal::Label::CommitPrepared,
-        prepared_journal_image,
     )) by {
         reveal(CrashAwareCachingDiskJournal::State::next);
         reveal(CrashAwareCachingDiskJournal::State::next_by);
@@ -1552,9 +1568,7 @@ proof fn commit_prepared_refines_coordination(
             step,
         );
         match step {
-            CrashAwareCachingDiskJournal::Step::commit_prepared(prepared_image) => {
-                assert(prepared_image == prepared_journal_image);
-            },
+            CrashAwareCachingDiskJournal::Step::commit_prepared() => {},
             _ => { assert(false); },
         }
     }
@@ -1566,20 +1580,11 @@ proof fn commit_prepared_refines_coordination(
     pre.journal.commit_prepared_refines(
         new_journal,
         CrashAwareCachingDiskJournal::Label::CommitPrepared,
-        prepared_journal_image,
     );
-    let prepared_branch_image = choose |prepared_image: CachingDiskBranchImage|
-        CrashAwareCachingDiskBranch::State::freeze_prepared(
-            pre.branch,
-            new_branch,
-            CrashAwareCachingDiskBranch::Label::FreezePrepared,
-            prepared_image,
-        );
     assert(CrashAwareCachingDiskBranch::State::freeze_prepared(
         pre.branch,
         new_branch,
         CrashAwareCachingDiskBranch::Label::FreezePrepared,
-        prepared_branch_image,
     )) by {
         reveal(CrashAwareCachingDiskBranch::State::next);
         reveal(CrashAwareCachingDiskBranch::State::next_by);
@@ -1590,9 +1595,7 @@ proof fn commit_prepared_refines_coordination(
             step,
         );
         match step {
-            CrashAwareCachingDiskBranch::Step::freeze_prepared(prepared_image) => {
-                assert(prepared_image == prepared_branch_image);
-            },
+            CrashAwareCachingDiskBranch::Step::freeze_prepared() => {},
             _ => { assert(false); },
         }
     }
@@ -1601,7 +1604,7 @@ proof fn commit_prepared_refines_coordination(
         new_branch,
         CrashAwareCachingDiskBranch::Label::FreezePrepared,
     );
-    pre.branch.freeze_prepared_preserves_i(new_branch, prepared_branch_image);
+    pre.branch.freeze_prepared_preserves_i(new_branch);
     assert(!pre.superblockstore.landed) by {
         reveal(SuperblockStore::State::next);
         reveal(SuperblockStore::State::next_by);
@@ -2048,7 +2051,7 @@ proof fn commit_complete_refines_coordination(
             step,
         );
         match journal_step {
-            CrashAwareCachingDiskJournal::Step::commit_complete(new_ephemeral) => {
+            CrashAwareCachingDiskJournal::Step::commit_complete(new_ephemeral, prepared_image) => {
                 reveal(CrashAwareCachingDiskJournal::State::commit_complete);
             },
             _ => { assert(false); },
@@ -2064,7 +2067,7 @@ proof fn commit_complete_refines_coordination(
             step,
         );
         match branch_step {
-            CrashAwareCachingDiskBranch::Step::commit_complete() => {
+            CrashAwareCachingDiskBranch::Step::commit_complete(prepared_image) => {
                 reveal(CrashAwareCachingDiskBranch::State::commit_complete);
             },
             _ => { assert(false); },
@@ -2087,7 +2090,7 @@ proof fn commit_complete_refines_coordination(
             step,
         );
         match branch_step {
-            CrashAwareCachingDiskBranch::Step::commit_complete() => {
+            CrashAwareCachingDiskBranch::Step::commit_complete(prepared_image) => {
                 reveal(CrashAwareCachingDiskBranch::State::commit_complete);
             },
             _ => { assert(false); },

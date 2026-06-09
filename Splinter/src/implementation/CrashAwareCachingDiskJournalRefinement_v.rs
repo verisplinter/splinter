@@ -73,13 +73,10 @@ impl EphemeralCachingDiskJournal {
 
 pub open spec fn option_image_i(
     frozen: Option<CachingDiskJournalFrozenImage>,
-    prepared: Option<CachingDiskJournalImage>,
     ephemeral: EphemeralCachingDiskJournal,
 ) -> Option<JournalImage> {
     if frozen is None {
         Option::None
-    } else if prepared is Some {
-        Option::Some(prepared.unwrap().i())
     } else if ephemeral is Known {
         Option::Some(snapshot_tight_image(
             ephemeral->v.journal_disk_view().entries,
@@ -139,7 +136,7 @@ impl CrashAwareCachingDiskJournal::State {
         AllocationCrashAwareJournal::State{
             persistent: self.persistent.i(),
             ephemeral: self.ephemeral.i(),
-            frozen: option_image_i(self.frozen, self.prepared, self.ephemeral),
+            frozen: option_image_i(self.frozen, self.ephemeral),
         }
     }
 
@@ -162,9 +159,7 @@ impl CrashAwareCachingDiskJournal::State {
         if self.ephemeral is Known {
             self.ephemeral->v.interpreted_inv();
         }
-        if self.prepared is Some {
-            Self::image_valid_i(self.prepared.unwrap());
-        } else if self.frozen is Some && self.ephemeral is Known {
+        if self.frozen is Some && self.ephemeral is Known {
             let frozen = self.frozen.unwrap();
             self.ephemeral->v.frozen_snapshot_valid_image(frozen.snapshot, frozen.seq_end);
             let base = JournalImage{
@@ -233,7 +228,7 @@ impl CrashAwareCachingDiskJournal::State {
                 AllocationCrashAwareJournal::Label::CommitStart{
                     new_boundary_lsn,
                     frozen_journal: if post.frozen is Some {
-                        option_image_i(post.frozen, post.prepared, post.ephemeral).unwrap()
+                        option_image_i(post.frozen, post.ephemeral).unwrap()
                     } else {
                         JournalImage::empty()
                     },
@@ -453,14 +448,14 @@ impl CrashAwareCachingDiskJournal::State {
         assert(post.ephemeral is Known);
         assert(post.ephemeral->v == new_ephemeral);
         assert(new_ephemeral.inv());
-        if self.frozen is Some && self.prepared is None {
+        if self.frozen is Some {
             let frozen = self.frozen.unwrap();
             CachingDiskJournal::State::internal_extends_journal_view(self.ephemeral->v, new_ephemeral);
             unprepared_frozen_image_stable_by_extension(self.ephemeral->v, new_ephemeral, frozen);
             assert(post.frozen == self.frozen);
             assert(post.prepared == self.prepared);
-            assert(option_image_i(post.frozen, post.prepared, post.ephemeral)
-                == option_image_i(self.frozen, self.prepared, self.ephemeral));
+            assert(option_image_i(post.frozen, post.ephemeral)
+                == option_image_i(self.frozen, self.ephemeral));
             assert(post.i().frozen == self.i().frozen);
         }
         assert(AllocationCrashAwareJournal::State::next_by(
@@ -493,7 +488,7 @@ impl CrashAwareCachingDiskJournal::State {
         assert(post.ephemeral is Known);
         assert(post.ephemeral->v == new_ephemeral);
         assert(new_ephemeral.inv());
-        if self.frozen is Some && self.prepared is None {
+        if self.frozen is Some {
             let frozen = self.frozen.unwrap();
             CachingDiskJournal::State::load_index_visible_unchanged(
                 self.ephemeral->v,
@@ -537,7 +532,7 @@ impl CrashAwareCachingDiskJournal::State {
         assert(post.ephemeral is Known);
         assert(post.ephemeral->v == new_ephemeral);
         assert(new_ephemeral.inv());
-        if self.frozen is Some && self.prepared is None {
+        if self.frozen is Some {
             let frozen = self.frozen.unwrap();
             CachingDiskJournal::State::observe_clean_aus_visible_unchanged(
                 self.ephemeral->v,
@@ -616,7 +611,7 @@ impl CrashAwareCachingDiskJournal::State {
         reveal(CrashAwareCachingDiskJournal::State::internal_alloc);
         assert(allocs.disjoint(caching_disk_journal_accessible_aus(self.ephemeral->v)));
         assert(new_ephemeral.inv());
-        if self.frozen is Some && self.prepared is None {
+        if self.frozen is Some {
             let frozen = self.frozen.unwrap();
             CachingDiskJournal::State::internal_alloc_visible_unchanged(
                 self.ephemeral->v,
@@ -753,12 +748,11 @@ impl CrashAwareCachingDiskJournal::State {
         self,
         post: Self,
         lbl: CrashAwareCachingDiskJournal::Label,
-        prepared_image: CachingDiskJournalImage,
     )
         requires
             self.inv(),
             post.inv(),
-            CrashAwareCachingDiskJournal::State::commit_prepared(self, post, lbl, prepared_image),
+            CrashAwareCachingDiskJournal::State::commit_prepared(self, post, lbl),
         ensures
             AllocationCrashAwareJournal::State::next(self.i(), post.i(), self.label_i(post, lbl)),
             post.i() == self.i(),
@@ -768,11 +762,8 @@ impl CrashAwareCachingDiskJournal::State {
         let cj_lbl = CachingDiskJournal::Label::CommitPrepared{
             frozen: frozen.snapshot,
             seq_end: frozen.seq_end,
-            persistent: prepared_image.persistent,
         };
         reveal(CrashAwareCachingDiskJournal::State::commit_prepared);
-        assert(prepared_image.snapshot == frozen.snapshot);
-        assert(prepared_image.seq_end == frozen.seq_end);
         self.ephemeral->v.next_refines(self.ephemeral->v, cj_lbl);
         reveal(CachingDiskJournal::State::next);
         reveal(CachingDiskJournal::State::next_by);
@@ -784,11 +775,6 @@ impl CrashAwareCachingDiskJournal::State {
             },
             _ => { assert(false); },
         }
-        assert(prepared_image.persistent == self.ephemeral->v.disk.persistent);
-        assert(self.ephemeral->v.frozen_snapshot_valid(frozen.snapshot, frozen.seq_end));
-        prepared_snapshot_image_matches_visible(self.ephemeral->v, prepared_image, frozen.seq_end);
-        assert(prepared_image.i()
-            == snapshot_tight_image(self.ephemeral->v.journal_disk_view().entries, frozen.snapshot));
         assert(post.i() == self.i());
         assert(cj_lbl.i(self.ephemeral->v) == AllocationJournal::Label::InternalAllocations{
             allocs: Set::empty(),
@@ -811,6 +797,7 @@ impl CrashAwareCachingDiskJournal::State {
         post: Self,
         lbl: CrashAwareCachingDiskJournal::Label,
         new_ephemeral: CachingDiskJournal::State,
+        prepared_image: CachingDiskJournalImage,
     )
         requires
             self.inv(),
@@ -820,11 +807,12 @@ impl CrashAwareCachingDiskJournal::State {
                 post,
                 lbl,
                 new_ephemeral,
+                prepared_image,
             ),
         ensures
             AllocationCrashAwareJournal::State::next(self.i(), post.i(), self.label_i(post, lbl)),
     {
-        let frozen_image = self.prepared.unwrap();
+        let frozen_image = prepared_image;
         let require_end = lbl.arrow_CommitComplete_require_end();
         let discarded = lbl.arrow_CommitComplete_discarded();
         let cj_lbl = CachingDiskJournal::Label::DiscardOld{
@@ -837,7 +825,15 @@ impl CrashAwareCachingDiskJournal::State {
             require_end,
             deallocs: discarded,
         });
-        assert(post.i().persistent == self.prepared.unwrap().i());
+        let frozen = self.frozen.unwrap();
+        assert(prepared_image.snapshot == frozen.snapshot);
+        assert(prepared_image.seq_end == frozen.seq_end);
+        assert(prepared_image.persistent == self.ephemeral->v.disk.persistent);
+        assert(self.ephemeral->v.frozen_snapshot_valid(frozen.snapshot, frozen.seq_end));
+        prepared_snapshot_image_matches_visible(self.ephemeral->v, prepared_image, frozen.seq_end);
+        assert(prepared_image.i()
+            == snapshot_tight_image(self.ephemeral->v.journal_disk_view().entries, frozen.snapshot));
+        assert(post.i().persistent == prepared_image.i());
         assert(post.i().ephemeral == AllocationEphemeral::Known{v: new_ephemeral.i()});
         assert(post.i().frozen == Option::<JournalImage>::None);
         assert(AllocationCrashAwareJournal::State::next_by(
@@ -855,17 +851,25 @@ impl CrashAwareCachingDiskJournal::State {
         self,
         post: Self,
         lbl: CrashAwareCachingDiskJournal::Label,
+        prepared_image: CachingDiskJournalImage,
     )
         requires
             self.inv(),
             post.inv(),
-            CrashAwareCachingDiskJournal::State::crash(self, post, lbl),
+            CrashAwareCachingDiskJournal::State::crash(self, post, lbl, prepared_image),
         ensures
             AllocationCrashAwareJournal::State::next(self.i(), post.i(), self.label_i(post, lbl)),
     {
         if lbl.arrow_Crash_keep_in_flight() {
             assert(self.frozen is Some);
-            assert(self.prepared is Some);
+            assert(self.prepared);
+            let frozen = self.frozen.unwrap();
+            assert(prepared_image.snapshot == frozen.snapshot);
+            assert(prepared_image.seq_end == frozen.seq_end);
+            assert(prepared_image.persistent == self.ephemeral->v.disk.persistent);
+            prepared_snapshot_image_matches_visible(self.ephemeral->v, prepared_image, frozen.seq_end);
+            assert(prepared_image.i()
+                == snapshot_tight_image(self.ephemeral->v.journal_disk_view().entries, frozen.snapshot));
         }
         assert(AllocationCrashAwareJournal::State::next_by(
             self.i(),
@@ -928,14 +932,14 @@ impl CrashAwareCachingDiskJournal::State {
             CrashAwareCachingDiskJournal::Step::commit_start() => {
                 self.commit_start_refines(post, lbl);
             },
-            CrashAwareCachingDiskJournal::Step::commit_prepared(prepared_image) => {
-                self.commit_prepared_refines(post, lbl, prepared_image);
+            CrashAwareCachingDiskJournal::Step::commit_prepared() => {
+                self.commit_prepared_refines(post, lbl);
             },
-            CrashAwareCachingDiskJournal::Step::commit_complete(new_ephemeral) => {
-                self.commit_complete_refines(post, lbl, new_ephemeral);
+            CrashAwareCachingDiskJournal::Step::commit_complete(new_ephemeral, prepared_image) => {
+                self.commit_complete_refines(post, lbl, new_ephemeral, prepared_image);
             },
-            CrashAwareCachingDiskJournal::Step::crash() => {
-                self.crash_refines(post, lbl);
+            CrashAwareCachingDiskJournal::Step::crash(prepared_image) => {
+                self.crash_refines(post, lbl, prepared_image);
             },
             CrashAwareCachingDiskJournal::Step::dummy_to_use_type_params(_) => {
                 assert(false);

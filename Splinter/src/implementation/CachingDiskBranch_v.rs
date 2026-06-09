@@ -24,7 +24,9 @@ use crate::betree::Utils_v::{lemma_union_set_of_sets_contains, lemma_union_set_o
 use crate::betree::LinkedBranch_v::{
     DiskView, LinkedBranch, Path, Refinement_v as LinkedBranchRefinement, SplitArg,
 };
-use crate::disk::GenericDisk_v::{addrs_closed, AU, Address, Pointer, Ranking, to_aus};
+use crate::disk::GenericDisk_v::{
+    addrs_closed, AU, Address, Pointer, Ranking, to_aus, to_aus_finite,
+};
 use crate::marshalling::IBranchNodeFormat_v::raw_page_to_branch_node;
 use crate::spec::AsyncDisk_t::RawPage;
 use crate::spec::KeyType_t::Key;
@@ -1513,6 +1515,411 @@ impl CachingDiskBranchImage {
         }
     }
 
+    pub proof fn write_outside_summary_aus_preserves_sealed_stack(
+        pre: Self,
+        post: Self,
+        addr: Address,
+        data: RawPage,
+    )
+        requires
+            pre.wf(),
+            post.sealed_roots == pre.sealed_roots,
+            post.seq_end == pre.seq_end,
+            post.persistent == pre.persistent.insert(addr, data),
+            !addresses_in_aus(summary_aus(pre.branch_summary())).contains(addr),
+        ensures
+            post.wf(),
+            post.branch_summary() == pre.branch_summary(),
+            post.live_persistent() == pre.live_persistent(),
+            post.sealed_stack_i() == pre.sealed_stack_i(),
+    {
+        let pre_summary = pre.branch_summary();
+        let pre_nodes = pre.persistent_branch_nodes();
+        let post_nodes = post.persistent_branch_nodes();
+
+        assert(branch_summary_reads_valid(post.sealed_roots, post_nodes)) by {
+            assert forall |i: int| #![trigger post.sealed_roots[i]]
+                0 <= i < post.sealed_roots.len()
+                implies root_summary_read_valid(post.sealed_roots[i], post_nodes)
+            by {
+                let root = post.sealed_roots[i];
+                assert(pre.sealed_roots[i] == root);
+                assert(root_summary_read_valid(root, pre_nodes));
+                assert(pre_summary.contains_key(root.au)) by {
+                    assert(pre.sealed_stack_i().wf());
+                    assert(pre.sealed_roots.to_set().contains(root));
+                    assert(pre.sealed_stack_i().branch_summary() == pre_summary);
+                    pre.sealed_stack_i().root_au_in_summary(root);
+                }
+                assert(pre.sealed_stack_i().branch_summary() == pre_summary);
+                assert(pre.sealed_roots.to_set().contains(root));
+                pre.sealed_stack_i().root_au_in_summary(root);
+                assert(pre_summary[root.au].contains(root.au));
+                pre.sealed_stack_i().sealed_disk.build_branch_summary_finite(pre.sealed_roots.to_set());
+                assert(pre_summary.values().finite());
+                assert(summary_aus(pre_summary).contains(root.au)) by {
+                    assert(pre_summary.values().contains(pre_summary[root.au]));
+                    lemma_union_set_of_sets_subset(pre_summary.values(), pre_summary[root.au]);
+                }
+                assert(addr != root);
+                assert(post.persistent[root] == pre.persistent[root]);
+                assert(post_nodes[root] == pre_nodes[root]);
+                if pre_nodes[root] is Index {
+                    let aux = pre_nodes[root]->aux_ptr.unwrap();
+                    assert(pre_nodes.contains_key(aux));
+                    assert(pre_nodes[aux] is Auxiliary);
+                    let branch = pre.sealed_stack_i().sealed_disk.get_branch(root);
+                    assert(branch.valid_sealed_branch());
+                    assert(branch.full_repr().contains(aux));
+                    assert(addrs_closed(branch.full_repr(), branch.get_summary()));
+                    assert(branch.get_summary() == pre_summary[root.au]) by {
+                        pre.sealed_stack_i().sealed_disk.build_branch_summary_contains(
+                            pre.sealed_roots.to_set(),
+                            root,
+                        );
+                    }
+                    assert(pre_summary[root.au].contains(aux.au));
+                    pre.sealed_stack_i().sealed_disk.build_branch_summary_finite(pre.sealed_roots.to_set());
+                    assert(pre_summary.values().finite());
+                    assert(summary_aus(pre_summary).contains(aux.au)) by {
+                        assert(pre_summary.values().contains(pre_summary[root.au]));
+                        lemma_union_set_of_sets_subset(pre_summary.values(), pre_summary[root.au]);
+                    }
+                    assert(addr != aux);
+                    assert(post.persistent[aux] == pre.persistent[aux]);
+                    assert(post_nodes[aux] == pre_nodes[aux]);
+                }
+            }
+        }
+
+        assert forall |i: int| #![trigger post.sealed_roots[i]]
+            0 <= i < post.sealed_roots.len()
+            implies root_summary_from_read(post.sealed_roots[i], post_nodes)
+                == root_summary_from_read(pre.sealed_roots[i], pre_nodes)
+        by {
+            let root = post.sealed_roots[i];
+            assert(pre.sealed_roots[i] == root);
+            assert(root_summary_read_valid(root, post_nodes));
+            assert(root_summary_read_valid(root, pre_nodes));
+            assert(pre_summary.contains_key(root.au)) by {
+                assert(pre.sealed_roots.to_set().contains(root));
+                assert(pre.sealed_stack_i().branch_summary() == pre_summary);
+                pre.sealed_stack_i().root_au_in_summary(root);
+            }
+            assert(pre_summary[root.au].contains(root.au)) by {
+                pre.sealed_stack_i().root_au_in_summary(root);
+            }
+            pre.sealed_stack_i().sealed_disk.build_branch_summary_finite(pre.sealed_roots.to_set());
+            assert(pre_summary.values().finite());
+            assert(summary_aus(pre_summary).contains(root.au)) by {
+                assert(pre_summary.values().contains(pre_summary[root.au]));
+                lemma_union_set_of_sets_subset(pre_summary.values(), pre_summary[root.au]);
+            }
+            assert(addr != root);
+            assert(post_nodes[root] == pre_nodes[root]);
+            if pre_nodes[root] is Index {
+                let aux = pre_nodes[root]->aux_ptr.unwrap();
+                let branch = pre.sealed_stack_i().sealed_disk.get_branch(root);
+                assert(branch.valid_sealed_branch());
+                assert(branch.full_repr().contains(aux));
+                assert(addrs_closed(branch.full_repr(), branch.get_summary()));
+                assert(branch.get_summary() == pre_summary[root.au]) by {
+                    pre.sealed_stack_i().sealed_disk.build_branch_summary_contains(
+                        pre.sealed_roots.to_set(),
+                        root,
+                    );
+                }
+                assert(pre_summary[root.au].contains(aux.au));
+                assert(summary_aus(pre_summary).contains(aux.au)) by {
+                    assert(pre_summary.values().contains(pre_summary[root.au]));
+                    lemma_union_set_of_sets_subset(pre_summary.values(), pre_summary[root.au]);
+                }
+                assert(addr != aux);
+                assert(post_nodes[aux] == pre_nodes[aux]);
+            }
+        }
+
+        assert(post.branch_summary() == pre.branch_summary()) by {
+            pre.sealed_stack_i().sealed_disk.build_branch_summary_finite(pre.sealed_roots.to_set());
+            assert(pre_summary.values().finite());
+            assert(crate::disk::GenericDisk_v::set_addrs_disjoint_aus(pre.sealed_roots.to_set()));
+            branch_summary_from_reads_up_to_self_ensures(
+                pre.sealed_roots,
+                post_nodes,
+                pre.sealed_roots.len() as nat,
+            );
+            branch_summary_from_reads_up_to_self_ensures(
+                pre.sealed_roots,
+                pre_nodes,
+                pre.sealed_roots.len() as nat,
+            );
+            assert_maps_equal!(post.branch_summary(), pre.branch_summary(), au => {
+                if post.branch_summary().contains_key(au) {
+                    assert(root_aus_up_to(pre.sealed_roots, pre.sealed_roots.len() as nat).contains(au));
+                    let idx = root_aus_up_to_member_has_index(
+                        pre.sealed_roots,
+                        pre.sealed_roots.len() as nat,
+                        au,
+                    );
+                    assert(post.branch_summary()[au]
+                        == root_summary_from_read(pre.sealed_roots[idx], post_nodes));
+                    assert(pre.branch_summary()[au]
+                        == root_summary_from_read(pre.sealed_roots[idx], pre_nodes));
+                }
+                if pre.branch_summary().contains_key(au) {
+                    assert(root_aus_up_to(pre.sealed_roots, pre.sealed_roots.len() as nat).contains(au));
+                    let idx = root_aus_up_to_member_has_index(
+                        pre.sealed_roots,
+                        pre.sealed_roots.len() as nat,
+                        au,
+                    );
+                    assert(post.branch_summary()[au]
+                        == root_summary_from_read(pre.sealed_roots[idx], post_nodes));
+                    assert(pre.branch_summary()[au]
+                        == root_summary_from_read(pre.sealed_roots[idx], pre_nodes));
+                }
+            });
+        }
+
+        assert(post.live_persistent() == pre.live_persistent()) by {
+            assert_maps_equal!(post.live_persistent(), pre.live_persistent(), a => {
+                assert(post.branch_summary() == pre.branch_summary());
+                if addresses_in_aus(summary_aus(pre_summary)).contains(a) {
+                    assert(a != addr);
+                    assert(post.persistent[a] == pre.persistent[a]);
+                }
+            });
+        }
+        assert(post.sealed_stack_i() == pre.sealed_stack_i());
+        assert(post.stack_wf()) by {
+            assert(post.branch_summary() == pre.branch_summary());
+            assert(post.sealed_stack_i() == pre.sealed_stack_i());
+            assert(pre.stack_wf());
+        }
+        assert(post.wf());
+    }
+
+    pub proof fn same_summary_aus_preserves_sealed_stack(
+        pre: Self,
+        post: Self,
+    )
+        requires
+            pre.wf(),
+            post.sealed_roots == pre.sealed_roots,
+            post.seq_end == pre.seq_end,
+            post.persistent.restrict(addresses_in_aus(summary_aus(pre.branch_summary())))
+                == pre.persistent.restrict(addresses_in_aus(summary_aus(pre.branch_summary()))),
+        ensures
+            post.wf(),
+            post.branch_summary() == pre.branch_summary(),
+            post.live_persistent() == pre.live_persistent(),
+            post.sealed_stack_i() == pre.sealed_stack_i(),
+    {
+        let pre_summary = pre.branch_summary();
+        let pre_nodes = pre.persistent_branch_nodes();
+        let post_nodes = post.persistent_branch_nodes();
+        let summary_addrs = addresses_in_aus(summary_aus(pre_summary));
+        assert(post.persistent.restrict(summary_addrs)
+            == pre.persistent.restrict(summary_addrs));
+
+        assert(branch_summary_reads_valid(post.sealed_roots, post_nodes)) by {
+            assert forall |i: int| #![trigger post.sealed_roots[i]]
+                0 <= i < post.sealed_roots.len()
+                implies root_summary_read_valid(post.sealed_roots[i], post_nodes)
+            by {
+                let root = post.sealed_roots[i];
+                assert(pre.sealed_roots[i] == root);
+                assert(root_summary_read_valid(root, pre_nodes));
+                assert(pre.sealed_roots.to_set().contains(root));
+                assert(pre.sealed_stack_i().branch_summary() == pre_summary);
+                pre.sealed_stack_i().root_au_in_summary(root);
+                assert(pre_summary[root.au].contains(root.au));
+                pre.sealed_stack_i().sealed_disk.build_branch_summary_finite(pre.sealed_roots.to_set());
+                assert(pre_summary.values().finite());
+                assert(summary_aus(pre_summary).contains(root.au)) by {
+                    assert(pre_summary.values().contains(pre_summary[root.au]));
+                    lemma_union_set_of_sets_subset(pre_summary.values(), pre_summary[root.au]);
+                }
+                assert(summary_addrs.contains(root));
+                assert(pre.persistent.contains_key(root));
+                assert(pre.persistent.restrict(summary_addrs).contains_key(root));
+                assert(post.persistent.restrict(summary_addrs).contains_key(root));
+                assert(post.persistent.contains_key(root));
+                assert(post.persistent.restrict(summary_addrs)[root]
+                    == pre.persistent.restrict(summary_addrs)[root]);
+                assert(post.persistent.restrict(summary_addrs)[root] == post.persistent[root]);
+                assert(pre.persistent.restrict(summary_addrs)[root] == pre.persistent[root]);
+                assert(post.persistent[root] == pre.persistent[root]);
+                assert(post_nodes[root] == pre_nodes[root]);
+                if pre_nodes[root] is Index {
+                    let aux = pre_nodes[root]->aux_ptr.unwrap();
+                    let branch = pre.sealed_stack_i().sealed_disk.get_branch(root);
+                    assert(branch.valid_sealed_branch());
+                    assert(branch.full_repr().contains(aux));
+                    assert(addrs_closed(branch.full_repr(), branch.get_summary()));
+                    assert(branch.get_summary() == pre_summary[root.au]) by {
+                        pre.sealed_stack_i().sealed_disk.build_branch_summary_contains(
+                            pre.sealed_roots.to_set(),
+                            root,
+                        );
+                    }
+                    assert(pre_summary[root.au].contains(aux.au));
+                    assert(summary_aus(pre_summary).contains(aux.au)) by {
+                        assert(pre_summary.values().contains(pre_summary[root.au]));
+                        lemma_union_set_of_sets_subset(pre_summary.values(), pre_summary[root.au]);
+                    }
+                    assert(summary_addrs.contains(aux));
+                    assert(pre.persistent.contains_key(aux));
+                    assert(pre.persistent.restrict(summary_addrs).contains_key(aux));
+                    assert(post.persistent.restrict(summary_addrs).contains_key(aux));
+                    assert(post.persistent.contains_key(aux));
+                    assert(post.persistent.restrict(summary_addrs)[aux]
+                        == pre.persistent.restrict(summary_addrs)[aux]);
+                    assert(post.persistent.restrict(summary_addrs)[aux] == post.persistent[aux]);
+                    assert(pre.persistent.restrict(summary_addrs)[aux] == pre.persistent[aux]);
+                    assert(post.persistent[aux] == pre.persistent[aux]);
+                    assert(post_nodes[aux] == pre_nodes[aux]);
+                }
+            }
+        }
+
+        assert forall |i: int| #![trigger post.sealed_roots[i]]
+            0 <= i < post.sealed_roots.len()
+            implies root_summary_from_read(post.sealed_roots[i], post_nodes)
+                == root_summary_from_read(pre.sealed_roots[i], pre_nodes)
+        by {
+            let root = post.sealed_roots[i];
+            assert(pre.sealed_roots[i] == root);
+            assert(root_summary_read_valid(root, post_nodes));
+            assert(root_summary_read_valid(root, pre_nodes));
+            assert(pre.sealed_stack_i().branch_summary() == pre_summary);
+            pre.sealed_stack_i().root_au_in_summary(root);
+            assert(pre_summary[root.au].contains(root.au));
+            pre.sealed_stack_i().sealed_disk.build_branch_summary_finite(pre.sealed_roots.to_set());
+            assert(pre_summary.values().finite());
+            assert(summary_aus(pre_summary).contains(root.au)) by {
+                assert(pre_summary.values().contains(pre_summary[root.au]));
+                lemma_union_set_of_sets_subset(pre_summary.values(), pre_summary[root.au]);
+            }
+            assert(summary_addrs.contains(root));
+            assert(pre.persistent.contains_key(root));
+            assert(pre.persistent.restrict(summary_addrs).contains_key(root));
+            assert(post.persistent.restrict(summary_addrs).contains_key(root));
+            assert(post.persistent.contains_key(root));
+            assert(post.persistent.restrict(summary_addrs)[root]
+                == pre.persistent.restrict(summary_addrs)[root]);
+            assert(post.persistent.restrict(summary_addrs)[root] == post.persistent[root]);
+            assert(pre.persistent.restrict(summary_addrs)[root] == pre.persistent[root]);
+            assert(post.persistent[root] == pre.persistent[root]);
+            assert(post_nodes[root] == pre_nodes[root]);
+            if pre_nodes[root] is Index {
+                let aux = pre_nodes[root]->aux_ptr.unwrap();
+                let branch = pre.sealed_stack_i().sealed_disk.get_branch(root);
+                assert(branch.valid_sealed_branch());
+                assert(branch.full_repr().contains(aux));
+                assert(addrs_closed(branch.full_repr(), branch.get_summary()));
+                assert(branch.get_summary() == pre_summary[root.au]) by {
+                    pre.sealed_stack_i().sealed_disk.build_branch_summary_contains(
+                        pre.sealed_roots.to_set(),
+                        root,
+                    );
+                }
+                assert(pre_summary[root.au].contains(aux.au));
+                assert(summary_aus(pre_summary).contains(aux.au)) by {
+                    assert(pre_summary.values().contains(pre_summary[root.au]));
+                    lemma_union_set_of_sets_subset(pre_summary.values(), pre_summary[root.au]);
+                }
+                assert(summary_addrs.contains(aux));
+                assert(pre.persistent.contains_key(aux));
+                assert(pre.persistent.restrict(summary_addrs).contains_key(aux));
+                assert(post.persistent.restrict(summary_addrs).contains_key(aux));
+                assert(post.persistent.contains_key(aux));
+                assert(post.persistent.restrict(summary_addrs)[aux]
+                    == pre.persistent.restrict(summary_addrs)[aux]);
+                assert(post.persistent.restrict(summary_addrs)[aux] == post.persistent[aux]);
+                assert(pre.persistent.restrict(summary_addrs)[aux] == pre.persistent[aux]);
+                assert(post.persistent[aux] == pre.persistent[aux]);
+                assert(post_nodes[aux] == pre_nodes[aux]);
+            }
+        }
+
+        assert(post.branch_summary() == pre.branch_summary()) by {
+            pre.sealed_stack_i().sealed_disk.build_branch_summary_finite(pre.sealed_roots.to_set());
+            assert(crate::disk::GenericDisk_v::set_addrs_disjoint_aus(pre.sealed_roots.to_set()));
+            branch_summary_from_reads_up_to_self_ensures(
+                pre.sealed_roots,
+                post_nodes,
+                pre.sealed_roots.len() as nat,
+            );
+            branch_summary_from_reads_up_to_self_ensures(
+                pre.sealed_roots,
+                pre_nodes,
+                pre.sealed_roots.len() as nat,
+            );
+            assert_maps_equal!(post.branch_summary(), pre.branch_summary(), au => {
+                if post.branch_summary().contains_key(au) {
+                    assert(root_aus_up_to(pre.sealed_roots, pre.sealed_roots.len() as nat).contains(au));
+                    let idx = root_aus_up_to_member_has_index(
+                        pre.sealed_roots,
+                        pre.sealed_roots.len() as nat,
+                        au,
+                    );
+                    assert(post.branch_summary()[au]
+                        == root_summary_from_read(pre.sealed_roots[idx], post_nodes));
+                    assert(pre.branch_summary()[au]
+                        == root_summary_from_read(pre.sealed_roots[idx], pre_nodes));
+                }
+                if pre.branch_summary().contains_key(au) {
+                    assert(root_aus_up_to(pre.sealed_roots, pre.sealed_roots.len() as nat).contains(au));
+                    let idx = root_aus_up_to_member_has_index(
+                        pre.sealed_roots,
+                        pre.sealed_roots.len() as nat,
+                        au,
+                    );
+                    assert(post.branch_summary()[au]
+                        == root_summary_from_read(pre.sealed_roots[idx], post_nodes));
+                    assert(pre.branch_summary()[au]
+                        == root_summary_from_read(pre.sealed_roots[idx], pre_nodes));
+                }
+            });
+        }
+
+        assert(post.live_persistent() == pre.live_persistent()) by {
+            assert_maps_equal!(post.live_persistent(), pre.live_persistent(), a => {
+                assert(post.branch_summary() == pre.branch_summary());
+                if summary_addrs.contains(a) {
+                    if pre.live_persistent().contains_key(a) {
+                        assert(pre.persistent.contains_key(a));
+                        assert(pre.persistent.restrict(summary_addrs).contains_key(a));
+                        assert(post.persistent.restrict(summary_addrs).contains_key(a));
+                        assert(post.persistent.contains_key(a));
+                        assert(post.persistent.restrict(summary_addrs)[a]
+                            == pre.persistent.restrict(summary_addrs)[a]);
+                        assert(post.persistent.restrict(summary_addrs)[a] == post.persistent[a]);
+                        assert(pre.persistent.restrict(summary_addrs)[a] == pre.persistent[a]);
+                    }
+                    if post.live_persistent().contains_key(a) {
+                        assert(post.persistent.contains_key(a));
+                        assert(post.persistent.restrict(summary_addrs).contains_key(a));
+                        assert(pre.persistent.restrict(summary_addrs).contains_key(a));
+                        assert(pre.persistent.contains_key(a));
+                        assert(post.persistent.restrict(summary_addrs)[a]
+                            == pre.persistent.restrict(summary_addrs)[a]);
+                        assert(post.persistent.restrict(summary_addrs)[a] == post.persistent[a]);
+                        assert(pre.persistent.restrict(summary_addrs)[a] == pre.persistent[a]);
+                    }
+                }
+            });
+        }
+        assert(post.sealed_stack_i() == pre.sealed_stack_i());
+        assert(post.stack_wf()) by {
+            assert(post.branch_summary() == pre.branch_summary());
+            assert(post.sealed_stack_i() == pre.sealed_stack_i());
+            assert(pre.stack_wf());
+        }
+        assert(post.wf());
+    }
+
     pub proof fn branch_summary_matches_stack(self)
         requires
             self.stack_wf(),
@@ -1648,7 +2055,7 @@ state_machine!{ CachingDiskBranch {
         QueryLabel{ key: Key, msg: Message },
         AppendLabel{ keys: Seq<Key>, msgs: Seq<Message> },
         FreezeAsLabel{ image: CachingDiskBranchFrozenImage },
-        FreezePrepared{ image: CachingDiskBranchImage },
+        FreezePrepared{ image: CachingDiskBranchFrozenImage },
         LoadMetadata{ root: Address, discovered_aus: Set<AU> },
         Internal,
         InternalAlloc{ allocs: Set<AU>, deallocs: Set<AU> },
@@ -1805,7 +2212,6 @@ state_machine!{ CachingDiskBranch {
 
     transition!{ freeze_prepared(lbl: Label) {
         require let Label::FreezePrepared{image} = lbl;
-        require image.persistent == pre.disk.persistent;
         require image.sealed_roots.len() <= pre.persisted_root_count;
         require pre.sealed_roots.subrange(0, image.sealed_roots.len() as int) == image.sealed_roots;
     }}
@@ -3681,6 +4087,64 @@ state_machine!{ CachingDiskBranch {
             },
         }
     }
+
+    pub proof fn next_preserves_persisted_root_count_lower_bound(
+        pre: Self,
+        post: Self,
+        lbl: Label,
+        bound: nat,
+    )
+        requires
+            CachingDiskBranch::State::next(pre, post, lbl),
+            bound <= pre.persisted_root_count,
+        ensures
+            bound <= post.persisted_root_count,
+    {
+        reveal(CachingDiskBranch::State::next);
+        reveal(CachingDiskBranch::State::next_by);
+        let step = choose |step| CachingDiskBranch::State::next_by(pre, post, lbl, step);
+        match step {
+            CachingDiskBranch::Step::disk_internal(new_disk) => {
+                assert(CachingDiskBranch::State::disk_internal(pre, post, lbl, new_disk));
+            },
+            CachingDiskBranch::Step::observe_persisted_roots(target_count) => {
+                assert(CachingDiskBranch::State::observe_persisted_roots(pre, post, lbl, target_count));
+            },
+            CachingDiskBranch::Step::load_metadata(reads) => {
+                assert(CachingDiskBranch::State::load_metadata(pre, post, lbl, reads));
+            },
+            CachingDiskBranch::Step::query(receipts, reads) => {
+                assert(CachingDiskBranch::State::query(pre, post, lbl, receipts, reads));
+            },
+            CachingDiskBranch::Step::append(new_disk, new_active_branch, receipt, init_root, reads, writes) => {
+                assert(CachingDiskBranch::State::append(pre, post, lbl, new_disk, new_active_branch, receipt, init_root, reads, writes));
+            },
+            CachingDiskBranch::Step::freeze_as() => {
+                assert(CachingDiskBranch::State::freeze_as(pre, post, lbl));
+            },
+            CachingDiskBranch::Step::freeze_prepared() => {
+                assert(CachingDiskBranch::State::freeze_prepared(pre, post, lbl));
+            },
+            CachingDiskBranch::Step::internal_noop() => {
+                assert(CachingDiskBranch::State::internal_noop(pre, post, lbl));
+            },
+            CachingDiskBranch::Step::internal_grow(new_disk, new_root_addr, reads, writes) => {
+                assert(CachingDiskBranch::State::internal_grow(pre, post, lbl, new_disk, new_root_addr, reads, writes));
+            },
+            CachingDiskBranch::Step::internal_split(new_disk, new_child_addr, receipt, split_arg, reads, writes) => {
+                assert(CachingDiskBranch::State::internal_split(pre, post, lbl, new_disk, new_child_addr, receipt, split_arg, reads, writes));
+            },
+            CachingDiskBranch::Step::internal_seal(written_disk, aux_ptr, reads, writes) => {
+                assert(CachingDiskBranch::State::internal_seal(pre, post, lbl, written_disk, aux_ptr, reads, writes));
+            },
+            CachingDiskBranch::Step::internal_fill_au(aus) => {
+                assert(CachingDiskBranch::State::internal_fill_au(pre, post, lbl, aus));
+            },
+            _ => {
+                assert(false);
+            },
+        }
+    }
 }}
 
 impl CachingDiskBranch::State {
@@ -4645,6 +5109,8 @@ impl CachingDiskBranch::State {
                 == self.interpreted_branch_summary().remove_keys(
                     to_aus(self.sealed_roots.to_set() - frozen.sealed_roots.to_set()),
                 ),
+            summary_aus(self.visible_image_for_metadata(frozen).branch_summary())
+                <= summary_aus(self.interpreted_branch_summary()),
             self.visible_image_for_metadata(frozen).sealed_stack_i().sealed_disk.entries
                 == self.sealed_stack_i().sealed_disk.entries.restrict(
                     restrict_domain_au(
@@ -4679,6 +5145,9 @@ impl CachingDiskBranch::State {
         full_stack.sealed_disk_wf();
         assert(full_stack.sealed_disk.sealed_branch_roots(full_roots));
         assert(full_stack.branch_summary() == full_summary);
+        full_stack.sealed_disk.build_branch_summary_finite(full_roots);
+        assert(full_summary.dom().finite());
+        assert(full_summary.values().finite());
         assert(map_with_disjoint_values(full_summary));
         assert(addrs_closed(full_stack.sealed_disk.entries.dom(), summary_aus(full_summary)));
         full_stack.sealed_disk.build_branch_summary_remove(
@@ -4760,6 +5229,39 @@ impl CachingDiskBranch::State {
                     assert(image.branch_summary()[au] == full_summary[au]);
                 }
             });
+        };
+        assert(summary_aus(image.branch_summary()) <= summary_aus(full_summary)) by {
+            assert(full_summary.dom().finite());
+            assert(full_summary.values().finite());
+            root_aus_up_to_full(frozen.sealed_roots);
+            to_aus_finite(frozen_roots);
+            assert(image.branch_summary().dom().finite()) by {
+                assert(image.branch_summary().dom()
+                    =~= root_aus_up_to(frozen.sealed_roots, frozen.sealed_roots.len() as nat));
+                assert(root_aus_up_to(
+                    frozen.sealed_roots,
+                    frozen.sealed_roots.len() as nat,
+                ) =~= to_aus(frozen_roots));
+            }
+            lemma_values_finite(image.branch_summary());
+            assert forall |au: AU| #[trigger] summary_aus(image.branch_summary()).contains(au)
+                implies summary_aus(full_summary).contains(au)
+            by {
+                let summary = lemma_union_set_of_sets_contains(
+                    image.branch_summary().values(),
+                    au,
+                );
+                assert(image.branch_summary().values().contains(summary));
+                let root_au = choose |root_au: AU|
+                    image.branch_summary().contains_key(root_au)
+                        && image.branch_summary()[root_au] == summary;
+                assert(prefix_summary.contains_key(root_au));
+                assert(full_summary.contains_key(root_au));
+                assert(prefix_summary[root_au] == full_summary[root_au]);
+                assert(full_summary[root_au] == summary);
+                assert(full_summary.values().contains(summary));
+                lemma_union_set_of_sets_subset(full_summary.values(), summary);
+            }
         };
 
         assert(image.live_persistent_aus() == summary_aus(prefix_summary));
@@ -4861,10 +5363,16 @@ impl CachingDiskBranch::State {
     )
         requires
             self.inv(),
+            image.persistent == self.disk.persistent,
             CachingDiskBranch::State::next(
                 self,
                 self,
-                CachingDiskBranch::Label::FreezePrepared{image},
+                CachingDiskBranch::Label::FreezePrepared{
+                    image: CachingDiskBranchFrozenImage{
+                        sealed_roots: image.sealed_roots,
+                        seq_end: image.seq_end,
+                    },
+                },
             ),
         ensures
             image.sealed_stack_i().wf(),
@@ -4883,7 +5391,11 @@ impl CachingDiskBranch::State {
     {
         reveal(CachingDiskBranch::State::next);
         reveal(CachingDiskBranch::State::next_by);
-        let lbl = CachingDiskBranch::Label::FreezePrepared{image};
+        let frozen = CachingDiskBranchFrozenImage{
+            sealed_roots: image.sealed_roots,
+            seq_end: image.seq_end,
+        };
+        let lbl = CachingDiskBranch::Label::FreezePrepared{image: frozen};
         let step = choose |step: CachingDiskBranch::Step|
             CachingDiskBranch::State::next_by(self, self, lbl, step);
         match step {
@@ -4893,10 +5405,6 @@ impl CachingDiskBranch::State {
             _ => { assert(false); },
         }
 
-        let frozen = CachingDiskBranchFrozenImage{
-            sealed_roots: image.sealed_roots,
-            seq_end: image.seq_end,
-        };
         let visible_image = self.visible_image_for_metadata(frozen);
         self.visible_prefix_image_matches_stack(frozen);
         branch_summary_from_reads_up_to_self_ensures(

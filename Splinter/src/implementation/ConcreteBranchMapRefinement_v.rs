@@ -821,7 +821,7 @@ impl ConcreteBranch::State {
 
     pub proof fn init_refines(
         self,
-        cached_branches: Seq<crate::implementation::CachedBranch_v::CachedBranch>,
+        cached_branches: Seq<crate::implementation::CachedBranch_v::CachedBranch::State>,
         seq_end: nat,
         init_aus: Set<AU>,
         cache: crate::implementation::Cache_v::Cache::State,
@@ -2431,7 +2431,7 @@ impl ConcreteBranch::State {
                 assert(post.disk == self.disk);
                 assert(post.seq_end == self.seq_end);
                 assert(post.cached_branches.len() == self.cached_branches.len() + 1);
-                assert(post.active_cached_branch() == crate::implementation::CachedBranch_v::CachedBranch::empty_active());
+                assert(post.active_cached_branch() == crate::implementation::CachedBranch_v::CachedBranch::State::empty_active());
                 let empty_allocator = crate::allocation_layer::MiniAllocator_v::MiniAllocator::empty();
                 assert(empty_allocator.wf());
                 assert(empty_allocator.add_aus(Set::<AU>::empty()) == empty_allocator) by {

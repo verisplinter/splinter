@@ -307,7 +307,7 @@ impl CachingDiskJournal::Label {
                     deallocs: Set::empty(),
                 }
             },
-            Self::CommitPrepared{frozen, seq_end, persistent} => {
+            Self::CommitPrepared{frozen, seq_end} => {
                 AllocationJournal::Label::InternalAllocations{
                     allocs: Set::empty(),
                     deallocs: Set::empty(),

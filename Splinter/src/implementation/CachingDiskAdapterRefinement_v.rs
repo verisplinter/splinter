@@ -11,7 +11,7 @@ use vstd::map::*;
 use vstd::assert_maps_equal;
 
 use crate::disk::GenericDisk_v::AU;
-use crate::implementation::Cache_v::{Cache, Entry, Status as CacheStatus};
+use crate::implementation::Cache_v::{Cache, Entry, Slot, Status as CacheStatus};
 use crate::implementation::CachingDisk_v::{
     addresses_in_aus, status_map, CachingDisk, PageStatus as CachingDiskPageStatus,
 };
@@ -364,6 +364,121 @@ pub proof fn filled_cache_access_effect(
     });
 }
 
+pub proof fn projected_cache_access_effect_by_addrs(
+    pre: Cache::State,
+    post: Cache::State,
+    addrs: Set<Address>,
+    reads: Map<Address, RawPage>,
+    writes: Map<Address, RawPage>,
+)
+    requires
+        pre.inv(),
+        Cache::State::next(pre, post, Cache::Label::Access{reads, writes}),
+        writes.dom() <= addrs,
+    ensures
+        project_cache_pages_by_addrs(post, addrs)
+            =~= project_cache_pages_by_addrs(pre, addrs).union_prefer_right(writes),
+        project_cache_status_by_addrs(post, addrs)
+            =~= project_cache_status_by_addrs(pre, addrs)
+                .union_prefer_right(status_map(writes.dom(), CachingDiskPageStatus::Dirty)),
+{
+    let lbl = Cache::Label::Access{reads, writes};
+    Cache::State::inv_next(pre, post, lbl);
+    pre.build_lookup_map_ensures();
+    post.build_lookup_map_ensures();
+    reveal(Cache::State::next);
+    reveal(Cache::State::next_by);
+    assert(Cache::State::next_by(pre, post, lbl, Cache::Step::access()));
+    let updated_entries = pre.write_updated_entries(writes);
+    let updated_status = pre.write_updated_status(writes);
+    assert(post.lookup_map == pre.lookup_map);
+    assert(post.entries == pre.entries.union_prefer_right(updated_entries));
+    assert(post.status_map == pre.status_map.union_prefer_right(updated_status));
+
+    assert_maps_equal!(
+        project_cache_pages_by_addrs(post, addrs),
+        project_cache_pages_by_addrs(pre, addrs).union_prefer_right(writes),
+        addr => {
+            if writes.contains_key(addr) {
+                assert(addrs.contains(addr));
+                assert(pre.valid_write(addr));
+                assert(pre.lookup_map.contains_key(addr));
+                let slot = pre.lookup_map[addr];
+                if pre.entries[slot] is Filled {
+                    assert(pre.entries[slot].get_addr() == addr);
+                } else {
+                    assert(pre.entries[slot] is Reserved);
+                    assert(pre.entries[slot].get_addr() == addr);
+                }
+                let restricted = pre.lookup_map.restrict(writes.dom());
+                assert(restricted.contains_key(addr));
+                assert(restricted[addr] == slot);
+                assert(restricted.values().contains(slot));
+                assert(updated_entries.contains_key(slot));
+                assert(post.entries[slot] == Entry::Filled{addr, data: writes[addr]});
+                assert(cache_filled_addr(post, addr));
+                assert(project_cache_pages_by_addrs(post, addrs).contains_key(addr));
+                assert(project_cache_pages_by_addrs(post, addrs)[addr] == writes[addr]);
+            } else {
+                Cache::State::access_unwritten_addr_unchanged(pre, post, reads, writes, addr);
+                if project_cache_pages_by_addrs(post, addrs).contains_key(addr) {
+                    assert(addrs.contains(addr));
+                    assert(cache_filled_addr(post, addr));
+                    assert(cache_filled_addr(pre, addr));
+                    assert(post.lookup_map[addr] == pre.lookup_map[addr]);
+                    assert(post.entries[post.lookup_map[addr]] == pre.entries[pre.lookup_map[addr]]);
+                }
+                if project_cache_pages_by_addrs(pre, addrs).contains_key(addr) {
+                    assert(addrs.contains(addr));
+                    assert(cache_filled_addr(pre, addr));
+                    assert(cache_filled_addr(post, addr));
+                    assert(post.lookup_map[addr] == pre.lookup_map[addr]);
+                    assert(post.entries[post.lookup_map[addr]] == pre.entries[pre.lookup_map[addr]]);
+                }
+            }
+        }
+    );
+    assert_maps_equal!(
+        project_cache_status_by_addrs(post, addrs),
+        project_cache_status_by_addrs(pre, addrs)
+            .union_prefer_right(status_map(writes.dom(), CachingDiskPageStatus::Dirty)),
+        addr => {
+            if writes.contains_key(addr) {
+                assert(addrs.contains(addr));
+                assert(pre.valid_write(addr));
+                assert(pre.lookup_map.contains_key(addr));
+                let slot = pre.lookup_map[addr];
+                let restricted = pre.lookup_map.restrict(writes.dom());
+                assert(restricted.contains_key(addr));
+                assert(restricted[addr] == slot);
+                assert(restricted.values().contains(slot));
+                assert(updated_status.contains_key(slot));
+                assert(post.status_map[slot] == CacheStatus::Dirty);
+                assert(cache_filled_addr(post, addr));
+                assert(project_cache_status_by_addrs(post, addrs)[addr] == CachingDiskPageStatus::Dirty);
+            } else {
+                Cache::State::access_unwritten_addr_unchanged(pre, post, reads, writes, addr);
+                if project_cache_status_by_addrs(post, addrs).contains_key(addr) {
+                    assert(addrs.contains(addr));
+                    assert(cache_filled_addr(post, addr));
+                    assert(cache_filled_addr(pre, addr));
+                    assert(post.lookup_map[addr] == pre.lookup_map[addr]);
+                    assert(post.status_map[post.lookup_map[addr]]
+                        == pre.status_map[pre.lookup_map[addr]]);
+                }
+                if project_cache_status_by_addrs(pre, addrs).contains_key(addr) {
+                    assert(addrs.contains(addr));
+                    assert(cache_filled_addr(pre, addr));
+                    assert(cache_filled_addr(post, addr));
+                    assert(post.lookup_map[addr] == pre.lookup_map[addr]);
+                    assert(post.status_map[post.lookup_map[addr]]
+                        == pre.status_map[pre.lookup_map[addr]]);
+                }
+            }
+        }
+    );
+}
+
 pub proof fn cache_access_refines_caching_disk_access(
     pre_cache: Cache::State,
     post_cache: Cache::State,
@@ -421,6 +536,364 @@ pub proof fn cache_access_refines_caching_disk_access(
         reveal(CachingDisk::State::next_by);
     }
     reveal(CachingDisk::State::next);
+}
+
+pub proof fn cache_access_refines_caching_disk_access_by_domains(
+    pre_cache: Cache::State,
+    post_cache: Cache::State,
+    disk: AsyncDisk::State,
+    cache_addrs: Set<Address>,
+    persistent_addrs: Set<Address>,
+    reads: Map<Address, RawPage>,
+    writes: Map<Address, RawPage>,
+)
+    requires
+        pre_cache.inv(),
+        Cache::State::next(pre_cache, post_cache, Cache::Label::Access{reads, writes}),
+        reads <= project_cache_pages_by_addrs(pre_cache, cache_addrs),
+        writes.dom() <= cache_addrs,
+    ensures
+        CachingDisk::State::next(
+            caching_disk_i_by_domains(pre_cache, disk, cache_addrs, persistent_addrs),
+            caching_disk_i_by_domains(post_cache, disk, cache_addrs, persistent_addrs),
+            CachingDisk::Label::Access{reads, writes},
+        ),
+{
+    let pre_cd = caching_disk_i_by_domains(pre_cache, disk, cache_addrs, persistent_addrs);
+    let post_cd = caching_disk_i_by_domains(post_cache, disk, cache_addrs, persistent_addrs);
+    projected_cache_access_effect_by_addrs(pre_cache, post_cache, cache_addrs, reads, writes);
+    assert(pre_cd.persistent == post_cd.persistent);
+    assert(post_cd.cache == pre_cd.cache.union_prefer_right(writes));
+    assert(post_cd.status == pre_cd.status.union_prefer_right(
+        status_map(writes.dom(), CachingDiskPageStatus::Dirty)));
+    assert forall |addr: Address| #[trigger] writes.contains_key(addr)
+        && pre_cd.status.contains_key(addr)
+        implies !(pre_cd.status[addr] == CachingDiskPageStatus::Writeback) by {
+        assert(pre_cache.valid_write(addr)) by {
+            reveal(Cache::State::next);
+            reveal(Cache::State::next_by);
+            assert(Cache::State::next_by(
+                pre_cache,
+                post_cache,
+                Cache::Label::Access{reads, writes},
+                Cache::Step::access(),
+            ));
+        }
+        assert(pre_cache.lookup_map.contains_key(addr));
+        let slot = pre_cache.lookup_map[addr];
+        assert(cache_filled_addr(pre_cache, addr));
+        if pre_cache.status_map[slot] == CacheStatus::Writeback {
+            assert(pre_cd.status[addr] == CachingDiskPageStatus::Writeback);
+            assert(false);
+        }
+    }
+    assert(CachingDisk::State::next_by(
+        pre_cd,
+        post_cd,
+        CachingDisk::Label::Access{reads, writes},
+        CachingDisk::Step::access(),
+    )) by {
+        reveal(CachingDisk::State::next_by);
+    }
+    reveal(CachingDisk::State::next);
+}
+
+pub proof fn cache_access_refines_caching_disk_access_by_growing_domains(
+    pre_cache: Cache::State,
+    post_cache: Cache::State,
+    disk: AsyncDisk::State,
+    pre_cache_addrs: Set<Address>,
+    post_cache_addrs: Set<Address>,
+    pre_persistent_addrs: Set<Address>,
+    post_persistent_addrs: Set<Address>,
+    reads: Map<Address, RawPage>,
+    writes: Map<Address, RawPage>,
+)
+    requires
+        pre_cache.inv(),
+        Cache::State::next(pre_cache, post_cache, Cache::Label::Access{reads, writes}),
+        reads <= project_cache_pages_by_addrs(pre_cache, pre_cache_addrs),
+        pre_cache_addrs <= post_cache_addrs,
+        post_cache_addrs <= pre_cache_addrs + writes.dom(),
+        writes.dom() <= post_cache_addrs,
+        project_persistent_by_addrs(disk, post_persistent_addrs)
+            == project_persistent_by_addrs(disk, pre_persistent_addrs),
+    ensures
+        CachingDisk::State::next(
+            caching_disk_i_by_domains(pre_cache, disk, pre_cache_addrs, pre_persistent_addrs),
+            caching_disk_i_by_domains(post_cache, disk, post_cache_addrs, post_persistent_addrs),
+            CachingDisk::Label::Access{reads, writes},
+        ),
+{
+    let pre_cd = caching_disk_i_by_domains(pre_cache, disk, pre_cache_addrs, pre_persistent_addrs);
+    let post_cd = caching_disk_i_by_domains(post_cache, disk, post_cache_addrs, post_persistent_addrs);
+    projected_cache_access_effect_by_addrs(pre_cache, post_cache, post_cache_addrs, reads, writes);
+    assert(pre_cd.persistent == post_cd.persistent);
+    assert_maps_equal!(
+        post_cd.cache,
+        pre_cd.cache.union_prefer_right(writes),
+        addr => {
+            if writes.contains_key(addr) {
+                assert(post_cache_addrs.contains(addr));
+                assert(project_cache_pages_by_addrs(post_cache, post_cache_addrs).contains_key(addr));
+                assert(project_cache_pages_by_addrs(post_cache, post_cache_addrs)[addr] == writes[addr]);
+            } else {
+                if post_cd.cache.contains_key(addr) {
+                    assert(post_cache_addrs.contains(addr));
+                    assert(pre_cache_addrs.contains(addr)) by {
+                        if !pre_cache_addrs.contains(addr) {
+                            assert((pre_cache_addrs + writes.dom()).contains(addr));
+                            assert(writes.dom().contains(addr));
+                            assert(false);
+                        }
+                    }
+                    Cache::State::access_unwritten_addr_unchanged(pre_cache, post_cache, reads, writes, addr);
+                    assert(cache_filled_addr(post_cache, addr));
+                    assert(cache_filled_addr(pre_cache, addr));
+                }
+                if pre_cd.cache.contains_key(addr) {
+                    assert(pre_cache_addrs.contains(addr));
+                    assert(post_cache_addrs.contains(addr));
+                    Cache::State::access_unwritten_addr_unchanged(pre_cache, post_cache, reads, writes, addr);
+                    assert(cache_filled_addr(pre_cache, addr));
+                    assert(cache_filled_addr(post_cache, addr));
+                }
+            }
+        }
+    );
+    assert_maps_equal!(
+        post_cd.status,
+        pre_cd.status.union_prefer_right(status_map(writes.dom(), CachingDiskPageStatus::Dirty)),
+        addr => {
+            if writes.contains_key(addr) {
+                assert(post_cache_addrs.contains(addr));
+                assert(project_cache_status_by_addrs(post_cache, post_cache_addrs).contains_key(addr));
+                assert(project_cache_status_by_addrs(post_cache, post_cache_addrs)[addr] == CachingDiskPageStatus::Dirty);
+            } else {
+                if post_cd.status.contains_key(addr) {
+                    assert(post_cache_addrs.contains(addr));
+                    assert(pre_cache_addrs.contains(addr)) by {
+                        if !pre_cache_addrs.contains(addr) {
+                            assert((pre_cache_addrs + writes.dom()).contains(addr));
+                            assert(writes.dom().contains(addr));
+                            assert(false);
+                        }
+                    }
+                    Cache::State::access_unwritten_addr_unchanged(pre_cache, post_cache, reads, writes, addr);
+                    assert(cache_filled_addr(post_cache, addr));
+                    assert(cache_filled_addr(pre_cache, addr));
+                    assert(post_cache.lookup_map[addr] == pre_cache.lookup_map[addr]);
+                    assert(post_cache.status_map[post_cache.lookup_map[addr]]
+                        == pre_cache.status_map[pre_cache.lookup_map[addr]]);
+                }
+                if pre_cd.status.contains_key(addr) {
+                    assert(pre_cache_addrs.contains(addr));
+                    assert(post_cache_addrs.contains(addr));
+                    Cache::State::access_unwritten_addr_unchanged(pre_cache, post_cache, reads, writes, addr);
+                    assert(cache_filled_addr(pre_cache, addr));
+                    assert(cache_filled_addr(post_cache, addr));
+                    assert(post_cache.lookup_map[addr] == pre_cache.lookup_map[addr]);
+                    assert(post_cache.status_map[post_cache.lookup_map[addr]]
+                        == pre_cache.status_map[pre_cache.lookup_map[addr]]);
+                }
+            }
+        }
+    );
+    assert forall |addr: Address| #[trigger] writes.contains_key(addr)
+        && pre_cd.status.contains_key(addr)
+        implies !(pre_cd.status[addr] == CachingDiskPageStatus::Writeback) by {
+        assert(pre_cache.valid_write(addr)) by {
+            reveal(Cache::State::next);
+            reveal(Cache::State::next_by);
+            assert(Cache::State::next_by(
+                pre_cache,
+                post_cache,
+                Cache::Label::Access{reads, writes},
+                Cache::Step::access(),
+            ));
+        }
+        assert(pre_cache.lookup_map.contains_key(addr));
+        let slot = pre_cache.lookup_map[addr];
+        assert(cache_filled_addr(pre_cache, addr));
+        if pre_cache.status_map[slot] == CacheStatus::Writeback {
+            assert(pre_cd.status[addr] == CachingDiskPageStatus::Writeback);
+            assert(false);
+        }
+    }
+    assert(CachingDisk::State::next_by(
+        pre_cd,
+        post_cd,
+        CachingDisk::Label::Access{reads, writes},
+        CachingDisk::Step::access(),
+    )) by {
+        reveal(CachingDisk::State::next_by);
+    }
+    reveal(CachingDisk::State::next);
+}
+
+pub proof fn cache_access_refines_caching_disk_access_by_growing_domains_with_component_reads(
+    pre_cache: Cache::State,
+    post_cache: Cache::State,
+    disk: AsyncDisk::State,
+    pre_cache_addrs: Set<Address>,
+    post_cache_addrs: Set<Address>,
+    pre_persistent_addrs: Set<Address>,
+    post_persistent_addrs: Set<Address>,
+    cache_reads: Map<Address, RawPage>,
+    component_reads: Map<Address, RawPage>,
+    writes: Map<Address, RawPage>,
+)
+    requires
+        pre_cache.inv(),
+        Cache::State::next(pre_cache, post_cache, Cache::Label::Access{reads: cache_reads, writes}),
+        component_reads <= project_cache_pages_by_addrs(pre_cache, pre_cache_addrs),
+        pre_cache_addrs <= post_cache_addrs,
+        post_cache_addrs <= pre_cache_addrs + writes.dom(),
+        writes.dom() <= post_cache_addrs,
+        project_persistent_by_addrs(disk, post_persistent_addrs)
+            == project_persistent_by_addrs(disk, pre_persistent_addrs),
+    ensures
+        CachingDisk::State::next(
+            caching_disk_i_by_domains(pre_cache, disk, pre_cache_addrs, pre_persistent_addrs),
+            caching_disk_i_by_domains(post_cache, disk, post_cache_addrs, post_persistent_addrs),
+            CachingDisk::Label::Access{reads: component_reads, writes},
+        ),
+{
+    let pre_cd = caching_disk_i_by_domains(pre_cache, disk, pre_cache_addrs, pre_persistent_addrs);
+    let post_cd = caching_disk_i_by_domains(post_cache, disk, post_cache_addrs, post_persistent_addrs);
+    projected_cache_access_effect_by_addrs(pre_cache, post_cache, post_cache_addrs, cache_reads, writes);
+    assert(pre_cd.persistent == post_cd.persistent);
+    assert_maps_equal!(
+        post_cd.cache,
+        pre_cd.cache.union_prefer_right(writes),
+        addr => {
+            if writes.contains_key(addr) {
+                assert(post_cache_addrs.contains(addr));
+                assert(project_cache_pages_by_addrs(post_cache, post_cache_addrs).contains_key(addr));
+                assert(project_cache_pages_by_addrs(post_cache, post_cache_addrs)[addr] == writes[addr]);
+            } else {
+                if post_cd.cache.contains_key(addr) {
+                    assert(post_cache_addrs.contains(addr));
+                    assert(pre_cache_addrs.contains(addr)) by {
+                        if !pre_cache_addrs.contains(addr) {
+                            assert((pre_cache_addrs + writes.dom()).contains(addr));
+                            assert(writes.dom().contains(addr));
+                            assert(false);
+                        }
+                    }
+                    Cache::State::access_unwritten_addr_unchanged(pre_cache, post_cache, cache_reads, writes, addr);
+                    assert(cache_filled_addr(post_cache, addr));
+                    assert(cache_filled_addr(pre_cache, addr));
+                }
+                if pre_cd.cache.contains_key(addr) {
+                    assert(pre_cache_addrs.contains(addr));
+                    assert(post_cache_addrs.contains(addr));
+                    Cache::State::access_unwritten_addr_unchanged(pre_cache, post_cache, cache_reads, writes, addr);
+                    assert(cache_filled_addr(pre_cache, addr));
+                    assert(cache_filled_addr(post_cache, addr));
+                }
+            }
+        }
+    );
+    assert_maps_equal!(
+        post_cd.status,
+        pre_cd.status.union_prefer_right(status_map(writes.dom(), CachingDiskPageStatus::Dirty)),
+        addr => {
+            if writes.contains_key(addr) {
+                assert(post_cache_addrs.contains(addr));
+                assert(project_cache_status_by_addrs(post_cache, post_cache_addrs).contains_key(addr));
+                assert(project_cache_status_by_addrs(post_cache, post_cache_addrs)[addr] == CachingDiskPageStatus::Dirty);
+            } else {
+                if post_cd.status.contains_key(addr) {
+                    assert(post_cache_addrs.contains(addr));
+                    assert(pre_cache_addrs.contains(addr)) by {
+                        if !pre_cache_addrs.contains(addr) {
+                            assert((pre_cache_addrs + writes.dom()).contains(addr));
+                            assert(writes.dom().contains(addr));
+                            assert(false);
+                        }
+                    }
+                    Cache::State::access_unwritten_addr_unchanged(pre_cache, post_cache, cache_reads, writes, addr);
+                    assert(cache_filled_addr(post_cache, addr));
+                    assert(cache_filled_addr(pre_cache, addr));
+                    assert(post_cache.lookup_map[addr] == pre_cache.lookup_map[addr]);
+                    assert(post_cache.status_map[post_cache.lookup_map[addr]]
+                        == pre_cache.status_map[pre_cache.lookup_map[addr]]);
+                }
+                if pre_cd.status.contains_key(addr) {
+                    assert(pre_cache_addrs.contains(addr));
+                    assert(post_cache_addrs.contains(addr));
+                    Cache::State::access_unwritten_addr_unchanged(pre_cache, post_cache, cache_reads, writes, addr);
+                    assert(cache_filled_addr(pre_cache, addr));
+                    assert(cache_filled_addr(post_cache, addr));
+                    assert(post_cache.lookup_map[addr] == pre_cache.lookup_map[addr]);
+                    assert(post_cache.status_map[post_cache.lookup_map[addr]]
+                        == pre_cache.status_map[pre_cache.lookup_map[addr]]);
+                }
+            }
+        }
+    );
+    assert forall |addr: Address| #[trigger] writes.contains_key(addr)
+        && pre_cd.status.contains_key(addr)
+        implies !(pre_cd.status[addr] == CachingDiskPageStatus::Writeback) by {
+        assert(pre_cache.valid_write(addr)) by {
+            reveal(Cache::State::next);
+            reveal(Cache::State::next_by);
+            assert(Cache::State::next_by(
+                pre_cache,
+                post_cache,
+                Cache::Label::Access{reads: cache_reads, writes},
+                Cache::Step::access(),
+            ));
+        }
+        assert(pre_cache.lookup_map.contains_key(addr));
+        let slot = pre_cache.lookup_map[addr];
+        assert(cache_filled_addr(pre_cache, addr));
+        if pre_cache.status_map[slot] == CacheStatus::Writeback {
+            assert(pre_cd.status[addr] == CachingDiskPageStatus::Writeback);
+            assert(false);
+        }
+    }
+    assert(CachingDisk::State::next_by(
+        pre_cd,
+        post_cd,
+        CachingDisk::Label::Access{reads: component_reads, writes},
+        CachingDisk::Step::access(),
+    )) by {
+        reveal(CachingDisk::State::next_by);
+    }
+    reveal(CachingDisk::State::next);
+}
+
+pub proof fn cache_access_refines_caching_disk_access_by_addrs(
+    pre_cache: Cache::State,
+    post_cache: Cache::State,
+    disk: AsyncDisk::State,
+    addrs: Set<Address>,
+    reads: Map<Address, RawPage>,
+    writes: Map<Address, RawPage>,
+)
+    requires
+        pre_cache.inv(),
+        Cache::State::next(pre_cache, post_cache, Cache::Label::Access{reads, writes}),
+        reads <= project_cache_pages_by_addrs(pre_cache, addrs),
+        writes.dom() <= addrs,
+    ensures
+        CachingDisk::State::next(
+            caching_disk_i_by_addrs(pre_cache, disk, addrs),
+            caching_disk_i_by_addrs(post_cache, disk, addrs),
+            CachingDisk::Label::Access{reads, writes},
+        ),
+{
+    cache_access_refines_caching_disk_access_by_domains(
+        pre_cache,
+        post_cache,
+        disk,
+        addrs,
+        addrs,
+        reads,
+        writes,
+    );
 }
 
 pub proof fn projected_cache_read_only_access_unchanged(
@@ -729,6 +1202,363 @@ pub proof fn projected_cache_access_outside_addrs_unchanged(
     });
 }
 
+pub proof fn cache_internal_refines_caching_disk_internal_by_domains(
+    pre_cache: Cache::State,
+    post_cache: Cache::State,
+    disk: AsyncDisk::State,
+    cache_addrs: Set<Address>,
+    persistent_addrs: Set<Address>,
+)
+    requires
+        pre_cache.inv(),
+        Cache::State::next(pre_cache, post_cache, Cache::Label::Internal{}),
+    ensures
+        CachingDisk::State::next(
+            caching_disk_i_by_domains(pre_cache, disk, cache_addrs, persistent_addrs),
+            caching_disk_i_by_domains(post_cache, disk, cache_addrs, persistent_addrs),
+            CachingDisk::Label::Internal{},
+        ),
+{
+    let pre_cd = caching_disk_i_by_domains(pre_cache, disk, cache_addrs, persistent_addrs);
+    let post_cd = caching_disk_i_by_domains(post_cache, disk, cache_addrs, persistent_addrs);
+    Cache::State::inv_next(pre_cache, post_cache, Cache::Label::Internal{});
+    pre_cache.build_lookup_map_ensures();
+    post_cache.build_lookup_map_ensures();
+    reveal(Cache::State::next);
+    reveal(Cache::State::next_by);
+    let step = choose |step: Cache::Step| Cache::State::next_by(
+        pre_cache,
+        post_cache,
+        Cache::Label::Internal{},
+        step,
+    );
+    match step {
+        Cache::Step::reserve(new_slots_mapping) => {
+            assert(Cache::State::reserve(pre_cache, post_cache, Cache::Label::Internal{}, new_slots_mapping)) by {
+                reveal(Cache::State::reserve);
+            }
+            let updated_entries = Map::new(
+                |slot| new_slots_mapping.contains_key(slot),
+                |slot| Entry::Reserved{addr: new_slots_mapping[slot]},
+            );
+            assert(post_cache.entries == pre_cache.entries.union_prefer_right(updated_entries));
+            assert(post_cache.status_map == pre_cache.status_map);
+            assert_maps_equal!(
+                project_cache_pages_by_addrs(post_cache, cache_addrs),
+                project_cache_pages_by_addrs(pre_cache, cache_addrs),
+                addr => {
+                    if project_cache_pages_by_addrs(post_cache, cache_addrs).contains_key(addr) {
+                        assert(cache_addrs.contains(addr));
+                        assert(cache_filled_addr(post_cache, addr));
+                        let slot = post_cache.lookup_map[addr];
+                        assert(post_cache.entries[slot] is Filled);
+                        assert(!updated_entries.contains_key(slot)) by {
+                            if updated_entries.contains_key(slot) {
+                                assert(post_cache.entries[slot] == Entry::Reserved{
+                                    addr: new_slots_mapping[slot],
+                                });
+                                assert(false);
+                            }
+                        }
+                        assert(post_cache.entries[slot] == pre_cache.entries[slot]);
+                        assert(pre_cache.entries[slot] is Filled);
+                        assert(pre_cache.lookup_map.contains_key(addr));
+                        assert(pre_cache.lookup_map[addr] == slot) by {
+                            assert(pre_cache.build_lookup_map_props(pre_cache.lookup_map));
+                        }
+                        assert(cache_filled_addr(pre_cache, addr));
+                    }
+                    if project_cache_pages_by_addrs(pre_cache, cache_addrs).contains_key(addr) {
+                        assert(cache_addrs.contains(addr));
+                        assert(cache_filled_addr(pre_cache, addr));
+                        let slot = pre_cache.lookup_map[addr];
+                        assert(pre_cache.entries[slot] is Filled);
+                        assert(!new_slots_mapping.contains_key(slot)) by {
+                            if new_slots_mapping.contains_key(slot) {
+                                assert(pre_cache.valid_new_slots_mapping(new_slots_mapping));
+                                assert(pre_cache.entries[slot] is Empty);
+                                assert(false);
+                            }
+                        }
+                        assert(!updated_entries.contains_key(slot));
+                        assert(post_cache.entries[slot] == pre_cache.entries[slot]);
+                        assert(post_cache.lookup_map.contains_key(addr));
+                        assert(post_cache.lookup_map[addr] == slot) by {
+                            assert(post_cache.build_lookup_map_props(post_cache.lookup_map));
+                        }
+                        assert(cache_filled_addr(post_cache, addr));
+                    }
+                }
+            );
+            assert_maps_equal!(
+                project_cache_status_by_addrs(post_cache, cache_addrs),
+                project_cache_status_by_addrs(pre_cache, cache_addrs),
+                addr => {
+                    if project_cache_status_by_addrs(post_cache, cache_addrs).contains_key(addr) {
+                        assert(cache_addrs.contains(addr));
+                        assert(cache_filled_addr(post_cache, addr));
+                        let slot = post_cache.lookup_map[addr];
+                        assert(post_cache.entries[slot] is Filled);
+                        assert(!updated_entries.contains_key(slot)) by {
+                            if updated_entries.contains_key(slot) {
+                                assert(post_cache.entries[slot] == Entry::Reserved{
+                                    addr: new_slots_mapping[slot],
+                                });
+                                assert(false);
+                            }
+                        }
+                        assert(post_cache.entries[slot] == pre_cache.entries[slot]);
+                        assert(pre_cache.entries[slot] is Filled);
+                        assert(pre_cache.lookup_map.contains_key(addr));
+                        assert(pre_cache.lookup_map[addr] == slot) by {
+                            assert(pre_cache.build_lookup_map_props(pre_cache.lookup_map));
+                        }
+                        assert(post_cache.status_map[slot] == pre_cache.status_map[slot]);
+                        assert(cache_filled_addr(pre_cache, addr));
+                    }
+                    if project_cache_status_by_addrs(pre_cache, cache_addrs).contains_key(addr) {
+                        assert(cache_addrs.contains(addr));
+                        assert(cache_filled_addr(pre_cache, addr));
+                        let slot = pre_cache.lookup_map[addr];
+                        assert(pre_cache.entries[slot] is Filled);
+                        assert(!new_slots_mapping.contains_key(slot)) by {
+                            if new_slots_mapping.contains_key(slot) {
+                                assert(pre_cache.valid_new_slots_mapping(new_slots_mapping));
+                                assert(pre_cache.entries[slot] is Empty);
+                                assert(false);
+                            }
+                        }
+                        assert(!updated_entries.contains_key(slot));
+                        assert(post_cache.entries[slot] == pre_cache.entries[slot]);
+                        assert(post_cache.lookup_map.contains_key(addr));
+                        assert(post_cache.lookup_map[addr] == slot) by {
+                            assert(post_cache.build_lookup_map_props(post_cache.lookup_map));
+                        }
+                        assert(post_cache.status_map[slot] == pre_cache.status_map[slot]);
+                        assert(cache_filled_addr(post_cache, addr));
+                    }
+                }
+            );
+            assert(pre_cd == post_cd) by {
+                assert(pre_cd.cache == post_cd.cache);
+                assert(pre_cd.status == post_cd.status);
+                assert(pre_cd.persistent == post_cd.persistent);
+            }
+            assert(CachingDisk::State::next_by(
+                pre_cd,
+                post_cd,
+                CachingDisk::Label::Internal{},
+                CachingDisk::Step::internal_noop(),
+            )) by {
+                reveal(CachingDisk::State::next_by);
+            }
+            reveal(CachingDisk::State::next);
+        },
+        Cache::Step::evict(evicted_slots) => {
+            assert(Cache::State::evict(pre_cache, post_cache, Cache::Label::Internal{}, evicted_slots)) by {
+                reveal(Cache::State::evict);
+            }
+            let evicted_map = Map::new(
+                |slot: Slot| evicted_slots.contains(slot),
+                |slot: Slot| pre_cache.entries[slot].get_addr(),
+            );
+            let evicted_addrs = evicted_map.values();
+            let projected_evicted = evicted_addrs.intersect(cache_addrs);
+            assert(post_cache.lookup_map == pre_cache.lookup_map.remove_keys(evicted_addrs));
+            assert forall |addr: Address| #[trigger] projected_evicted.contains(addr) implies {
+                &&& pre_cd.status.contains_key(addr)
+                &&& pre_cd.status[addr] == CachingDiskPageStatus::Clean
+            } by {
+                assert(evicted_addrs.contains(addr));
+                let slot = choose |slot: Slot| evicted_map.contains_key(slot) && evicted_map[slot] == addr;
+                assert(evicted_slots.contains(slot));
+                assert(pre_cache.entries[slot] is Filled);
+                assert(pre_cache.status_map[slot] is Clean);
+                assert(pre_cache.status_map[slot] == CacheStatus::Clean);
+                assert(pre_cache.lookup_map.contains_key(addr));
+                assert(pre_cache.lookup_map[addr] == slot) by {
+                    assert(pre_cache.build_lookup_map_props(pre_cache.lookup_map));
+                }
+                assert(cache_filled_addr(pre_cache, addr));
+                assert(project_cache_status_by_addrs(pre_cache, cache_addrs).contains_key(addr));
+                assert(cache_status_i(pre_cache, addr) == CachingDiskPageStatus::Clean);
+            }
+            assert_maps_equal!(
+                post_cd.cache,
+                pre_cd.cache.remove_keys(projected_evicted),
+                addr => {
+                    if post_cd.cache.contains_key(addr) {
+                        assert(cache_addrs.contains(addr));
+                        assert(cache_filled_addr(post_cache, addr));
+                        assert(!evicted_addrs.contains(addr)) by {
+                            if evicted_addrs.contains(addr) {
+                                assert(!post_cache.lookup_map.contains_key(addr));
+                                assert(cache_filled_addr(post_cache, addr));
+                                assert(false);
+                            }
+                        }
+                        assert(pre_cache.lookup_map.contains_key(addr));
+                        assert(pre_cache.lookup_map[addr] == post_cache.lookup_map[addr]) by {
+                            assert(pre_cache.build_lookup_map_props(pre_cache.lookup_map));
+                            assert(post_cache.build_lookup_map_props(post_cache.lookup_map));
+                        }
+                        assert(cache_filled_addr(pre_cache, addr));
+                        assert(!projected_evicted.contains(addr));
+                    }
+                    if pre_cd.cache.remove_keys(projected_evicted).contains_key(addr) {
+                        assert(pre_cd.cache.contains_key(addr));
+                        assert(cache_addrs.contains(addr));
+                        assert(cache_filled_addr(pre_cache, addr));
+                        assert(!projected_evicted.contains(addr));
+                        assert(!evicted_addrs.contains(addr)) by {
+                            if evicted_addrs.contains(addr) {
+                                assert(projected_evicted.contains(addr));
+                                assert(false);
+                            }
+                        }
+                        assert(post_cache.lookup_map.contains_key(addr));
+                        assert(post_cache.lookup_map[addr] == pre_cache.lookup_map[addr]) by {
+                            assert(pre_cache.build_lookup_map_props(pre_cache.lookup_map));
+                            assert(post_cache.build_lookup_map_props(post_cache.lookup_map));
+                        }
+                        assert(cache_filled_addr(post_cache, addr));
+                    }
+                }
+            );
+            assert_maps_equal!(
+                post_cd.status,
+                pre_cd.status.remove_keys(projected_evicted),
+                addr => {
+                    if post_cd.status.contains_key(addr) {
+                        assert(cache_addrs.contains(addr));
+                        assert(cache_filled_addr(post_cache, addr));
+                        assert(!evicted_addrs.contains(addr)) by {
+                            if evicted_addrs.contains(addr) {
+                                assert(!post_cache.lookup_map.contains_key(addr));
+                                assert(cache_filled_addr(post_cache, addr));
+                                assert(false);
+                            }
+                        }
+                        assert(pre_cache.lookup_map.contains_key(addr));
+                        assert(pre_cache.lookup_map[addr] == post_cache.lookup_map[addr]) by {
+                            assert(pre_cache.build_lookup_map_props(pre_cache.lookup_map));
+                            assert(post_cache.build_lookup_map_props(post_cache.lookup_map));
+                        }
+                        assert(cache_filled_addr(pre_cache, addr));
+                        assert(!projected_evicted.contains(addr));
+                    }
+                    if pre_cd.status.remove_keys(projected_evicted).contains_key(addr) {
+                        assert(pre_cd.status.contains_key(addr));
+                        assert(cache_addrs.contains(addr));
+                        assert(cache_filled_addr(pre_cache, addr));
+                        assert(!projected_evicted.contains(addr));
+                        assert(!evicted_addrs.contains(addr)) by {
+                            if evicted_addrs.contains(addr) {
+                                assert(projected_evicted.contains(addr));
+                                assert(false);
+                            }
+                        }
+                        assert(post_cache.lookup_map.contains_key(addr));
+                        assert(post_cache.lookup_map[addr] == pre_cache.lookup_map[addr]) by {
+                            assert(pre_cache.build_lookup_map_props(pre_cache.lookup_map));
+                            assert(post_cache.build_lookup_map_props(post_cache.lookup_map));
+                        }
+                        assert(cache_filled_addr(post_cache, addr));
+                    }
+                }
+            );
+            assert(post_cd.persistent == pre_cd.persistent);
+            assert(CachingDisk::State::evict_clean(
+                pre_cd,
+                post_cd,
+                CachingDisk::Label::Internal{},
+                projected_evicted,
+            )) by {
+                reveal(CachingDisk::State::evict_clean);
+            }
+            assert(CachingDisk::State::next_by(
+                pre_cd,
+                post_cd,
+                CachingDisk::Label::Internal{},
+                CachingDisk::Step::evict_clean(projected_evicted),
+            )) by {
+                reveal(CachingDisk::State::next_by);
+            }
+            reveal(CachingDisk::State::next);
+        },
+        Cache::Step::noop() => {
+            assert(post_cache == pre_cache) by {
+                assert(Cache::State::noop(pre_cache, post_cache, Cache::Label::Internal{})) by {
+                    reveal(Cache::State::noop);
+                }
+            }
+            assert(pre_cd == post_cd);
+            assert(CachingDisk::State::next_by(
+                pre_cd,
+                post_cd,
+                CachingDisk::Label::Internal{},
+                CachingDisk::Step::internal_noop(),
+            )) by {
+                reveal(CachingDisk::State::next_by);
+            }
+            reveal(CachingDisk::State::next);
+        },
+        _ => {
+            assert(false);
+        },
+    }
+}
+
+pub proof fn cache_internal_refines_caching_disk_internal(
+    pre_cache: Cache::State,
+    post_cache: Cache::State,
+    disk: AsyncDisk::State,
+    owned_aus: Set<AU>,
+)
+    requires
+        pre_cache.inv(),
+        Cache::State::next(pre_cache, post_cache, Cache::Label::Internal{}),
+    ensures
+        CachingDisk::State::next(
+            caching_disk_i(pre_cache, disk, owned_aus),
+            caching_disk_i(post_cache, disk, owned_aus),
+            CachingDisk::Label::Internal{},
+        ),
+{
+    cache_internal_refines_caching_disk_internal_by_domains(
+        pre_cache,
+        post_cache,
+        disk,
+        addresses_in_aus(owned_aus),
+        addresses_in_aus(owned_aus),
+    );
+}
+
+pub proof fn cache_internal_refines_caching_disk_internal_by_addrs(
+    pre_cache: Cache::State,
+    post_cache: Cache::State,
+    disk: AsyncDisk::State,
+    addrs: Set<Address>,
+)
+    requires
+        pre_cache.inv(),
+        Cache::State::next(pre_cache, post_cache, Cache::Label::Internal{}),
+    ensures
+        CachingDisk::State::next(
+            caching_disk_i_by_addrs(pre_cache, disk, addrs),
+            caching_disk_i_by_addrs(post_cache, disk, addrs),
+            CachingDisk::Label::Internal{},
+        ),
+{
+    cache_internal_refines_caching_disk_internal_by_domains(
+        pre_cache,
+        post_cache,
+        disk,
+        addrs,
+        addrs,
+    );
+}
+
 pub proof fn cache_evictable_refines_observe_clean_aus(
     cache: Cache::State,
     disk: AsyncDisk::State,
@@ -769,6 +1599,119 @@ pub proof fn cache_evictable_refines_observe_clean_aus(
         assert(cache.status_map.contains_key(cache.lookup_map[addr]));
         assert(filled_cache_status(cache).contains_key(addr));
         assert(project_cache_status(cache, owned_aus).contains_key(addr));
+        assert(cache_status_i(cache, addr) == CachingDiskPageStatus::Clean);
+        assert(cd.status[addr] == CachingDiskPageStatus::Clean);
+    }
+    assert(CachingDisk::State::next_by(
+        cd,
+        cd,
+        CachingDisk::Label::ObserveCleanAUs{aus},
+        CachingDisk::Step::observe_clean_aus(),
+    )) by {
+        reveal(CachingDisk::State::next_by);
+    }
+    reveal(CachingDisk::State::next);
+}
+
+pub proof fn cache_evictable_refines_observe_clean_aus_by_domains(
+    cache: Cache::State,
+    disk: AsyncDisk::State,
+    cache_addrs: Set<Address>,
+    persistent_addrs: Set<Address>,
+    aus: Set<AU>,
+)
+    requires
+        cache.inv(),
+        Cache::State::next(cache, cache, Cache::Label::EvictableCheck{aus}),
+        addresses_in_aus(aus) <= cache_addrs,
+    ensures
+        CachingDisk::State::next(
+            caching_disk_i_by_domains(cache, disk, cache_addrs, persistent_addrs),
+            caching_disk_i_by_domains(cache, disk, cache_addrs, persistent_addrs),
+            CachingDisk::Label::ObserveCleanAUs{aus},
+        ),
+{
+    let cd = caching_disk_i_by_domains(cache, disk, cache_addrs, persistent_addrs);
+    assert forall |addr: Address| #[trigger] cd.cache.contains_key(addr) && aus.contains(addr.au)
+        implies {
+            &&& cd.status.contains_key(addr)
+            &&& cd.status[addr] == CachingDiskPageStatus::Clean
+        } by {
+        assert(addresses_in_aus(aus).contains(addr));
+        assert(cache_addrs.contains(addr));
+        assert(project_cache_pages_by_addrs(cache, cache_addrs).contains_key(addr));
+        assert(cache_filled_addr(cache, addr));
+        assert(cache.lookup_map.contains_key(addr));
+        reveal(Cache::State::next);
+        reveal(Cache::State::next_by);
+        assert(Cache::State::next_by(
+            cache,
+            cache,
+            Cache::Label::EvictableCheck{aus},
+            Cache::Step::evictable(),
+        ));
+        reveal(Cache::State::evictable);
+        assert(cache.entries[cache.lookup_map[addr]] is Filled);
+        assert(cache.status_map[cache.lookup_map[addr]] is Clean);
+        assert(cache.status_map[cache.lookup_map[addr]] == CacheStatus::Clean);
+        assert(cache.status_map.contains_key(cache.lookup_map[addr]));
+        assert(filled_cache_status(cache).contains_key(addr));
+        assert(project_cache_status_by_addrs(cache, cache_addrs).contains_key(addr));
+        assert(cache_status_i(cache, addr) == CachingDiskPageStatus::Clean);
+        assert(cd.status[addr] == CachingDiskPageStatus::Clean);
+    }
+    assert(CachingDisk::State::next_by(
+        cd,
+        cd,
+        CachingDisk::Label::ObserveCleanAUs{aus},
+        CachingDisk::Step::observe_clean_aus(),
+    )) by {
+        reveal(CachingDisk::State::next_by);
+    }
+    reveal(CachingDisk::State::next);
+}
+
+pub proof fn cache_evictable_refines_observe_clean_aus_by_tight_domains(
+    cache: Cache::State,
+    disk: AsyncDisk::State,
+    cache_addrs: Set<Address>,
+    persistent_addrs: Set<Address>,
+    aus: Set<AU>,
+)
+    requires
+        cache.inv(),
+        Cache::State::next(cache, cache, Cache::Label::EvictableCheck{aus}),
+    ensures
+        CachingDisk::State::next(
+            caching_disk_i_by_domains(cache, disk, cache_addrs, persistent_addrs),
+            caching_disk_i_by_domains(cache, disk, cache_addrs, persistent_addrs),
+            CachingDisk::Label::ObserveCleanAUs{aus},
+        ),
+{
+    let cd = caching_disk_i_by_domains(cache, disk, cache_addrs, persistent_addrs);
+    assert forall |addr: Address| #[trigger] cd.cache.contains_key(addr) && aus.contains(addr.au)
+        implies {
+            &&& cd.status.contains_key(addr)
+            &&& cd.status[addr] == CachingDiskPageStatus::Clean
+        } by {
+        assert(project_cache_pages_by_addrs(cache, cache_addrs).contains_key(addr));
+        assert(cache_filled_addr(cache, addr));
+        assert(cache.lookup_map.contains_key(addr));
+        reveal(Cache::State::next);
+        reveal(Cache::State::next_by);
+        assert(Cache::State::next_by(
+            cache,
+            cache,
+            Cache::Label::EvictableCheck{aus},
+            Cache::Step::evictable(),
+        ));
+        reveal(Cache::State::evictable);
+        assert(cache.entries[cache.lookup_map[addr]] is Filled);
+        assert(cache.status_map[cache.lookup_map[addr]] is Clean);
+        assert(cache.status_map[cache.lookup_map[addr]] == CacheStatus::Clean);
+        assert(cache.status_map.contains_key(cache.lookup_map[addr]));
+        assert(filled_cache_status(cache).contains_key(addr));
+        assert(project_cache_status_by_addrs(cache, cache_addrs).contains_key(addr));
         assert(cache_status_i(cache, addr) == CachingDiskPageStatus::Clean);
         assert(cd.status[addr] == CachingDiskPageStatus::Clean);
     }

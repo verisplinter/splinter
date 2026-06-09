@@ -28,6 +28,7 @@ use crate::implementation::CachedBranch_v::{
 };
 use crate::implementation::CachedJournal_v::{CachedJournal, JournalSnapshot};
 use crate::implementation::CachingDiskBranch_v::sealed_summary_aus_between;
+use crate::implementation::CachingDisk_v::addresses_in_aus;
 use crate::implementation::AbstractSuperblock_v::{
     AbstractSuperblockImage, empty_abstract_superblock_image, marshal_abstract_superblock,
     superblock_matches,
@@ -323,10 +324,16 @@ state_machine!{ AtomicBranchState {
         } else {
             pre.mini_allocator.allocate(init_addr)
         };
+        let pre_support_addrs = atomic_branch_support_addrs(pre);
+        let post_support_addrs = addresses_in_aus(summary_aus(pre.branch_summary))
+            + mini_allocator_allocated_addrs(new_mini_allocator);
 
         require CachedBranch::State::next(pre.active_branch, new_active_branch, branch_lbl);
         require (pre.active_branch.root is Some <==> init_root is None);
         require to_aus(write_nodes.dom()) <= pre.owned_aus();
+        require pre_support_addrs <= post_support_addrs;
+        require write_nodes.dom() <= post_support_addrs;
+        require post_support_addrs <= pre_support_addrs + write_nodes.dom();
 
         update active_branch = new_active_branch;
         update mini_allocator = new_mini_allocator;
@@ -480,7 +487,8 @@ pub enum InternalEvent {
         msgs: Seq<Message>,
         receipt: LoadedPathReceipt,
         init_root: Option<Address>,
-        reads: Map<Address, RawPage>,
+        journal_reads: Map<Address, RawPage>,
+        branch_reads: Map<Address, RawPage>,
         writes: Map<Address, RawPage>,
         branch: AtomicBranchState::State,
     },
@@ -537,6 +545,21 @@ pub open spec fn to_branch_nodes(reads: Map<Address, RawPage>) -> LoadedBranch
         |addr| reads.contains_key(addr),
         |addr| raw_page_to_branch_node(reads[addr]),
     )
+}
+
+pub open spec fn mini_allocator_allocated_addrs(mini_allocator: MiniAllocator) -> Set<Address>
+{
+    Set::new(|addr: Address| {
+        &&& mini_allocator.allocs.contains_key(addr.au)
+        &&& (mini_allocator.allocs[addr.au].reserved
+            + mini_allocator.allocs[addr.au].observed).contains(addr)
+    })
+}
+
+pub open spec fn atomic_branch_support_addrs(branch: AtomicBranchState::State) -> Set<Address>
+{
+    addresses_in_aus(summary_aus(branch.branch_summary))
+        + mini_allocator_allocated_addrs(branch.mini_allocator)
 }
 
 pub open spec fn journal_snapshot_seq_end_from_reads(
@@ -1321,6 +1344,84 @@ impl AtomicBranchState::State {
         }
     }
 
+    pub proof fn append_support_effect(pre: Self, post: Self, lbl: AtomicBranchState::Label)
+        requires
+            AtomicBranchState::State::next(pre, post, lbl),
+            lbl is Append,
+        ensures
+            atomic_branch_support_addrs(pre) <= atomic_branch_support_addrs(post),
+            ({
+                let write_nodes = match lbl {
+                    AtomicBranchState::Label::Append{write_nodes, ..} => write_nodes,
+                    _ => arbitrary(),
+                };
+                write_nodes.dom() <= atomic_branch_support_addrs(post)
+            }),
+            ({
+                let write_nodes = match lbl {
+                    AtomicBranchState::Label::Append{write_nodes, ..} => write_nodes,
+                    _ => arbitrary(),
+                };
+                atomic_branch_support_addrs(post) <= atomic_branch_support_addrs(pre) + write_nodes.dom()
+            }),
+    {
+        reveal(AtomicBranchState::State::next);
+        reveal(AtomicBranchState::State::next_by);
+        let step = choose |step| AtomicBranchState::State::next_by(pre, post, lbl, step);
+        match step {
+            AtomicBranchState::Step::append(new_active_branch) => {
+                assert(AtomicBranchState::State::append(pre, post, lbl, new_active_branch)) by {
+                    reveal(AtomicBranchState::State::append);
+                }
+                let write_nodes = match lbl {
+                    AtomicBranchState::Label::Append{write_nodes, ..} => write_nodes,
+                    _ => arbitrary(),
+                };
+                assert(post.branch_summary == pre.branch_summary);
+                assert(atomic_branch_support_addrs(post)
+                    == addresses_in_aus(summary_aus(pre.branch_summary))
+                        + mini_allocator_allocated_addrs(post.mini_allocator));
+                assert(atomic_branch_support_addrs(pre) <= atomic_branch_support_addrs(post));
+                assert(write_nodes.dom() <= atomic_branch_support_addrs(post));
+                assert(atomic_branch_support_addrs(post)
+                    <= atomic_branch_support_addrs(pre) + write_nodes.dom());
+            },
+            _ => {
+                assert(false);
+            },
+        }
+    }
+
+    pub proof fn fill_aus_effect(pre: Self, post: Self, lbl: AtomicBranchState::Label)
+        requires
+            AtomicBranchState::State::next(pre, post, lbl),
+            lbl is FillAUs,
+        ensures
+            post.image == pre.image,
+            post.persistent_image == pre.persistent_image,
+            post.in_flight == pre.in_flight,
+            post.branch_summary == pre.branch_summary,
+            post.persisted_root_count == pre.persisted_root_count,
+            post.active_branch == pre.active_branch,
+            post.seq_end == pre.seq_end,
+            post.mini_allocator == pre.mini_allocator.add_aus(lbl->aus),
+            post.metadata_loaded() == pre.metadata_loaded(),
+    {
+        reveal(AtomicBranchState::State::next);
+        reveal(AtomicBranchState::State::next_by);
+        let step = choose |step| AtomicBranchState::State::next_by(pre, post, lbl, step);
+        match step {
+            AtomicBranchState::Step::fill_aus() => {
+                assert(AtomicBranchState::State::fill_aus(pre, post, lbl)) by {
+                    reveal(AtomicBranchState::State::fill_aus);
+                }
+            },
+            _ => {
+                assert(false);
+            },
+        }
+    }
+
     pub proof fn commit_complete_effect(
         pre: Self,
         post: Self,
@@ -1684,28 +1785,32 @@ impl AnotherAtomicState {
         msgs: Seq<Message>,
         receipt: LoadedPathReceipt,
         init_root: Option<Address>,
-        reads: Map<Address, RawPage>,
+        journal_reads: Map<Address, RawPage>,
+        branch_reads: Map<Address, RawPage>,
         writes: Map<Address, RawPage>,
         branch: AtomicBranchState::State,
     ) -> bool
     {
+        let reads = journal_reads.union_prefer_right(branch_reads);
         let cache_lbl = Cache::Label::Access{reads, writes};
-        let read_nodes = to_branch_nodes(reads);
+        let read_nodes = to_branch_nodes(branch_reads);
         let write_nodes = to_branch_nodes(writes);
         &&& pre.recovery_state is MetadataLoadComplete
         &&& Cache::State::next(pre.cache, post.cache, cache_lbl)
-        &&& reads.contains_key(addr)
+        &&& journal_reads <= reads
+        &&& branch_reads <= reads
+        &&& journal_reads.contains_key(addr)
+        &&& branch_reads.dom() <= atomic_branch_support_addrs(pre.branch)
         &&& {
-            let journal_reads = to_journal_records(reads);
-            let journal_records = journal_reads[addr].message_seq.maybe_discard_old(
+            let journal_records = to_journal_records(journal_reads)[addr].message_seq.maybe_discard_old(
                 pre.journal.journal.snapshot.boundary_lsn,
             );
-            let branch_records = journal_reads[addr].message_seq.maybe_discard_old(
+            let branch_records = to_journal_records(journal_reads)[addr].message_seq.maybe_discard_old(
                 pre.journal.journal.seq_start(),
             );
             let journal_lbl = AtomicJournalState::Label::ReadForRecovery{
                 messages: journal_records,
-                reads: journal_reads,
+                reads: to_journal_records(journal_reads),
             };
             &&& branch_records == append_puts(pre.branch.seq_end(), keys, msgs)
             &&& AtomicJournalState::State::next(pre.journal, post.journal, journal_lbl)
@@ -3015,6 +3120,109 @@ impl AnotherAtomicState {
         }
     }
 
+    pub proof fn recovery_complete_effect(pre: Self, post: Self)
+        requires
+            Self::recovery_complete(pre, post),
+        ensures
+            pre.recovery_state is MetadataLoadComplete,
+            post.recovery_state is RecoveryComplete,
+            post.cache == pre.cache,
+            post.branch == pre.branch,
+            post.journal.journal == pre.journal.journal,
+            post.journal.journal.seq_end() == pre.branch.seq_end(),
+            post.journal.mini_allocator == pre.journal.mini_allocator,
+            post.journal.in_flight == pre.journal.in_flight,
+            post.journal.ready() == pre.journal.ready(),
+            post.in_flight == pre.in_flight,
+            post.branch.in_flight == pre.branch.in_flight,
+    {
+        let end_lsn = pre.branch.seq_end();
+        let journal_lbl = AtomicJournalState::Label::QueryEndLsn{end_lsn};
+        assert(AtomicJournalState::State::next(pre.journal, post.journal, journal_lbl));
+        reveal(AtomicJournalState::State::next);
+        reveal(AtomicJournalState::State::next_by);
+        let step = choose |step: AtomicJournalState::Step|
+            AtomicJournalState::State::next_by(pre.journal, post.journal, journal_lbl, step);
+        match step {
+            AtomicJournalState::Step::query_end_lsn(new_journal) => {
+                assert(AtomicJournalState::State::query_end_lsn(
+                    pre.journal,
+                    post.journal,
+                    journal_lbl,
+                    new_journal,
+                )) by {
+                    reveal(AtomicJournalState::State::query_end_lsn);
+                }
+                assert(new_journal == post.journal.journal);
+                let cj_lbl = CachedJournal::Label::QueryEndLsn{end_lsn};
+                assert(CachedJournal::State::next(pre.journal.journal, new_journal, cj_lbl));
+                reveal(CachedJournal::State::next);
+                reveal(CachedJournal::State::next_by);
+                let cj_step = choose |step: CachedJournal::Step|
+                    CachedJournal::State::next_by(pre.journal.journal, new_journal, cj_lbl, step);
+                match cj_step {
+                    CachedJournal::Step::query_end_lsn() => {
+                        assert(CachedJournal::State::query_end_lsn(
+                            pre.journal.journal,
+                            new_journal,
+                            cj_lbl,
+                        )) by {
+                            reveal(CachedJournal::State::query_end_lsn);
+                        }
+                        assert(new_journal == pre.journal.journal);
+                    },
+                    _ => {
+                        assert(false);
+                    },
+                }
+            },
+            _ => {
+                assert(false);
+            },
+        }
+        assert(post == Self{
+            recovery_state: RecoveryState::RecoveryComplete,
+            journal: post.journal,
+            ..pre
+        });
+    }
+
+    pub proof fn recovery_complete_wf(pre: Self, post: Self)
+        requires
+            pre.wf(),
+            Self::recovery_complete(pre, post),
+        ensures
+            post.wf(),
+    {
+        Self::recovery_complete_effect(pre, post);
+
+        let end_lsn = pre.branch.seq_end();
+        AtomicJournalState::State::wf_next(
+            pre.journal,
+            post.journal,
+            AtomicJournalState::Label::QueryEndLsn{end_lsn},
+        );
+
+        assert(post.journal.owned_aus() =~= pre.journal.owned_aus());
+        assert(post.branch.owned_aus() =~= pre.branch.owned_aus());
+        assert(post.component_owned_aus() =~= pre.component_owned_aus());
+        assert(post.component_disjoint());
+        assert(post.allocation_wf());
+
+        assert(pre.recovery_metadata_wf());
+        assert(pre.superblock_metadata_known());
+        assert(pre.journal_metadata_loaded());
+        assert(pre.branch_metadata_loaded());
+        assert(post.superblock_metadata_known());
+        assert(post.journal_metadata_loaded());
+        assert(post.branch_metadata_loaded());
+        assert(post.journal.journal.seq_end() == post.branch.seq_end());
+        assert(post.recovery_metadata_wf());
+
+        assert(post.in_flight_agrees());
+        assert(post.wf());
+    }
+
     pub open spec fn accept_sync_request(pre: Self, post: Self, sync_req_id: SyncReqId) -> bool
     {
         &&& pre.client_ready()
@@ -3177,7 +3385,8 @@ impl AnotherAtomicState {
                 msgs,
                 receipt,
                 init_root,
-                reads,
+                journal_reads,
+                branch_reads,
                 writes,
                 branch,
             } => Self::read_for_recovery(
@@ -3188,7 +3397,8 @@ impl AnotherAtomicState {
                 msgs,
                 receipt,
                 init_root,
-                reads,
+                journal_reads,
+                branch_reads,
                 writes,
                 branch,
             ),
@@ -3445,16 +3655,29 @@ impl AnotherAtomicState {
         msgs: Seq<Message>,
         receipt: LoadedPathReceipt,
         init_root: Option<Address>,
-        reads: Map<Address, RawPage>,
+        journal_reads: Map<Address, RawPage>,
+        branch_reads: Map<Address, RawPage>,
         writes: Map<Address, RawPage>,
         branch: AtomicBranchState::State,
     )
         requires
-            Self::read_for_recovery(pre, post, addr, keys, msgs, receipt, init_root, reads, writes, branch),
+            Self::read_for_recovery(
+                pre,
+                post,
+                addr,
+                keys,
+                msgs,
+                receipt,
+                init_root,
+                journal_reads,
+                branch_reads,
+                writes,
+                branch,
+            ),
         ensures
             ({
-                let journal_reads = to_journal_records(reads);
-                let journal_records = journal_reads[addr].message_seq.maybe_discard_old(
+                let records = to_journal_records(journal_reads);
+                let journal_records = records[addr].message_seq.maybe_discard_old(
                     pre.journal.journal.snapshot.boundary_lsn,
                 );
                 AtomicJournalState::State::next(
@@ -3462,13 +3685,13 @@ impl AnotherAtomicState {
                     post.journal,
                     AtomicJournalState::Label::ReadForRecovery{
                         messages: journal_records,
-                        reads: journal_reads,
+                        reads: records,
                     },
                 )
             }),
             ({
-                let journal_reads = to_journal_records(reads);
-                let journal_records = journal_reads[addr].message_seq.maybe_discard_old(
+                let records = to_journal_records(journal_reads);
+                let journal_records = records[addr].message_seq.maybe_discard_old(
                     pre.journal.journal.snapshot.boundary_lsn,
                 );
                 CachedJournal::State::next(
@@ -3476,7 +3699,7 @@ impl AnotherAtomicState {
                     post.journal.journal,
                     CachedJournal::Label::ReadForRecovery{
                         messages: journal_records,
-                        reads: journal_reads,
+                        reads: records,
                     },
                 )
             }),
@@ -3488,13 +3711,13 @@ impl AnotherAtomicState {
                 ..pre
             }),
     {
-        let journal_reads = to_journal_records(reads);
-        let journal_records = journal_reads[addr].message_seq.maybe_discard_old(
+        let records = to_journal_records(journal_reads);
+        let journal_records = records[addr].message_seq.maybe_discard_old(
             pre.journal.journal.snapshot.boundary_lsn,
         );
         let lbl = AtomicJournalState::Label::ReadForRecovery{
             messages: journal_records,
-            reads: journal_reads,
+            reads: records,
         };
         reveal(AtomicJournalState::State::next);
         reveal(AtomicJournalState::State::next_by);
@@ -3518,7 +3741,7 @@ impl AnotherAtomicState {
         }
         let cj_lbl = CachedJournal::Label::ReadForRecovery{
             messages: journal_records,
-            reads: journal_reads,
+            reads: records,
         };
         reveal(CachedJournal::State::next);
         reveal(CachedJournal::State::next_by);
