@@ -30,9 +30,13 @@ use crate::spec::TotalKMMap_t::TotalKMMap;
 
 verus! {
 
-pub open spec fn sealed_store_i(sealed_stack: SealedAllocationBranchStack, seq_end: nat) -> StampedMap
+pub open spec fn sealed_store_i(
+    sealed_stack: SealedAllocationBranchStack,
+    branch_summary: Map<AU, Summary>,
+    seq_end: nat,
+) -> StampedMap
 {
-    sealed_stack.abstract_map_i_at(seq_end).stamped_map
+    sealed_stack.abstract_map_i_at(branch_summary, seq_end).stamped_map
 }
 
 pub open spec fn optional_sealed_store_i(
@@ -41,7 +45,11 @@ pub open spec fn optional_sealed_store_i(
 {
     match sealed_stack {
         Option::None => Option::None,
-        Option::Some{0: stack} => Option::Some(sealed_store_i(stack.sealed_stack, stack.seq_end)),
+        Option::Some{0: stack} => Option::Some(sealed_store_i(
+            stack.sealed_stack,
+            stack.branch_summary,
+            stack.seq_end,
+        )),
     }
 }
 
@@ -60,7 +68,11 @@ impl CrashAwareAllocationBranchStack::State {
     pub open spec fn abstract_i(self) -> AbstractCrashAwareMap::State
     {
         AbstractCrashAwareMap::State{
-            persistent: sealed_store_i(self.persistent, self.persistent_seq_end),
+            persistent: sealed_store_i(
+                self.persistent,
+                self.persistent_branch_summary,
+                self.persistent_seq_end,
+            ),
             ephemeral: self.ephemeral.abstract_i(),
             frozen: optional_sealed_store_i(self.frozen),
         }
@@ -93,7 +105,11 @@ impl CrashAwareAllocationBranchStack::State {
             CrashAwareAllocationBranchStack::Label::CommitStart{new_boundary_lsn, frozen_stack} =>
                 AbstractCrashAwareMap::Label::CommitStartLabel{
                     new_boundary_lsn,
-                    frozen_map: sealed_store_i(frozen_stack.sealed_stack, frozen_stack.seq_end),
+                    frozen_map: sealed_store_i(
+                        frozen_stack.sealed_stack,
+                        frozen_stack.branch_summary,
+                        frozen_stack.seq_end,
+                    ),
                 },
             CrashAwareAllocationBranchStack::Label::CommitComplete =>
                 AbstractCrashAwareMap::Label::CommitCompleteLabel,
@@ -104,39 +120,58 @@ impl CrashAwareAllocationBranchStack::State {
 
     proof fn empty_sealed_stack_refines_to_empty()
         ensures
-            sealed_store_i(empty_sealed_stack(), 0) == empty(),
+            sealed_store_i(empty_sealed_stack(), Map::<AU, Summary>::empty(), 0) == empty(),
     {
         let stack = empty_sealed_stack();
-        stack.kmmap_i_wf();
-        assert(stack.sparse_map() == Map::<Key, Message>::empty());
-        assert(stack.kmmap_i().0 =~= TotalKMMap::empty().0) by {
-            assert forall |key: Key| #[trigger] stack.kmmap_i().0.contains_key(key)
+        let branch_summary = Map::<AU, Summary>::empty();
+        stack.kmmap_i_wf(branch_summary);
+        assert(stack.sparse_map(branch_summary) == Map::<Key, Message>::empty());
+        assert(stack.kmmap_i(branch_summary).0 =~= TotalKMMap::empty().0) by {
+            assert forall |key: Key| #[trigger] stack.kmmap_i(branch_summary).0.contains_key(key)
                 <==> TotalKMMap::empty().0.contains_key(key) by { }
-            assert forall |key: Key| #[trigger] stack.kmmap_i().0.contains_key(key)
-                implies stack.kmmap_i().0[key] == TotalKMMap::empty().0[key] by { }
+            assert forall |key: Key| #[trigger] stack.kmmap_i(branch_summary).0.contains_key(key)
+                implies stack.kmmap_i(branch_summary).0[key] == TotalKMMap::empty().0[key] by { }
         }
-        assert(stack.kmmap_i() == TotalKMMap::empty());
+        assert(stack.kmmap_i(branch_summary) == TotalKMMap::empty());
     }
 
-    proof fn load_stack_matches_persistent(persistent: SealedAllocationBranchStack, persistent_seq_end: nat, free_aus: Set<AU>)
+    proof fn load_stack_matches_persistent(
+        persistent: SealedAllocationBranchStack,
+        persistent_branch_summary: Map<AU, Summary>,
+        persistent_seq_end: nat,
+        free_aus: Set<AU>,
+    )
         requires
-            load_stack(persistent, persistent_seq_end, free_aus).wf(),
+            load_stack(persistent, persistent_branch_summary, persistent_seq_end, free_aus).wf(),
         ensures
-            load_stack(persistent, persistent_seq_end, free_aus).abstract_map_i().stamped_map
-                == persistent.abstract_map_i_at(persistent_seq_end).stamped_map,
+            load_stack(
+                persistent,
+                persistent_branch_summary,
+                persistent_seq_end,
+                free_aus,
+            ).abstract_map_i().stamped_map
+                == persistent.abstract_map_i_at(
+                    persistent_branch_summary,
+                    persistent_seq_end,
+                ).stamped_map,
     {
-        let stack = load_stack(persistent, persistent_seq_end, free_aus);
+        let stack = load_stack(
+            persistent,
+            persistent_branch_summary,
+            persistent_seq_end,
+            free_aus,
+        );
         assert(stack.active_branch.branch is None);
         assert(active_branch_sparse_map(stack.active_branch) == Map::<Key, Message>::empty());
-        assert(stack.sparse_map() =~= persistent.sparse_map()) by {
+        assert(stack.sparse_map() =~= persistent.sparse_map(persistent_branch_summary)) by {
             assert forall |key: Key| #[trigger] stack.sparse_map().contains_key(key)
-                <==> persistent.sparse_map().contains_key(key) by { }
+                <==> persistent.sparse_map(persistent_branch_summary).contains_key(key) by { }
             assert forall |key: Key| #![auto] stack.sparse_map().contains_key(key)
-                implies stack.sparse_map()[key] == persistent.sparse_map()[key] by { }
+                implies stack.sparse_map()[key] == persistent.sparse_map(persistent_branch_summary)[key] by { }
         }
         assert(stack.seq_end == persistent_seq_end);
-        assert(stack.kmmap_i().0 =~= persistent.kmmap_i().0);
-        assert(stack.kmmap_i() == persistent.kmmap_i());
+        assert(stack.kmmap_i().0 =~= persistent.kmmap_i(persistent_branch_summary).0);
+        assert(stack.kmmap_i() == persistent.kmmap_i(persistent_branch_summary));
     }
 
     pub proof fn init_refines(self)
@@ -170,8 +205,18 @@ impl CrashAwareAllocationBranchStack::State {
 
         match lbl {
             CrashAwareAllocationBranchStack::Label::LoadEphemeral{free_aus} => {
-                Self::load_stack_matches_persistent(self.persistent, self.persistent_seq_end, free_aus);
-                let new_map = load_stack(self.persistent, self.persistent_seq_end, free_aus).abstract_map_i();
+                Self::load_stack_matches_persistent(
+                    self.persistent,
+                    self.persistent_branch_summary,
+                    self.persistent_seq_end,
+                    free_aus,
+                );
+                let new_map = load_stack(
+                    self.persistent,
+                    self.persistent_branch_summary,
+                    self.persistent_seq_end,
+                    free_aus,
+                ).abstract_map_i();
                 assert(new_map.stamped_map == self.abstract_i().persistent);
                 assert(AbstractMap::State::init_by(
                     new_map,
@@ -319,6 +364,7 @@ impl CrashAwareAllocationBranchStack::State {
                 AbstractMap::Label::InternalLabel,
             ),
             post.persistent == self.persistent,
+            post.persistent_branch_summary == self.persistent_branch_summary,
             post.persistent_seq_end == self.persistent_seq_end,
             post.frozen == self.frozen,
         ensures
@@ -414,16 +460,29 @@ impl CrashAwareAllocationBranchStack::State {
         lbl: CrashAwareAllocationBranchStack::Label,
         new_stack: AllocationBranchStack::State,
         aux_ptr: Pointer,
+        loose_active_disk: crate::betree::BufferDisk_v::BufferDisk<crate::allocation_layer::AllocationBranch_v::BranchNode>,
     )
         requires
             self.inv(),
             post.inv(),
-            CrashAwareAllocationBranchStack::State::ephemeral_internal_seal(self, post, lbl, new_stack, aux_ptr),
+            CrashAwareAllocationBranchStack::State::ephemeral_internal_seal(
+                self,
+                post,
+                lbl,
+                new_stack,
+                aux_ptr,
+                loose_active_disk,
+            ),
         ensures
             AbstractCrashAwareMap::State::next(self.abstract_i(), post.abstract_i(), self.label_to_abstract_map(lbl)),
     {
         let old_stack = self.ephemeral->v;
-        old_stack.seal_refines(new_stack, AllocationBranchStack::Label::InternalLabel, aux_ptr);
+        old_stack.seal_refines(
+            new_stack,
+            AllocationBranchStack::Label::InternalLabel,
+            aux_ptr,
+            loose_active_disk,
+        );
         self.stack_internal_refines(post, new_stack);
     }
 
@@ -465,7 +524,7 @@ impl CrashAwareAllocationBranchStack::State {
             post.abstract_i(),
             self.label_to_abstract_map(lbl),
             AbstractCrashAwareMap::Step::freeze_map_internal(
-                sealed_stack.abstract_map_i_at(stack.seq_end).stamped_map,
+                sealed_stack.abstract_map_i_at(stack.branch_summary, stack.seq_end).stamped_map,
                 stack.abstract_map_i(),
             ),
         ));
@@ -489,7 +548,11 @@ impl CrashAwareAllocationBranchStack::State {
         };
         assert(AllocationBranchStack::State::freeze_as(stack, stack, stack_lbl));
         stack.freeze_as_refines(stack, stack_lbl);
-        assert(sealed_store_i(frozen_stack.sealed_stack, frozen_stack.seq_end)
+        assert(sealed_store_i(
+            frozen_stack.sealed_stack,
+            frozen_stack.branch_summary,
+            frozen_stack.seq_end,
+        )
             == self.label_to_abstract_map(lbl)->frozen_map);
         assert(stack.abstract_map_i() == self.abstract_i().ephemeral->v);
         assert(AbstractCrashAwareMap::State::next_by(
@@ -512,9 +575,17 @@ impl CrashAwareAllocationBranchStack::State {
         reveal(AbstractCrashAwareMap::State::next_by);
         reveal(CrashAwareAllocationBranchStack::State::commit_start_persistent);
         let frozen_stack = lbl->frozen_stack;
-        assert(sealed_store_i(frozen_stack.sealed_stack, frozen_stack.seq_end)
+        assert(sealed_store_i(
+            frozen_stack.sealed_stack,
+            frozen_stack.branch_summary,
+            frozen_stack.seq_end,
+        )
             == self.abstract_i().persistent);
-        assert(sealed_store_i(frozen_stack.sealed_stack, frozen_stack.seq_end)
+        assert(sealed_store_i(
+            frozen_stack.sealed_stack,
+            frozen_stack.branch_summary,
+            frozen_stack.seq_end,
+        )
             == self.label_to_abstract_map(lbl)->frozen_map);
         assert(AbstractCrashAwareMap::State::next_by(
             self.abstract_i(),
@@ -594,8 +665,14 @@ impl CrashAwareAllocationBranchStack::State {
             CrashAwareAllocationBranchStack::Step::ephemeral_internal_split(new_stack, new_child_addr, path, split_arg) => {
                 self.ephemeral_internal_split_refines(post, lbl, new_stack, new_child_addr, path, split_arg);
             }
-            CrashAwareAllocationBranchStack::Step::ephemeral_internal_seal(new_stack, aux_ptr) => {
-                self.ephemeral_internal_seal_refines(post, lbl, new_stack, aux_ptr);
+            CrashAwareAllocationBranchStack::Step::ephemeral_internal_seal(new_stack, aux_ptr, loose_active_disk) => {
+                self.ephemeral_internal_seal_refines(
+                    post,
+                    lbl,
+                    new_stack,
+                    aux_ptr,
+                    loose_active_disk,
+                );
             }
             CrashAwareAllocationBranchStack::Step::ephemeral_internal_fill_au(new_stack, aus) => {
                 self.ephemeral_internal_fill_au_refines(post, lbl, new_stack, aus);

@@ -901,38 +901,6 @@ impl CachingDiskJournal::State {
         let loaded = Self::load_from_persistent(snapshot, persistent);
         assert(loaded.mini_allocator.all_aus() =~= Set::<AU>::empty());
         assert(loaded.disk.visible().dom() == persistent.dom());
-        let image = loaded.backing_journal_image();
-        let tight = image.tight_tj();
-        let tight_index = tight.build_lsn_au_index_from_first(image.first);
-        image.valid_image_implies_tight_valid_image();
-        image.tj.disk_view.loose_build_lsn_au_index_au_walk_matches_tight(
-            image.tj.freshest_rec,
-            image.first,
-        );
-        tight.build_lsn_au_index_from_first_ensures(image.first);
-        assert(loaded.visible_lsn_au_index() == tight_index);
-        assert forall |au: AU| #[trigger] Self::load_from_persistent(
-            snapshot,
-            persistent,
-        ).accessible_aus().contains(au)
-            implies to_aus(persistent.dom()).contains(au) by {
-            if loaded.mini_allocator.all_aus().contains(au) {
-                assert(false);
-            } else {
-                assert(loaded.visible_lsn_au_index().values().contains(au));
-                assert(tight_index.values().contains(au));
-                let lsn = choose |lsn: LSN| tight_index.contains_key(lsn) && tight_index[lsn] == au;
-                let addr = tight.disk_view.instantiate_index_keys_exist_valid_entries(tight_index, lsn);
-                assert(tight.disk_view.entries.contains_key(addr));
-                image.tj.disk_view.path_build_tight_is_sub_disk(image.tj.freshest_rec);
-                assert(image.tj.disk_view.entries.contains_key(addr));
-                assert(to_journal_records(persistent).contains_key(addr));
-                assert(persistent.contains_key(addr));
-                to_aus_domain(persistent.dom());
-                assert(to_aus(persistent.dom()).contains(addr.au));
-                assert(addr.au == au);
-            }
-        }
     }
 
     pub open spec fn visible_lsn_au_index(self) -> LsnAUIndex {
@@ -968,7 +936,11 @@ impl CachingDiskJournal::State {
     }
 
     pub open spec fn accessible_aus(self) -> Set<AU> {
-        self.visible_lsn_au_index().values() + self.mini_allocator.all_aus()
+        if self.journal.status is Some {
+            self.visible_lsn_au_index().values() + self.mini_allocator.all_aus()
+        } else {
+            to_aus(self.disk.visible().dom()) + self.mini_allocator.all_aus()
+        }
     }
 
     pub open spec fn clean_watermark_pages(self) -> Set<Address> {
@@ -1160,6 +1132,88 @@ impl CachingDiskJournal::State {
         }
     }
 
+    pub proof fn load_index_preserves_accessible_aus(
+        pre: Self,
+        post: Self,
+        discovered_aus: Set<AU>,
+    )
+        requires
+            pre.inv(),
+            CachingDiskJournal::State::next(
+                pre,
+                post,
+                CachingDiskJournal::Label::LoadIndex{discovered_aus},
+            ),
+        ensures
+            post.accessible_aus() <= pre.accessible_aus(),
+    {
+        let lbl = CachingDiskJournal::Label::LoadIndex{discovered_aus};
+        reveal(CachingDiskJournal::State::next);
+        reveal(CachingDiskJournal::State::next_by);
+        let step = choose |step: CachingDiskJournal::Step|
+            CachingDiskJournal::State::next_by(pre, post, lbl, step);
+        match step {
+            CachingDiskJournal::Step::load_index(new_journal, reads) => {
+                reveal(CachingDiskJournal::State::load_index);
+                let disk_lbl = CachingDisk::Label::Access{reads, writes: Map::empty()};
+                CachingDisk::State::access_effect(pre.disk, pre.disk, reads, Map::empty());
+                CachedJournal::State::load_index_effect(
+                    pre.journal,
+                    post.journal,
+                    to_journal_records(reads),
+                    discovered_aus,
+                );
+                CachedJournal::State::load_index_discovered_aus_in_reads(
+                    pre.journal,
+                    post.journal,
+                    to_journal_records(reads),
+                    discovered_aus,
+                );
+                assert(pre.journal.status is None);
+                assert(post.journal.status is Some);
+                assert(post.disk == pre.disk);
+                assert(post.mini_allocator == pre.mini_allocator);
+                assert(to_journal_records(reads).dom() == reads.dom()) by {
+                    assert_maps_equal!(to_journal_records(reads), to_journal_records(reads));
+                    assert forall |addr: Address| #[trigger] to_journal_records(reads).contains_key(addr)
+                        <==> reads.contains_key(addr) by { }
+                }
+                assert(reads.dom() <= pre.disk.cache.dom()) by {
+                    assert(reads <= pre.disk.cache);
+                    assert forall |addr: Address| #[trigger] reads.dom().contains(addr)
+                        implies pre.disk.cache.dom().contains(addr) by {
+                        assert(reads.contains_key(addr));
+                    }
+                };
+                assert(pre.disk.cache.dom() <= pre.disk.visible().dom()) by {
+                    assert forall |addr: Address| #[trigger] pre.disk.cache.dom().contains(addr)
+                        implies pre.disk.visible().dom().contains(addr) by {
+                        assert(pre.disk.cache.contains_key(addr));
+                        assert(pre.disk.visible().contains_key(addr));
+                    }
+                };
+                to_aus_preserves_lte(reads.dom(), pre.disk.cache.dom());
+                to_aus_preserves_lte(pre.disk.cache.dom(), pre.disk.visible().dom());
+                assert(discovered_aus <= to_aus(pre.disk.visible().dom()));
+                assert forall |au: AU| #[trigger] post.accessible_aus().contains(au)
+                    implies pre.accessible_aus().contains(au) by {
+                    if post.mini_allocator.all_aus().contains(au) {
+                        assert(pre.mini_allocator.all_aus().contains(au));
+                    } else {
+                        assert(post.visible_lsn_au_index().values().contains(au));
+                        assert(cj_lsn_au_index(post.journal).values().contains(au));
+                        assert(post.journal.status.unwrap().lsn_au_index.values().contains(au));
+                        assert(discovered_aus.contains(au));
+                        assert(to_aus(pre.disk.visible().dom()).contains(au));
+                    }
+                }
+            },
+            _ => {
+                assert(false);
+            },
+        }
+    }
+
     pub proof fn loaded_index_values_accessible(self)
         requires
             self.inv(),
@@ -1174,6 +1228,44 @@ impl CachingDiskJournal::State {
         }
     }
 
+    pub proof fn frozen_loose_subdomain_accessible(
+        self,
+        snapshot: JournalSnapshot,
+        addrs: Set<Address>,
+    )
+        requires
+            self.inv(),
+            addrs <= self.frozen_loose_domain(snapshot),
+            addrs <= self.journal_disk_view().entries.dom(),
+        ensures
+            to_aus(addrs) <= self.accessible_aus(),
+    {
+        let frozen_index = self.lsn_au_index_or_empty().restrict(self.frozen_lsns(snapshot));
+        assert(frozen_index.values() <= self.lsn_au_index_or_empty().values());
+        assert forall |au: AU|
+            #[trigger] to_aus(addrs).contains(au)
+            implies self.accessible_aus().contains(au) by {
+            let addr = choose |addr: Address|
+                addrs.contains(addr) && addr.au == au;
+            if self.journal.status is Some {
+                assert(addrs.contains(addr));
+                assert(self.frozen_loose_domain(snapshot).contains(addr));
+                assert(addresses_in_aus(frozen_index.values()).contains(addr));
+                assert(frozen_index.values().contains(addr.au));
+                assert(self.lsn_au_index_or_empty().values().contains(addr.au));
+                assert(self.accessible_aus().contains(addr.au));
+            } else {
+                assert(self.journal_disk_view().entries.contains_key(addr));
+                assert(self.disk.visible().contains_key(addr)) by {
+                    assert(to_journal_records(self.disk.visible()).contains_key(addr));
+                }
+                to_aus_domain(self.disk.visible().dom());
+                assert(to_aus(self.disk.visible().dom()).contains(addr.au));
+                assert(self.accessible_aus().contains(addr.au));
+            }
+        }
+    }
+
     pub proof fn frozen_loose_domain_persistent_aus_accessible(self, snapshot: JournalSnapshot)
         requires
             self.inv(),
@@ -1181,21 +1273,45 @@ impl CachingDiskJournal::State {
             to_aus(self.disk.persistent.restrict(self.frozen_loose_domain(snapshot)).dom())
                 <= self.accessible_aus(),
     {
-        let frozen_index = self.lsn_au_index_or_empty().restrict(self.frozen_lsns(snapshot));
-        assert(frozen_index.values() <= self.lsn_au_index_or_empty().values());
-        assert forall |au: AU|
-            #[trigger] to_aus(self.disk.persistent.restrict(self.frozen_loose_domain(snapshot)).dom()).contains(au)
-            implies self.accessible_aus().contains(au) by {
-            let addr = choose |addr: Address|
-                self.disk.persistent.restrict(self.frozen_loose_domain(snapshot)).dom().contains(addr)
-                    && addr.au == au;
-            assert(self.disk.persistent.restrict(self.frozen_loose_domain(snapshot)).contains_key(addr));
-            assert(self.frozen_loose_domain(snapshot).contains(addr));
-            assert(addresses_in_aus(frozen_index.values()).contains(addr));
-            assert(frozen_index.values().contains(addr.au));
-            assert(self.lsn_au_index_or_empty().values().contains(addr.au));
-            assert(self.accessible_aus().contains(addr.au));
+        let addrs = self.disk.persistent.restrict(self.frozen_loose_domain(snapshot)).dom();
+        assert(addrs <= self.frozen_loose_domain(snapshot)) by {
+            assert forall |addr: Address| #[trigger] addrs.contains(addr)
+                implies self.frozen_loose_domain(snapshot).contains(addr) by {
+                assert(self.disk.persistent.restrict(self.frozen_loose_domain(snapshot)).contains_key(addr));
+            }
         }
+        assert(addrs <= self.journal_disk_view().entries.dom()) by {
+            assert forall |addr: Address| #[trigger] addrs.contains(addr)
+                implies self.journal_disk_view().entries.dom().contains(addr) by {
+                assert(self.disk.persistent.restrict(self.frozen_loose_domain(snapshot)).contains_key(addr));
+                assert(self.disk.persistent.contains_key(addr));
+                assert(self.disk.visible().contains_key(addr));
+                assert(to_journal_records(self.disk.visible()).contains_key(addr));
+            }
+        }
+        self.frozen_loose_subdomain_accessible(snapshot, addrs);
+    }
+
+    pub proof fn frozen_tj_aus_accessible(self, snapshot: JournalSnapshot)
+        requires
+            self.inv(),
+        ensures
+            to_aus(self.frozen_tj(snapshot).disk_view.entries.dom()) <= self.accessible_aus(),
+    {
+        let addrs = self.frozen_tj(snapshot).disk_view.entries.dom();
+        assert(addrs <= self.frozen_loose_domain(snapshot)) by {
+            assert forall |addr: Address| #[trigger] addrs.contains(addr)
+                implies self.frozen_loose_domain(snapshot).contains(addr) by {
+                assert(self.frozen_tj(snapshot).disk_view.entries.contains_key(addr));
+            }
+        }
+        assert(addrs <= self.journal_disk_view().entries.dom()) by {
+            assert forall |addr: Address| #[trigger] addrs.contains(addr)
+                implies self.journal_disk_view().entries.dom().contains(addr) by {
+                assert(self.frozen_tj(snapshot).disk_view.entries.contains_key(addr));
+            }
+        }
+        self.frozen_loose_subdomain_accessible(snapshot, addrs);
     }
 
     pub proof fn lsn_au_index_or_empty_matches_full(self)
@@ -1470,11 +1586,6 @@ impl CachingDiskJournal::State {
     {
         &&& post.frozen_snapshot_valid(snapshot, seq_end)
         &&& post.frozen_tj(snapshot) == self.frozen_tj(snapshot)
-        &&& CachingDiskJournal::State::next(
-            post,
-            post,
-            CachingDiskJournal::Label::FreezeForCommit{frozen: snapshot, seq_end},
-        )
     }
 
     pub open spec fn frozen_snapshot_valid(self, snapshot: JournalSnapshot, seq_end: LSN) -> bool

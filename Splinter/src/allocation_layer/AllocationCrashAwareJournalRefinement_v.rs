@@ -503,9 +503,21 @@ impl AllocationCrashAwareJournal::State{
             deallocs: lbl.arrow_Internal_deallocs(),
         };
         aj.next_refines_abstract(new_journal, alloc_lbl);
+        assert(post.i().persistent == self.i().persistent) by {
+            if self.persistent_image is Some {
+                assert(post.persistent_image == self.persistent_image);
+            } else {
+                assert(new_journal.frozen_image(self.persistent).tight_tj()
+                    == aj.frozen_image(self.persistent).tight_tj());
+                assert(new_journal.frozen_image(self.persistent).i()
+                    == aj.frozen_image(self.persistent).i());
+            }
+        }
         if self.frozen is Some {
-            assert(new_journal.frozen_image(self.frozen.unwrap())
-                == aj.frozen_image(self.frozen.unwrap()));
+            assert(new_journal.frozen_image(self.frozen.unwrap()).tight_tj()
+                == aj.frozen_image(self.frozen.unwrap()).tight_tj());
+            assert(new_journal.frozen_image(self.frozen.unwrap()).i()
+                == aj.frozen_image(self.frozen.unwrap()).i());
             assert(post.i().frozen == self.i().frozen);
         }
     }

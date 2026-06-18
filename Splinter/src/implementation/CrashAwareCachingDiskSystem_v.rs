@@ -1123,13 +1123,13 @@ state_machine!{ CrashAwareCachingDiskSystem {
 	                },
 	                _ => { assert(false); },
 	            }
-	            old_e.lsn_au_index_or_empty_matches_full();
-	            new_e.lsn_au_index_or_empty_matches_full();
 	            assert(new_e.journal.snapshot == old_e.journal.snapshot);
 	            assert(new_e.journal_tj() == old_e.journal_tj());
-	            assert(new_e.lsn_au_index_or_empty() =~= old_e.lsn_au_index_or_empty());
-	            assert(caching_disk_journal_accessible_aus(new_e)
-	                =~= caching_disk_journal_accessible_aus(old_e));
+	            CachingDiskJournal::State::load_index_preserves_accessible_aus(
+	                old_e,
+	                new_e,
+	                discovered_aus,
+	            );
 	        }
         assert(Self::journal_state_owned_aus(post.journal)
             <= Self::journal_state_owned_aus(pre.journal));

@@ -7231,6 +7231,245 @@ state_machine!{ AllocationJournal {
         assert(post.frozen_image(frozen) == pre.frozen_image(frozen));
     }
 
+    pub proof fn internal_allocations_preserves_frozen_metadata_tight(
+        pre: Self,
+        post: Self,
+        lbl: Label,
+        frozen: JournalMetadata,
+    )
+        requires
+            pre.refinement_inv(),
+            post.refinement_inv(),
+            lbl is InternalAllocations,
+            Self::next(pre, post, lbl),
+            pre.frozen_metadata_valid(frozen),
+        ensures
+            post.frozen_metadata_valid(frozen),
+            post.frozen_image(frozen).tight_tj()
+                == pre.frozen_image(frozen).tight_tj(),
+    {
+        reveal(AllocationJournal::State::next);
+        reveal(AllocationJournal::State::next_by);
+        let step = choose |step| AllocationJournal::State::next_by(pre, post, lbl, step);
+        match step {
+            AllocationJournal::Step::internal_journal_marshal(cut, addr) => {
+                assert(AllocationJournal::State::internal_journal_marshal(pre, post, lbl, cut, addr));
+                Self::internal_journal_marshal_view_preserves(pre, post, lbl, cut, addr);
+                assert(post.frozen_metadata_valid(frozen));
+                let marshal_addr = addr;
+                let freeze_lbl = AllocationJournal::Label::FreezeForCommit{frozen_journal: frozen};
+                assert(Self::next_by(pre, pre, freeze_lbl, AllocationJournal::Step::freeze_for_commit())) by {
+                    reveal(AllocationJournal::State::next_by);
+                }
+                assert(Self::next(pre, pre, freeze_lbl)) by {
+                    reveal(AllocationJournal::State::next);
+                }
+                Self::frozen_journal_is_valid_image(pre, pre, freeze_lbl);
+
+                let pre_image = pre.frozen_image(frozen);
+                let post_image = post.frozen_image(frozen);
+                let pre_tight = pre_image.tight_tj();
+                let post_tight = post_image.tight_tj();
+
+                assert(pre.frozen_lsn_au_index(frozen) =~= post.frozen_lsn_au_index(frozen)) by {
+                    assert forall |lsn: LSN| #[trigger] pre.frozen_lsn_au_index(frozen).contains_key(lsn)
+                        <==> post.frozen_lsn_au_index(frozen).contains_key(lsn) by {
+                        if pre.frozen_lsn_au_index(frozen).contains_key(lsn) {
+                            assert(pre.lsn_au_index.contains_key(lsn));
+                            assert(frozen.boundary_lsn <= lsn < frozen.seq_end);
+                            assert(post.lsn_au_index.contains_key(lsn));
+                            assert(post.lsn_au_index[lsn] == pre.lsn_au_index[lsn]);
+                        }
+                        if post.frozen_lsn_au_index(frozen).contains_key(lsn) {
+                            assert(post.lsn_au_index.contains_key(lsn));
+                            assert(frozen.boundary_lsn <= lsn < frozen.seq_end);
+                            assert(pre.lsn_au_index.contains_key(lsn));
+                            assert(post.lsn_au_index[lsn] == pre.lsn_au_index[lsn]);
+                        }
+                    }
+                }
+                assert(pre.frozen_domain(frozen) =~= post.frozen_domain(frozen)) by {
+                    assert_maps_equal!(
+                        pre.frozen_lsn_au_index(frozen),
+                        post.frozen_lsn_au_index(frozen)
+                    );
+                }
+                assert(pre_tight.disk_view.is_sub_disk(post_image.tj.disk_view)) by {
+                    pre_image.tj.disk_view.path_build_tight_is_sub_disk(pre_image.tj.freshest_rec);
+                    assert forall |x: Address| #[trigger] pre_tight.disk_view.entries.contains_key(x)
+                        implies post_image.tj.disk_view.entries.contains_key(x)
+                            && post_image.tj.disk_view.entries[x] == pre_tight.disk_view.entries[x] by {
+                        assert(pre_image.tj.disk_view.entries.contains_key(x));
+                        assert(pre.frozen_domain(frozen).contains(x));
+                        assert(post.frozen_domain(frozen).contains(x));
+                        assert(pre.disk_view.entries.contains_key(x));
+                        assert(pre_tight.disk_view.is_sub_disk_with_newer_lsn(pre.tj().disk_view));
+                        assert(pre.tj().disk_view.entries.contains_key(x));
+                        assert(x != marshal_addr) by {
+                            if x == marshal_addr {
+                                assert(pre.tj().disk_view.entries.contains_key(marshal_addr));
+                                assert(!pre.tj().disk_view.entries.contains_key(marshal_addr));
+                            }
+                        }
+                        assert(post.disk_view.entries.contains_key(x));
+                        assert(post.disk_view.entries[x] == pre.disk_view.entries[x]);
+                    }
+                }
+                pre_image.valid_image_implies_tight_valid_image();
+                assert(pre_tight.decodable());
+                assert(pre_tight.disk_view.acyclic());
+                pre_tight.disk_view.decodable_implies_path_decodable(pre_tight.freshest_rec);
+                assert(pre_tight.disk_view.path_decodable(pre_tight.freshest_rec));
+                pre_image.tj.disk_view.path_build_tight_idempotent(pre_image.tj.freshest_rec);
+                assert(pre_image.tj.disk_view.path_build_tight(pre_image.tj.freshest_rec)
+                    == pre_tight.disk_view);
+                assert(pre_tight.disk_view.path_build_tight(pre_tight.freshest_rec)
+                    == pre_tight.disk_view);
+                pre_tight.disk_view.path_build_tight_preserved_in_superdisk(
+                    post_image.tj.disk_view,
+                    pre_tight.freshest_rec,
+                );
+                assert(post_tight == pre_tight);
+            },
+            AllocationJournal::Step::internal_mini_allocator_fill(post_disk_view) => {
+                assert(AllocationJournal::State::internal_mini_allocator_fill(pre, post, lbl, post_disk_view));
+                Self::internal_mini_allocator_fill_tj_unchanged(pre, post, lbl, post_disk_view);
+                assert(post.frozen_metadata_valid(frozen));
+                assert(post.frozen_lsn_au_index(frozen) =~= pre.frozen_lsn_au_index(frozen)) by {
+                    assert_maps_equal!(
+                        post.frozen_lsn_au_index(frozen),
+                        pre.frozen_lsn_au_index(frozen)
+                    );
+                }
+                assert(post.frozen_domain(frozen) =~= pre.frozen_domain(frozen)) by {
+                    assert_maps_equal!(
+                        post.frozen_lsn_au_index(frozen),
+                        pre.frozen_lsn_au_index(frozen)
+                    );
+                }
+                assert(post.frozen_tj(frozen).disk_view.entries
+                    =~= pre.frozen_tj(frozen).disk_view.entries) by {
+                    assert_maps_equal!(
+                        post.frozen_tj(frozen).disk_view.entries,
+                        pre.frozen_tj(frozen).disk_view.entries,
+                        a => {
+                            if post.frozen_tj(frozen).disk_view.entries.contains_key(a) {
+                                assert(post.frozen_domain(frozen).contains(a));
+                                assert(pre.frozen_domain(frozen).contains(a));
+                                assert(pre.disk_view.entries.contains_key(a)) by {
+                                    if !pre.disk_view.entries.contains_key(a) {
+                                        assert(post.disk_view.entries.contains_key(a));
+                                        assert(lbl->allocs.contains(a.au));
+                                        assert(pre.frozen_lsn_au_index(frozen).values().contains(a.au));
+                                        assert(lbl->allocs.disjoint(pre.lsn_au_index.values()));
+                                        assert(false);
+                                    }
+                                }
+                                assert(post.disk_view.entries[a] == pre.disk_view.entries[a]);
+                            }
+                            if pre.frozen_tj(frozen).disk_view.entries.contains_key(a) {
+                                assert(pre.frozen_domain(frozen).contains(a));
+                                assert(post.frozen_domain(frozen).contains(a));
+                                assert(pre.disk_view.entries.contains_key(a));
+                                assert(post.disk_view.entries.contains_key(a));
+                                assert(post.disk_view.entries[a] == pre.disk_view.entries[a]);
+                            }
+                        }
+                    );
+                }
+                assert(post.frozen_tj(frozen).disk_view == pre.frozen_tj(frozen).disk_view);
+                assert(post.frozen_tj(frozen).freshest_rec == pre.frozen_tj(frozen).freshest_rec);
+                assert(post.frozen_tj(frozen) == pre.frozen_tj(frozen));
+                assert(post.frozen_image(frozen).tj == pre.frozen_image(frozen).tj);
+                assert(post.frozen_image(frozen).first == pre.frozen_image(frozen).first);
+                assert(post.frozen_image(frozen) == pre.frozen_image(frozen));
+            },
+            AllocationJournal::Step::internal_mini_allocator_prune(prune_aus) => {
+                assert(AllocationJournal::State::internal_mini_allocator_prune(pre, post, lbl, prune_aus));
+                Self::internal_mini_allocator_prune_tj_unchanged(pre, post, lbl, prune_aus);
+                let deallocs = lbl.arrow_InternalAllocations_deallocs();
+                assert(deallocs.disjoint(pre.lsn_au_index.values())) by {
+                    assert forall |au: AU| #[trigger] deallocs.contains(au)
+                        implies !pre.lsn_au_index.values().contains(au) by {
+                        if pre.lsn_au_index.values().contains(au) {
+                            pre.tj_inherits_semantic_structure();
+                            let first = if pre.tj().freshest_rec is Some {
+                                pre.lsn_au_index[pre.seq_start()]
+                            } else {
+                                0
+                            };
+                            pre.tj().build_lsn_au_index_from_first_ensures(first);
+                            let lsn = choose |lsn: LSN| #![auto]
+                                pre.lsn_au_index.contains_key(lsn) && pre.lsn_au_index[lsn] == au;
+                            let witness = pre.tj().disk_view.instantiate_index_keys_exist_valid_entries(
+                                pre.lsn_au_index,
+                                lsn,
+                            );
+                            assert(witness.au == au);
+                            assert(pre.tj().disk_view.entries.contains_key(witness));
+                            assert(Self::disk_domain_not_free(pre.tj().disk_view, pre.mini_allocator));
+                            assert(!pre.mini_allocator.can_allocate(witness));
+                            assert(pre.mini_allocator.allocs.contains_key(au));
+                            assert(pre.mini_allocator.allocs[au].all_pages_free());
+                            assert(pre.mini_allocator.wf());
+                            assert(pre.mini_allocator.allocs[au].au == au);
+                            assert(pre.mini_allocator.allocs[au].is_free_addr(witness));
+                            assert(pre.mini_allocator.can_allocate(witness));
+                            assert(false);
+                        }
+                    }
+                }
+                assert(post.frozen_metadata_valid(frozen));
+                assert(post.frozen_lsn_au_index(frozen) =~= pre.frozen_lsn_au_index(frozen)) by {
+                    assert_maps_equal!(
+                        post.frozen_lsn_au_index(frozen),
+                        pre.frozen_lsn_au_index(frozen)
+                    );
+                }
+                assert(post.frozen_domain(frozen) =~= pre.frozen_domain(frozen)) by {
+                    assert_maps_equal!(
+                        post.frozen_lsn_au_index(frozen),
+                        pre.frozen_lsn_au_index(frozen)
+                    );
+                }
+                assert(post.frozen_tj(frozen).disk_view.entries
+                    =~= pre.frozen_tj(frozen).disk_view.entries) by {
+                    assert_maps_equal!(
+                        post.frozen_tj(frozen).disk_view.entries,
+                        pre.frozen_tj(frozen).disk_view.entries,
+                        a => {
+                            if post.frozen_tj(frozen).disk_view.entries.contains_key(a) {
+                                assert(pre.frozen_domain(frozen).contains(a));
+                                assert(pre.disk_view.entries.contains_key(a));
+                                assert(!deallocs.contains(a.au));
+                                assert(post.disk_view.entries[a] == pre.disk_view.entries[a]);
+                            }
+                            if pre.frozen_tj(frozen).disk_view.entries.contains_key(a) {
+                                assert(pre.frozen_domain(frozen).contains(a));
+                                assert(pre.frozen_lsn_au_index(frozen).values().contains(a.au));
+                                assert(!deallocs.contains(a.au));
+                                assert(post.disk_view.entries.contains_key(a));
+                                assert(post.disk_view.entries[a] == pre.disk_view.entries[a]);
+                            }
+                        }
+                    );
+                }
+                assert(post.frozen_tj(frozen).disk_view == pre.frozen_tj(frozen).disk_view);
+                assert(post.frozen_tj(frozen).freshest_rec == pre.frozen_tj(frozen).freshest_rec);
+                assert(post.frozen_tj(frozen) == pre.frozen_tj(frozen));
+                assert(post.frozen_image(frozen).tj == pre.frozen_image(frozen).tj);
+                assert(post.frozen_image(frozen).first == pre.frozen_image(frozen).first);
+            },
+            AllocationJournal::Step::internal_no_op() => {
+                assert(AllocationJournal::State::internal_no_op(pre, post, lbl));
+                assert(post == pre);
+            },
+            _ => {
+                assert(false);
+            },
+        }
+    }
+
     pub proof fn discard_old_preserves_frozen_metadata_at_boundary(
         pre: Self,
         post: Self,

@@ -164,13 +164,13 @@ state_machine!{AllocationCrashAwareJournal{
             );
             require pre.persistent_image is None ==> {
                 &&& new_journal.frozen_metadata_valid(pre.persistent)
-                &&& new_journal.frozen_image(pre.persistent)
-                    == pre.ephemeral->v.frozen_image(pre.persistent)
+                &&& new_journal.frozen_image(pre.persistent).tight_tj()
+                    == pre.ephemeral->v.frozen_image(pre.persistent).tight_tj()
             };
             require pre.frozen is Some ==> {
                 &&& new_journal.frozen_metadata_valid(pre.frozen.unwrap())
-                &&& new_journal.frozen_image(pre.frozen.unwrap())
-                    == pre.ephemeral->v.frozen_image(pre.frozen.unwrap())
+                &&& new_journal.frozen_image(pre.frozen.unwrap()).tight_tj()
+                    == pre.ephemeral->v.frozen_image(pre.frozen.unwrap()).tight_tj()
             };
             update ephemeral = Ephemeral::Known{ v: new_journal };
         }

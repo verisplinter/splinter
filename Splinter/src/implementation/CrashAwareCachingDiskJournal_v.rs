@@ -190,17 +190,7 @@ state_machine!{ CrashAwareCachingDiskJournal {
     pub open spec fn active_step_preserves_images(self, new_ephemeral: CachingDiskJournal::State) -> bool
         recommends self.ephemeral is Known
     {
-        let persistent = self.persistent;
-        &&& self.ephemeral->v.frozen_snapshot_valid(
-            persistent.snapshot,
-            persistent.seq_end,
-        )
-        &&& self.ephemeral->v.frozen_snapshot_preserved_by(
-            new_ephemeral,
-            persistent.snapshot,
-            persistent.seq_end,
-        )
-        &&& self.frozen is Some ==> {
+        self.frozen is Some ==> {
             &&& self.ephemeral->v.frozen_snapshot_valid(
                 self.frozen.unwrap().snapshot,
                 self.frozen.unwrap().seq_end,

@@ -165,11 +165,21 @@ pub open spec fn branch_projection_addrs(
         + branch_mini_allocator_allocated_addrs(model.program.state.branch.mini_allocator)
 }
 
+pub open spec fn branch_backing_projection_addrs(
+    model: SystemModel::State<AnotherProgramModel>,
+) -> Set<Address>
+{
+    addresses_in_aus(
+        summary_aus(branch_projection_summary_i(model))
+            + model.program.state.branch.mini_allocator.all_aus(),
+    )
+}
+
 pub open spec fn branch_persistent_projection_addrs(
     model: SystemModel::State<AnotherProgramModel>,
 ) -> Set<Address>
 {
-    let support = branch_projection_addrs(model);
+    let support = branch_backing_projection_addrs(model);
     Set::new(|addr: Address| {
         &&& support.contains(addr)
         &&& model.disk.content.contains_key(addr)
@@ -229,14 +239,14 @@ pub open spec fn branch_disk_cache_i(
     model: SystemModel::State<AnotherProgramModel>,
 ) -> Map<Address, RawPage>
 {
-    project_cache_pages_by_addrs(model.program.state.cache, branch_projection_addrs(model))
+    project_cache_pages_by_addrs(model.program.state.cache, branch_backing_projection_addrs(model))
 }
 
 pub open spec fn branch_disk_status_i(
     model: SystemModel::State<AnotherProgramModel>,
 ) -> Map<Address, CachingDiskPageStatus>
 {
-    project_cache_status_by_addrs(model.program.state.cache, branch_projection_addrs(model))
+    project_cache_status_by_addrs(model.program.state.cache, branch_backing_projection_addrs(model))
 }
 
 pub open spec fn branch_caching_disk_i(
@@ -246,7 +256,7 @@ pub open spec fn branch_caching_disk_i(
     adapter_caching_disk_i_by_domains(
         model.program.state.cache,
         model.disk,
-        branch_projection_addrs(model),
+        branch_backing_projection_addrs(model),
         branch_persistent_projection_addrs(model),
     )
 }
@@ -359,6 +369,8 @@ pub proof fn branch_child_path_push_ensures(
             == nodes[branch_child_path_target(nodes, root, path)]->children[idx],
     decreases path.len()
 {
+    reveal_with_fuel(branch_child_path_valid, 2);
+    reveal_with_fuel(branch_child_path_target, 2);
     if path.len() == 0 {
         assert(path.push(idx).len() == 1);
         assert(path.push(idx)[0] == idx);
@@ -370,6 +382,14 @@ pub proof fn branch_child_path_push_ensures(
         assert(path.push(idx)[0] == first);
         assert(path.push(idx).skip(1) == path.skip(1).push(idx));
         branch_child_path_push_ensures(nodes, child, path.skip(1), idx);
+        assert(branch_child_path_valid(nodes, child, path.skip(1).push(idx)));
+        assert(branch_child_path_target(nodes, child, path.skip(1))
+            == branch_child_path_target(nodes, root, path));
+        assert(branch_child_path_target(nodes, child, path.skip(1).push(idx))
+            == nodes[branch_child_path_target(nodes, root, path)]->children[idx]);
+        assert(branch_child_path_valid(nodes, root, path.push(idx)));
+        assert(branch_child_path_target(nodes, root, path.push(idx))
+            == nodes[branch_child_path_target(nodes, root, path)]->children[idx]);
     }
 }
 
@@ -617,13 +637,7 @@ pub open spec fn persistent_branch_image_i(
 ) -> CachingDiskBranchImage
 {
     let image = atomic_persistent_superblock_image_i(model);
-    if model.program.state.superblock_metadata_known()
-        && atomic_branch_metadata_loaded_flag(model.program.state.branch)
-    {
-        branch_visible_tight_image_i(model, image)
-    } else {
-        branch_image_i(model, image)
-    }
+    branch_image_i(model, image)
 }
 
 pub open spec fn frozen_branch_image_i(
@@ -707,20 +721,20 @@ pub proof fn branch_caching_disk_visible_addrs_subset_projection(
     model: SystemModel::State<AnotherProgramModel>,
 )
     ensures
-        branch_caching_disk_i(model).visible().dom() <= branch_projection_addrs(model),
+        branch_caching_disk_i(model).visible().dom() <= branch_backing_projection_addrs(model),
 {
     let disk = branch_caching_disk_i(model);
     assert forall |addr: Address| #[trigger] disk.visible().dom().contains(addr)
-        implies branch_projection_addrs(model).contains(addr)
+        implies branch_backing_projection_addrs(model).contains(addr)
     by {
         assert(disk.visible().contains_key(addr));
         assert(disk.visible() == disk.persistent.union_prefer_right(disk.cache));
         if disk.cache.contains_key(addr) {
             assert(project_cache_pages_by_addrs(
                 model.program.state.cache,
-                branch_projection_addrs(model),
+                branch_backing_projection_addrs(model),
             ).contains_key(addr));
-            assert(branch_projection_addrs(model).contains(addr));
+            assert(branch_backing_projection_addrs(model).contains(addr));
         } else {
             assert(disk.persistent.contains_key(addr));
             assert(project_persistent_by_addrs(
@@ -728,7 +742,7 @@ pub proof fn branch_caching_disk_visible_addrs_subset_projection(
                 branch_persistent_projection_addrs(model),
             ).contains_key(addr));
             assert(branch_persistent_projection_addrs(model).contains(addr));
-            assert(branch_projection_addrs(model).contains(addr));
+            assert(branch_backing_projection_addrs(model).contains(addr));
         }
     }
 }
@@ -750,15 +764,12 @@ pub proof fn branch_projected_visible_aus_subset_owned(
     by {
         let addr = choose |addr: Address|
             branch_caching_disk_i(model).visible().dom().contains(addr) && addr.au == au;
-        assert(branch_projection_addrs(model).contains(addr));
+        assert(branch_backing_projection_addrs(model).contains(addr));
         assert(branch_projection_summary_i(model)
             == model.program.state.branch.branch_summary);
         if addresses_in_aus(summary_aus(model.program.state.branch.branch_summary)).contains(addr) {
             assert(summary_aus(model.program.state.branch.branch_summary).contains(au));
         } else {
-            assert(branch_mini_allocator_allocated_addrs(
-                model.program.state.branch.mini_allocator,
-            ).contains(addr));
             assert(model.program.state.branch.mini_allocator.allocs.contains_key(addr.au));
             assert(model.program.state.branch.mini_allocator.all_aus().contains(au));
         }
@@ -777,6 +788,7 @@ pub proof fn loaded_branch_projection_unchanged(
         post.disk == pre.disk,
     ensures
         branch_projection_addrs(post) =~= branch_projection_addrs(pre),
+        branch_backing_projection_addrs(post) =~= branch_backing_projection_addrs(pre),
         branch_projection_aus(post) =~= branch_projection_aus(pre),
         branch_persistent_projection_addrs(post) =~= branch_persistent_projection_addrs(pre),
 {
@@ -791,6 +803,14 @@ pub proof fn loaded_branch_projection_unchanged(
             implies branch_projection_addrs(post).contains(addr) by {
         }
     }
+    assert(branch_backing_projection_addrs(post) =~= branch_backing_projection_addrs(pre)) by {
+        assert forall |addr: Address| #[trigger] branch_backing_projection_addrs(post).contains(addr)
+            implies branch_backing_projection_addrs(pre).contains(addr) by {
+        }
+        assert forall |addr: Address| #[trigger] branch_backing_projection_addrs(pre).contains(addr)
+            implies branch_backing_projection_addrs(post).contains(addr) by {
+        }
+    }
     assert(branch_projection_aus(post) =~= branch_projection_aus(pre)) by {
         assert forall |au: AU| #[trigger] branch_projection_aus(post).contains(au)
             implies branch_projection_aus(pre).contains(au) by {
@@ -802,11 +822,11 @@ pub proof fn loaded_branch_projection_unchanged(
     assert(branch_persistent_projection_addrs(post) =~= branch_persistent_projection_addrs(pre)) by {
         assert forall |addr: Address| #[trigger] branch_persistent_projection_addrs(post).contains(addr)
             implies branch_persistent_projection_addrs(pre).contains(addr) by {
-            assert(branch_projection_addrs(pre).contains(addr));
+            assert(branch_backing_projection_addrs(pre).contains(addr));
         }
         assert forall |addr: Address| #[trigger] branch_persistent_projection_addrs(pre).contains(addr)
             implies branch_persistent_projection_addrs(post).contains(addr) by {
-            assert(branch_projection_addrs(post).contains(addr));
+            assert(branch_backing_projection_addrs(post).contains(addr));
         }
     }
 }
@@ -886,6 +906,7 @@ pub proof fn cache_read_only_branch_projection_unchanged(
         ),
         post.disk == pre.disk,
         branch_projection_addrs(post) =~= branch_projection_addrs(pre),
+        branch_backing_projection_addrs(post) =~= branch_backing_projection_addrs(pre),
         branch_persistent_projection_addrs(post) =~= branch_persistent_projection_addrs(pre),
     ensures
         branch_caching_disk_i(post) == branch_caching_disk_i(pre),
@@ -893,7 +914,7 @@ pub proof fn cache_read_only_branch_projection_unchanged(
     projected_cache_read_only_access_unchanged_by_addrs(
         pre.program.state.cache,
         post.program.state.cache,
-        branch_projection_addrs(pre),
+        branch_backing_projection_addrs(pre),
         reads,
     );
     filled_cache_read_only_access_unchanged(
@@ -902,18 +923,18 @@ pub proof fn cache_read_only_branch_projection_unchanged(
         reads,
     );
     assert_maps_equal!(branch_disk_cache_i(post), branch_disk_cache_i(pre), addr => {
-        assert(branch_projection_addrs(post).contains(addr)
-            <==> branch_projection_addrs(pre).contains(addr));
+        assert(branch_backing_projection_addrs(post).contains(addr)
+            <==> branch_backing_projection_addrs(pre).contains(addr));
     });
     assert_maps_equal!(branch_disk_status_i(post), branch_disk_status_i(pre), addr => {
-        assert(branch_projection_addrs(post).contains(addr)
-            <==> branch_projection_addrs(pre).contains(addr));
+        assert(branch_backing_projection_addrs(post).contains(addr)
+            <==> branch_backing_projection_addrs(pre).contains(addr));
     });
     assert_maps_equal!(branch_disk_persistent_i(post), branch_disk_persistent_i(pre), addr => {
         assert(branch_persistent_projection_addrs(post).contains(addr)
             <==> branch_persistent_projection_addrs(pre).contains(addr)) by {
-            assert(branch_projection_addrs(post).contains(addr)
-                <==> branch_projection_addrs(pre).contains(addr));
+            assert(branch_backing_projection_addrs(post).contains(addr)
+                <==> branch_backing_projection_addrs(pre).contains(addr));
             assert(filled_cache_pages(post.program.state.cache).contains_key(addr)
                 <==> filled_cache_pages(pre.program.state.cache).contains_key(addr));
             assert(filled_cache_status(post.program.state.cache).contains_key(addr)
@@ -936,10 +957,10 @@ pub proof fn cache_access_refines_branch_caching_disk_access(
             Cache::Label::Access{reads, writes},
         ),
         post.disk == pre.disk,
-        branch_projection_addrs(pre) <= branch_projection_addrs(post),
-        branch_projection_addrs(post) <= branch_projection_addrs(pre) + writes.dom(),
+        branch_backing_projection_addrs(pre) <= branch_backing_projection_addrs(post),
+        branch_backing_projection_addrs(post) <= branch_backing_projection_addrs(pre) + writes.dom(),
         branch_disk_persistent_i(post) == branch_disk_persistent_i(pre),
-        writes.dom() <= branch_projection_addrs(post),
+        writes.dom() <= branch_backing_projection_addrs(post),
         reads <= branch_disk_cache_i(pre),
     ensures
         CachingDisk::State::next(
@@ -953,8 +974,8 @@ pub proof fn cache_access_refines_branch_caching_disk_access(
         pre.program.state.cache,
         post.program.state.cache,
         pre.disk,
-        branch_projection_addrs(pre),
-        branch_projection_addrs(post),
+        branch_backing_projection_addrs(pre),
+        branch_backing_projection_addrs(post),
         branch_persistent_projection_addrs(pre),
         branch_persistent_projection_addrs(post),
         reads,
@@ -977,10 +998,10 @@ pub proof fn cache_access_refines_branch_caching_disk_access_with_component_read
             Cache::Label::Access{reads: cache_reads, writes},
         ),
         post.disk == pre.disk,
-        branch_projection_addrs(pre) <= branch_projection_addrs(post),
-        branch_projection_addrs(post) <= branch_projection_addrs(pre) + writes.dom(),
+        branch_backing_projection_addrs(pre) <= branch_backing_projection_addrs(post),
+        branch_backing_projection_addrs(post) <= branch_backing_projection_addrs(pre) + writes.dom(),
         branch_disk_persistent_i(post) == branch_disk_persistent_i(pre),
-        writes.dom() <= branch_projection_addrs(post),
+        writes.dom() <= branch_backing_projection_addrs(post),
         component_reads <= branch_disk_cache_i(pre),
     ensures
         CachingDisk::State::next(
@@ -993,8 +1014,8 @@ pub proof fn cache_access_refines_branch_caching_disk_access_with_component_read
         pre.program.state.cache,
         post.program.state.cache,
         pre.disk,
-        branch_projection_addrs(pre),
-        branch_projection_addrs(post),
+        branch_backing_projection_addrs(pre),
+        branch_backing_projection_addrs(post),
         branch_persistent_projection_addrs(pre),
         branch_persistent_projection_addrs(post),
         cache_reads,
@@ -1042,8 +1063,9 @@ pub proof fn cache_access_refines_branch_caching_disk_access_same_domain(
         ),
         post.disk == pre.disk,
         branch_projection_addrs(post) =~= branch_projection_addrs(pre),
+        branch_backing_projection_addrs(post) =~= branch_backing_projection_addrs(pre),
         branch_persistent_projection_addrs(post) =~= branch_persistent_projection_addrs(pre),
-        writes.dom() <= branch_projection_addrs(pre),
+        writes.dom() <= branch_backing_projection_addrs(pre),
         reads <= branch_disk_cache_i(pre),
     ensures
         CachingDisk::State::next(
@@ -1057,7 +1079,7 @@ pub proof fn cache_access_refines_branch_caching_disk_access_same_domain(
         pre.program.state.cache,
         post.program.state.cache,
         pre.disk,
-        branch_projection_addrs(pre),
+        branch_backing_projection_addrs(pre),
         branch_persistent_projection_addrs(pre),
         reads,
         writes,
@@ -1065,23 +1087,23 @@ pub proof fn cache_access_refines_branch_caching_disk_access_same_domain(
     assert(branch_caching_disk_i(post) == adapter_caching_disk_i_by_domains(
         post.program.state.cache,
         pre.disk,
-        branch_projection_addrs(pre),
+        branch_backing_projection_addrs(pre),
         branch_persistent_projection_addrs(pre),
     )) by {
         assert_maps_equal!(
-            project_cache_pages_by_addrs(post.program.state.cache, branch_projection_addrs(post)),
-            project_cache_pages_by_addrs(post.program.state.cache, branch_projection_addrs(pre)),
+            project_cache_pages_by_addrs(post.program.state.cache, branch_backing_projection_addrs(post)),
+            project_cache_pages_by_addrs(post.program.state.cache, branch_backing_projection_addrs(pre)),
             addr => {
-                assert(branch_projection_addrs(post).contains(addr)
-                    <==> branch_projection_addrs(pre).contains(addr));
+                assert(branch_backing_projection_addrs(post).contains(addr)
+                    <==> branch_backing_projection_addrs(pre).contains(addr));
             }
         );
         assert_maps_equal!(
-            project_cache_status_by_addrs(post.program.state.cache, branch_projection_addrs(post)),
-            project_cache_status_by_addrs(post.program.state.cache, branch_projection_addrs(pre)),
+            project_cache_status_by_addrs(post.program.state.cache, branch_backing_projection_addrs(post)),
+            project_cache_status_by_addrs(post.program.state.cache, branch_backing_projection_addrs(pre)),
             addr => {
-                assert(branch_projection_addrs(post).contains(addr)
-                    <==> branch_projection_addrs(pre).contains(addr));
+                assert(branch_backing_projection_addrs(post).contains(addr)
+                    <==> branch_backing_projection_addrs(pre).contains(addr));
             }
         );
         assert_maps_equal!(
@@ -1309,9 +1331,10 @@ pub proof fn branch_append_refines(
         post.program.state.superblock_metadata_known(),
         branch_projection_addrs(pre) <= branch_projection_addrs(post),
         branch_projection_addrs(post) <= branch_projection_addrs(pre) + writes.dom(),
+        branch_backing_projection_addrs(post) =~= branch_backing_projection_addrs(pre),
         branch_disk_persistent_i(post) == branch_disk_persistent_i(pre),
         reads <= branch_disk_cache_i(pre),
-        writes.dom() <= branch_projection_addrs(post),
+        writes.dom() <= branch_backing_projection_addrs(pre),
         atomic_branch_metadata_loaded_flag(pre.program.state.branch),
         persistent_branch_image_i(post) == persistent_branch_image_i(pre),
         frozen_branch_image_i(post) == frozen_branch_image_i(pre),
@@ -1504,7 +1527,6 @@ pub proof fn branch_fill_aus_refines(
         branch_component_refinement_inv(pre),
         AnotherAtomicState::branch_fill_aus(pre.program.state, post.program.state, aus),
         post.disk == pre.disk,
-        branch_caching_disk_i(post) == branch_caching_disk_i(pre),
     ensures
         CrashAwareCachingDiskBranch::State::next(
             crash_aware_caching_disk_branch_i(pre),
@@ -1545,20 +1567,12 @@ pub proof fn branch_fill_aus_refines(
     };
     assert(src.ephemeral is Known);
     assert(dst.ephemeral is Known);
-    assert(dst.ephemeral->v.disk == src.ephemeral->v.disk);
     assert(pre.program.state.client_ready());
     assert(pre.program.state.recovery_metadata_wf());
     assert(pre.program.state.branch_metadata_loaded());
     atomic_branch_metadata_loaded_flag_from_metadata_loaded(pre.program.state.branch);
     branch_projected_visible_aus_subset_owned(pre);
     assert(src.ephemeral->v.metadata_loaded);
-    assert(aus.disjoint(to_aus(src.ephemeral->v.disk.visible().dom()))) by {
-        assert(aus <= pre.program.state.free_aus);
-        assert(pre.program.state.allocation_wf());
-        assert(pre.program.state.free_aus.disjoint(pre.program.state.branch_owned_aus()));
-        assert(to_aus(branch_caching_disk_i(pre).visible().dom())
-            <= pre.program.state.branch_owned_aus());
-    }
     assert(aus.disjoint(summary_aus(src.ephemeral->v.branch_summary))) by {
         assert(pre.program.state.allocation_wf());
         assert(aus <= pre.program.state.free_aus);
@@ -1575,7 +1589,7 @@ pub proof fn branch_fill_aus_refines(
         src.ephemeral->v,
         dst.ephemeral->v,
         inner_lbl,
-        CachingDiskBranch::Step::internal_fill_au(aus),
+        CachingDiskBranch::Step::internal_fill_au(aus, dst.ephemeral->v.disk),
     )) by {
         reveal(CachingDiskBranch::State::next_by);
     }

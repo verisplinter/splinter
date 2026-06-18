@@ -480,7 +480,11 @@ pub enum DiskEvent {
 
 pub enum InternalEvent {
     CacheInternal{},
-    JournalLoadIndex{reads: Map<Address, RawPage>, discovered_aus: Set<AU>},
+    JournalLoadIndex{
+        cache_reads: Map<Address, RawPage>,
+        journal_reads: Map<Address, RawPage>,
+        discovered_aus: Set<AU>,
+    },
     ReadForRecovery{
         addr: Address,
         keys: Seq<Key>,
@@ -1757,16 +1761,19 @@ impl AnotherAtomicState {
     pub open spec fn journal_load_index(
         pre: Self,
         post: Self,
-        reads: Map<Address, RawPage>,
+        cache_reads: Map<Address, RawPage>,
+        journal_reads: Map<Address, RawPage>,
         discovered_aus: Set<AU>,
     ) -> bool
     {
-        let cache_lbl = Cache::Label::Access{reads, writes: Map::empty()};
+        let cache_lbl = Cache::Label::Access{reads: cache_reads, writes: Map::empty()};
         let journal_lbl = AtomicJournalState::Label::LoadIndex{
-            reads: to_journal_records(reads),
+            reads: to_journal_records(journal_reads),
             discovered_aus,
         };
         &&& pre.recovery_state is SuperblockAvailable
+        &&& journal_reads <= cache_reads
+        &&& to_aus(journal_reads.dom()) <= discovered_aus
         &&& Cache::State::next(pre.cache, post.cache, cache_lbl)
         &&& AtomicJournalState::State::next(pre.journal, post.journal, journal_lbl)
         &&& post == Self{
@@ -3377,8 +3384,8 @@ impl AnotherAtomicState {
     {
         match event {
             InternalEvent::CacheInternal{} => Self::cache_internal(pre, post),
-            InternalEvent::JournalLoadIndex{reads, discovered_aus} =>
-                Self::journal_load_index(pre, post, reads, discovered_aus),
+            InternalEvent::JournalLoadIndex{cache_reads, journal_reads, discovered_aus} =>
+                Self::journal_load_index(pre, post, cache_reads, journal_reads, discovered_aus),
             InternalEvent::ReadForRecovery{
                 addr,
                 keys,
@@ -3431,7 +3438,7 @@ impl AnotherAtomicState {
     pub open spec fn journal_load_index_cached_next(
         pre: Self,
         post: Self,
-        reads: Map<Address, RawPage>,
+        journal_reads: Map<Address, RawPage>,
         discovered_aus: Set<AU>,
     ) -> bool
     {
@@ -3439,7 +3446,7 @@ impl AnotherAtomicState {
             pre.journal.journal,
             post.journal.journal,
             CachedJournal::Label::LoadIndex{
-                reads: to_journal_records(reads),
+                reads: to_journal_records(journal_reads),
                 discovered_aus,
             },
             step,
@@ -3449,26 +3456,29 @@ impl AnotherAtomicState {
     pub proof fn journal_load_index_effect(
         pre: Self,
         post: Self,
-        reads: Map<Address, RawPage>,
+        cache_reads: Map<Address, RawPage>,
+        journal_reads: Map<Address, RawPage>,
         discovered_aus: Set<AU>,
     )
         requires
-            Self::journal_load_index(pre, post, reads, discovered_aus),
+            Self::journal_load_index(pre, post, cache_reads, journal_reads, discovered_aus),
         ensures
             pre.recovery_state is SuperblockAvailable,
+            journal_reads <= cache_reads,
+            to_aus(journal_reads.dom()) <= discovered_aus,
             pre.journal.journal.status is None,
             post.journal.ready(),
             post.journal.loaded_index_aus() == discovered_aus,
             Cache::State::next(
                 pre.cache,
                 post.cache,
-                Cache::Label::Access{reads, writes: Map::empty()},
+                Cache::Label::Access{reads: cache_reads, writes: Map::empty()},
             ),
             AtomicJournalState::State::next(
                 pre.journal,
                 post.journal,
                 AtomicJournalState::Label::LoadIndex{
-                    reads: to_journal_records(reads),
+                    reads: to_journal_records(journal_reads),
                     discovered_aus,
                 },
             ),
@@ -3476,7 +3486,7 @@ impl AnotherAtomicState {
                 pre.journal,
                 post.journal,
                 AtomicJournalState::Label::LoadIndex{
-                    reads: to_journal_records(reads),
+                    reads: to_journal_records(journal_reads),
                     discovered_aus,
                 },
                 post.journal.journal,
@@ -3485,7 +3495,7 @@ impl AnotherAtomicState {
                 pre.journal.journal,
                 post.journal.journal,
                 CachedJournal::Label::LoadIndex{
-                    reads: to_journal_records(reads),
+                    reads: to_journal_records(journal_reads),
                     discovered_aus,
                 },
             ),
@@ -3493,12 +3503,12 @@ impl AnotherAtomicState {
                 pre.journal.journal,
                 post.journal.journal,
                 CachedJournal::Label::LoadIndex{
-                    reads: to_journal_records(reads),
+                    reads: to_journal_records(journal_reads),
                     discovered_aus,
                 },
                 step,
             ),
-            Self::journal_load_index_cached_next(pre, post, reads, discovered_aus),
+            Self::journal_load_index_cached_next(pre, post, journal_reads, discovered_aus),
             post.journal.mini_allocator == pre.journal.mini_allocator,
             post.journal.persistent_seq_end == pre.journal.persistent_seq_end,
             post == (Self{
@@ -3511,7 +3521,7 @@ impl AnotherAtomicState {
         reveal(AtomicJournalState::State::next);
         reveal(AtomicJournalState::State::next_by);
         let lbl = AtomicJournalState::Label::LoadIndex{
-            reads: to_journal_records(reads),
+            reads: to_journal_records(journal_reads),
             discovered_aus,
         };
         let step = choose |step: AtomicJournalState::Step|
@@ -3534,7 +3544,7 @@ impl AnotherAtomicState {
         }
         reveal(CachedJournal::State::next);
         let cj_lbl = CachedJournal::Label::LoadIndex{
-            reads: to_journal_records(reads),
+            reads: to_journal_records(journal_reads),
             discovered_aus,
         };
         let cj_step = choose |step: CachedJournal::Step|
@@ -3548,7 +3558,7 @@ impl AnotherAtomicState {
         CachedJournal::State::load_index_effect(
             pre.journal.journal,
             post.journal.journal,
-            to_journal_records(reads),
+            to_journal_records(journal_reads),
             discovered_aus,
         );
     }

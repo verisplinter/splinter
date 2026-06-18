@@ -43,6 +43,10 @@ pub proof fn cdb_step_preserves_image_match(
             sealed_roots: image.sealed_roots,
             seq_end: image.seq_end,
         }).sealed_stack_i() == image.sealed_stack_i(),
+        pre.visible_image_for_metadata(CachingDiskBranchFrozenImage{
+            sealed_roots: image.sealed_roots,
+            seq_end: image.seq_end,
+        }).branch_summary() == image.branch_summary(),
         CachingDiskBranch::State::next(pre, post, lbl),
     ensures
         image.sealed_roots.len() <= post.sealed_roots.len(),
@@ -51,6 +55,10 @@ pub proof fn cdb_step_preserves_image_match(
             sealed_roots: image.sealed_roots,
             seq_end: image.seq_end,
         }).sealed_stack_i() == image.sealed_stack_i(),
+        post.visible_image_for_metadata(CachingDiskBranchFrozenImage{
+            sealed_roots: image.sealed_roots,
+            seq_end: image.seq_end,
+        }).branch_summary() == image.branch_summary(),
 {
     let frozen = CachingDiskBranchFrozenImage{
         sealed_roots: image.sealed_roots,
@@ -280,7 +288,7 @@ state_machine!{ CrashAwareCachingDiskBranch {
         &&& self.wf()
         &&& self.stack_compatible()
         &&& self.persistent_matches_ephemeral()
-        &&& self.persistent.sealed_stack_i().wf()
+        &&& self.persistent.sealed_stack_i().wf(self.persistent.branch_summary())
         &&& self.frozen is None ==> !self.prepared
         &&& self.frozen is Some && self.ephemeral is Known ==> {
             ||| {
@@ -325,6 +333,8 @@ state_machine!{ CrashAwareCachingDiskBranch {
             ) == self.persistent.sealed_roots
             &&& self.ephemeral->v.visible_image_for_metadata(frozen).sealed_stack_i()
                 == self.persistent.sealed_stack_i()
+            &&& self.ephemeral->v.visible_image_for_metadata(frozen).branch_summary()
+                == self.persistent.branch_summary()
         }
     }
 
@@ -714,10 +724,10 @@ state_machine!{ CrashAwareCachingDiskBranch {
     ) {
         reveal(CrashAwareCachingDiskBranch::State::commit_complete);
         pre.ephemeral->v.prepared_image_matches_visible_prefix(prepared_image);
-        assert(prepared_image.sealed_stack_i().wf());
+        assert(prepared_image.sealed_stack_i().wf(prepared_image.branch_summary()));
         assert(post.ephemeral->v.inv());
         assert(post.wf());
-        assert(post.persistent.sealed_stack_i().wf());
+        assert(post.persistent.sealed_stack_i().wf(post.persistent.branch_summary()));
         assert(post.stack_compatible());
     }
 
@@ -725,8 +735,8 @@ state_machine!{ CrashAwareCachingDiskBranch {
     fn crash_inductive(pre: Self, post: Self, lbl: Label, prepared_image: CachingDiskBranchImage) {
         if lbl.arrow_Crash_keep_in_flight() {
             pre.ephemeral->v.prepared_image_matches_visible_prefix(prepared_image);
-            assert(prepared_image.sealed_stack_i().wf());
-            assert(post.persistent.sealed_stack_i().wf());
+            assert(prepared_image.sealed_stack_i().wf(prepared_image.branch_summary()));
+            assert(post.persistent.sealed_stack_i().wf(post.persistent.branch_summary()));
         } else {
             assert(post.persistent == pre.persistent);
         }

@@ -1139,6 +1139,8 @@ impl CachingDiskBranch::State {
         ensures
             post.visible_image_for_metadata(frozen).sealed_stack_i()
                 == self.visible_image_for_metadata(frozen).sealed_stack_i(),
+            post.visible_image_for_metadata(frozen).branch_summary()
+                == self.visible_image_for_metadata(frozen).branch_summary(),
     {
         CachingDiskBranch::State::inv_next(self, post, lbl);
         CachingDiskBranch::State::next_preserves_loaded_root_prefix(

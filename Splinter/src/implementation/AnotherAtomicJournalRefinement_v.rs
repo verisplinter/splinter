@@ -42,7 +42,7 @@ use crate::implementation::CachingDisk_v::{
     addresses_in_aus, CachingDisk, PageStatus as CachingDiskPageStatus,
 };
 use crate::implementation::CachingDiskJournal_v::{
-    CachingDiskJournal, snapshot_walk_domain, snapshot_walk_ptr,
+    CachingDiskJournal, cj_lsn_au_index,
 };
 use crate::implementation::CrashAwareCachingDiskJournal_v::{
     caching_disk_journal_accessible_aus, CachingDiskJournalFrozenImage, CachingDiskJournalImage,
@@ -104,8 +104,11 @@ pub open spec fn on_disk_journal_aus_i(
 ) -> Set<AU>
 {
     let image = async_disk_superblock_image_i(disk_content);
-    on_disk_journal_tj_i(disk_content)
-        .build_lsn_au_index_from_first(image.journal_snapshot.first())
+    let tj = on_disk_journal_tj_i(disk_content);
+    tj.disk_view.loose_build_lsn_au_index_au_walk(
+        tj.freshest_rec,
+        image.journal_snapshot.first(),
+    )
         .values()
 }
 
@@ -113,41 +116,7 @@ pub open spec fn on_disk_journal_addrs_i(
     disk_content: Map<Address, RawPage>,
 ) -> Set<Address>
 {
-    let image = async_disk_superblock_image_i(disk_content);
-    snapshot_walk_domain(
-        to_journal_records(disk_content),
-        image.journal_snapshot.boundary_lsn,
-        image.journal_snapshot.freshest_rec(),
-    )
-}
-
-pub proof fn snapshot_walk_ptr_none(
-    records: Map<Address, JournalRecord>,
-    boundary_lsn: LSN,
-    depth: nat,
-)
-    ensures
-        snapshot_walk_ptr(records, boundary_lsn, None, depth) is None,
-    decreases depth
-{
-    if depth > 0 {
-        snapshot_walk_ptr_none(records, boundary_lsn, (depth - 1) as nat);
-    }
-}
-
-pub proof fn snapshot_walk_domain_none_empty(
-    records: Map<Address, JournalRecord>,
-    boundary_lsn: LSN,
-)
-    ensures
-        snapshot_walk_domain(records, boundary_lsn, None) =~= Set::<Address>::empty(),
-{
-    assert forall |addr: Address| #[trigger] snapshot_walk_domain(records, boundary_lsn, None).contains(addr)
-        implies false by {
-        let depth = choose |depth: nat|
-            snapshot_walk_ptr(records, boundary_lsn, None, depth) == Some(addr);
-        snapshot_walk_ptr_none(records, boundary_lsn, depth);
-    }
+    addresses_in_aus(on_disk_journal_aus_i(disk_content))
 }
 
 pub open spec fn mini_allocator_allocated_addrs(
@@ -165,38 +134,14 @@ pub open spec fn live_journal_projection_addrs(
     model: SystemModel::State<AnotherProgramModel>,
 ) -> Set<Address>
 {
-    let journal = model.program.state.journal;
-    addresses_in_aus(journal.loaded_index_aus().difference(journal.mini_allocator.all_aus()))
-        + mini_allocator_allocated_addrs(journal.mini_allocator)
-}
-
-pub open spec fn snapshot_tight_journal_projection_addrs(
-    model: SystemModel::State<AnotherProgramModel>,
-) -> Set<Address>
-{
-    let journal = model.program.state.journal;
-    let snapshot = journal.journal.snapshot;
-    let overlay_records = to_journal_records(model.disk.content);
-    snapshot_walk_domain(
-        overlay_records,
-        snapshot.boundary_lsn,
-        snapshot.freshest_rec(),
-    )
-        + mini_allocator_allocated_addrs(journal.mini_allocator)
+    addresses_in_aus(model.program.state.journal_owned_aus())
 }
 
 pub open spec fn journal_projection_addrs(
     model: SystemModel::State<AnotherProgramModel>,
 ) -> Set<Address>
 {
-    let raw_addrs = if journal_projection_uses_live(model) {
-        live_journal_projection_addrs(model)
-    } else if model.program.state.superblock_metadata_known() {
-        snapshot_tight_journal_projection_addrs(model)
-    } else {
-        on_disk_journal_addrs_i(model.disk.content)
-    };
-    raw_addrs.difference(addresses_in_aus(AnotherAtomicState::reserved_aus()))
+    addresses_in_aus(journal_projection_aus(model))
 }
 
 pub open spec fn journal_projection_uses_live(
@@ -211,14 +156,14 @@ pub open spec fn journal_projection_aus(
     model: SystemModel::State<AnotherProgramModel>,
 ) -> Set<AU>
 {
-    // AU-level over-approximation used for disjointness proofs.  Actual journal
-    // cache/disk projection is address-precise through journal_projection_addrs.
     if journal_projection_uses_live(model) {
-        to_aus(journal_projection_addrs(model))
-            + model.program.state.journal.loaded_index_aus()
-            + model.program.state.journal.mini_allocator.all_aus()
+        model.program.state.journal_owned_aus()
     } else {
-        to_aus(journal_projection_addrs(model))
+        let image = persistent_journal_image_i(model);
+        image.tj().disk_view.loose_build_lsn_au_index_au_walk(
+            image.snapshot.freshest_rec(),
+            image.snapshot.first(),
+        ).values()
     }
 }
 
@@ -226,55 +171,38 @@ pub open spec fn journal_persistent_projection_addrs(
     model: SystemModel::State<AnotherProgramModel>,
 ) -> Set<Address>
 {
-    let support = journal_projection_addrs(model);
-    let cache_status = crate::implementation::CachingDiskAdapterRefinement_v::filled_cache_status(
-        model.program.state.cache,
-    );
-    let cache_pages = filled_cache_pages(model.program.state.cache);
-    Set::new(|addr: Address| {
-        &&& support.contains(addr)
-        &&& model.disk.content.contains_key(addr)
-        &&& if cache_status.contains_key(addr) {
-            ||| cache_status[addr] == CachingDiskPageStatus::Clean
-            ||| (cache_status[addr] == CachingDiskPageStatus::Writeback
-                && cache_pages.contains_key(addr)
-                && model.disk.content[addr] == cache_pages[addr])
-        } else {
-            true
-        }
-    })
+    journal_projection_addrs(model)
 }
 
 pub open spec fn journal_disk_persistent_i(
     model: SystemModel::State<AnotherProgramModel>,
 ) -> Map<Address, RawPage>
 {
-    project_persistent_by_addrs(model.disk, journal_persistent_projection_addrs(model))
+    project_persistent(model.disk, journal_projection_aus(model))
 }
 
 pub open spec fn journal_disk_cache_i(
     model: SystemModel::State<AnotherProgramModel>,
 ) -> Map<Address, RawPage>
 {
-    project_cache_pages_by_addrs(model.program.state.cache, journal_projection_addrs(model))
+    project_cache_pages(model.program.state.cache, journal_projection_aus(model))
 }
 
 pub open spec fn journal_disk_status_i(
     model: SystemModel::State<AnotherProgramModel>,
 ) -> Map<Address, CachingDiskPageStatus>
 {
-    project_cache_status_by_addrs(model.program.state.cache, journal_projection_addrs(model))
+    project_cache_status(model.program.state.cache, journal_projection_aus(model))
 }
 
 pub open spec fn journal_caching_disk_i(
     model: SystemModel::State<AnotherProgramModel>,
 ) -> CachingDisk::State
 {
-    caching_disk_i_by_domains(
+    adapter_caching_disk_i(
         model.program.state.cache,
         model.disk,
-        journal_projection_addrs(model),
-        journal_persistent_projection_addrs(model),
+        journal_projection_aus(model),
     )
 }
 
@@ -286,6 +214,14 @@ pub open spec fn journal_caching_disk_state_i(
         journal: model.program.state.journal.journal,
         disk: journal_caching_disk_i(model),
         mini_allocator: model.program.state.journal.mini_allocator,
+        au_page_bounds: (DiskView{
+            boundary_lsn: model.program.state.journal.journal.snapshot.boundary_lsn,
+            entries: to_journal_records(journal_caching_disk_i(model).visible())
+                .restrict(addresses_in_aus(model.program.state.journal.loaded_index_aus())),
+        }).loose_build_au_page_bounds_au_walk(
+            model.program.state.journal.journal.snapshot.freshest_rec(),
+            model.program.state.journal.journal.snapshot.first(),
+        ),
     }
 }
 
@@ -341,8 +277,11 @@ pub open spec fn journal_image_projection_aus(
     image: AbstractSuperblockImage,
 ) -> Set<AU>
 {
-    journal_image_tj_i(disk_content, image)
-        .build_lsn_au_index_from_first(image.journal_snapshot.first())
+    let tj = journal_image_tj_i(disk_content, image);
+    tj.disk_view.loose_build_lsn_au_index_au_walk(
+        tj.freshest_rec,
+        image.journal_snapshot.first(),
+    )
         .values()
 }
 
@@ -374,90 +313,7 @@ pub open spec fn journal_image_projection_domain_i(
     image: AbstractSuperblockImage,
 ) -> Set<Address>
 {
-    snapshot_walk_domain(
-        to_journal_records(model.disk.content),
-        image.journal_snapshot.boundary_lsn,
-        image.journal_snapshot.freshest_rec(),
-    )
-}
-
-pub proof fn snapshot_walk_ptr_union_outside_domain_same(
-    records: Map<Address, JournalRecord>,
-    updates: Map<Address, JournalRecord>,
-    boundary_lsn: LSN,
-    root: Pointer,
-    depth: nat,
-)
-    requires
-        updates.dom().disjoint(snapshot_walk_domain(records, boundary_lsn, root)),
-    ensures
-        snapshot_walk_ptr(records.union_prefer_right(updates), boundary_lsn, root, depth)
-            == snapshot_walk_ptr(records, boundary_lsn, root, depth),
-    decreases depth,
-{
-    if depth == 0 {
-    } else {
-        snapshot_walk_ptr_union_outside_domain_same(
-            records,
-            updates,
-            boundary_lsn,
-            root,
-            (depth - 1) as nat,
-        );
-        let prev = snapshot_walk_ptr(records, boundary_lsn, root, (depth - 1) as nat);
-        if prev is Some {
-            let prev_addr = prev.unwrap();
-            assert(snapshot_walk_domain(records, boundary_lsn, root).contains(prev_addr)) by {
-                assert(snapshot_walk_ptr(records, boundary_lsn, root, (depth - 1) as nat)
-                    == Some(prev_addr));
-            }
-            assert(!updates.contains_key(prev_addr)) by {
-                if updates.contains_key(prev_addr) {
-                    assert(updates.dom().contains(prev_addr));
-                    assert(false);
-                }
-            }
-            assert(records.union_prefer_right(updates).contains_key(prev_addr)
-                == records.contains_key(prev_addr));
-            if records.contains_key(prev_addr) {
-                assert(records.union_prefer_right(updates)[prev_addr] == records[prev_addr]);
-            }
-        }
-    }
-}
-
-pub proof fn snapshot_walk_domain_union_outside_same(
-    records: Map<Address, JournalRecord>,
-    updates: Map<Address, JournalRecord>,
-    boundary_lsn: LSN,
-    root: Pointer,
-)
-    requires
-        updates.dom().disjoint(snapshot_walk_domain(records, boundary_lsn, root)),
-    ensures
-        snapshot_walk_domain(records.union_prefer_right(updates), boundary_lsn, root)
-            =~= snapshot_walk_domain(records, boundary_lsn, root),
-{
-    assert forall |addr: Address| #[trigger] snapshot_walk_domain(
-        records.union_prefer_right(updates),
-        boundary_lsn,
-        root,
-    ).contains(addr) <==> snapshot_walk_domain(records, boundary_lsn, root).contains(addr) by {
-        if snapshot_walk_domain(records.union_prefer_right(updates), boundary_lsn, root).contains(addr) {
-            let depth = choose |depth: nat|
-                snapshot_walk_ptr(records.union_prefer_right(updates), boundary_lsn, root, depth)
-                    == Some(addr);
-            snapshot_walk_ptr_union_outside_domain_same(records, updates, boundary_lsn, root, depth);
-            assert(snapshot_walk_ptr(records, boundary_lsn, root, depth) == Some(addr));
-        }
-        if snapshot_walk_domain(records, boundary_lsn, root).contains(addr) {
-            let depth = choose |depth: nat|
-                snapshot_walk_ptr(records, boundary_lsn, root, depth) == Some(addr);
-            snapshot_walk_ptr_union_outside_domain_same(records, updates, boundary_lsn, root, depth);
-            assert(snapshot_walk_ptr(records.union_prefer_right(updates), boundary_lsn, root, depth)
-                == Some(addr));
-        }
-    }
+    addresses_in_aus(journal_image_projection_aus_i(model, image))
 }
 
 pub open spec fn journal_image_projection_domain_from_disk(
@@ -570,6 +426,7 @@ pub proof fn journal_images_unchanged_by_loaded_index_preservation(
         post.program.state.journal.journal.status.unwrap().lsn_au_index
             == pre.program.state.journal.journal.status.unwrap().lsn_au_index,
         post.program.state.in_flight == pre.program.state.in_flight,
+        post.program.state.persistent_image == pre.program.state.persistent_image,
         post.program.state.journal.in_flight == pre.program.state.journal.in_flight,
         post.program.state.branch.in_flight == pre.program.state.branch.in_flight,
     ensures
@@ -635,8 +492,14 @@ pub open spec fn crash_aware_caching_disk_journal_i(
     model: SystemModel::State<AnotherProgramModel>,
 ) -> CrashAwareCachingDiskJournal::State
 {
+    let persistent_image = persistent_journal_image_i(model);
     CrashAwareCachingDiskJournal::State{
-        persistent: persistent_journal_image_i(model),
+        persistent: persistent_image.metadata(),
+        persistent_image: if ephemeral_journal_i(model) is Unknown {
+            Option::Some(persistent_image)
+        } else {
+            Option::None
+        },
         ephemeral: ephemeral_journal_i(model),
         frozen: frozen_journal_metadata_i(model),
         prepared: atomic_superblock_prepared_i(model),
@@ -670,27 +533,21 @@ pub open spec fn journal_owned_disk_records_do_not_impersonate_index(
     model: SystemModel::State<AnotherProgramModel>,
 ) -> bool
 {
-    !model.program.state.client_ready() && journal_projection_uses_live(model) ==> {
-        let journal = model.program.state.journal;
-        let snapshot = journal.journal.snapshot;
-        let disk_view = DiskView{
-            boundary_lsn: snapshot.boundary_lsn,
-            entries: to_journal_records(model.disk.content),
-        };
-        let index = journal.journal.status.unwrap().lsn_au_index;
-        forall |addr: Address, lsn: LSN| {
-            &&& #[trigger] disk_view.entries.contains_key(addr)
-            &&& model.program.state.journal_owned_aus().contains(addr.au)
-            &&& #[trigger] index.contains_key(lsn)
+    model.program.state.journal_metadata_loaded() ==> {
+        let journal = journal_caching_disk_state_i(model);
+        let disk_view = journal.journal_disk_view();
+        let index = model.program.state.journal.journal.status.unwrap().lsn_au_index;
+        forall |addr: Address, lsn: LSN|
+            #![trigger disk_view.entries.contains_key(addr), index.contains_key(lsn)]
+        {
+            let record = disk_view.entries[addr];
+            &&& disk_view.entries.contains_key(addr)
+            &&& index.contains_key(lsn)
             &&& index[lsn] == addr.au
-            &&& disk_view.entries[addr].contains_lsn(snapshot.boundary_lsn, lsn)
+            &&& record.contains_lsn(disk_view.boundary_lsn, lsn)
         } ==> {
-            ||| snapshot_walk_domain(
-                disk_view.entries,
-                snapshot.boundary_lsn,
-                snapshot.freshest_rec(),
-            ).contains(addr)
-            ||| mini_allocator_allocated_addrs(journal.mini_allocator).contains(addr)
+            &&& journal.au_page_bounds.contains_key(addr.au)
+            &&& addr.page <= journal.au_page_bounds[addr.au]
         }
     }
 }
@@ -720,12 +577,14 @@ pub open spec fn journal_component_refinement_inv(
     &&& model.program.state.wf()
     &&& model.disk.inv()
     &&& async_disk_superblock_page_wf(model.disk.content)
-    &&& crash_aware_caching_disk_journal_i(model).inv()
+    &&& crash_aware_caching_disk_journal_i(model).refinement_inv()
     &&& !model.program.state.journal_metadata_loaded() ==>
         model.program.state.journal.mini_allocator == crate::allocation_layer::MiniAllocator_v::MiniAllocator::empty()
     &&& !model.program.state.client_ready() ==>
         model.program.state.journal.mini_allocator == crate::allocation_layer::MiniAllocator_v::MiniAllocator::empty()
-    &&& persistent_journal_image_i(model).wf()
+    &&& !model.program.state.journal_metadata_loaded() ==> persistent_journal_image_i(model).wf()
+    &&& model.program.state.journal_metadata_loaded() && !journal_projection_uses_live(model) ==>
+        journal_projection_aus(model) =~= model.program.state.journal.loaded_index_aus()
     &&& journal_projection_tight(model)
     &&& journal_projection_uses_shared_async_disk(model)
     &&& journal_owned_disk_records_do_not_impersonate_index(model)
@@ -749,6 +608,7 @@ pub proof fn branch_writes_disjoint_from_journal_projection(
     requires
         journal_component_refinement_inv(model),
         model.program.state.journal_metadata_loaded(),
+        journal_projection_uses_live(model),
         to_aus(writes.dom()) <= model.program.state.branch_owned_aus(),
     ensures
         writes.dom().disjoint(addresses_in_aus(journal_projection_aus(model))),
@@ -1059,6 +919,7 @@ pub proof fn journal_projection_domains_unchanged_by_cache_access_outside(
         post.disk.content == pre.disk.content,
         pre.program.state.superblock_metadata_known(),
         post.program.state.superblock_metadata_known(),
+        post.program.state.persistent_image == pre.program.state.persistent_image,
         journal_projection_uses_live(post) == journal_projection_uses_live(pre),
         post.program.state.journal_metadata_loaded() == pre.program.state.journal_metadata_loaded(),
         post.program.state.journal.journal.snapshot == pre.program.state.journal.journal.snapshot,
@@ -1073,176 +934,16 @@ pub proof fn journal_projection_domains_unchanged_by_cache_access_outside(
         journal_persistent_projection_addrs(post) =~= journal_persistent_projection_addrs(pre),
         journal_projection_aus(post) =~= journal_projection_aus(pre),
 {
-    filled_cache_access_effect(pre.program.state.cache, post.program.state.cache, reads, writes);
-    projected_cache_access_outside_addrs_unchanged(
-        pre.program.state.cache,
-        post.program.state.cache,
-        journal_projection_addrs(pre),
-        reads,
-        writes,
-    );
-
-    let snapshot = pre.program.state.journal.journal.snapshot;
-    let pre_pages = filled_cache_pages(pre.program.state.cache);
-    let post_pages = filled_cache_pages(post.program.state.cache);
-    let pre_overlay = pre.disk.content.union_prefer_right(pre_pages);
-    let post_overlay = post.disk.content.union_prefer_right(post_pages);
-    let raw_updates = writes;
-    let pre_records = to_journal_records(pre_overlay);
-    let post_records = to_journal_records(post_overlay);
-    let updates = to_journal_records(raw_updates);
-    let pre_disk_records = to_journal_records(pre.disk.content);
-    let post_disk_records = to_journal_records(post.disk.content);
-    assert(post_pages =~= pre_pages.union_prefer_right(writes));
-    assert(post_overlay =~= pre_overlay.union_prefer_right(writes)) by {
-        assert_maps_equal!(post_overlay, pre_overlay.union_prefer_right(writes), addr => {
-            if writes.contains_key(addr) {
-                assert(post_pages.contains_key(addr));
-                assert(post_pages[addr] == writes[addr]);
-            } else {
-                if post_overlay.contains_key(addr) {
-                    if post_pages.contains_key(addr) {
-                        assert(pre_pages.contains_key(addr));
-                        assert(post_pages[addr] == pre_pages[addr]);
-                    } else {
-                        assert(pre.disk.content.contains_key(addr));
-                    }
-                }
-                if pre_overlay.union_prefer_right(writes).contains_key(addr) {
-                    if pre_overlay.contains_key(addr) {
-                        if pre_pages.contains_key(addr) {
-                            assert(post_pages.contains_key(addr));
-                            assert(post_pages[addr] == pre_pages[addr]);
-                        } else {
-                            assert(pre.disk.content.contains_key(addr));
-                        }
-                    }
-                }
-            }
-        });
+    assert(post.program.state.journal.owned_aus() =~= pre.program.state.journal.owned_aus()) by {
+        assert(post.program.state.journal.loaded_index_aus()
+            =~= pre.program.state.journal.loaded_index_aus());
+        assert(post.program.state.journal.mini_allocator.all_aus()
+            == pre.program.state.journal.mini_allocator.all_aus());
     }
-    assert(post_records =~= pre_records.union_prefer_right(updates)) by {
-        assert_maps_equal!(post_records, pre_records.union_prefer_right(updates), addr => {
-            if updates.contains_key(addr) {
-                assert(writes.contains_key(addr));
-                assert(post_overlay.contains_key(addr));
-                assert(post_overlay[addr] == writes[addr]);
-            } else {
-                if post_records.contains_key(addr) {
-                    assert(post_overlay.contains_key(addr));
-                    assert(pre_overlay.contains_key(addr));
-                    assert(post_overlay[addr] == pre_overlay[addr]);
-                }
-                if pre_records.union_prefer_right(updates).contains_key(addr) {
-                    assert(pre_records.contains_key(addr));
-                    assert(pre_overlay.contains_key(addr));
-                    assert(post_overlay.contains_key(addr));
-                    assert(post_overlay[addr] == pre_overlay[addr]);
-                }
-            }
-        });
-    }
-    if !journal_projection_uses_live(pre) {
-        assert(post_disk_records == pre_disk_records);
-        assert(snapshot_walk_domain(post_disk_records, snapshot.boundary_lsn, snapshot.freshest_rec())
-            =~= snapshot_walk_domain(pre_disk_records, snapshot.boundary_lsn, snapshot.freshest_rec()));
-    }
-
-    assert(journal_projection_addrs(post) =~= journal_projection_addrs(pre)) by {
-        if journal_projection_uses_live(pre) {
-            assert(journal_projection_uses_live(post));
-            assert(post.program.state.journal.mini_allocator.all_aus()
-                == pre.program.state.journal.mini_allocator.all_aus());
-            assert(post.program.state.journal.journal.status.unwrap().lsn_au_index
-                == pre.program.state.journal.journal.status.unwrap().lsn_au_index);
-            assert(mini_allocator_allocated_addrs(post.program.state.journal.mini_allocator)
-                =~= mini_allocator_allocated_addrs(pre.program.state.journal.mini_allocator));
-        } else {
-            assert forall |addr: Address| #[trigger] journal_projection_addrs(post).contains(addr)
-                <==> journal_projection_addrs(pre).contains(addr) by {
-                if journal_projection_addrs(post).contains(addr) {
-                    if mini_allocator_allocated_addrs(post.program.state.journal.mini_allocator).contains(addr) {
-                        assert(mini_allocator_allocated_addrs(pre.program.state.journal.mini_allocator).contains(addr));
-                    } else {
-                        assert(snapshot_walk_domain(post_disk_records, snapshot.boundary_lsn, snapshot.freshest_rec()).contains(addr));
-                        assert(snapshot_walk_domain(pre_disk_records, snapshot.boundary_lsn, snapshot.freshest_rec()).contains(addr));
-                    }
-                }
-                if journal_projection_addrs(pre).contains(addr) {
-                    if mini_allocator_allocated_addrs(pre.program.state.journal.mini_allocator).contains(addr) {
-                        assert(mini_allocator_allocated_addrs(post.program.state.journal.mini_allocator).contains(addr));
-                    } else {
-                        assert(snapshot_walk_domain(pre_disk_records, snapshot.boundary_lsn, snapshot.freshest_rec()).contains(addr));
-                        assert(snapshot_walk_domain(post_disk_records, snapshot.boundary_lsn, snapshot.freshest_rec()).contains(addr));
-                    }
-                }
-            }
-        }
-    }
-    assert(journal_persistent_projection_addrs(post) =~= journal_persistent_projection_addrs(pre)) by {
-        assert forall |addr: Address| #[trigger] journal_persistent_projection_addrs(post).contains(addr)
-            <==> journal_persistent_projection_addrs(pre).contains(addr) by {
-            assert(journal_projection_addrs(post).contains(addr)
-                <==> journal_projection_addrs(pre).contains(addr));
-            let support = journal_projection_addrs(pre);
-            let post_pages = filled_cache_pages(post.program.state.cache);
-            let pre_pages = filled_cache_pages(pre.program.state.cache);
-            let post_status =
-                crate::implementation::CachingDiskAdapterRefinement_v::filled_cache_status(
-                    post.program.state.cache,
-                );
-            let pre_status =
-                crate::implementation::CachingDiskAdapterRefinement_v::filled_cache_status(
-                    pre.program.state.cache,
-                );
-            assert(project_cache_pages_by_addrs(post.program.state.cache, support)
-                =~= project_cache_pages_by_addrs(pre.program.state.cache, support));
-            assert(project_cache_status_by_addrs(post.program.state.cache, support)
-                =~= project_cache_status_by_addrs(pre.program.state.cache, support));
-            if support.contains(addr) {
-                assert(project_cache_pages_by_addrs(
-                    post.program.state.cache,
-                    support,
-                ).contains_key(addr) <==> post_pages.contains_key(addr));
-                assert(project_cache_pages_by_addrs(
-                    pre.program.state.cache,
-                    support,
-                ).contains_key(addr) <==> pre_pages.contains_key(addr));
-                assert(project_cache_status_by_addrs(
-                    post.program.state.cache,
-                    support,
-                ).contains_key(addr) <==> post_status.contains_key(addr));
-                assert(project_cache_status_by_addrs(
-                    pre.program.state.cache,
-                    support,
-                ).contains_key(addr) <==> pre_status.contains_key(addr));
-                assert(post_pages.contains_key(addr) <==> pre_pages.contains_key(addr));
-                assert(post_status.contains_key(addr) <==> pre_status.contains_key(addr));
-                if post_pages.contains_key(addr) {
-                    assert(project_cache_pages_by_addrs(
-                        post.program.state.cache,
-                        support,
-                    )[addr] == post_pages[addr]);
-                    assert(project_cache_pages_by_addrs(
-                        pre.program.state.cache,
-                        support,
-                    )[addr] == pre_pages[addr]);
-                    assert(post_pages[addr] == pre_pages[addr]);
-                }
-                if post_status.contains_key(addr) {
-                    assert(project_cache_status_by_addrs(
-                        post.program.state.cache,
-                        support,
-                    )[addr] == post_status[addr]);
-                    assert(project_cache_status_by_addrs(
-                        pre.program.state.cache,
-                        support,
-                    )[addr] == pre_status[addr]);
-                    assert(post_status[addr] == pre_status[addr]);
-                }
-            }
-        }
-    }
+    assert(persistent_journal_image_i(post) == persistent_journal_image_i(pre));
+    assert(journal_projection_aus(post) =~= journal_projection_aus(pre));
+    assert(journal_projection_addrs(post) =~= journal_projection_addrs(pre));
+    assert(journal_persistent_projection_addrs(post) =~= journal_persistent_projection_addrs(pre));
     assert(journal_projection_aus(post) =~= journal_projection_aus(pre)) by {
         to_aus_domain(journal_projection_addrs(post));
         to_aus_domain(journal_projection_addrs(pre));
@@ -1269,7 +970,8 @@ pub proof fn journal_projection_domains_unchanged_by_cache_access_outside(
 pub proof fn journal_load_index_refines(
     pre: SystemModel::State<AnotherProgramModel>,
     post: SystemModel::State<AnotherProgramModel>,
-    reads: Map<Address, RawPage>,
+    cache_reads: Map<Address, RawPage>,
+    journal_reads: Map<Address, RawPage>,
     discovered_aus: Set<AU>,
 )
     requires
@@ -1277,12 +979,13 @@ pub proof fn journal_load_index_refines(
         AnotherAtomicState::journal_load_index(
             pre.program.state,
             post.program.state,
-            reads,
+            cache_reads,
+            journal_reads,
             discovered_aus,
         ),
         post.disk == pre.disk,
         journal_projection_aus(post) =~= journal_projection_aus(pre),
-        reads <= journal_disk_cache_i(pre),
+        journal_reads <= journal_disk_cache_i(pre),
         journal_image_projection_aus_i(post, durable_superblock_image_i(pre))
             =~= journal_image_projection_aus_i(pre, durable_superblock_image_i(pre)),
         pre.program.state.in_flight is None,
@@ -1296,23 +999,24 @@ pub proof fn journal_load_index_refines(
 {
     let atomic_pre = pre.program.state;
     let atomic_post = post.program.state;
-    let raw_lbl = Cache::Label::Access{reads, writes: Map::empty()};
-    let journal_reads = to_journal_records(reads);
+    let raw_lbl = Cache::Label::Access{reads: cache_reads, writes: Map::empty()};
+    let journal_records = to_journal_records(journal_reads);
     let atomic_journal_lbl = AtomicJournalState::Label::LoadIndex{
-        reads: journal_reads,
+        reads: journal_records,
         discovered_aus,
     };
 
     AnotherAtomicState::journal_load_index_effect(
         pre.program.state,
         post.program.state,
-        reads,
+        cache_reads,
+        journal_reads,
         discovered_aus,
     );
     assert(AnotherAtomicState::journal_load_index_cached_next(
         pre.program.state,
         post.program.state,
-        reads,
+        journal_reads,
         discovered_aus,
     ));
     assert(atomic_pre.recovery_state is SuperblockAvailable);
@@ -1322,21 +1026,21 @@ pub proof fn journal_load_index_refines(
         pre.program.state.journal.journal,
         post.program.state.journal.journal,
         CachedJournal::Label::LoadIndex{
-            reads: to_journal_records(reads),
+            reads: to_journal_records(journal_reads),
             discovered_aus,
         },
     )) by {
         assert(AnotherAtomicState::journal_load_index_cached_next(
             pre.program.state,
             post.program.state,
-            reads,
+            journal_reads,
             discovered_aus,
         ));
     }
     CachedJournal::State::load_index_effect(
         pre.program.state.journal.journal,
         post.program.state.journal.journal,
-        to_journal_records(reads),
+        to_journal_records(journal_reads),
         discovered_aus,
     );
     assert(atomic_post.journal.journal.snapshot == atomic_pre.journal.journal.snapshot);
@@ -1344,7 +1048,7 @@ pub proof fn journal_load_index_refines(
     filled_cache_read_only_access_unchanged(
         pre.program.state.cache,
         post.program.state.cache,
-        reads,
+        cache_reads,
     );
     assert(filled_cache_pages(post.program.state.cache)
         =~= filled_cache_pages(pre.program.state.cache));
@@ -1370,9 +1074,9 @@ pub proof fn journal_load_index_refines(
         }
     }
 
-    cache_read_only_access_projection_unchanged(pre, post, reads);
+    cache_read_only_access_projection_unchanged(pre, post, cache_reads);
     assert(journal_caching_disk_i(post) == journal_caching_disk_i(pre));
-    projected_caching_disk_read_only_access(pre, reads);
+    projected_caching_disk_read_only_access(pre, journal_reads);
     assert(journal_caching_disk_state_i(post).disk == journal_caching_disk_state_i(pre).disk);
     assert(journal_caching_disk_state_i(post).mini_allocator
         == journal_caching_disk_state_i(pre).mini_allocator);
@@ -1391,7 +1095,7 @@ pub proof fn journal_load_index_refines(
     assert(atomic_post.journal.journal == post.program.state.journal.journal);
     reveal(CachedJournal::State::next);
     let cj_lbl = CachedJournal::Label::LoadIndex{
-        reads: to_journal_records(reads),
+        reads: to_journal_records(journal_reads),
         discovered_aus,
     };
     assert(exists |step: CachedJournal::Step| CachedJournal::State::next_by(
@@ -1403,7 +1107,7 @@ pub proof fn journal_load_index_refines(
         assert(AnotherAtomicState::journal_load_index_cached_next(
             pre.program.state,
             post.program.state,
-            reads,
+            journal_reads,
             discovered_aus,
         ));
     }
@@ -1429,7 +1133,7 @@ pub proof fn journal_load_index_refines(
         src.ephemeral->v.journal,
         atomic_post.journal.journal,
         CachedJournal::Label::LoadIndex{
-            reads: to_journal_records(reads),
+            reads: to_journal_records(journal_reads),
             discovered_aus,
         },
     ));
@@ -1438,9 +1142,10 @@ pub proof fn journal_load_index_refines(
         src.ephemeral->v,
         dst.ephemeral->v,
         inner_lbl,
-        CachingDiskJournal::Step::load_index(atomic_post.journal.journal, reads),
+        CachingDiskJournal::Step::load_index(atomic_post.journal.journal, journal_reads),
     )) by {
         reveal(CachingDiskJournal::State::next_by);
+        reveal(CachingDiskJournal::State::mini_allocator_fill);
     }
     reveal(CachingDiskJournal::State::next);
     let persistent_image = durable_superblock_image_i(pre);
@@ -1548,6 +1253,7 @@ pub proof fn journal_execute_put_refines(
     };
     AtomicBranchState::State::append_effect(pre.program.state.branch, branch, branch_lbl);
     assert(post.program.state.branch == branch);
+    assert(journal_projection_uses_live(pre));
 
     branch_writes_disjoint_from_journal_projection(pre, writes);
     journal_projection_domains_unchanged_by_cache_access_outside(pre, post, reads, writes);
@@ -1647,9 +1353,6 @@ pub proof fn journal_read_for_recovery_refines(
     let records = full_journal_reads[addr].message_seq.maybe_discard_old(
         pre.program.state.journal.journal.snapshot.boundary_lsn,
     );
-    let raw_journal_reads = journal_reads.restrict(journal_projection_addrs(pre));
-    let restricted_journal_reads = to_journal_records(raw_journal_reads);
-
     AnotherAtomicState::read_for_recovery_journal_effect(
         pre.program.state,
         post.program.state,
@@ -1664,6 +1367,7 @@ pub proof fn journal_read_for_recovery_refines(
         branch,
     );
     assert(pre.program.state.recovery_state is MetadataLoadComplete);
+    assert(journal_projection_uses_live(pre));
     assert(pre.program.state.journal_metadata_loaded());
     assert(post.program.state.journal_metadata_loaded());
 
@@ -1672,15 +1376,10 @@ pub proof fn journal_read_for_recovery_refines(
     assert(journal_projection_aus(post) =~= journal_projection_aus(pre));
     cache_access_outside_journal_projection_unchanged(pre, post, reads, writes);
     cache_access_reads_restricted_to_journal_projection_available(pre, post, reads, writes);
-    projected_caching_disk_read_only_access(pre, raw_journal_reads);
 
     let full_lbl = CachedJournal::Label::ReadForRecovery{
         messages: records,
         reads: full_journal_reads,
-    };
-    let restricted_lbl = CachedJournal::Label::ReadForRecovery{
-        messages: records,
-        reads: restricted_journal_reads,
     };
     reveal(CachedJournal::State::next);
     reveal(CachedJournal::State::next_by);
@@ -1697,8 +1396,24 @@ pub proof fn journal_read_for_recovery_refines(
         full_lbl,
         cj_step,
     ));
+    let start_lsn = match cj_step {
+        CachedJournal::Step::read_for_recovery(start_lsn, read_addr) => start_lsn,
+        _ => arbitrary(),
+    };
+    let read_addr = match cj_step {
+        CachedJournal::Step::read_for_recovery(start_lsn, read_addr) => read_addr,
+        _ => arbitrary(),
+    };
+    let raw_journal_reads = Map::<Address, RawPage>::empty().insert(read_addr, reads[read_addr]);
+    let restricted_journal_reads = to_journal_records(raw_journal_reads);
+    let restricted_lbl = CachedJournal::Label::ReadForRecovery{
+        messages: records,
+        reads: restricted_journal_reads,
+    };
     match cj_step {
-        CachedJournal::Step::read_for_recovery(start_lsn, read_addr) => {
+        CachedJournal::Step::read_for_recovery(step_start_lsn, step_read_addr) => {
+            assert(step_start_lsn == start_lsn);
+            assert(step_read_addr == read_addr);
             assert(CachedJournal::State::read_for_recovery(
                 pre.program.state.journal.journal,
                 pre.program.state.journal.journal,
@@ -1803,25 +1518,12 @@ pub proof fn journal_read_for_recovery_refines(
                     assert(cropped.seq_start == record.message_seq.seq_start);
                 }
             }
-            assert(snapshot_walk_domain(
-                disk_view.entries,
-                pre.program.state.journal.journal.snapshot.boundary_lsn,
-                pre.program.state.journal.journal.snapshot.freshest_rec(),
-            ).contains(read_addr)
-                || mini_allocator_allocated_addrs(
-                    pre.program.state.journal.mini_allocator,
-                ).contains(read_addr)) by {
-                assert(journal_owned_disk_records_do_not_impersonate_index(pre));
-            }
-            assert(snapshot_walk_domain(
-                disk_view.entries,
-                pre.program.state.journal.journal.snapshot.boundary_lsn,
-                pre.program.state.journal.journal.snapshot.freshest_rec(),
-            ).contains(read_addr));
             assert(live_journal_projection_addrs(pre).contains(read_addr));
             assert(journal_projection_addrs(pre).contains(read_addr));
             assert(raw_journal_reads.contains_key(read_addr));
             assert(raw_journal_reads[read_addr] == reads[read_addr]);
+            assert(reads[read_addr] == journal_reads[read_addr]);
+            projected_caching_disk_read_only_access(pre, raw_journal_reads);
             assert(restricted_journal_reads.contains_key(read_addr));
             assert(restricted_journal_reads[read_addr] == full_journal_reads[read_addr]);
             assert(CachedJournal::State::read_for_recovery(
@@ -1865,9 +1567,55 @@ pub proof fn journal_read_for_recovery_refines(
 
     assert(src.ephemeral is Known);
     assert(dst.ephemeral is Known);
+    assert(src.ephemeral->v.refinement_inv());
     assert(journal_caching_disk_state_i(post) == journal_caching_disk_state_i(pre)) by {
         assert(post.program.state.journal == pre.program.state.journal);
         assert(journal_caching_disk_i(post) == journal_caching_disk_i(pre));
+    }
+    assert(to_journal_records(raw_journal_reads) <= src.ephemeral->v.journal_disk_view().entries) by {
+        assert forall |read: Address| #[trigger] to_journal_records(raw_journal_reads).contains_key(read)
+            implies src.ephemeral->v.journal_disk_view().entries.contains_key(read)
+                && to_journal_records(raw_journal_reads)[read]
+                    == src.ephemeral->v.journal_disk_view().entries[read] by {
+            assert(raw_journal_reads.contains_key(read));
+            assert(read == read_addr);
+            assert(src.ephemeral->v.disk.cache.contains_key(read));
+            assert(src.ephemeral->v.disk.visible().contains_key(read));
+            assert(src.ephemeral->v.disk.visible()[read] == src.ephemeral->v.disk.cache[read]);
+        }
+    }
+    assert forall |read: Address| #[trigger] raw_journal_reads.contains_key(read) implies {
+        &&& src.ephemeral->v.au_page_bounds.contains_key(read.au)
+        &&& read.page <= src.ephemeral->v.au_page_bounds[read.au]
+    } by {
+        assert(read == read_addr);
+        assert(src.ephemeral->v.journal_disk_view().entries.contains_key(read));
+        assert(journal_owned_disk_records_do_not_impersonate_index(pre));
+        let projected = journal_caching_disk_state_i(pre);
+        assert(projected == src.ephemeral->v);
+        let disk_view = projected.journal_disk_view();
+        let index = pre.program.state.journal.journal.status.unwrap().lsn_au_index;
+        assert(disk_view.entries.contains_key(read));
+        assert(disk_view.entries[read] == src.ephemeral->v.journal_disk_view().entries[read]);
+        assert(index.contains_key(start_lsn));
+        assert(index[start_lsn] == read.au);
+        assert(disk_view.entries[read].contains_lsn(disk_view.boundary_lsn, start_lsn)) by {
+            assert(read == read_addr);
+            assert(disk_view.boundary_lsn == pre.program.state.journal.journal.snapshot.boundary_lsn);
+            assert(disk_view.entries[read] == full_journal_reads[read]);
+            assert(full_journal_reads[read].contains_lsn(
+                pre.program.state.journal.journal.snapshot.boundary_lsn,
+                start_lsn,
+            ));
+        }
+    }
+    assert(CachingDiskJournal::State::read_for_recovery(
+        src.ephemeral->v,
+        src.ephemeral->v,
+        inner_lbl,
+        raw_journal_reads,
+    )) by {
+        reveal(CachingDiskJournal::State::read_for_recovery);
     }
     assert(CachingDiskJournal::State::next_by(
         src.ephemeral->v,
@@ -1878,6 +1626,26 @@ pub proof fn journal_read_for_recovery_refines(
         reveal(CachingDiskJournal::State::next_by);
     }
     reveal(CachingDiskJournal::State::next);
+    assert(dst.prepared == src.prepared) by {
+        assert(post.program.state.in_flight == pre.program.state.in_flight);
+        assert(post.program.state.journal.in_flight == pre.program.state.journal.in_flight);
+        let branch_lbl = AtomicBranchState::Label::Append{
+            keys,
+            msgs,
+            receipt,
+            init_root,
+            read_nodes: crate::implementation::AnotherAtomicState_v::to_branch_nodes(branch_reads),
+            write_nodes: crate::implementation::AnotherAtomicState_v::to_branch_nodes(writes),
+        };
+        AtomicBranchState::State::append_effect(pre.program.state.branch, branch, branch_lbl);
+        assert(post.program.state.branch == branch);
+        assert(post.program.state.branch.in_flight == pre.program.state.branch.in_flight);
+        if pre.program.state.in_flight is Some {
+            assert(post.program.state.atomic_inflight_superblock_i()
+                == pre.program.state.atomic_inflight_superblock_i());
+        }
+        assert(post.disk == pre.disk);
+    }
 
     assert(CrashAwareCachingDiskJournal::State::next_by(
         src,
@@ -2118,6 +1886,23 @@ pub proof fn journal_observe_clean_aus_refines(
     reveal(CachingDiskJournal::State::next);
     assert(dst.persistent == src.persistent);
     assert(dst.frozen == src.frozen);
+    assert(src.active_step_preserves_images(dst.ephemeral->v)) by {
+        if src.frozen is Some {
+            let frozen = src.frozen.unwrap();
+            assert(src.ephemeral->v.frozen_snapshot_valid(frozen.snapshot, frozen.seq_end));
+            assert(dst.ephemeral->v.frozen_snapshot_valid(frozen.snapshot, frozen.seq_end)) by {
+                assert(dst.ephemeral->v.journal.status is Some);
+                assert(dst.ephemeral->v.journal.snapshot == src.ephemeral->v.journal.snapshot);
+                assert(dst.ephemeral->v.journal.seq_end() == src.ephemeral->v.journal.seq_end());
+                assert(dst.ephemeral->v.journal_disk_view() == src.ephemeral->v.journal_disk_view());
+                assert(dst.ephemeral->v.au_page_bounds == src.ephemeral->v.au_page_bounds);
+            }
+            assert(dst.ephemeral->v.frozen_tj(frozen.snapshot)
+                == src.ephemeral->v.frozen_tj(frozen.snapshot)) by {
+                assert(dst.ephemeral->v.journal_disk_view() == src.ephemeral->v.journal_disk_view());
+            }
+        }
+    }
     assert(CrashAwareCachingDiskJournal::State::next_by(
         src,
         dst,
@@ -2136,6 +1921,7 @@ pub proof fn journal_fill_aus_refines(
 )
     requires
         journal_component_refinement_inv(pre),
+        journal_component_refinement_inv(post),
         AnotherAtomicState::journal_fill_aus(pre.program.state, post.program.state, aus),
         post.disk == pre.disk,
     ensures
@@ -2192,12 +1978,14 @@ pub proof fn journal_fill_aus_refines(
     assert(post.program.state.journal.persistent_seq_end == pre.program.state.journal.persistent_seq_end);
     assert(post.program.state.journal.mini_allocator
         == pre.program.state.journal.mini_allocator.add_aus(aus));
-    assert(journal_caching_disk_i(post) == journal_caching_disk_i(pre)) by {
-        assert(post.program.state.cache == pre.program.state.cache);
-        assert(post.disk == pre.disk);
+    assert(post.program.state.journal.loaded_index_aus()
+        == pre.program.state.journal.loaded_index_aus());
+    assert(post.program.state.journal.owned_aus()
+        == pre.program.state.journal.owned_aus() + aus) by {
+        assert(post.program.state.journal.mini_allocator.all_aus()
+            =~= pre.program.state.journal.mini_allocator.all_aus() + aus);
     }
     assert(dst.ephemeral->v.journal == src.ephemeral->v.journal);
-    assert(dst.ephemeral->v.disk == src.ephemeral->v.disk);
     assert(dst.ephemeral->v.mini_allocator == src.ephemeral->v.mini_allocator.add_aus(aus));
 
     assert(aus.disjoint(caching_disk_journal_accessible_aus(src.ephemeral->v))) by {
@@ -2222,15 +2010,320 @@ pub proof fn journal_fill_aus_refines(
         }
     }
 
+    assert(dst.ephemeral->v.refinement_inv());
+    assert(dst.ephemeral->v.inv());
+    assert(dst.ephemeral->v.disk.inv());
+    assert(src.ephemeral->v.disk.cache <= dst.ephemeral->v.disk.cache) by {
+        assert forall |addr: Address| #[trigger] src.ephemeral->v.disk.cache.contains_key(addr)
+            implies dst.ephemeral->v.disk.cache.contains_key(addr)
+                && dst.ephemeral->v.disk.cache[addr] == src.ephemeral->v.disk.cache[addr] by {
+            assert(journal_caching_disk_i(pre).cache.contains_key(addr));
+            assert(addresses_in_aus(pre.program.state.journal_owned_aus()).contains(addr));
+            assert(pre.program.state.journal_owned_aus().contains(addr.au));
+            assert(post.program.state.journal_owned_aus().contains(addr.au));
+            assert(addresses_in_aus(post.program.state.journal_owned_aus()).contains(addr));
+            assert(post.program.state.cache == pre.program.state.cache);
+        }
+    }
+    assert(src.ephemeral->v.disk.persistent <= dst.ephemeral->v.disk.persistent) by {
+        assert forall |addr: Address| #[trigger] src.ephemeral->v.disk.persistent.contains_key(addr)
+            implies dst.ephemeral->v.disk.persistent.contains_key(addr)
+                && dst.ephemeral->v.disk.persistent[addr] == src.ephemeral->v.disk.persistent[addr] by {
+            assert(addresses_in_aus(pre.program.state.journal_owned_aus()).contains(addr));
+            assert(pre.program.state.journal_owned_aus().contains(addr.au));
+            assert(post.program.state.journal_owned_aus().contains(addr.au));
+            assert(addresses_in_aus(post.program.state.journal_owned_aus()).contains(addr));
+            assert(post.disk == pre.disk);
+        }
+    }
+    assert(src.ephemeral->v.disk.status <= dst.ephemeral->v.disk.status) by {
+        assert forall |addr: Address| #[trigger] src.ephemeral->v.disk.status.contains_key(addr)
+            implies dst.ephemeral->v.disk.status.contains_key(addr)
+                && dst.ephemeral->v.disk.status[addr] == src.ephemeral->v.disk.status[addr] by {
+            assert(addresses_in_aus(pre.program.state.journal_owned_aus()).contains(addr));
+            assert(pre.program.state.journal_owned_aus().contains(addr.au));
+            assert(post.program.state.journal_owned_aus().contains(addr.au));
+            assert(addresses_in_aus(post.program.state.journal_owned_aus()).contains(addr));
+            assert(post.program.state.cache == pre.program.state.cache);
+        }
+    }
+    assert(dst.ephemeral->v.disk.cache.dom() <= addresses_in_aus(
+        cj_lsn_au_index(src.ephemeral->v.journal).values()
+            + src.ephemeral->v.mini_allocator.all_aus() + aus,
+    )) by {
+        assert forall |addr: Address| #[trigger] dst.ephemeral->v.disk.cache.dom().contains(addr)
+            implies addresses_in_aus(
+                cj_lsn_au_index(src.ephemeral->v.journal).values()
+                    + src.ephemeral->v.mini_allocator.all_aus() + aus,
+            ).contains(addr) by {
+            assert(addresses_in_aus(post.program.state.journal_owned_aus()).contains(addr));
+            assert(post.program.state.journal_owned_aus().contains(addr.au));
+            assert(post.program.state.journal_owned_aus()
+                =~= pre.program.state.journal_owned_aus() + aus);
+            if pre.program.state.journal_owned_aus().contains(addr.au) {
+                assert(src.ephemeral->v.lsn_au_index_or_empty().values().contains(addr.au)
+                    || src.ephemeral->v.mini_allocator.all_aus().contains(addr.au));
+            }
+        }
+    }
+    assert(dst.ephemeral->v.disk.persistent.dom() <= addresses_in_aus(
+        cj_lsn_au_index(src.ephemeral->v.journal).values()
+            + src.ephemeral->v.mini_allocator.all_aus() + aus,
+    )) by {
+        assert forall |addr: Address| #[trigger] dst.ephemeral->v.disk.persistent.dom().contains(addr)
+            implies addresses_in_aus(
+                cj_lsn_au_index(src.ephemeral->v.journal).values()
+                    + src.ephemeral->v.mini_allocator.all_aus() + aus,
+            ).contains(addr) by {
+            assert(addresses_in_aus(post.program.state.journal_owned_aus()).contains(addr));
+            assert(post.program.state.journal_owned_aus().contains(addr.au));
+            assert(post.program.state.journal_owned_aus()
+                =~= pre.program.state.journal_owned_aus() + aus);
+            if pre.program.state.journal_owned_aus().contains(addr.au) {
+                assert(src.ephemeral->v.lsn_au_index_or_empty().values().contains(addr.au)
+                    || src.ephemeral->v.mini_allocator.all_aus().contains(addr.au));
+            }
+        }
+    }
+    assert(dst.ephemeral->v.disk.status.dom() <= addresses_in_aus(
+        cj_lsn_au_index(src.ephemeral->v.journal).values()
+            + src.ephemeral->v.mini_allocator.all_aus() + aus,
+    )) by {
+        assert forall |addr: Address| #[trigger] dst.ephemeral->v.disk.status.dom().contains(addr)
+            implies addresses_in_aus(
+                cj_lsn_au_index(src.ephemeral->v.journal).values()
+                    + src.ephemeral->v.mini_allocator.all_aus() + aus,
+            ).contains(addr) by {
+            assert(addresses_in_aus(post.program.state.journal_owned_aus()).contains(addr));
+            assert(post.program.state.journal_owned_aus().contains(addr.au));
+            assert(post.program.state.journal_owned_aus()
+                =~= pre.program.state.journal_owned_aus() + aus);
+            if pre.program.state.journal_owned_aus().contains(addr.au) {
+                assert(src.ephemeral->v.lsn_au_index_or_empty().values().contains(addr.au)
+                    || src.ephemeral->v.mini_allocator.all_aus().contains(addr.au));
+            }
+        }
+    }
+    assert(dst.ephemeral->v.disk.cache.dom() - src.ephemeral->v.disk.cache.dom()
+        <= addresses_in_aus(aus)) by {
+        assert forall |addr: Address| #[trigger] (dst.ephemeral->v.disk.cache.dom()
+                - src.ephemeral->v.disk.cache.dom()).contains(addr)
+            implies addresses_in_aus(aus).contains(addr) by {
+            assert(dst.ephemeral->v.disk.cache.dom().contains(addr));
+            assert(!src.ephemeral->v.disk.cache.dom().contains(addr));
+            assert(addresses_in_aus(post.program.state.journal_owned_aus()).contains(addr));
+            assert(post.program.state.journal_owned_aus().contains(addr.au));
+            assert(post.program.state.journal_owned_aus()
+                =~= pre.program.state.journal_owned_aus() + aus);
+            if pre.program.state.journal_owned_aus().contains(addr.au) {
+                assert(addresses_in_aus(pre.program.state.journal_owned_aus()).contains(addr));
+                assert(src.ephemeral->v.disk.cache.dom().contains(addr));
+                assert(false);
+            }
+        }
+    }
+    assert(dst.ephemeral->v.disk.persistent.dom() - src.ephemeral->v.disk.persistent.dom()
+        <= addresses_in_aus(aus)) by {
+        assert forall |addr: Address| #[trigger] (dst.ephemeral->v.disk.persistent.dom()
+                - src.ephemeral->v.disk.persistent.dom()).contains(addr)
+            implies addresses_in_aus(aus).contains(addr) by {
+            assert(dst.ephemeral->v.disk.persistent.dom().contains(addr));
+            assert(!src.ephemeral->v.disk.persistent.dom().contains(addr));
+            assert(addresses_in_aus(post.program.state.journal_owned_aus()).contains(addr));
+            assert(post.program.state.journal_owned_aus().contains(addr.au));
+            assert(post.program.state.journal_owned_aus()
+                =~= pre.program.state.journal_owned_aus() + aus);
+            if pre.program.state.journal_owned_aus().contains(addr.au) {
+                assert(addresses_in_aus(pre.program.state.journal_owned_aus()).contains(addr));
+                assert(src.ephemeral->v.disk.persistent.dom().contains(addr));
+                assert(false);
+            }
+        }
+    }
+    assert(dst.ephemeral->v.disk.status.dom() - src.ephemeral->v.disk.status.dom()
+        <= addresses_in_aus(aus)) by {
+        assert forall |addr: Address| #[trigger] (dst.ephemeral->v.disk.status.dom()
+                - src.ephemeral->v.disk.status.dom()).contains(addr)
+            implies addresses_in_aus(aus).contains(addr) by {
+            assert(dst.ephemeral->v.disk.status.dom().contains(addr));
+            assert(!src.ephemeral->v.disk.status.dom().contains(addr));
+            assert(addresses_in_aus(post.program.state.journal_owned_aus()).contains(addr));
+            assert(post.program.state.journal_owned_aus().contains(addr.au));
+            assert(post.program.state.journal_owned_aus()
+                =~= pre.program.state.journal_owned_aus() + aus);
+            if pre.program.state.journal_owned_aus().contains(addr.au) {
+                assert(addresses_in_aus(pre.program.state.journal_owned_aus()).contains(addr));
+                assert(src.ephemeral->v.disk.status.dom().contains(addr));
+                assert(false);
+            }
+        }
+    }
+    assert(dst.ephemeral->v.disk.cache.dom() <= Set::new(|addr: Address| addr.wf())) by {
+        assert(dst.ephemeral->v.allocation_view_semantic_inv());
+        assert(dst.ephemeral->v.journal_disk_view().wf_addrs());
+        assert forall |addr: Address| #[trigger] dst.ephemeral->v.disk.cache.dom().contains(addr)
+            implies Set::new(|addr: Address| addr.wf()).contains(addr) by {
+            assert(dst.ephemeral->v.disk.cache.contains_key(addr));
+            assert(dst.ephemeral->v.disk.visible().contains_key(addr));
+            assert(dst.ephemeral->v.journal_disk_view().entries.contains_key(addr));
+        }
+    }
+    assert(dst.ephemeral->v.disk.persistent.dom() <= Set::new(|addr: Address| addr.wf())) by {
+        assert(dst.ephemeral->v.allocation_view_semantic_inv());
+        assert(dst.ephemeral->v.journal_disk_view().wf_addrs());
+        assert forall |addr: Address| #[trigger] dst.ephemeral->v.disk.persistent.dom().contains(addr)
+            implies Set::new(|addr: Address| addr.wf()).contains(addr) by {
+            assert(dst.ephemeral->v.disk.persistent.contains_key(addr));
+            assert(dst.ephemeral->v.disk.visible().contains_key(addr));
+            assert(dst.ephemeral->v.journal_disk_view().entries.contains_key(addr));
+        }
+    }
+    assert(dst.ephemeral->v.au_page_bounds == src.ephemeral->v.au_page_bounds) by {
+        let pre_index_addrs = addresses_in_aus(pre.program.state.journal.loaded_index_aus());
+        let post_index_addrs = addresses_in_aus(post.program.state.journal.loaded_index_aus());
+        assert(pre_index_addrs =~= post_index_addrs);
+        assert(journal_caching_disk_i(post).visible().restrict(post_index_addrs)
+            =~= journal_caching_disk_i(pre).visible().restrict(pre_index_addrs)) by {
+            assert_maps_equal!(
+                journal_caching_disk_i(post).visible().restrict(post_index_addrs),
+                journal_caching_disk_i(pre).visible().restrict(pre_index_addrs),
+                addr => {
+                    if post_index_addrs.contains(addr) {
+                        assert(pre_index_addrs.contains(addr));
+                        assert(pre.program.state.journal.loaded_index_aus().contains(addr.au));
+                        assert(pre.program.state.journal_owned_aus().contains(addr.au));
+                        assert(post.program.state.journal_owned_aus().contains(addr.au));
+                        assert(addresses_in_aus(pre.program.state.journal_owned_aus()).contains(addr));
+                        assert(addresses_in_aus(post.program.state.journal_owned_aus()).contains(addr));
+                        assert(post.program.state.cache == pre.program.state.cache);
+                        assert(post.disk == pre.disk);
+                        if journal_caching_disk_i(post).visible().contains_key(addr) {
+                            if journal_caching_disk_i(post).cache.contains_key(addr) {
+                                assert(journal_caching_disk_i(pre).cache.contains_key(addr));
+                                assert(journal_caching_disk_i(post).visible()[addr]
+                                    == journal_caching_disk_i(post).cache[addr]);
+                                assert(journal_caching_disk_i(pre).visible()[addr]
+                                    == journal_caching_disk_i(pre).cache[addr]);
+                            } else {
+                                assert(journal_caching_disk_i(post).persistent.contains_key(addr));
+                                assert(journal_caching_disk_i(pre).persistent.contains_key(addr));
+                                assert(!journal_caching_disk_i(pre).cache.contains_key(addr));
+                            }
+                        }
+                        if journal_caching_disk_i(pre).visible().contains_key(addr) {
+                            if journal_caching_disk_i(pre).cache.contains_key(addr) {
+                                assert(journal_caching_disk_i(post).cache.contains_key(addr));
+                                assert(journal_caching_disk_i(post).visible()[addr]
+                                    == journal_caching_disk_i(post).cache[addr]);
+                                assert(journal_caching_disk_i(pre).visible()[addr]
+                                    == journal_caching_disk_i(pre).cache[addr]);
+                            } else {
+                                assert(journal_caching_disk_i(pre).persistent.contains_key(addr));
+                                assert(journal_caching_disk_i(post).persistent.contains_key(addr));
+                                assert(!journal_caching_disk_i(post).cache.contains_key(addr));
+                            }
+                        }
+                    }
+                }
+            );
+        }
+        assert(to_journal_records(journal_caching_disk_i(post).visible()).restrict(post_index_addrs)
+            =~= to_journal_records(journal_caching_disk_i(pre).visible()).restrict(pre_index_addrs)) by {
+            assert_maps_equal!(
+                to_journal_records(journal_caching_disk_i(post).visible()).restrict(post_index_addrs),
+                to_journal_records(journal_caching_disk_i(pre).visible()).restrict(pre_index_addrs),
+                addr => {
+                    assert(journal_caching_disk_i(post).visible().restrict(post_index_addrs)
+                        =~= journal_caching_disk_i(pre).visible().restrict(pre_index_addrs));
+                }
+            );
+        }
+    }
+
+    assert(CachingDiskJournal::State::mini_allocator_fill(
+        src.ephemeral->v,
+        dst.ephemeral->v,
+        cj_lbl,
+        dst.ephemeral->v.disk,
+    )) by {
+        reveal(CachingDiskJournal::State::mini_allocator_fill);
+    }
     assert(CachingDiskJournal::State::next_by(
         src.ephemeral->v,
         dst.ephemeral->v,
         cj_lbl,
-        CachingDiskJournal::Step::mini_allocator_fill(src.ephemeral->v.disk),
+        CachingDiskJournal::Step::mini_allocator_fill(dst.ephemeral->v.disk),
     )) by {
         reveal(CachingDiskJournal::State::next_by);
     }
     reveal(CachingDiskJournal::State::next);
+
+    assert(src.active_step_preserves_images(dst.ephemeral->v)) by {
+        if src.frozen is Some {
+            let frozen = src.frozen.unwrap();
+            let pre_index_addrs = addresses_in_aus(pre.program.state.journal.loaded_index_aus());
+            let post_index_addrs = addresses_in_aus(post.program.state.journal.loaded_index_aus());
+            assert(src.ephemeral->v.frozen_snapshot_valid(frozen.snapshot, frozen.seq_end));
+            assert(dst.frozen == src.frozen);
+            assert(dst.refinement_inv());
+            assert(dst.semantic_inv());
+            assert(dst.ephemeral->v.frozen_snapshot_valid(frozen.snapshot, frozen.seq_end));
+            assert(dst.ephemeral->v.lsn_au_index_or_empty()
+                == src.ephemeral->v.lsn_au_index_or_empty());
+            assert(dst.ephemeral->v.frozen_loose_domain(frozen.snapshot)
+                =~= src.ephemeral->v.frozen_loose_domain(frozen.snapshot));
+            assert(src.ephemeral->v.frozen_loose_domain(frozen.snapshot) <= pre_index_addrs) by {
+                assert forall |addr: Address| #[trigger] src.ephemeral->v.frozen_loose_domain(frozen.snapshot).contains(addr)
+                    implies pre_index_addrs.contains(addr) by {
+                    assert(src.ephemeral->v.lsn_au_index_or_empty()
+                        == pre.program.state.journal.journal.status.unwrap().lsn_au_index);
+                    assert(src.ephemeral->v.lsn_au_index_or_empty()
+                        .restrict(src.ephemeral->v.frozen_lsns(frozen.snapshot))
+                        .values().contains(addr.au));
+                    assert(src.ephemeral->v.lsn_au_index_or_empty().values().contains(addr.au));
+                    assert(pre.program.state.journal.loaded_index_aus().contains(addr.au));
+                }
+            }
+            assert(dst.ephemeral->v.frozen_loose_domain(frozen.snapshot) <= post_index_addrs) by {
+                assert forall |addr: Address| #[trigger] dst.ephemeral->v.frozen_loose_domain(frozen.snapshot).contains(addr)
+                    implies post_index_addrs.contains(addr) by {
+                    assert(dst.ephemeral->v.lsn_au_index_or_empty()
+                        == post.program.state.journal.journal.status.unwrap().lsn_au_index);
+                    assert(dst.ephemeral->v.lsn_au_index_or_empty()
+                        .restrict(dst.ephemeral->v.frozen_lsns(frozen.snapshot))
+                        .values().contains(addr.au));
+                    assert(dst.ephemeral->v.lsn_au_index_or_empty().values().contains(addr.au));
+                    assert(post.program.state.journal.loaded_index_aus().contains(addr.au));
+                }
+            }
+            assert(dst.ephemeral->v.frozen_tj(frozen.snapshot)
+                == src.ephemeral->v.frozen_tj(frozen.snapshot)) by {
+                assert(dst.ephemeral->v.journal_disk_view().boundary_lsn
+                    == src.ephemeral->v.journal_disk_view().boundary_lsn);
+                assert(dst.ephemeral->v.journal_disk_view().entries
+                    .restrict(dst.ephemeral->v.frozen_loose_domain(frozen.snapshot))
+                    =~= src.ephemeral->v.journal_disk_view().entries
+                    .restrict(src.ephemeral->v.frozen_loose_domain(frozen.snapshot))) by {
+                    assert_maps_equal!(
+                        dst.ephemeral->v.journal_disk_view().entries
+                            .restrict(dst.ephemeral->v.frozen_loose_domain(frozen.snapshot)),
+                        src.ephemeral->v.journal_disk_view().entries
+                            .restrict(src.ephemeral->v.frozen_loose_domain(frozen.snapshot)),
+                        addr => {
+                            assert(dst.ephemeral->v.frozen_loose_domain(frozen.snapshot)
+                                =~= src.ephemeral->v.frozen_loose_domain(frozen.snapshot));
+                            if src.ephemeral->v.frozen_loose_domain(frozen.snapshot).contains(addr) {
+                                assert(pre_index_addrs.contains(addr));
+                                assert(post_index_addrs.contains(addr));
+                                assert(to_journal_records(journal_caching_disk_i(post).visible()).restrict(post_index_addrs)
+                                    =~= to_journal_records(journal_caching_disk_i(pre).visible()).restrict(pre_index_addrs));
+                            }
+                        }
+                    );
+                }
+            }
+        }
+    }
 
     assert(CrashAwareCachingDiskJournal::State::next_by(
         src,

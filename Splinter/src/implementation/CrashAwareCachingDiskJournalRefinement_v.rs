@@ -112,6 +112,45 @@ impl CrashAwareCachingDiskJournal::State {
         }
     }
 
+    pub proof fn internal_allocs_disjoint_implies_fresh_label(
+        self,
+        post: Self,
+        lbl: CrashAwareCachingDiskJournal::Label,
+    )
+        requires
+            self.refinement_inv(),
+            self.ephemeral is Known,
+            self.label_i(post, lbl) is Internal,
+            self.label_i(post, lbl).arrow_Internal_allocs()
+                .disjoint(caching_disk_journal_accessible_aus(self.ephemeral->v)),
+        ensures
+            self.i().fresh_label(self.label_i(post, lbl)),
+    {
+        let allocs = self.label_i(post, lbl).arrow_Internal_allocs();
+        let persistent_meta = frozen_image_metadata_i(self.persistent);
+        self.ephemeral->v.i_accessible_aus_subset_accessible_aus();
+        self.ephemeral->v.i_frozen_image_accessible_aus(persistent_meta);
+        assert(self.i().persistent_image is None);
+        assert(self.i().persistent_image_view()
+            == self.ephemeral->v.i().frozen_image(persistent_meta));
+        assert(self.i().persistent_image_view().accessible_aus()
+            <= self.ephemeral->v.accessible_aus());
+        assert forall |au: AU| #[trigger] allocs.contains(au)
+            implies !self.i().persistent_image_view().accessible_aus().contains(au) by {
+            if self.i().persistent_image_view().accessible_aus().contains(au) {
+                assert(self.ephemeral->v.accessible_aus().contains(au));
+                assert(caching_disk_journal_accessible_aus(self.ephemeral->v).contains(au));
+            }
+        }
+        assert forall |au: AU| #[trigger] allocs.contains(au)
+            implies !self.i().ephemeral->v.accessible_aus().contains(au) by {
+            if self.i().ephemeral->v.accessible_aus().contains(au) {
+                assert(self.ephemeral->v.accessible_aus().contains(au));
+                assert(caching_disk_journal_accessible_aus(self.ephemeral->v).contains(au));
+            }
+        }
+    }
+
     pub proof fn active_step_preserves_image_refines(
         self,
         new_ephemeral: CachingDiskJournal::State,
@@ -132,12 +171,7 @@ impl CrashAwareCachingDiskJournal::State {
             new_ephemeral.i().frozen_image(frozen_image_metadata_i(frozen))
                 == self.ephemeral->v.i().frozen_image(frozen_image_metadata_i(frozen)),
     {
-        let cj_lbl = CachingDiskJournal::Label::FreezeForCommit{
-            frozen: frozen.snapshot,
-            seq_end: frozen.seq_end,
-        };
         let meta = frozen_image_metadata_i(frozen);
-        assert(CachingDiskJournal::State::next(new_ephemeral, new_ephemeral, cj_lbl));
         new_ephemeral.frozen_snapshot_valid_implies_i_metadata_valid(
             frozen.snapshot,
             frozen.seq_end,
@@ -723,10 +757,36 @@ impl CrashAwareCachingDiskJournal::State {
                 };
                 self.ephemeral->v.next_refines(new_ephemeral, cj_lbl);
                 assert(self.active_step_preserves_images(new_ephemeral));
-                self.active_step_preserves_image_refines(new_ephemeral, self.persistent);
+                let aj_lbl = cj_lbl.i(self.ephemeral->v);
+                let persistent_meta = frozen_image_metadata_i(self.persistent);
+                AllocationJournal::State::internal_allocations_preserves_frozen_metadata_tight(
+                    self.ephemeral->v.i(),
+                    new_ephemeral.i(),
+                    aj_lbl,
+                    persistent_meta,
+                );
                 if self.frozen is Some {
+                    AllocationJournal::State::internal_allocations_preserves_frozen_metadata_tight(
+                        self.ephemeral->v.i(),
+                        new_ephemeral.i(),
+                        aj_lbl,
+                        frozen_image_metadata_i(self.frozen.unwrap()),
+                    );
                     self.active_step_preserves_image_refines(new_ephemeral, self.frozen.unwrap());
                 }
+                assert(self.label_i(post, lbl) is Internal);
+                assert(self.label_i(post, lbl).arrow_Internal_allocs()
+                    .disjoint(caching_disk_journal_accessible_aus(self.ephemeral->v))) by {
+                    match lbl {
+                        CrashAwareCachingDiskJournal::Label::InternalAlloc{allocs, deallocs, prune_aus} => {
+                            assert(allocs.disjoint(caching_disk_journal_accessible_aus(self.ephemeral->v))) by {
+                                reveal(CrashAwareCachingDiskJournal::State::internal_alloc);
+                            }
+                        },
+                        _ => {}
+                    }
+                }
+                self.internal_allocs_disjoint_implies_fresh_label(post, lbl);
                 assert(AllocationCrashAwareJournal::State::next_by(
                     self.i(),
                     post.i(),
