@@ -41,10 +41,12 @@ use crate::implementation::CachedJournal_v::{CachedJournal, JournalSnapshot};
 use crate::implementation::CachingDisk_v::{
     addresses_in_aus, CachingDisk, PageStatus as CachingDiskPageStatus,
 };
-use crate::implementation::CachingDiskJournal_v::CachingDiskJournal;
+use crate::implementation::CachingDiskJournal_v::{
+    CachingDiskJournal, snapshot_walk_domain, snapshot_walk_ptr,
+};
 use crate::implementation::CrashAwareCachingDiskJournal_v::{
     caching_disk_journal_accessible_aus, CachingDiskJournalFrozenImage, CachingDiskJournalImage,
-    snapshot_walk_domain, snapshot_walk_ptr, CrashAwareCachingDiskJournal, EphemeralCachingDiskJournal,
+    CrashAwareCachingDiskJournal, EphemeralCachingDiskJournal,
 };
 use crate::implementation::DiskLayout_v::spec_superblock_addr;
 use crate::implementation::JournalTypes_v::to_journal_records;

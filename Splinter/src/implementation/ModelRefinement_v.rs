@@ -101,10 +101,12 @@ use crate::implementation::AnotherAtomicBranchRefinement_v::{
     sealed_roots_pointer_domain_preserved_by_write_outside,
 };
 use crate::implementation::CrashAwareCachingDiskJournal_v::{
-    CrashAwareCachingDiskJournal, snapshot_walk_domain, snapshot_walk_domain_restrict_domain_same,
+    CrashAwareCachingDiskJournal,
+};
+use crate::implementation::CachingDiskJournal_v::{
+    CachingDiskJournal, snapshot_walk_domain, snapshot_walk_domain_restrict_domain_same,
     snapshot_walk_ptr,
 };
-use crate::implementation::CachingDiskJournal_v::CachingDiskJournal;
 use crate::implementation::CachingDiskBranch_v as CachingDiskBranchModule;
 use crate::implementation::CrashAwareCachingDiskBranch_v::CrashAwareCachingDiskBranch;
 use crate::implementation::AnotherProgramModel_v::AnotherProgramModel;
@@ -2256,9 +2258,9 @@ pub proof fn persistent_journal_image_projection_domain_materialized(
         abstract_image.journal_snapshot.boundary_lsn,
         abstract_image.journal_snapshot.freshest_rec(),
     );
-    assert(image.stable_persistent_domain() =~= domain) by {
+    assert(image.stable_tj().disk_view.entries.dom() =~= domain) by {
         assert forall |addr: Address|
-            #[trigger] image.stable_persistent_domain().contains(addr)
+            #[trigger] image.stable_tj().disk_view.entries.dom().contains(addr)
                 <==> domain.contains(addr)
         by {
             assert(to_journal_records(image.persistent) =~= full_records.restrict(domain));
@@ -2267,7 +2269,7 @@ pub proof fn persistent_journal_image_projection_domain_materialized(
     image.valid_image_stable_domain_materialized();
     assert forall |addr: Address| #[trigger] domain.contains(addr)
         implies model.disk.content.dom().contains(addr) by {
-        assert(image.stable_persistent_domain().contains(addr));
+        assert(image.stable_tj().disk_view.entries.dom().contains(addr));
         assert(image.persistent.dom().contains(addr));
         assert(image.persistent.contains_key(addr));
         assert(model.disk.content.restrict(domain).contains_key(addr));
@@ -5329,7 +5331,7 @@ pub proof fn program_internal_journal_load_index_preserves_journal_component(
                 let bdy = pre.program.state.journal.journal.snapshot.boundary_lsn;
                 let first = pre.program.state.journal.journal.snapshot.first();
                 let read_records = to_journal_records(reads);
-                let visible_records = dst.ephemeral->v.visible_records();
+                let visible_records = dst.ephemeral->v.journal_disk_view().entries;
                 assert(dst.ephemeral is Known);
                 assert(src.ephemeral is Known);
                 assert(dst.ephemeral->v.disk == src.ephemeral->v.disk);
@@ -5531,10 +5533,10 @@ pub proof fn metadata_load_complete_preserves_refinement_invariants(
                         assert(journal_caching_disk_i(post).persistent.contains_key(addr));
                     }
                     assert(journal_caching_disk_i(post).visible().contains_key(addr));
-                    assert(post_journal.visible_records().contains_key(addr));
+                    assert(post_journal.journal_disk_view().entries.contains_key(addr));
                 }
                 if post_journal.journal_disk_view().entries.dom().contains(addr) {
-                    assert(post_journal.visible_records().contains_key(addr));
+                    assert(post_journal.journal_disk_view().entries.contains_key(addr));
                     assert(journal_caching_disk_i(post).visible().contains_key(addr));
                     assert(journal_projection_addrs(post).contains(addr));
                 }

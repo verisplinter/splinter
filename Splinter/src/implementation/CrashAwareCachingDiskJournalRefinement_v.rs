@@ -50,17 +50,6 @@ pub open spec fn frozen_image_metadata_i(frozen: CachingDiskJournalFrozenImage)
     }
 }
 
-pub open spec fn journal_image_metadata_i(image: CachingDiskJournalImage)
-    -> JournalMetadata
-{
-    JournalMetadata{
-        boundary_lsn: image.snapshot.boundary_lsn,
-        seq_end: image.seq_end,
-        freshest_rec: image.snapshot.freshest_rec(),
-        first: image.snapshot.first(),
-    }
-}
-
 pub open spec fn option_frozen_metadata_i(
     frozen: Option<CachingDiskJournalFrozenImage>,
 ) -> Option<JournalMetadata> {
@@ -337,12 +326,12 @@ impl CrashAwareCachingDiskJournal::State {
         let image = self.persistent_image.unwrap();
         let loaded = CachingDiskJournal::State::load_from_persistent(
             image.snapshot,
-            image.live_persistent(),
+            image.persistent,
         );
         assert(post.ephemeral == EphemeralCachingDiskJournal::Known{v: loaded});
         CachingDiskJournal::State::load_from_persistent_refines_image(
             image.snapshot,
-            image.live_persistent(),
+            image.persistent,
             image.i(),
         );
         assert(self.i().persistent_image.unwrap() == image.i());

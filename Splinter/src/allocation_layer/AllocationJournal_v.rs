@@ -4327,10 +4327,15 @@ state_machine!{ AllocationJournal {
 
     pub open spec fn frozen_prefix_domain(self, frozen: JournalMetadata) -> Set<Address>
     {
+        let tight = self.frozen_image(frozen).tight_tj();
+        let tight_bounds = tight.disk_view.build_au_page_bounds_au_walk(
+            tight.freshest_rec,
+            frozen.first,
+        );
         Set::new(|addr: Address| {
             &&& self.frozen_loose_domain(frozen).contains(addr)
-            &&& self.au_page_bounds.contains_key(addr.au)
-            &&& addr.page <= self.au_page_bounds[addr.au]
+            &&& tight_bounds.contains_key(addr.au)
+            &&& addr.page <= tight_bounds[addr.au]
         })
     }
 
@@ -7122,6 +7127,19 @@ state_machine!{ AllocationJournal {
         image.valid_image_implies_tight_valid_image();
         base.valid_image_implies_tight_seq_bounds();
         image.valid_image_implies_tight_seq_bounds();
+        let base_bounds = base_tight.disk_view.build_au_page_bounds_au_walk(
+            base_tight.freshest_rec,
+            frozen.first,
+        );
+        base.tj.disk_view.path_build_tight_idempotent(base.tj.freshest_rec);
+        assert(base_tight.disk_view.path_build_tight(base_tight.freshest_rec)
+            == base_tight.disk_view);
+        base_tight.disk_view.decodable_implies_path_decodable(base_tight.freshest_rec);
+        base_tight.disk_view.path_build_tight_equals_build_tight(base_tight.freshest_rec);
+        base_tight.disk_view.build_au_page_bounds_au_walk_domain_matches_build_tight(
+            base_tight.freshest_rec,
+            frozen.first,
+        );
 
         assert(base_tight.disk_view.entries <= image.tj.disk_view.entries) by {
             assert forall |addr: Address| #[trigger] base_tight.disk_view.entries.contains_key(addr)
@@ -7139,6 +7157,13 @@ state_machine!{ AllocationJournal {
                 }
                 assert(base.tj.disk_view.entries.contains_key(addr));
                 assert(pre.frozen_loose_domain(frozen).contains(addr));
+                assert(base_tight.disk_view.build_tight(base_tight.freshest_rec)
+                    == base_tight.disk_view);
+                assert(base_tight.disk_view.build_tight(base_tight.freshest_rec).entries.contains_key(addr));
+                assert(base_tight.disk_view.entries_bounded_by_au_page_bounds(base_bounds)
+                    .contains_key(addr));
+                assert(base_bounds.contains_key(addr.au));
+                assert(addr.page <= base_bounds[addr.au]);
                 assert(prefix.contains(addr));
                 assert(maps_agree_on(prefix, image.tj.disk_view.entries, pre.disk_view.entries));
                 assert(image.tj.disk_view.entries.restrict(prefix)
@@ -7203,6 +7228,90 @@ state_machine!{ AllocationJournal {
         assert(post.au_page_bounds == pre.au_page_bounds);
         assert(post.tj() == pre.tj());
         assert(pre.seq_end() <= post.seq_end());
+        assert(post.frozen_image(frozen) == pre.frozen_image(frozen));
+    }
+
+    pub proof fn discard_old_preserves_frozen_metadata_at_boundary(
+        pre: Self,
+        post: Self,
+        lbl: Label,
+        frozen: JournalMetadata,
+    )
+        requires
+            pre.inv(),
+            post.inv(),
+            Self::discard_old(pre, post, lbl),
+            pre.frozen_metadata_valid(frozen),
+            lbl->start_lsn == frozen.boundary_lsn,
+            lbl->require_end == pre.seq_end(),
+        ensures
+            post.frozen_metadata_valid(frozen),
+            post.frozen_image(frozen) == pre.frozen_image(frozen),
+    {
+        reveal(AllocationJournal::State::discard_old);
+        let start_lsn = lbl->start_lsn;
+        let new_index = lsn_au_index_discard_up_to(pre.lsn_au_index, start_lsn);
+        let discarded_aus = pre.lsn_au_index.values().difference(new_index.values());
+        lsn_au_index_discard_up_to_ensures(pre.lsn_au_index, start_lsn);
+
+        assert(post.lsn_au_index == new_index);
+        assert(start_lsn == frozen.boundary_lsn);
+        assert(post.seq_start() == frozen.boundary_lsn);
+        assert(post.seq_end() == pre.seq_end());
+
+        assert(post.frozen_lsn_au_index(frozen) =~= pre.frozen_lsn_au_index(frozen)) by {
+            assert forall |lsn: LSN| #[trigger] post.frozen_lsn_au_index(frozen).contains_key(lsn)
+                <==> pre.frozen_lsn_au_index(frozen).contains_key(lsn) by {
+                if post.frozen_lsn_au_index(frozen).contains_key(lsn) {
+                    assert(post.lsn_au_index.contains_key(lsn));
+                    assert(frozen.boundary_lsn <= lsn);
+                    assert(pre.lsn_au_index.contains_key(lsn));
+                }
+                if pre.frozen_lsn_au_index(frozen).contains_key(lsn) {
+                    assert(pre.lsn_au_index.contains_key(lsn));
+                    assert(frozen.boundary_lsn <= lsn);
+                    assert(new_index.contains_key(lsn));
+                    assert(post.lsn_au_index.contains_key(lsn));
+                }
+            }
+        }
+
+        assert(post.frozen_domain(frozen) =~= pre.frozen_domain(frozen)) by {
+            assert_maps_equal!(
+                post.frozen_lsn_au_index(frozen),
+                pre.frozen_lsn_au_index(frozen)
+            );
+        }
+
+        assert(post.frozen_tj(frozen).disk_view.entries
+            =~= pre.frozen_tj(frozen).disk_view.entries) by {
+            assert forall |addr: Address| #[trigger] post.frozen_tj(frozen).disk_view.entries.contains_key(addr)
+                <==> pre.frozen_tj(frozen).disk_view.entries.contains_key(addr) by {
+                if post.frozen_tj(frozen).disk_view.entries.contains_key(addr) {
+                    assert(post.frozen_domain(frozen).contains(addr));
+                    assert(pre.frozen_domain(frozen).contains(addr));
+                    assert(post.disk_view.entries.contains_key(addr));
+                    assert(pre.disk_view.entries.contains_key(addr));
+                }
+                if pre.frozen_tj(frozen).disk_view.entries.contains_key(addr) {
+                    assert(pre.frozen_domain(frozen).contains(addr));
+                    assert(post.frozen_domain(frozen).contains(addr));
+                    assert(pre.disk_view.entries.contains_key(addr));
+                    assert(pre.frozen_lsn_au_index(frozen).values().contains(addr.au));
+                    assert(post.frozen_lsn_au_index(frozen).values().contains(addr.au));
+                    assert(new_index.values().contains(addr.au));
+                    assert(!discarded_aus.contains(addr.au));
+                    assert(post.disk_view.entries.contains_key(addr));
+                }
+            }
+            assert forall |addr: Address| #[trigger] post.frozen_tj(frozen).disk_view.entries.contains_key(addr)
+                implies post.frozen_tj(frozen).disk_view.entries[addr]
+                    == pre.frozen_tj(frozen).disk_view.entries[addr] by {
+                assert(post.disk_view.entries[addr] == pre.disk_view.entries[addr]);
+            }
+        }
+
+        assert(post.frozen_tj(frozen) == pre.frozen_tj(frozen));
         assert(post.frozen_image(frozen) == pre.frozen_image(frozen));
     }
 

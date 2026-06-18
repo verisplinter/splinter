@@ -105,10 +105,6 @@ impl CachingDiskJournalImage {
         }
     }
 
-    pub open spec fn stable_persistent_domain(self) -> Set<Address> {
-        self.stable_tj().disk_view.entries.dom()
-    }
-
     pub open spec fn stable_tj(self) -> TruncatedJournal {
         let dv = DiskView{
             boundary_lsn: self.snapshot.boundary_lsn,
@@ -120,30 +116,14 @@ impl CachingDiskJournalImage {
         }
     }
 
-    pub open spec fn stable_lsn_au_index(self) -> LsnAUIndex {
-        self.stable_tj().build_lsn_au_index_from_first(self.snapshot.first())
-    }
-
-    pub open spec fn live_persistent_domain(self) -> Set<Address> {
-        self.persistent.dom()
-    }
-
-    pub open spec fn live_persistent(self) -> Map<Address, RawPage> {
-        self.persistent
-    }
-
     pub open spec fn tj(self) -> TruncatedJournal {
         TruncatedJournal{
             freshest_rec: self.snapshot.freshest_rec(),
             disk_view: DiskView{
                 boundary_lsn: self.snapshot.boundary_lsn,
-                entries: to_journal_records(self.live_persistent()),
+                entries: to_journal_records(self.persistent),
             },
         }
-    }
-
-    pub open spec fn live_tj(self) -> TruncatedJournal {
-        self.tj()
     }
 
     pub open spec fn tight_tj(self) -> TruncatedJournal {
@@ -249,7 +229,7 @@ state_machine!{ CrashAwareCachingDiskJournal {
         update ephemeral = EphemeralCachingDiskJournal::Known{
             v: CachingDiskJournal::State::load_from_persistent(
                 pre.persistent_image.unwrap().snapshot,
-                pre.persistent_image.unwrap().live_persistent(),
+                pre.persistent_image.unwrap().persistent,
             ),
         };
         update persistent_image = Option::None;
@@ -484,7 +464,8 @@ state_machine!{ CrashAwareCachingDiskJournal {
         &&& self.ephemeral is Unknown ==> self.frozen is None && !self.prepared
         &&& self.ephemeral is Unknown <==> self.persistent_image is Some
         &&& self.persistent_image is Some ==> {
-            self.persistent_image.unwrap().metadata() == self.persistent
+            &&& self.persistent_image.unwrap().metadata() == self.persistent
+            &&& self.persistent_image.unwrap().wf()
         }
         &&& self.ephemeral is Known ==> self.ephemeral->v.inv()
         &&& self.frozen is Some && self.ephemeral is Known ==> self.ephemeral->v.journal.status is Some
@@ -512,56 +493,53 @@ state_machine!{ CrashAwareCachingDiskJournal {
         let image = pre.persistent_image.unwrap();
         let loaded = CachingDiskJournal::State::load_from_persistent(
             image.snapshot,
-            image.live_persistent(),
+            image.persistent,
         );
         assert(post.ephemeral is Known);
         assert(post.ephemeral->v == loaded);
-        assert(loaded.disk.visible() =~= image.live_persistent()) by {
+        assert(loaded.disk.visible() =~= image.persistent) by {
             assert forall |addr: Address| #[trigger] loaded.disk.visible().contains_key(addr)
-                implies image.live_persistent().contains_key(addr) by {
+                implies image.persistent.contains_key(addr) by {
                 assert(loaded.disk.cache == Map::<Address, RawPage>::empty());
             }
-            assert forall |addr: Address| #[trigger] image.live_persistent().contains_key(addr)
+            assert forall |addr: Address| #[trigger] image.persistent.contains_key(addr)
                 implies loaded.disk.visible().contains_key(addr) by {
                 assert(loaded.disk.persistent.contains_key(addr));
             }
         }
-        assert(loaded.visible_records().dom() =~= image.live_persistent().dom()) by {
-            assert forall |addr: Address| #[trigger] loaded.visible_records().dom().contains(addr)
-                implies image.live_persistent().dom().contains(addr) by {
-                assert(loaded.visible_records().contains_key(addr));
+        assert(loaded.journal_disk_view().entries.dom() =~= image.persistent.dom()) by {
+            assert forall |addr: Address| #[trigger] loaded.journal_disk_view().entries.dom().contains(addr)
+                implies image.persistent.dom().contains(addr) by {
+                assert(loaded.journal_disk_view().entries.contains_key(addr));
                 assert(loaded.disk.visible().contains_key(addr));
             }
-            assert forall |addr: Address| #[trigger] image.live_persistent().dom().contains(addr)
-                implies loaded.visible_records().dom().contains(addr) by {
-                assert(image.live_persistent().contains_key(addr));
+            assert forall |addr: Address| #[trigger] image.persistent.dom().contains(addr)
+                implies loaded.journal_disk_view().entries.dom().contains(addr) by {
+                assert(image.persistent.contains_key(addr));
                 assert(loaded.disk.visible().contains_key(addr));
-                assert(loaded.visible_records().contains_key(addr));
+                assert(loaded.journal_disk_view().entries.contains_key(addr));
             }
         }
         let snapshot = image.snapshot;
         let full_records = to_journal_records(image.persistent);
-        let live_domain = image.live_persistent_domain();
-        assert(loaded.raw_visible_records() == full_records.restrict(live_domain)) by {
+        let live_domain = image.persistent.dom();
+        assert(loaded.journal_disk_view().entries == full_records.restrict(live_domain)) by {
             assert_maps_equal!(
-                loaded.raw_visible_records(),
+                loaded.journal_disk_view().entries,
                 full_records.restrict(live_domain),
                 addr => {
-                    if loaded.raw_visible_records().contains_key(addr) {
+                    if loaded.journal_disk_view().entries.contains_key(addr) {
                         assert(loaded.disk.visible().contains_key(addr));
-                        assert(image.live_persistent().contains_key(addr));
                         assert(image.persistent.contains_key(addr));
                         assert(live_domain.contains(addr));
-                        assert(loaded.disk.visible()[addr] == image.live_persistent()[addr]);
-                        assert(image.live_persistent()[addr] == image.persistent[addr]);
+                        assert(loaded.disk.visible()[addr] == image.persistent[addr]);
                     }
                     if full_records.restrict(live_domain).contains_key(addr) {
                         assert(full_records.contains_key(addr));
                         assert(image.persistent.contains_key(addr));
                         assert(live_domain.contains(addr));
-                        assert(image.live_persistent().contains_key(addr));
                         assert(loaded.disk.visible().contains_key(addr));
-                        assert(loaded.disk.visible()[addr] == image.live_persistent()[addr]);
+                        assert(loaded.disk.visible()[addr] == image.persistent[addr]);
                     }
                 }
             );
@@ -571,7 +549,7 @@ state_machine!{ CrashAwareCachingDiskJournal {
                 freshest_rec: snapshot.freshest_rec(),
                 disk_view: (DiskView{
                     boundary_lsn: snapshot.boundary_lsn,
-                    entries: loaded.raw_visible_records(),
+                    entries: loaded.journal_disk_view().entries,
                 }).path_build_tight(snapshot.freshest_rec()),
             });
         assert(loaded.journal.wf());
@@ -882,6 +860,49 @@ state_machine!{ CrashAwareCachingDiskJournal {
             _ => {
                 assert(post.inv());
             },
+        }
+    }
+
+    pub proof fn crash_persistent_image_accessible_aus(
+        pre: Self,
+        post: Self,
+        lbl: Label,
+    )
+        requires
+            pre.inv(),
+            CrashAwareCachingDiskJournal::State::crash(pre, post, lbl),
+        ensures
+            post.persistent_image is Some,
+            pre.ephemeral is Known ==>
+                post.persistent_image.unwrap().accessible_aus()
+                    <= caching_disk_journal_accessible_aus(pre.ephemeral->v),
+            pre.ephemeral is Unknown ==> post.persistent_image == pre.persistent_image,
+    {
+        reveal(CrashAwareCachingDiskJournal::State::crash);
+        let keep_in_flight = lbl.arrow_Crash_keep_in_flight();
+        let prepared_image = if keep_in_flight {
+            CachingDiskJournalImage::materialized_from_persistent(
+                pre.ephemeral->v,
+                pre.frozen.unwrap(),
+            )
+        } else if pre.ephemeral is Unknown {
+            pre.persistent_image.unwrap()
+        } else {
+            CachingDiskJournalImage::materialized_from_persistent(
+                pre.ephemeral->v,
+                pre.persistent,
+            )
+        };
+        assert(post.persistent_image == Option::Some(prepared_image));
+        if pre.ephemeral is Known {
+            let frozen = if keep_in_flight {
+                pre.frozen.unwrap()
+            } else {
+                pre.persistent
+            };
+            pre.ephemeral->v.frozen_loose_domain_persistent_aus_accessible(frozen.snapshot);
+            assert(prepared_image.accessible_aus()
+                <= caching_disk_journal_accessible_aus(pre.ephemeral->v));
         }
     }
 }}

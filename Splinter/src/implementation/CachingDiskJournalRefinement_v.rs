@@ -42,10 +42,6 @@ impl CachingDiskJournal::State {
         }
     }
 
-    pub open spec fn allocation_semantic_disk_view(self) -> DiskView {
-        self.journal_disk_view().path_build_tight(cj_freshest_rec(self.journal))
-    }
-
     pub open spec fn allocation_view_inv(self) -> bool {
         let disk_view = self.journal_disk_view();
         let unmarshalled_tail = self.allocation_unmarshalled_tail();
@@ -64,7 +60,7 @@ impl CachingDiskJournal::State {
 
     pub open spec fn allocation_view_semantic_inv(self) -> bool {
         let disk_view = self.journal_disk_view();
-        let semantic_dv = self.allocation_semantic_disk_view();
+        let semantic_dv = self.journal_tj().disk_view;
         let freshest_rec = cj_freshest_rec(self.journal);
         let unmarshalled_tail = self.allocation_unmarshalled_tail();
         let lsn_au_index = self.lsn_au_index_or_empty();
@@ -389,11 +385,11 @@ impl CachingDiskJournal::State {
         ensures
             reads <= self.disk.cache,
             forall |addr: Address| #[trigger] reads.contains_key(addr)
-                ==> to_journal_records(reads)[addr] == self.visible_records()[addr],
+                ==> to_journal_records(reads)[addr] == self.journal_disk_view().entries[addr],
     {
         CachingDisk::State::access_effect(self.disk, self.disk, reads, Map::empty());
         assert forall |addr: Address| #[trigger] reads.contains_key(addr)
-            implies to_journal_records(reads)[addr] == self.visible_records()[addr] by {
+            implies to_journal_records(reads)[addr] == self.journal_disk_view().entries[addr] by {
             assert(reads <= self.disk.cache);
             assert(self.disk.visible().contains_key(addr));
             assert(self.disk.visible()[addr] == self.disk.cache[addr]);
@@ -580,12 +576,12 @@ impl CachingDiskJournal::State {
                 assert(loaded.disk.persistent.contains_key(addr));
             }
         }
-        assert(loaded.raw_visible_records() == to_journal_records(persistent)) by {
+        assert(loaded.journal_disk_view().entries == to_journal_records(persistent)) by {
             assert_maps_equal!(
-                loaded.raw_visible_records(),
+                loaded.journal_disk_view().entries,
                 to_journal_records(persistent),
                 addr => {
-                    if loaded.raw_visible_records().contains_key(addr) {
+                    if loaded.journal_disk_view().entries.contains_key(addr) {
                         assert(loaded.disk.visible().contains_key(addr));
                         assert(persistent.contains_key(addr));
                         assert(loaded.disk.visible()[addr] == persistent[addr]);
@@ -750,8 +746,8 @@ impl CachingDiskJournal::State {
                     self.journal.snapshot.boundary_lsn,
                 ));
                 assert(self.i().disk_view.entries.contains_key(addr));
-                assert(to_journal_records(reads)[addr] == self.visible_records()[addr]);
-                assert(self.visible_records()[addr] == self.i().disk_view.entries[addr]);
+                assert(to_journal_records(reads)[addr] == self.journal_disk_view().entries[addr]);
+                assert(self.journal_disk_view().entries[addr] == self.i().disk_view.entries[addr]);
                 assert(self.i().au_page_bounds.contains_key(addr.au));
                 assert(addr.page <= self.i().au_page_bounds[addr.au]);
                 let record = self.i().disk_view.entries[addr];
@@ -831,8 +827,8 @@ impl CachingDiskJournal::State {
             assert(reads.contains_key(root));
             assert(to_journal_records(reads).contains_key(root));
             assert(self.disk.visible().contains_key(root));
-            assert(self.visible_records().contains_key(root));
-            assert(to_journal_records(reads)[root] == self.visible_records()[root]);
+            assert(self.journal_disk_view().entries.contains_key(root));
+            assert(to_journal_records(reads)[root] == self.journal_disk_view().entries[root]);
             assert(self.i().tj().disk_view.entries.contains_key(root));
             assert(frozen_seq_end == self.frozen_seq_end(frozen));
             assert(frozen.boundary_lsn < to_journal_records(reads)[root].message_seq.seq_end);
@@ -914,7 +910,7 @@ impl CachingDiskJournal::State {
         assert(post.journal == self.journal);
         assert(post.mini_allocator == self.mini_allocator);
         assert(post.disk.visible() == self.disk.visible());
-        assert(post.visible_records() == self.visible_records());
+        assert(post.journal_disk_view().entries == self.journal_disk_view().entries);
         assert(post.journal_disk_view() == self.journal_disk_view());
         assert(post.journal_tj() == self.journal_tj());
         assert(post.i() == self.i());
@@ -994,8 +990,8 @@ impl CachingDiskJournal::State {
             && entries.contains_key(addr)
             implies to_journal_records(reads)[addr] == entries[addr] by {
             assert(reads.contains_key(addr));
-            assert(entries == self.visible_records());
-            assert(to_journal_records(reads)[addr] == self.visible_records()[addr]);
+            assert(entries == self.journal_disk_view().entries);
+            assert(to_journal_records(reads)[addr] == self.journal_disk_view().entries[addr]);
         };
         CachedJournal::State::load_index_matches_loose_full(
             self.journal,
@@ -1086,7 +1082,7 @@ impl CachingDiskJournal::State {
         assert(post.journal.status.unwrap().unmarshalled_tail
             == self.journal.status.unwrap().unmarshalled_tail);
         assert(post.mini_allocator == self.mini_allocator);
-        assert(post.visible_records() == self.visible_records());
+        assert(post.journal_disk_view().entries == self.journal_disk_view().entries);
         assert(post.journal_disk_view() == self.journal_disk_view());
         assert(post.journal_tj() == self.journal_tj());
         assert(post.i() == self.i());
@@ -1179,8 +1175,8 @@ impl CachingDiskJournal::State {
         assert(post.mini_allocator == self.mini_allocator.allocate(addr).observe(addr));
         assert(post.disk.visible() == self.disk.visible().union_prefer_right(writes));
         assert_maps_equal!(
-            post.visible_records(),
-            self.visible_records().union_prefer_right(to_journal_records(writes)),
+            post.journal_disk_view().entries,
+            self.journal_disk_view().entries.union_prefer_right(to_journal_records(writes)),
             a => {
                 if writes.contains_key(a) {
                 } else {
@@ -1194,8 +1190,8 @@ impl CachingDiskJournal::State {
                 if a == addr {
                     assert(to_journal_records(writes).contains_key(addr));
                     assert(to_journal_records(writes)[addr] == expected_record);
-                    assert(post.visible_records().contains_key(addr));
-                    assert(post.visible_records()[addr] == expected_record);
+                    assert(post.journal_disk_view().entries.contains_key(addr));
+                    assert(post.journal_disk_view().entries[addr] == expected_record);
                 } else {
                     assert(!writes.contains_key(a)) by {
                         if writes.contains_key(a) {
@@ -1626,7 +1622,7 @@ impl CachingDiskJournal::State {
                     reveal(CachingDiskJournal::State::caching_disk_internal);
                     CachingDisk::State::internal_visible_unchanged(self.disk, post.disk);
                     assert(post.journal == self.journal);
-                    assert(post.raw_visible_records() == self.raw_visible_records());
+                    assert(post.journal_disk_view().entries == self.journal_disk_view().entries);
                     assert(post.journal_disk_view() == self.journal_disk_view());
                     assert(post.backing_journal_image() == self.backing_journal_image());
                     assert(self.backing_journal_image().valid_image());
