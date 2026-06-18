@@ -85,10 +85,9 @@ pub proof fn cdb_step_preserves_image_match(
                 assert(post.visible_image_for_metadata(frozen)
                     == pre.visible_image_for_metadata(frozen));
             },
-            CachingDiskBranch::Step::internal_fill_au(aus) => {
+            CachingDiskBranch::Step::internal_fill_au(aus, new_disk) => {
                 reveal(CachingDiskBranch::State::internal_fill_au);
                 assert(post.sealed_roots == pre.sealed_roots);
-                assert(post.disk == pre.disk);
                 assert(post.visible_image_for_metadata(frozen)
                     == pre.visible_image_for_metadata(frozen));
             },
