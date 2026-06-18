@@ -9,7 +9,7 @@ use crate::abstract_system::AbstractJournal_v::AbstractJournal;
 use crate::abstract_system::MsgHistory_v::*;
 use crate::allocation_layer::AllocationCrashAwareJournal_v::*;
 use crate::allocation_layer::AllocationJournal_v::{
-    AllocationJournal, JournalMetadata, JournalImage,
+    AllocationJournal, JournalMetadata, JournalImage, maps_agree_on,
 };
 use crate::allocation_layer::LikesJournal_v::LikesJournal;
 use crate::journal::LinkedJournal_v::{LinkedJournal, TruncatedJournal};
@@ -268,6 +268,40 @@ impl AllocationCrashAwareJournal::Label{
 }
 
 impl AllocationCrashAwareJournal::State{
+    pub proof fn persistent_image_view_i_wf(self)
+    requires
+        self.inv(),
+    ensures
+        self.persistent_image_view().valid_image(),
+        self.persistent_image_view().i().wf(),
+        self.persistent_image_view().i().seq_end == self.persistent.seq_end,
+    {
+        let image = self.persistent_image_view();
+        if self.persistent_image is Some {
+            assert(image.valid_image());
+            assert(AllocationCrashAwareJournal::State::image_matches_metadata(image, self.persistent));
+            image.i_wf();
+        } else {
+            let aj = self.ephemeral->v;
+            let freeze_lbl = AllocationJournal::Label::FreezeForCommit{
+                frozen_journal: self.persistent,
+            };
+            assert(AllocationJournal::State::next(aj, aj, freeze_lbl)) by {
+                reveal(AllocationJournal::State::next);
+                reveal(AllocationJournal::State::next_by);
+                assert(AllocationJournal::State::next_by(
+                    aj,
+                    aj,
+                    freeze_lbl,
+                    AllocationJournal::Step::freeze_for_commit(),
+                ));
+            }
+            AllocationJournal::State::frozen_journal_is_valid_image(aj, aj, freeze_lbl);
+            assert(image == aj.frozen_image(self.persistent));
+            image.i_wf();
+        }
+    }
+
     pub open spec fn label_i(self, lbl: AllocationCrashAwareJournal::Label) -> AbstractCrashAwareJournal::Label
     {
         match lbl {
@@ -292,7 +326,7 @@ impl AllocationCrashAwareJournal::State{
             else { arbitrary() };
 
         AbstractCrashAwareJournal::State{
-            persistent: self.persistent.i(),
+            persistent: self.persistent_image_view().i(),
             ephemeral: self.ephemeral.i(),
             frozen: i_frozen,
         }
@@ -311,12 +345,69 @@ impl AllocationCrashAwareJournal::State{
         reveal(AbstractCrashAwareJournal::State::next_by);
         reveal(AbstractJournal::State::init_by);
 
-        let persistent = post.persistent;
+        let persistent = self.persistent_image.unwrap();
         persistent.i_wf();
         new_journal.init_refines_abstract(persistent);
         AllocationJournal::State::initialize_tj_matches(new_journal, persistent);
         new_journal.initialized_i_abstract_journal_matches_image(persistent);
         assert(new_journal.tj() == persistent.tight_tj());
+        let freeze_lbl = AllocationJournal::Label::FreezeForCommit{
+            frozen_journal: post.persistent,
+        };
+        assert(AllocationJournal::State::next(new_journal, new_journal, freeze_lbl)) by {
+            reveal(AllocationJournal::State::next);
+            reveal(AllocationJournal::State::next_by);
+            assert(AllocationJournal::State::next_by(
+                new_journal,
+                new_journal,
+                freeze_lbl,
+                AllocationJournal::Step::freeze_for_commit(),
+            ));
+        }
+        assert(new_journal.acceptable_frozen_image(post.persistent, persistent)) by {
+            assert(persistent.valid_image());
+            assert(AllocationCrashAwareJournal::State::image_matches_metadata(persistent, post.persistent));
+            assert(new_journal.disk_view == persistent.tj.disk_view);
+            let tight_index = persistent.tight_tj().build_lsn_au_index_from_first(persistent.first);
+            assert(new_journal.lsn_au_index == tight_index);
+            assert(persistent.tj.disk_view.domain_au_bounded_wrt_index(tight_index));
+            assert(persistent.tj.disk_view.entries.dom()
+                <= new_journal.frozen_loose_domain(post.persistent)) by {
+                assert forall |addr: crate::disk::GenericDisk_v::Address|
+                    #[trigger] persistent.tj.disk_view.entries.dom().contains(addr)
+                    implies new_journal.frozen_loose_domain(post.persistent).contains(addr) by {
+                    assert(tight_index.values().contains(addr.au));
+                    assert(new_journal.lsn_au_index.values().contains(addr.au));
+                    let lsn = choose |lsn: nat| {
+                        &&& new_journal.lsn_au_index.contains_key(lsn)
+                        &&& new_journal.lsn_au_index[lsn] == addr.au
+                    };
+                    assert(tight_index.contains_key(lsn));
+                    persistent.tight_tj().build_lsn_au_index_from_first_ensures(persistent.first);
+                    reveal(TruncatedJournal::au_domain_valid);
+                    assert(persistent.tight_tj().seq_start() <= lsn < persistent.tight_tj().seq_end());
+                    persistent.valid_image_implies_tight_seq_bounds();
+                    assert(post.persistent.boundary_lsn <= lsn < post.persistent.seq_end);
+                    assert(new_journal.frozen_lsns(post.persistent).contains(lsn));
+                    assert(new_journal.frozen_lsn_au_index(post.persistent).contains_key(lsn));
+                    assert(new_journal.frozen_lsn_au_index(post.persistent)[lsn] == addr.au);
+                    assert(new_journal.frozen_lsn_au_index(post.persistent).values().contains(addr.au));
+                }
+            }
+            assert(maps_agree_on(
+                new_journal.frozen_prefix_domain(post.persistent),
+                persistent.tj.disk_view.entries,
+                new_journal.disk_view.entries,
+            ));
+        }
+        AllocationJournal::State::acceptable_frozen_image_matches_frozen_image(
+            new_journal,
+            post.persistent,
+            persistent,
+        );
+        assert(post.persistent_image is None);
+        assert(post.persistent_image_view() == new_journal.frozen_image(post.persistent));
+        assert(post.persistent_image_view().i() == persistent.i());
         assert(post.i().persistent.wf());
         assert(post.i().persistent == persistent.i());
         assert(new_journal.i_abstract().journal == persistent.i());
@@ -472,7 +563,7 @@ impl AllocationCrashAwareJournal::State{
         ));
 
         assert(self.i().frozen is None);
-        self.persistent.i_wf();
+        self.persistent_image_view_i_wf();
         assert(self.i().persistent.seq_end <= lbl->new_boundary_lsn);
         assert(post.i().frozen == Some(frozen_journal.i()));
         assert(AbstractCrashAwareJournal::State::next_by(
@@ -484,12 +575,11 @@ impl AllocationCrashAwareJournal::State{
     }
 
     pub proof fn commit_complete_refines(self, post: Self, lbl: AllocationCrashAwareJournal::Label, 
-        new_journal: AllocationJournal::State,
-        frozen_image: JournalImage)
+        new_journal: AllocationJournal::State)
     requires
         self.inv(),
         post.inv(),
-        Self::commit_complete(self, post, lbl, new_journal, frozen_image)
+        Self::commit_complete(self, post, lbl, new_journal)
     ensures
         AbstractCrashAwareJournal::State::next_by(self.i(), post.i(), self.label_i(lbl),
             AbstractCrashAwareJournal::Step::commit_complete(new_journal.i_abstract()))
@@ -512,15 +602,15 @@ impl AllocationCrashAwareJournal::State{
             self.ephemeral->v,
             freeze_lbl,
         );
-        AllocationJournal::State::acceptable_frozen_image_matches_frozen_image(
-            self.ephemeral->v,
-            self.frozen.unwrap(),
-            frozen_image,
-        );
+        let frozen_image = self.ephemeral->v.frozen_image(self.frozen.unwrap());
         frozen_image.i_wf();
 
         assert(self.i().frozen == Some(frozen_image.i()));
         assert(frozen_image.tj.seq_start() == self.i().frozen.unwrap().seq_start);
+        assert(post.persistent == self.frozen.unwrap());
+        assert(post.persistent_image is None);
+        assert(post.ephemeral->v.frozen_image(post.persistent) == frozen_image);
+        assert(post.i().persistent == frozen_image.i());
 
         let aj = self.ephemeral->v;
         let alloc_lbl = AllocationJournal::Label::DiscardOld{ 
@@ -562,17 +652,17 @@ impl AllocationCrashAwareJournal::State{
                 self.internal_refines(post, lbl, new_journal);
             },
             AllocationCrashAwareJournal::Step::query_lsn_persistence() => {
-                self.persistent.i_wf();
+                self.persistent_image_view_i_wf();
                 assert( AbstractCrashAwareJournal::State::next_by(self.i(), post.i(), self.label_i(lbl),
                     AbstractCrashAwareJournal::Step::query_lsn_persistence()) ); // witness
             },
             AllocationCrashAwareJournal::Step::commit_start() => {
                 self.commit_start_refines(post, lbl);
             },
-            AllocationCrashAwareJournal::Step::commit_complete(new_journal, frozen_image) => {
-                self.commit_complete_refines(post, lbl, new_journal, frozen_image);
+            AllocationCrashAwareJournal::Step::commit_complete(new_journal) => {
+                self.commit_complete_refines(post, lbl, new_journal);
             },
-            AllocationCrashAwareJournal::Step::crash() => {
+            AllocationCrashAwareJournal::Step::crash(persistent_image) => {
                 if lbl->keep_in_flight {
                     let freeze_lbl = AllocationJournal::Label::FreezeForCommit{
                         frozen_journal: self.frozen.unwrap(),
@@ -592,10 +682,40 @@ impl AllocationCrashAwareJournal::State{
                         self.ephemeral->v,
                         freeze_lbl,
                     );
-                    let frozen_image = self.ephemeral->v.frozen_image(self.frozen.unwrap());
-                    frozen_image.i_wf();
-                    assert(self.i().frozen == Some(frozen_image.i()));
-                    assert(post.i().persistent == frozen_image.i());
+                    AllocationJournal::State::acceptable_frozen_image_matches_frozen_image(
+                        self.ephemeral->v,
+                        self.frozen.unwrap(),
+                        persistent_image,
+                    );
+                    persistent_image.i_wf();
+                    assert(self.i().frozen == Some(persistent_image.i()));
+                    assert(post.i().persistent == persistent_image.i());
+                } else {
+                    persistent_image.i_wf();
+                    if self.persistent_image is Some {
+                        assert(persistent_image == self.persistent_image.unwrap());
+                        assert(self.persistent_image_view() == persistent_image);
+                    } else {
+                        let freeze_lbl = AllocationJournal::Label::FreezeForCommit{
+                            frozen_journal: self.persistent,
+                        };
+                        assert(AllocationJournal::State::next(self.ephemeral->v, self.ephemeral->v, freeze_lbl)) by {
+                            reveal(AllocationJournal::State::next);
+                            reveal(AllocationJournal::State::next_by);
+                            assert(AllocationJournal::State::next_by(
+                                self.ephemeral->v,
+                                self.ephemeral->v,
+                                freeze_lbl,
+                                AllocationJournal::Step::freeze_for_commit(),
+                            ));
+                        }
+                        AllocationJournal::State::acceptable_frozen_image_matches_frozen_image(
+                            self.ephemeral->v,
+                            self.persistent,
+                            persistent_image,
+                        );
+                    }
+                    assert(post.i().persistent == persistent_image.i());
                 }
                 assert( AbstractCrashAwareJournal::State::next_by(self.i(), post.i(), self.label_i(lbl),
                     AbstractCrashAwareJournal::Step::crash()) ); // witness

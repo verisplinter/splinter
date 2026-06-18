@@ -1356,6 +1356,372 @@ impl DiskView {
     {
     }
 
+    proof fn build_au_page_bounds_page_walk_sub_disk_equal(self, big: DiskView, root: Pointer)
+        requires
+            self.decodable(root),
+            big.decodable(root),
+            big.acyclic(),
+            self.is_sub_disk(big),
+        ensures
+            self.build_au_page_bounds_page_walk(root) == big.build_au_page_bounds_page_walk(root),
+        decreases self.the_rank_of(root),
+    {
+        assert forall|addr| #[trigger] self.entries.contains_key(addr)
+        implies big.entries.contains_key(addr) by {}
+
+        assert(self.valid_ranking(big.the_ranking()));
+        if root is Some {
+            self.build_au_page_bounds_page_walk_sub_disk_equal(big, self.next(root));
+            assert(self.next(root) == big.next(root));
+            let addr = root.unwrap();
+            let self_prior = self.build_au_page_bounds_page_walk(self.next(root));
+            let big_prior = big.build_au_page_bounds_page_walk(self.next(root));
+            assert(self_prior == big_prior);
+            assert(big.entries[addr] == self.entries[addr]);
+            assert(self.build_au_page_bounds_page_walk(root)
+                == self_prior.insert(
+                    addr.au,
+                    if self_prior.contains_key(addr.au) && addr.page <= self_prior[addr.au] {
+                        self_prior[addr.au]
+                    } else {
+                        addr.page
+                    },
+                ));
+            assert(big.build_au_page_bounds_page_walk(root)
+                == big_prior.insert(
+                    addr.au,
+                    if big_prior.contains_key(addr.au) && addr.page <= big_prior[addr.au] {
+                        big_prior[addr.au]
+                    } else {
+                        addr.page
+                    },
+                ));
+        }
+    }
+
+    #[verifier(decreases_by)]
+    pub proof fn loose_build_lsn_au_index_page_walk_with_ranking_decreases(
+        self,
+        root: Pointer,
+        ranking: Ranking,
+    )
+    {
+        match root {
+            None => {},
+            Some(addr) => {
+                assert(self.entries.contains_key(addr));
+                assert(ranking.contains_key(addr));
+                let next = self.entries[addr].cropped_prior(self.boundary_lsn);
+                if next is Some {
+                    assert(ranking.contains_key(next.unwrap()));
+                    assert(ranking[next.unwrap()] < ranking[addr]);
+                }
+            },
+        }
+    }
+
+    pub open spec fn loose_build_lsn_au_index_page_walk_with_ranking(
+        self,
+        root: Pointer,
+        ranking: Ranking,
+    ) -> LsnAUIndex
+        recommends
+            self.path_valid_ranking(root, ranking),
+        decreases if root is Some && ranking.contains_key(root.unwrap()) {
+            ranking[root.unwrap()] + 1
+        } else {
+            0
+        }
+    {
+        decreases_when(self.path_valid_ranking(root, ranking));
+        decreases_by(Self::loose_build_lsn_au_index_page_walk_with_ranking_decreases);
+        match root {
+            None => Map::empty(),
+            Some(addr) => {
+                let record = self.entries[addr];
+                let update = singleton_index(
+                    math::max(self.boundary_lsn as int, record.message_seq.seq_start as int) as nat,
+                    record.message_seq.seq_end,
+                    addr.au,
+                );
+                self.loose_build_lsn_au_index_page_walk_with_ranking(
+                    record.cropped_prior(self.boundary_lsn),
+                    ranking,
+                ).union_prefer_right(update)
+            },
+        }
+    }
+
+    pub open spec fn loose_build_lsn_au_index_au_walk(self, root: Pointer, first: AU) -> LsnAUIndex
+        recommends
+            self.path_decodable(root),
+            self.path_build_tight(root).pointer_is_upstream(root, first),
+    {
+        if self.path_decodable(root) {
+            let ranking = choose |ranking: Ranking| self.path_valid_ranking(root, ranking);
+            self.loose_build_lsn_au_index_page_walk_with_ranking(root, ranking)
+        } else {
+            Map::empty()
+        }
+    }
+
+    pub proof fn loose_build_lsn_au_index_page_walk_with_ranking_matches_tight(
+        self,
+        root: Pointer,
+        ranking: Ranking,
+    )
+        requires
+            self.path_valid_ranking(root, ranking),
+        ensures
+            self.loose_build_lsn_au_index_page_walk_with_ranking(root, ranking)
+                == self.path_build_tight_with_ranking(root, ranking).build_lsn_au_index_page_walk(root),
+        decreases if root is Some && ranking.contains_key(root.unwrap()) {
+            ranking[root.unwrap()] + 1
+        } else {
+            0
+        }
+    {
+        self.path_build_tight_with_ranking_decodable(root, ranking);
+        match root {
+            None => {},
+            Some(addr) => {
+                let record = self.entries[addr];
+                let next = record.cropped_prior(self.boundary_lsn);
+                self.loose_build_lsn_au_index_page_walk_with_ranking_matches_tight(next, ranking);
+
+                let tail = self.path_build_tight_with_ranking(next, ranking);
+                let tight = self.path_build_tight_with_ranking(root, ranking);
+                assert(tight.entries == tail.entries.insert(addr, record));
+                assert(tight.boundary_lsn == self.boundary_lsn);
+                assert(tight.entries[addr] == record);
+                assert(tight.next(root) == next);
+                assert(tail.is_sub_disk(tight)) by {
+                    assert forall |a: Address| #[trigger] tail.entries.contains_key(a)
+                        implies tight.entries.contains_key(a) && tight.entries[a] == tail.entries[a] by {
+                        assert(a != addr) by {
+                            if a == addr {
+                                if next is None {
+                                    assert(tail.entries =~= Map::<Address, LinkedJournal_v::JournalRecord>::empty());
+                                } else {
+                                    self.path_build_tight_with_ranking_entry_rank_le(next, ranking, addr);
+                                    assert(ranking[addr] <= ranking[next.unwrap()]);
+                                    assert(ranking[next.unwrap()] < ranking[addr]);
+                                }
+                                assert(false);
+                            }
+                        }
+                    }
+                }
+                self.path_build_tight_with_ranking_decodable(next, ranking);
+                assert(tail.decodable(next));
+                assert(tail.is_sub_disk_with_newer_lsn(tight));
+                tail.build_lsn_au_index_page_walk_sub_disk(tight, next);
+                assert(tail.build_lsn_au_index_page_walk(next)
+                    == tight.build_lsn_au_index_page_walk(next));
+
+                let update = singleton_index(
+                    math::max(self.boundary_lsn as int, record.message_seq.seq_start as int) as nat,
+                    record.message_seq.seq_end,
+                    addr.au,
+                );
+                assert(self.loose_build_lsn_au_index_page_walk_with_ranking(root, ranking)
+                    == self.loose_build_lsn_au_index_page_walk_with_ranking(next, ranking)
+                        .union_prefer_right(update));
+                assert(tight.build_lsn_au_index_page_walk(root)
+                    == tight.build_lsn_au_index_page_walk(next).union_prefer_right(update));
+            },
+        }
+    }
+
+    pub proof fn loose_build_lsn_au_index_au_walk_matches_tight(
+        self,
+        root: Pointer,
+        first: AU,
+    )
+        requires
+            self.path_decodable(root),
+            self.path_build_tight(root).pointer_is_upstream(root, first),
+        ensures
+            self.loose_build_lsn_au_index_au_walk(root, first)
+                == self.path_build_tight(root).build_lsn_au_index_au_walk(root, first),
+    {
+        let ranking = choose |ranking: Ranking| self.path_valid_ranking(root, ranking);
+        self.path_build_tight_uses_ranking(root, ranking);
+        self.loose_build_lsn_au_index_page_walk_with_ranking_matches_tight(root, ranking);
+        let tight = self.path_build_tight(root);
+        tight.build_lsn_au_index_equiv_page_walk(root, first);
+        assert(self.loose_build_lsn_au_index_au_walk(root, first)
+            == self.loose_build_lsn_au_index_page_walk_with_ranking(root, ranking));
+        assert(tight.build_lsn_au_index_page_walk(root)
+            == tight.build_lsn_au_index_au_walk(root, first));
+    }
+
+    #[verifier(decreases_by)]
+    pub proof fn loose_build_au_page_bounds_page_walk_with_ranking_decreases(
+        self,
+        root: Pointer,
+        ranking: Ranking,
+    )
+    {
+        match root {
+            None => {},
+            Some(addr) => {
+                assert(self.entries.contains_key(addr));
+                assert(ranking.contains_key(addr));
+                let next = self.entries[addr].cropped_prior(self.boundary_lsn);
+                if next is Some {
+                    assert(ranking.contains_key(next.unwrap()));
+                    assert(ranking[next.unwrap()] < ranking[addr]);
+                }
+            },
+        }
+    }
+
+    pub open spec fn loose_build_au_page_bounds_page_walk_with_ranking(
+        self,
+        root: Pointer,
+        ranking: Ranking,
+    ) -> AUPageBounds
+        recommends
+            self.path_valid_ranking(root, ranking),
+        decreases if root is Some && ranking.contains_key(root.unwrap()) {
+            ranking[root.unwrap()] + 1
+        } else {
+            0
+        }
+    {
+        decreases_when(self.path_valid_ranking(root, ranking));
+        decreases_by(Self::loose_build_au_page_bounds_page_walk_with_ranking_decreases);
+        match root {
+            None => Map::empty(),
+            Some(addr) => {
+                let record = self.entries[addr];
+                let prior = self.loose_build_au_page_bounds_page_walk_with_ranking(
+                    record.cropped_prior(self.boundary_lsn),
+                    ranking,
+                );
+                let page = if prior.contains_key(addr.au) && addr.page <= prior[addr.au] {
+                    prior[addr.au]
+                } else {
+                    addr.page
+                };
+                prior.insert(addr.au, page)
+            },
+        }
+    }
+
+    pub open spec fn loose_build_au_page_bounds_au_walk(self, root: Pointer, first: AU) -> AUPageBounds
+        recommends
+            self.path_decodable(root),
+            self.path_build_tight(root).pointer_is_upstream(root, first),
+    {
+        if self.path_decodable(root) {
+            let ranking = choose |ranking: Ranking| self.path_valid_ranking(root, ranking);
+            self.loose_build_au_page_bounds_page_walk_with_ranking(root, ranking)
+        } else {
+            Map::empty()
+        }
+    }
+
+    pub proof fn loose_build_au_page_bounds_page_walk_with_ranking_matches_tight(
+        self,
+        root: Pointer,
+        ranking: Ranking,
+    )
+        requires
+            self.path_valid_ranking(root, ranking),
+        ensures
+            self.loose_build_au_page_bounds_page_walk_with_ranking(root, ranking)
+                == self.path_build_tight_with_ranking(root, ranking).build_au_page_bounds_page_walk(root),
+        decreases if root is Some && ranking.contains_key(root.unwrap()) {
+            ranking[root.unwrap()] + 1
+        } else {
+            0
+        }
+    {
+        self.path_build_tight_with_ranking_decodable(root, ranking);
+        match root {
+            None => {},
+            Some(addr) => {
+                let record = self.entries[addr];
+                let next = record.cropped_prior(self.boundary_lsn);
+                self.loose_build_au_page_bounds_page_walk_with_ranking_matches_tight(next, ranking);
+
+                let tail = self.path_build_tight_with_ranking(next, ranking);
+                let tight = self.path_build_tight_with_ranking(root, ranking);
+                assert(tight.entries == tail.entries.insert(addr, record));
+                assert(tight.boundary_lsn == self.boundary_lsn);
+                assert(tight.entries[addr] == record);
+                assert(tight.next(root) == next);
+                assert(tail.is_sub_disk(tight)) by {
+                    assert forall |a: Address| #[trigger] tail.entries.contains_key(a)
+                        implies tight.entries.contains_key(a) && tight.entries[a] == tail.entries[a] by {
+                        assert(a != addr) by {
+                            if a == addr {
+                                if next is None {
+                                    assert(tail.entries =~= Map::<Address, LinkedJournal_v::JournalRecord>::empty());
+                                } else {
+                                    self.path_build_tight_with_ranking_entry_rank_le(next, ranking, addr);
+                                    assert(ranking[addr] <= ranking[next.unwrap()]);
+                                    assert(ranking[next.unwrap()] < ranking[addr]);
+                                }
+                                assert(false);
+                            }
+                        }
+                    }
+                }
+                self.path_build_tight_with_ranking_decodable(next, ranking);
+                assert(tail.decodable(next));
+                tail.build_au_page_bounds_page_walk_sub_disk_equal(tight, next);
+                assert(tail.build_au_page_bounds_page_walk(next)
+                    == tight.build_au_page_bounds_page_walk(next));
+
+                let loose_prior = self.loose_build_au_page_bounds_page_walk_with_ranking(next, ranking);
+                let tight_prior = tight.build_au_page_bounds_page_walk(next);
+                assert(loose_prior == tight_prior);
+                assert(self.loose_build_au_page_bounds_page_walk_with_ranking(root, ranking)
+                    == loose_prior.insert(
+                        addr.au,
+                        if loose_prior.contains_key(addr.au) && addr.page <= loose_prior[addr.au] {
+                            loose_prior[addr.au]
+                        } else {
+                            addr.page
+                        },
+                    ));
+                assert(tight.build_au_page_bounds_page_walk(root)
+                    == tight_prior.insert(
+                        addr.au,
+                        if tight_prior.contains_key(addr.au) && addr.page <= tight_prior[addr.au] {
+                            tight_prior[addr.au]
+                        } else {
+                            addr.page
+                        },
+                    ));
+            },
+        }
+    }
+
+    pub proof fn loose_build_au_page_bounds_au_walk_matches_tight(
+        self,
+        root: Pointer,
+        first: AU,
+    )
+        requires
+            self.path_decodable(root),
+            self.path_build_tight(root).pointer_is_upstream(root, first),
+        ensures
+            self.loose_build_au_page_bounds_au_walk(root, first)
+                == self.path_build_tight(root).build_au_page_bounds_au_walk(root, first),
+    {
+        let ranking = choose |ranking: Ranking| self.path_valid_ranking(root, ranking);
+        self.path_build_tight_uses_ranking(root, ranking);
+        self.loose_build_au_page_bounds_page_walk_with_ranking_matches_tight(root, ranking);
+        let tight = self.path_build_tight(root);
+        tight.build_au_page_bounds_equiv_page_walk(root, first);
+        assert(self.loose_build_au_page_bounds_au_walk(root, first)
+            == self.loose_build_au_page_bounds_page_walk_with_ranking(root, ranking));
+    }
+
     pub proof fn build_tight_entry_lsn_bounded(self, root: Pointer, addr: Address)
         requires
             self.decodable(root),
@@ -2311,6 +2677,40 @@ impl DiskView {
                 }
             },
         }
+    }
+
+    pub proof fn build_au_page_bounds_equiv_page_walk(self, root: Pointer, first: AU)
+        requires
+            self.pointer_is_upstream(root, first),
+        ensures
+            self.build_au_page_bounds_au_walk(root, first)
+                == self.build_au_page_bounds_page_walk(root),
+    {
+        let au_bounds = self.build_au_page_bounds_au_walk(root, first);
+        let page_bounds = self.build_au_page_bounds_page_walk(root);
+        self.build_au_page_bounds_au_walk_domain_matches_build_tight(root, first);
+        self.build_au_page_bounds_page_walk_domain_matches_build_tight(root, first);
+
+        assert_maps_equal!(au_bounds, page_bounds, au => {
+            if au_bounds.contains_key(au) {
+                self.build_au_page_bounds_au_walk_bound_has_entry(root, first, au);
+                let addr = Address{au, page: au_bounds[au]};
+                assert(self.entries_bounded_by_au_page_bounds(au_bounds).contains_key(addr));
+                assert(self.build_tight(root).entries.contains_key(addr));
+                assert(self.entries_bounded_by_au_page_bounds(page_bounds).contains_key(addr));
+                assert(page_bounds.contains_key(au));
+                assert(au_bounds[au] <= page_bounds[au]);
+            }
+            if page_bounds.contains_key(au) {
+                self.build_au_page_bounds_page_walk_bound_has_entry(root, first, au);
+                let addr = Address{au, page: page_bounds[au]};
+                assert(self.entries_bounded_by_au_page_bounds(page_bounds).contains_key(addr));
+                assert(self.build_tight(root).entries.contains_key(addr));
+                assert(self.entries_bounded_by_au_page_bounds(au_bounds).contains_key(addr));
+                assert(au_bounds.contains_key(au));
+                assert(page_bounds[au] <= au_bounds[au]);
+            }
+        });
     }
 
     pub open spec   /*(checked)*/
@@ -3666,8 +4066,8 @@ state_machine!{ AllocationJournal {
         init freshest_rec = image.tj.freshest_rec;
         init unmarshalled_tail = MsgHistory::empty_history_at(image.tj.seq_end());
         init disk_view = image.tj.disk_view;
-        init lsn_au_index = image.tj.disk_view.path_build_lsn_au_index_au_walk(image.tj.freshest_rec, image.first);
-        init au_page_bounds = image.tj.disk_view.path_build_au_page_bounds_au_walk(image.tj.freshest_rec, image.first);
+        init lsn_au_index = image.tj.disk_view.loose_build_lsn_au_index_au_walk(image.tj.freshest_rec, image.first);
+        init au_page_bounds = image.tj.disk_view.loose_build_au_page_bounds_au_walk(image.tj.freshest_rec, image.first);
         init mini_allocator = mini_allocator;
     } }
 
@@ -5745,6 +6145,8 @@ state_machine!{ AllocationJournal {
         image_dv.path_build_tight_is_sub_disk(image.tj.freshest_rec);
         assert(tight_dv.is_sub_disk(image_dv));
         image_dv.path_build_bookkeeping_matches_tight(tight_tj.freshest_rec, post_first);
+        image_dv.loose_build_lsn_au_index_au_walk_matches_tight(tight_tj.freshest_rec, post_first);
+        image_dv.loose_build_au_page_bounds_au_walk_matches_tight(tight_tj.freshest_rec, post_first);
         assert(post.lsn_au_index == tight_dv.build_lsn_au_index_au_walk(tight_tj.freshest_rec, post_first));
         assert(post.au_page_bounds == tight_dv.build_au_page_bounds_au_walk(tight_tj.freshest_rec, post_first));
         post.tj().build_lsn_au_index_from_first_ensures(post_first);
@@ -5789,6 +6191,8 @@ state_machine!{ AllocationJournal {
         image_dv.path_build_tight_is_sub_disk(image.tj.freshest_rec);
         assert(tight_dv.is_sub_disk(image_dv));
         image_dv.path_build_bookkeeping_matches_tight(tight_tj.freshest_rec, first);
+        image_dv.loose_build_lsn_au_index_au_walk_matches_tight(tight_tj.freshest_rec, first);
+        image_dv.loose_build_au_page_bounds_au_walk_matches_tight(tight_tj.freshest_rec, first);
 
         assert(post.tj() == tight_tj);
         assert(post.disk_view.path_decodable(post.freshest_rec));

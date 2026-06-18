@@ -8,6 +8,7 @@ use crate::abstract_system::StampedMap_v::LSN;
 use crate::disk::GenericDisk_v::{AU};
 use crate::allocation_layer::AllocationJournal_v::*;
 use crate::allocation_layer::MiniAllocator_v::*;
+use crate::journal::LinkedJournal_v::TruncatedJournal;
 
 verus! {
 
@@ -38,14 +39,16 @@ impl JournalImage {
 // valid image
 state_machine!{AllocationCrashAwareJournal{
     fields {
-      pub persistent: JournalImage,
+      pub persistent: JournalMetadata,
+      pub persistent_image: Option<JournalImage>,
       pub ephemeral: Ephemeral,
       pub frozen: Option<JournalMetadata>
     }
 
     init!{
         initialize() {
-            init persistent = JournalImage::empty();
+            init persistent = JournalMetadata::empty();
+            init persistent_image = Option::Some(JournalImage::empty());
             init ephemeral = Ephemeral::Unknown;
             init frozen = Option::None;
       }
@@ -64,11 +67,39 @@ state_machine!{AllocationCrashAwareJournal{
         Crash{ keep_in_flight: bool },
     }
 
+    pub open spec(checked) fn image_matches_metadata(image: JournalImage, metadata: JournalMetadata) -> bool
+    {
+        &&& image.first == metadata.first
+        &&& image.tj.freshest_rec == metadata.freshest_rec
+        &&& image.tj.disk_view.boundary_lsn == metadata.boundary_lsn
+        &&& image.tj.seq_end() == metadata.seq_end
+    }
+
+    pub open spec(checked) fn persistent_image_view(self) -> JournalImage
+        recommends self.persistent_image is Some || self.ephemeral is Known
+    {
+        if self.persistent_image is Some {
+            self.persistent_image.unwrap()
+        } else {
+            self.ephemeral->v.frozen_image(self.persistent)
+        }
+    }
+
+    pub open spec(checked) fn acceptable_persistent_image(self, image: JournalImage) -> bool
+        recommends self.persistent_image is Some || self.ephemeral is Known
+    {
+        if self.persistent_image is Some {
+            image == self.persistent_image.unwrap()
+        } else {
+            self.ephemeral->v.acceptable_frozen_image(self.persistent, image)
+        }
+    }
+
     pub open spec(checked) fn fresh_label(self, lbl: Label) -> bool
         recommends lbl is Internal ==> self.ephemeral is Known
     {
         lbl is Internal ==> {
-            &&& lbl->allocs.disjoint(self.persistent.accessible_aus())
+            &&& lbl->allocs.disjoint(self.persistent_image_view().accessible_aus())
             &&& lbl->allocs.disjoint(self.ephemeral->v.accessible_aus())
         }
     }
@@ -77,8 +108,10 @@ state_machine!{AllocationCrashAwareJournal{
         load_ephemeral_from_persistent(lbl: Label, new_journal: AllocationJournal::State) {
             require lbl is LoadEphemeralFromPersistent;
             require pre.ephemeral is Unknown;
-            require pre.persistent.init_by(new_journal);
+            require pre.persistent_image is Some;
+            require pre.persistent_image.unwrap().init_by(new_journal);
             update ephemeral = Ephemeral::Known{ v: new_journal };
+            update persistent_image = Option::None;
         }
     }
 
@@ -129,6 +162,11 @@ state_machine!{AllocationCrashAwareJournal{
                 new_journal, 
                 AllocationJournal::Label::InternalAllocations{ allocs: lbl->allocs, deallocs: lbl.arrow_Internal_deallocs() }
             );
+            require pre.persistent_image is None ==> {
+                &&& new_journal.frozen_metadata_valid(pre.persistent)
+                &&& new_journal.frozen_image(pre.persistent)
+                    == pre.ephemeral->v.frozen_image(pre.persistent)
+            };
             require pre.frozen is Some ==> {
                 &&& new_journal.frozen_metadata_valid(pre.frozen.unwrap())
                 &&& new_journal.frozen_image(pre.frozen.unwrap())
@@ -141,7 +179,7 @@ state_machine!{AllocationCrashAwareJournal{
     transition!{
         query_lsn_persistence(lbl: Label) {
             require lbl is QueryLsnPersistence;
-            require lbl->sync_lsn <= pre.persistent.tj.seq_end();
+            require lbl->sync_lsn <= pre.persistent.seq_end;
         }
     }
 
@@ -159,17 +197,16 @@ state_machine!{AllocationCrashAwareJournal{
             // Frozen journal stitches to frozen map
             require frozen_journal.boundary_lsn == lbl->new_boundary_lsn;
             // Journal doesn't go backwards
-            require pre.persistent.tj.seq_end() <= lbl->new_boundary_lsn;
+            require pre.persistent.seq_end <= lbl->new_boundary_lsn;
             update frozen = Option::Some(frozen_journal);
         }
     }
 
     transition!{
-        commit_complete(lbl: Label, new_journal: AllocationJournal::State, frozen_image: JournalImage) {
+        commit_complete(lbl: Label, new_journal: AllocationJournal::State) {
             require lbl is CommitComplete;
             require pre.ephemeral is Known;
             require pre.frozen is Some;
-            require pre.ephemeral->v.acceptable_frozen_image(pre.frozen.unwrap(), frozen_image);
 
             // upon a successful write to super block, we truncate ephemeral 
             // journal to line up with the beginning of the newly persisted journal
@@ -189,39 +226,56 @@ state_machine!{AllocationCrashAwareJournal{
                     deallocs: lbl->discarded,
                 },
             );
+            require new_journal.frozen_metadata_valid(pre.frozen.unwrap());
+            require new_journal.frozen_image(pre.frozen.unwrap())
+                == pre.ephemeral->v.frozen_image(pre.frozen.unwrap());
             
             // Watch the `update` keyword!
-            update persistent = frozen_image;
+            update persistent = pre.frozen.unwrap();
             update ephemeral = Ephemeral::Known{ v: new_journal };
             update frozen = Option::None;
         }
     }
 
     transition!{
-        crash(lbl: Label) {
+        crash(lbl: Label, persistent_image: JournalImage) {
             require lbl is Crash;
             require lbl->keep_in_flight ==> pre.frozen is Some;
             require lbl->keep_in_flight ==> pre.ephemeral is Known;
+            let persistent_metadata =
+                if lbl->keep_in_flight { pre.frozen.unwrap() } else { pre.persistent };
+            require Self::image_matches_metadata(persistent_image, persistent_metadata);
+            require persistent_image.valid_image();
+            require if lbl->keep_in_flight {
+                pre.ephemeral->v.acceptable_frozen_image(pre.frozen.unwrap(), persistent_image)
+            } else {
+                pre.acceptable_persistent_image(persistent_image)
+            };
             update ephemeral = Ephemeral::Unknown;
             update frozen = Option::None;
-            update persistent = if lbl->keep_in_flight {
-                pre.ephemeral->v.frozen_image(pre.frozen.unwrap())
-            } else {
-                pre.persistent
-            };
+            update persistent = persistent_metadata;
+            update persistent_image = Option::Some(persistent_image);
         }
     }
 
     #[invariant]
     pub open spec(checked) fn inv(self) -> bool {
         &&& self.ephemeral is Unknown ==> self.frozen is None
+        &&& self.ephemeral is Unknown <==> self.persistent_image is Some
+        &&& self.persistent_image is Some ==> {
+            let image = self.persistent_image.unwrap();
+            &&& image.valid_image()
+            &&& Self::image_matches_metadata(image, self.persistent)
+        }
         &&& self.ephemeral is Known ==> self.ephemeral->v.inv()
         &&& self.ephemeral is Known ==> self.ephemeral->v.semantic_inv()
+        &&& self.ephemeral is Known && self.persistent_image is None ==> {
+            self.ephemeral->v.frozen_metadata_valid(self.persistent)
+        }
         &&& self.frozen is Some ==> {
             &&& self.ephemeral is Known
             &&& self.ephemeral->v.frozen_metadata_valid(self.frozen.unwrap())
         }
-        &&& self.persistent.valid_image()
     }
 
     #[inductive(initialize)]
@@ -232,8 +286,34 @@ state_machine!{AllocationCrashAwareJournal{
     #[inductive(load_ephemeral_from_persistent)]
     fn load_ephemeral_from_persistent_inductive(pre: Self, post: Self, lbl: Label, new_journal: AllocationJournal::State) 
     {
-        AllocationJournal::State::initialize_inductive(new_journal, pre.persistent);
-        AllocationJournal::State::initialize_semantic_inv(new_journal, pre.persistent);
+        let image = pre.persistent_image.unwrap();
+        let tight = image.tight_tj();
+        let first = image.first;
+        AllocationJournal::State::initialize_inductive(new_journal, image);
+        AllocationJournal::State::initialize_semantic_inv(new_journal, image);
+        AllocationJournal::State::initialize_tj_matches(new_journal, image);
+        image.valid_image_implies_tight_valid_image();
+        image.valid_image_implies_tight_seq_bounds();
+        tight.build_lsn_au_index_from_first_ensures(first);
+        reveal(TruncatedJournal::au_domain_valid);
+        assert(new_journal.lsn_au_index == tight.build_lsn_au_index_from_first(first));
+        if pre.persistent.freshest_rec is Some {
+            let root = pre.persistent.freshest_rec.unwrap();
+            let last_lsn = (pre.persistent.seq_end - 1) as nat;
+            assert(tight.seq_start() <= last_lsn);
+            assert(last_lsn < tight.seq_end());
+            assert(new_journal.lsn_au_index.contains_key(last_lsn));
+            assert(image.tj.freshest_rec == pre.persistent.freshest_rec);
+            assert(tight.freshest_rec == pre.persistent.freshest_rec);
+            assert(tight.disk_view.entries.contains_key(root));
+            assert(tight.disk_view.entries[root] == image.tj.disk_view.entries[root]);
+            assert(tight.disk_view.entries[root].message_seq.contains(last_lsn));
+            assert(tight.disk_view.addr_supports_lsn(root, last_lsn));
+            let index = tight.build_lsn_au_index_from_first(first);
+            tight.disk_view.addr_supports_lsn_consistent_with_index(index, last_lsn, root);
+            assert(index[last_lsn] == root.au);
+            assert(new_journal.lsn_au_index[last_lsn] == root.au);
+        }
     }
    
     #[inductive(read_for_recovery)]
@@ -299,7 +379,7 @@ state_machine!{AllocationCrashAwareJournal{
     }
    
     #[inductive(commit_complete)]
-    fn commit_complete_inductive(pre: Self, post: Self, lbl: Label, new_journal: AllocationJournal::State, frozen_image: JournalImage)
+    fn commit_complete_inductive(pre: Self, post: Self, lbl: Label, new_journal: AllocationJournal::State)
     {
         assert(pre.ephemeral->v.frozen_metadata_valid(pre.frozen.unwrap()));
         let freeze_lbl = AllocationJournal::Label::FreezeForCommit{frozen_journal: pre.frozen.unwrap()};
@@ -318,7 +398,6 @@ state_machine!{AllocationCrashAwareJournal{
             pre.ephemeral->v,
             freeze_lbl,
         );
-        assert(frozen_image.valid_image());
         assert(post.ephemeral is Known ==> post.ephemeral->v.refinement_inv()) by {
             let alloc_lbl = AllocationJournal::Label::DiscardOld{ 
                 start_lsn: pre.frozen.unwrap().boundary_lsn,
@@ -333,7 +412,7 @@ state_machine!{AllocationCrashAwareJournal{
     }
    
     #[inductive(crash)]
-    fn crash_inductive(pre: Self, post: Self, lbl: Label)
+    fn crash_inductive(pre: Self, post: Self, lbl: Label, persistent_image: JournalImage)
     {
         if lbl->keep_in_flight {
             let freeze_lbl = AllocationJournal::Label::FreezeForCommit{
@@ -411,17 +490,17 @@ state_machine!{AllocationCrashAwareJournal{
                 }
                 AllocationCrashAwareJournal::State::commit_start_inductive(pre, post, lbl);
             },
-            AllocationCrashAwareJournal::Step::commit_complete(new_journal, frozen_image) => {
-                assert(AllocationCrashAwareJournal::State::commit_complete(pre, post, lbl, new_journal, frozen_image)) by {
+            AllocationCrashAwareJournal::Step::commit_complete(new_journal) => {
+                assert(AllocationCrashAwareJournal::State::commit_complete(pre, post, lbl, new_journal)) by {
                     reveal(AllocationCrashAwareJournal::State::commit_complete);
                 }
-                AllocationCrashAwareJournal::State::commit_complete_inductive(pre, post, lbl, new_journal, frozen_image);
+                AllocationCrashAwareJournal::State::commit_complete_inductive(pre, post, lbl, new_journal);
             },
-            AllocationCrashAwareJournal::Step::crash() => {
-                assert(AllocationCrashAwareJournal::State::crash(pre, post, lbl)) by {
+            AllocationCrashAwareJournal::Step::crash(persistent_image) => {
+                assert(AllocationCrashAwareJournal::State::crash(pre, post, lbl, persistent_image)) by {
                     reveal(AllocationCrashAwareJournal::State::crash);
                 }
-                AllocationCrashAwareJournal::State::crash_inductive(pre, post, lbl);
+                AllocationCrashAwareJournal::State::crash_inductive(pre, post, lbl, persistent_image);
             },
             AllocationCrashAwareJournal::Step::dummy_to_use_type_params(_) => {
                 assert(false);
