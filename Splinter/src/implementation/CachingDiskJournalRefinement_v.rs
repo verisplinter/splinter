@@ -11,7 +11,7 @@ use vstd::assert_maps_equal;
 use crate::abstract_system::MsgHistory_v::*;
 use crate::abstract_system::StampedMap_v::LSN;
 use crate::allocation_layer::AllocationJournal_v::{
-    AllocationJournal, JournalMetadata, lsn_au_index_append_record,
+    AllocationJournal, JournalImage, JournalMetadata, addrs_in_aus, lsn_au_index_append_record,
     lsn_au_index_discard_up_to,
 };
 use crate::allocation_layer::AllocationJournalRefinement_v::*;
@@ -234,6 +234,150 @@ impl CachingDiskJournal::State {
         }
     }
 
+    pub proof fn frozen_snapshot_valid_implies_i_metadata_valid(
+        self,
+        frozen: JournalSnapshot,
+        seq_end: LSN,
+    )
+        requires
+            self.inv(),
+            self.semantic_inv(),
+            self.frozen_snapshot_valid(frozen, seq_end),
+            CachingDiskJournal::State::next(
+                self,
+                self,
+                CachingDiskJournal::Label::FreezeForCommit{frozen, seq_end},
+            ),
+        ensures
+            self.i().frozen_metadata_valid(JournalMetadata{
+                boundary_lsn: frozen.boundary_lsn,
+                seq_end,
+                freshest_rec: frozen.freshest_rec(),
+                first: frozen.first(),
+            }),
+    {
+        self.freeze_for_commit_label_implies_i_metadata_valid(frozen, seq_end);
+        assert(self.frozen_metadata(frozen) == JournalMetadata{
+            boundary_lsn: frozen.boundary_lsn,
+            seq_end,
+            freshest_rec: frozen.freshest_rec(),
+            first: frozen.first(),
+        });
+    }
+
+    pub proof fn frozen_tj_matches_i_frozen_tj(
+        self,
+        frozen: JournalSnapshot,
+        seq_end: LSN,
+    )
+        requires
+            self.inv(),
+            self.semantic_inv(),
+            self.frozen_snapshot_valid(frozen, seq_end),
+        ensures
+            self.frozen_loose_domain(frozen) =~= self.i().frozen_loose_domain(JournalMetadata{
+                boundary_lsn: frozen.boundary_lsn,
+                seq_end,
+                freshest_rec: frozen.freshest_rec(),
+                first: frozen.first(),
+            }),
+            self.frozen_tj(frozen) == self.i().frozen_tj(JournalMetadata{
+                boundary_lsn: frozen.boundary_lsn,
+                seq_end,
+                freshest_rec: frozen.freshest_rec(),
+                first: frozen.first(),
+            }),
+            (JournalImage{
+                tj: self.frozen_tj(frozen),
+                first: frozen.first(),
+            }) == self.i().frozen_image(JournalMetadata{
+                boundary_lsn: frozen.boundary_lsn,
+                seq_end,
+                freshest_rec: frozen.freshest_rec(),
+                first: frozen.first(),
+            }),
+    {
+        let meta = JournalMetadata{
+            boundary_lsn: frozen.boundary_lsn,
+            seq_end,
+            freshest_rec: frozen.freshest_rec(),
+            first: frozen.first(),
+        };
+        assert(self.frozen_metadata(frozen) == meta);
+        assert(self.i().disk_view == self.journal_disk_view());
+        assert(self.i().lsn_au_index == self.lsn_au_index_or_empty());
+        assert(self.i().frozen_lsns(meta) =~= self.frozen_lsns(frozen)) by {
+            assert forall |lsn: LSN| #[trigger] self.i().frozen_lsns(meta).contains(lsn)
+                <==> self.frozen_lsns(frozen).contains(lsn) by {}
+        }
+        assert(self.i().frozen_lsn_au_index(meta)
+            =~= self.lsn_au_index_or_empty().restrict(self.frozen_lsns(frozen))) by {
+            assert forall |lsn: LSN|
+                #[trigger] self.i().frozen_lsn_au_index(meta).contains_key(lsn)
+                <==> self.lsn_au_index_or_empty().restrict(self.frozen_lsns(frozen)).contains_key(lsn) by {}
+            assert forall |lsn: LSN|
+                #[trigger] self.i().frozen_lsn_au_index(meta).contains_key(lsn)
+                implies self.i().frozen_lsn_au_index(meta)[lsn]
+                    == self.lsn_au_index_or_empty().restrict(self.frozen_lsns(frozen))[lsn] by {}
+        }
+        assert(self.i().frozen_lsn_au_index(meta).values()
+            =~= self.lsn_au_index_or_empty().restrict(self.frozen_lsns(frozen)).values());
+        assert(addrs_in_aus(self.i().frozen_lsn_au_index(meta).values())
+            =~= addresses_in_aus(
+                self.lsn_au_index_or_empty().restrict(self.frozen_lsns(frozen)).values(),
+            )) by {
+            assert forall |addr: Address| #[trigger] addrs_in_aus(
+                self.i().frozen_lsn_au_index(meta).values(),
+            ).contains(addr)
+                <==> addresses_in_aus(
+                    self.lsn_au_index_or_empty().restrict(self.frozen_lsns(frozen)).values(),
+                ).contains(addr) by {}
+        }
+        assert(self.i().frozen_domain(meta) =~= self.frozen_loose_domain(frozen));
+        assert(self.i().frozen_loose_domain(meta) =~= self.frozen_loose_domain(frozen));
+        assert(self.i().frozen_tj(meta).disk_view.entries
+            =~= self.frozen_tj(frozen).disk_view.entries) by {
+            assert_maps_equal!(
+                self.i().frozen_tj(meta).disk_view.entries,
+                self.frozen_tj(frozen).disk_view.entries,
+            );
+        }
+        assert(self.i().frozen_tj(meta) == self.frozen_tj(frozen));
+    }
+
+    pub proof fn frozen_prefix_domain_matches_i(
+        self,
+        frozen: JournalSnapshot,
+        seq_end: LSN,
+    )
+        requires
+            self.inv(),
+            self.semantic_inv(),
+            self.frozen_snapshot_valid(frozen, seq_end),
+        ensures
+            self.frozen_prefix_domain(frozen) =~= self.i().frozen_prefix_domain(JournalMetadata{
+                boundary_lsn: frozen.boundary_lsn,
+                seq_end,
+                freshest_rec: frozen.freshest_rec(),
+                first: frozen.first(),
+            }),
+    {
+        let meta = JournalMetadata{
+            boundary_lsn: frozen.boundary_lsn,
+            seq_end,
+            freshest_rec: frozen.freshest_rec(),
+            first: frozen.first(),
+        };
+        self.frozen_tj_matches_i_frozen_tj(frozen, seq_end);
+        assert(self.i().frozen_image(meta).tight_tj()
+            == (JournalImage{tj: self.frozen_tj(frozen), first: frozen.first()}).tight_tj());
+        assert(self.i().frozen_loose_domain(meta) =~= self.frozen_loose_domain(frozen));
+        assert(self.frozen_prefix_domain(frozen) =~= self.i().frozen_prefix_domain(meta)) by {
+            assert forall |addr: Address| #[trigger] self.frozen_prefix_domain(frozen).contains(addr)
+                <==> self.i().frozen_prefix_domain(meta).contains(addr) by {}
+        }
+    }
+
     pub proof fn disk_reads_ensures(self, reads: Map<Address, RawPage>)
         requires
             self.disk.inv(),
@@ -396,6 +540,87 @@ impl CachingDiskJournal::State {
         assert(self.unloaded_backing_image_valid());
         assert(self.semantic_inv());
         assert(self.refinement_inv());
+    }
+
+    pub proof fn load_from_persistent_refines_image(
+        snapshot: JournalSnapshot,
+        persistent: Map<Address, RawPage>,
+        image: JournalImage,
+    )
+        requires
+            image == (JournalImage{
+                tj: TruncatedJournal{
+                    freshest_rec: snapshot.freshest_rec(),
+                    disk_view: DiskView{
+                        boundary_lsn: snapshot.boundary_lsn,
+                        entries: to_journal_records(persistent),
+                    },
+                },
+                first: snapshot.first(),
+            }),
+            image.valid_image(),
+        ensures
+            ({
+                let loaded = CachingDiskJournal::State::load_from_persistent(snapshot, persistent);
+                &&& loaded.backing_journal_image() == image
+                &&& loaded.refinement_inv()
+                &&& AllocationJournal::State::initialize(loaded.i(), image)
+            }),
+    {
+        let loaded = CachingDiskJournal::State::load_from_persistent(snapshot, persistent);
+        let disk = CachingDiskJournal::State::disk_from_persistent(persistent);
+        assert(loaded.disk == disk);
+        assert(loaded.disk.visible() =~= persistent) by {
+            assert forall |addr: Address| #[trigger] loaded.disk.visible().contains_key(addr)
+                implies persistent.contains_key(addr) by {
+                assert(loaded.disk.cache == Map::<Address, RawPage>::empty());
+            }
+            assert forall |addr: Address| #[trigger] persistent.contains_key(addr)
+                implies loaded.disk.visible().contains_key(addr) by {
+                assert(loaded.disk.persistent.contains_key(addr));
+            }
+        }
+        assert(loaded.raw_visible_records() == to_journal_records(persistent)) by {
+            assert_maps_equal!(
+                loaded.raw_visible_records(),
+                to_journal_records(persistent),
+                addr => {
+                    if loaded.raw_visible_records().contains_key(addr) {
+                        assert(loaded.disk.visible().contains_key(addr));
+                        assert(persistent.contains_key(addr));
+                        assert(loaded.disk.visible()[addr] == persistent[addr]);
+                    }
+                    if to_journal_records(persistent).contains_key(addr) {
+                        assert(persistent.contains_key(addr));
+                        assert(loaded.disk.visible().contains_key(addr));
+                        assert(loaded.disk.visible()[addr] == persistent[addr]);
+                    }
+                }
+            );
+        }
+        assert(loaded.journal_disk_view() == image.tj.disk_view);
+        assert(loaded.journal_backing_tj() == image.tj);
+        assert(loaded.backing_journal_image() == image);
+        let init_base = CachingDiskJournal::State{
+            journal: CachedJournal::State{
+                snapshot,
+                status: Option::None,
+            },
+            disk,
+            mini_allocator: crate::allocation_layer::MiniAllocator_v::MiniAllocator::empty(),
+            au_page_bounds: Map::empty(),
+        };
+        let init_bounds = image.tj.disk_view.loose_build_au_page_bounds_au_walk(
+            image.tj.freshest_rec,
+            image.first,
+        );
+        assert(loaded.au_page_bounds == init_bounds);
+        assert(CachingDiskJournal::State::initialize(loaded, snapshot, disk)) by {
+            reveal(CachingDiskJournal::State::initialize);
+            assert(disk.inv());
+            assert(init_base.backing_journal_image() == image);
+        }
+        loaded.init_refines(snapshot, disk);
     }
 
     pub proof fn query_end_lsn_refines(
@@ -1144,6 +1369,38 @@ impl CachingDiskJournal::State {
             reveal(AllocationJournal::State::next_by);
         }
         reveal(AllocationJournal::State::next);
+    }
+
+    pub proof fn discard_old_next_preserves_i_frozen_metadata_at_boundary(
+        self,
+        post: Self,
+        lbl: CachingDiskJournal::Label,
+        frozen: JournalMetadata,
+    )
+        requires
+            self.refinement_inv(),
+            post.inv(),
+            lbl is DiscardOld,
+            CachingDiskJournal::State::next(self, post, lbl),
+            self.i().frozen_metadata_valid(frozen),
+            lbl.arrow_DiscardOld_start_lsn() == frozen.boundary_lsn,
+        ensures
+            post.refinement_inv(),
+            AllocationJournal::State::next(self.i(), post.i(), lbl.i(self)),
+            post.i().frozen_metadata_valid(frozen),
+            post.i().frozen_image(frozen) == self.i().frozen_image(frozen),
+    {
+        self.next_refines(post, lbl);
+        assert(AllocationJournal::State::discard_old(self.i(), post.i(), lbl.i(self))) by {
+            reveal(AllocationJournal::State::next);
+            reveal(AllocationJournal::State::next_by);
+        }
+        AllocationJournal::State::discard_old_preserves_frozen_metadata_at_boundary(
+            self.i(),
+            post.i(),
+            lbl.i(self),
+            frozen,
+        );
     }
 
     pub proof fn mini_allocator_fill_refines(

@@ -1214,10 +1214,15 @@ impl CachingDiskJournal::State {
     }
 
     pub open spec fn frozen_prefix_domain(self, snapshot: JournalSnapshot) -> Set<Address> {
+        let tight = (JournalImage{tj: self.frozen_tj(snapshot), first: snapshot.first()}).tight_tj();
+        let tight_bounds = tight.disk_view.build_au_page_bounds_au_walk(
+            tight.freshest_rec,
+            snapshot.first(),
+        );
         Set::new(|addr: Address| {
             &&& self.frozen_loose_domain(snapshot).contains(addr)
-            &&& self.au_page_bounds.contains_key(addr.au)
-            &&& addr.page <= self.au_page_bounds[addr.au]
+            &&& tight_bounds.contains_key(addr.au)
+            &&& addr.page <= tight_bounds[addr.au]
         })
     }
 
@@ -1766,7 +1771,29 @@ impl CachingDiskJournal::State {
     }
 
     pub open spec fn frozen_tj(self, snapshot: JournalSnapshot) -> TruncatedJournal {
-        self.i().frozen_tj(self.frozen_metadata(snapshot))
+        TruncatedJournal{
+            freshest_rec: snapshot.freshest_rec(),
+            disk_view: DiskView{
+                boundary_lsn: snapshot.boundary_lsn,
+                entries: self.journal_disk_view().entries.restrict(self.frozen_loose_domain(snapshot)),
+            },
+        }
+    }
+
+    pub open spec fn frozen_snapshot_preserved_by(
+        self,
+        post: Self,
+        snapshot: JournalSnapshot,
+        seq_end: LSN,
+    ) -> bool
+    {
+        &&& post.frozen_snapshot_valid(snapshot, seq_end)
+        &&& post.frozen_tj(snapshot) == self.frozen_tj(snapshot)
+        &&& CachingDiskJournal::State::next(
+            post,
+            post,
+            CachingDiskJournal::Label::FreezeForCommit{frozen: snapshot, seq_end},
+        )
     }
 
     pub open spec fn frozen_snapshot_valid(self, snapshot: JournalSnapshot, seq_end: LSN) -> bool
@@ -1964,6 +1991,237 @@ impl CachingDiskJournal::State {
                 assert(post.disk == pre.disk);
                 assert(post.journal.snapshot == pre.journal.snapshot);
                 assert(post.raw_visible_records() == pre.raw_visible_records());
+            },
+            _ => {
+                assert(false);
+            },
+        }
+    }
+
+    pub proof fn put_loaded_status_and_clean_watermark_unchanged(
+        pre: Self,
+        post: Self,
+        messages: MsgHistory,
+    )
+        requires
+            pre.journal.status is Some,
+            CachingDiskJournal::State::next(
+                pre,
+                post,
+                CachingDiskJournal::Label::Put{messages},
+            ),
+        ensures
+            post.journal.status is Some,
+            post.journal.clean_watermark() == pre.journal.clean_watermark(),
+            post.disk == pre.disk,
+            post.mini_allocator == pre.mini_allocator,
+            post.journal.snapshot == pre.journal.snapshot,
+            post.journal_disk_view() == pre.journal_disk_view(),
+    {
+        let lbl = CachingDiskJournal::Label::Put{messages};
+        reveal(CachingDiskJournal::State::next);
+        reveal(CachingDiskJournal::State::next_by);
+        let step = choose |step: CachingDiskJournal::Step|
+            CachingDiskJournal::State::next_by(pre, post, lbl, step);
+        match step {
+            CachingDiskJournal::Step::put(new_journal) => {
+                reveal(CachingDiskJournal::State::put);
+                CachedJournal::State::put_effect(pre.journal, post.journal, messages);
+            },
+            _ => {
+                assert(false);
+            },
+        }
+    }
+
+    pub proof fn load_index_requires_unloaded(
+        pre: Self,
+        post: Self,
+        discovered_aus: Set<AU>,
+    )
+        requires
+            CachingDiskJournal::State::next(
+                pre,
+                post,
+                CachingDiskJournal::Label::LoadIndex{discovered_aus},
+            ),
+        ensures
+            pre.journal.status is None,
+    {
+        let lbl = CachingDiskJournal::Label::LoadIndex{discovered_aus};
+        reveal(CachingDiskJournal::State::next);
+        reveal(CachingDiskJournal::State::next_by);
+        let step = choose |step: CachingDiskJournal::Step|
+            CachingDiskJournal::State::next_by(pre, post, lbl, step);
+        match step {
+            CachingDiskJournal::Step::load_index(new_journal, reads) => {
+                reveal(CachingDiskJournal::State::load_index);
+                reveal(CachedJournal::State::next);
+                reveal(CachedJournal::State::next_by);
+                let journal_lbl = CachedJournal::Label::LoadIndex{
+                    reads: to_journal_records(reads),
+                    discovered_aus,
+                };
+                let journal_step = choose |step: CachedJournal::Step|
+                    CachedJournal::State::next_by(pre.journal, post.journal, journal_lbl, step);
+                match journal_step {
+                    CachedJournal::Step::load_index(_, _) => {
+                        reveal(CachedJournal::State::load_index);
+                    },
+                    _ => {
+                        assert(false);
+                    },
+                }
+            },
+            _ => {
+                assert(false);
+            },
+        }
+    }
+
+    pub proof fn observe_clean_aus_loaded_status_and_clean_watermark_monotonic(
+        pre: Self,
+        post: Self,
+        aus: Set<AU>,
+    )
+        requires
+            pre.journal.status is Some,
+            CachingDiskJournal::State::next(
+                pre,
+                post,
+                CachingDiskJournal::Label::ObserveCleanAUs{aus},
+            ),
+        ensures
+            post.journal.status is Some,
+            pre.journal.clean_watermark() <= post.journal.clean_watermark(),
+            post.disk == pre.disk,
+            post.mini_allocator == pre.mini_allocator,
+            post.journal.snapshot == pre.journal.snapshot,
+            post.journal_disk_view() == pre.journal_disk_view(),
+    {
+        let lbl = CachingDiskJournal::Label::ObserveCleanAUs{aus};
+        reveal(CachingDiskJournal::State::next);
+        reveal(CachingDiskJournal::State::next_by);
+        let step = choose |step: CachingDiskJournal::Step|
+            CachingDiskJournal::State::next_by(pre, post, lbl, step);
+        match step {
+            CachingDiskJournal::Step::observe_clean_aus(new_journal) => {
+                reveal(CachingDiskJournal::State::observe_clean_aus);
+                CachedJournal::State::observe_clean_aus_effect(pre.journal, post.journal, aus);
+            },
+            _ => {
+                assert(false);
+            },
+        }
+    }
+
+    pub proof fn commit_prepared_effect(
+        state: Self,
+        frozen: JournalSnapshot,
+        seq_end: LSN,
+    )
+        requires
+            CachingDiskJournal::State::next(
+                state,
+                state,
+                CachingDiskJournal::Label::CommitPrepared{frozen, seq_end},
+            ),
+        ensures
+            state.journal.status is Some,
+            frozen.freshest_rec() is Some ==> seq_end <= state.journal.clean_watermark(),
+    {
+        let lbl = CachingDiskJournal::Label::CommitPrepared{frozen, seq_end};
+        reveal(CachingDiskJournal::State::next);
+        reveal(CachingDiskJournal::State::next_by);
+        let step = choose |step: CachingDiskJournal::Step|
+            CachingDiskJournal::State::next_by(state, state, lbl, step);
+        match step {
+            CachingDiskJournal::Step::commit_prepared() => {
+                reveal(CachingDiskJournal::State::commit_prepared);
+            },
+            _ => {
+                assert(false);
+            },
+        }
+    }
+
+    pub proof fn internal_loaded_status_and_clean_watermark_monotonic(
+        pre: Self,
+        post: Self,
+    )
+        requires
+            pre.inv(),
+            pre.journal.status is Some,
+            CachingDiskJournal::State::next(pre, post, CachingDiskJournal::Label::Internal),
+        ensures
+            post.journal.status is Some,
+            pre.journal.clean_watermark() <= post.journal.clean_watermark(),
+    {
+        let lbl = CachingDiskJournal::Label::Internal;
+        reveal(CachingDiskJournal::State::next);
+        reveal(CachingDiskJournal::State::next_by);
+        let step = choose |step: CachingDiskJournal::Step|
+            CachingDiskJournal::State::next_by(pre, post, lbl, step);
+        match step {
+            CachingDiskJournal::Step::caching_disk_internal(new_disk) => {
+                reveal(CachingDiskJournal::State::caching_disk_internal);
+                assert(post.journal == pre.journal);
+            },
+            CachingDiskJournal::Step::journal_marshal(new_journal, new_disk, addr, writes) => {
+                reveal(CachingDiskJournal::State::journal_marshal);
+                reveal(CachedJournal::State::next);
+                reveal(CachedJournal::State::next_by);
+                let journal_lbl = CachedJournal::Label::JournalMarshal{
+                    writes: to_journal_records(writes),
+                };
+                let journal_step = choose |step: CachedJournal::Step|
+                    CachedJournal::State::next_by(pre.journal, post.journal, journal_lbl, step);
+                match journal_step {
+                    CachedJournal::Step::internal_journal_marshal(cut, hidden_addr) => {
+                        reveal(CachedJournal::State::internal_journal_marshal);
+                    },
+                    _ => {
+                        assert(false);
+                    },
+                }
+            },
+            CachingDiskJournal::Step::internal_noop() => {
+                reveal(CachingDiskJournal::State::internal_noop);
+                assert(post == pre);
+            },
+            _ => {
+                assert(false);
+            },
+        }
+    }
+
+    pub proof fn internal_alloc_preserves_journal(
+        pre: Self,
+        post: Self,
+        allocs: Set<AU>,
+        deallocs: Set<AU>,
+        prune_aus: Set<AU>,
+    )
+        requires
+            CachingDiskJournal::State::next(
+                pre,
+                post,
+                CachingDiskJournal::Label::InternalAlloc{allocs, deallocs, prune_aus},
+            ),
+        ensures
+            post.journal == pre.journal,
+    {
+        let lbl = CachingDiskJournal::Label::InternalAlloc{allocs, deallocs, prune_aus};
+        reveal(CachingDiskJournal::State::next);
+        reveal(CachingDiskJournal::State::next_by);
+        let step = choose |step: CachingDiskJournal::Step|
+            CachingDiskJournal::State::next_by(pre, post, lbl, step);
+        match step {
+            CachingDiskJournal::Step::mini_allocator_fill(new_disk) => {
+                reveal(CachingDiskJournal::State::mini_allocator_fill);
+            },
+            CachingDiskJournal::Step::mini_allocator_prune(new_disk) => {
+                reveal(CachingDiskJournal::State::mini_allocator_prune);
             },
             _ => {
                 assert(false);
