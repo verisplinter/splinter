@@ -2112,6 +2112,46 @@ state_machine!{ CachedJournal {
         }
     }
 
+    pub proof fn status_some_next_effect(pre: Self, post: Self, lbl: CachedJournal::Label)
+        requires
+            CachedJournal::State::next(pre, post, lbl),
+        ensures
+            post.status is Some,
+    {
+        reveal(CachedJournal::State::next);
+        reveal(CachedJournal::State::next_by);
+        let step = choose |step| CachedJournal::State::next_by(pre, post, lbl, step);
+        match step {
+            CachedJournal::Step::read_for_recovery(start_lsn, addr) => {
+                reveal(CachedJournal::State::read_for_recovery);
+            },
+            CachedJournal::Step::freeze_for_commit() => {
+                reveal(CachedJournal::State::freeze_for_commit);
+            },
+            CachedJournal::Step::query_end_lsn() => {
+                reveal(CachedJournal::State::query_end_lsn);
+            },
+            CachedJournal::Step::advance_watermark(target_lsn) => {
+                reveal(CachedJournal::State::advance_watermark);
+            },
+            CachedJournal::Step::put() => {
+                reveal(CachedJournal::State::put);
+            },
+            CachedJournal::Step::discard_old() => {
+                reveal(CachedJournal::State::discard_old);
+            },
+            CachedJournal::Step::internal_journal_marshal(cut, addr) => {
+                reveal(CachedJournal::State::internal_journal_marshal);
+            },
+            CachedJournal::Step::load_index(au_depth, page_depth) => {
+                reveal(CachedJournal::State::load_index);
+            },
+            _ => {
+                assert(false);
+            },
+        }
+    }
+
     pub proof fn load_index_effect(
         pre: Self,
         post: Self,
@@ -2251,6 +2291,72 @@ state_machine!{ CachedJournal {
             },
             _ => { assert(false); },
         }
+    }
+
+    pub proof fn load_index_matches_loose_full(
+        pre: Self,
+        post: Self,
+        reads: Map<Address, JournalRecord>,
+        discovered_aus: Set<AU>,
+        entries: Map<Address, JournalRecord>,
+    )
+        requires
+            CachedJournal::State::next(
+                pre,
+                post,
+                CachedJournal::Label::LoadIndex{reads, discovered_aus},
+            ),
+            forall |addr: Address| #[trigger] reads.contains_key(addr)
+                && entries.contains_key(addr) ==> reads[addr] == entries[addr],
+            (DiskView{boundary_lsn: pre.snapshot.boundary_lsn, entries}).path_decodable(
+                pre.snapshot.freshest_rec(),
+            ),
+            (DiskView{boundary_lsn: pre.snapshot.boundary_lsn, entries}).path_build_tight(
+                pre.snapshot.freshest_rec(),
+            ).pointer_is_upstream(pre.snapshot.freshest_rec(), pre.snapshot.first()),
+        ensures
+            post.status is Some,
+            post.status.unwrap().lsn_au_index =~= (DiskView{
+                boundary_lsn: pre.snapshot.boundary_lsn,
+                entries,
+            }).loose_build_lsn_au_index_au_walk(pre.snapshot.freshest_rec(), pre.snapshot.first()),
+            post.status.unwrap().unmarshalled_tail.seq_start == (DiskView{
+                boundary_lsn: pre.snapshot.boundary_lsn,
+                entries,
+            }).path_build_tight(pre.snapshot.freshest_rec()).seq_end(pre.snapshot.freshest_rec()),
+    {
+        let loose_dv = DiskView{boundary_lsn: pre.snapshot.boundary_lsn, entries};
+        let tight_dv = loose_dv.path_build_tight(pre.snapshot.freshest_rec());
+        loose_dv.path_build_tight_is_sub_disk(pre.snapshot.freshest_rec());
+        assert forall |addr: Address| #[trigger] reads.contains_key(addr)
+            && tight_dv.entries.contains_key(addr)
+            implies reads[addr] == tight_dv.entries[addr] by {
+            assert(tight_dv.entries <= entries);
+            assert(entries.contains_key(addr));
+            assert(tight_dv.entries[addr] == entries[addr]);
+        }
+        CachedJournal::State::load_index_matches_full(
+            pre,
+            post,
+            reads,
+            discovered_aus,
+            tight_dv.entries,
+        );
+        loose_dv.loose_build_lsn_au_index_au_walk_matches_tight(
+            pre.snapshot.freshest_rec(),
+            pre.snapshot.first(),
+        );
+        assert(DiskView{
+            boundary_lsn: pre.snapshot.boundary_lsn,
+            entries: tight_dv.entries,
+        } == tight_dv);
+        assert_maps_equal!(
+            post.status.unwrap().lsn_au_index,
+            loose_dv.loose_build_lsn_au_index_au_walk(
+                pre.snapshot.freshest_rec(),
+                pre.snapshot.first(),
+            )
+        );
     }
 
     pub proof fn put_effect(pre: Self, post: Self, messages: MsgHistory)

@@ -69,20 +69,6 @@ pub open spec fn snapshot_walk_domain(
     )
 }
 
-pub open spec fn snapshot_tight_tj(
-    records: Map<Address, JournalRecord>,
-    snapshot: JournalSnapshot,
-) -> TruncatedJournal {
-    crate::implementation::CachingDiskJournal_v::snapshot_tight_tj(records, snapshot)
-}
-
-pub open spec fn snapshot_tight_image(
-    records: Map<Address, JournalRecord>,
-    snapshot: JournalSnapshot,
-) -> JournalImage {
-    crate::implementation::CachingDiskJournal_v::snapshot_tight_image(records, snapshot)
-}
-
 pub proof fn snapshot_walk_restrict_domain_same(
     records: Map<Address, JournalRecord>,
     boundary_lsn: LSN,
@@ -188,27 +174,6 @@ pub proof fn snapshot_walk_ptr_extends_same(
         records,
         root,
         depth,
-    );
-}
-
-pub proof fn snapshot_tight_image_restrict_domain_same(
-    records: Map<Address, JournalRecord>,
-    snapshot: JournalSnapshot,
-)
-    ensures
-        snapshot_tight_image(records, snapshot)
-            == snapshot_tight_image(
-                records.restrict(snapshot_walk_domain(
-                    records,
-                    snapshot.boundary_lsn,
-                    snapshot.freshest_rec(),
-                )),
-                snapshot,
-            ),
-{
-    crate::implementation::CachingDiskJournal_v::snapshot_tight_image_restrict_domain_same(
-        records,
-        snapshot,
     );
 }
 
@@ -370,10 +335,14 @@ impl CachingDiskJournalImage {
     }
 
     pub open spec fn stable_tj(self) -> TruncatedJournal {
-        crate::implementation::CachingDiskJournal_v::snapshot_tight_tj(
-            to_journal_records(self.persistent),
-            self.snapshot,
-        )
+        let dv = DiskView{
+            boundary_lsn: self.snapshot.boundary_lsn,
+            entries: to_journal_records(self.persistent),
+        };
+        TruncatedJournal{
+            freshest_rec: self.snapshot.freshest_rec(),
+            disk_view: dv.path_build_tight(self.snapshot.freshest_rec()),
+        }
     }
 
     pub open spec fn stable_lsn_au_index(self) -> LsnAUIndex {
@@ -838,17 +807,14 @@ state_machine!{ CrashAwareCachingDiskJournal {
                 }
             );
         }
-        crate::implementation::CachingDiskJournal_v::snapshot_tight_tj_matches_path_build_tight(
-            loaded.raw_visible_records(),
-            snapshot,
-        );
         assert(loaded.journal_tj()
-            == crate::implementation::CachingDiskJournal_v::snapshot_tight_tj(
-                loaded.raw_visible_records(),
-                snapshot,
-            )) by {
-            loaded.journal_tj_matches_snapshot_tight();
-        }
+            == TruncatedJournal{
+                freshest_rec: snapshot.freshest_rec(),
+                disk_view: (DiskView{
+                    boundary_lsn: snapshot.boundary_lsn,
+                    entries: loaded.raw_visible_records(),
+                }).path_build_tight(snapshot.freshest_rec()),
+            });
         assert(loaded.journal.wf());
         assert(loaded.disk.inv());
         assert(loaded.mini_allocator.wf());

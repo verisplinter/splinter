@@ -190,27 +190,6 @@ pub open spec fn snapshot_walk_domain(
         snapshot_walk_ptr(records, boundary_lsn, root, depth) == Some(addr))
 }
 
-pub open spec fn snapshot_tight_tj(
-    records: Map<Address, JournalRecord>,
-    snapshot: JournalSnapshot,
-) -> TruncatedJournal {
-    let dv = DiskView{
-        boundary_lsn: snapshot.boundary_lsn,
-        entries: records,
-    };
-    TruncatedJournal{
-        freshest_rec: snapshot.freshest_rec(),
-        disk_view: dv.path_build_tight(snapshot.freshest_rec()),
-    }
-}
-
-pub open spec fn snapshot_tight_image(
-    records: Map<Address, JournalRecord>,
-    snapshot: JournalSnapshot,
-) -> JournalImage {
-    JournalImage{tj: snapshot_tight_tj(records, snapshot), first: snapshot.first()}
-}
-
 pub proof fn snapshot_walk_restrict_domain_same(
     records: Map<Address, JournalRecord>,
     boundary_lsn: LSN,
@@ -467,131 +446,6 @@ pub proof fn snapshot_restrict_preserves_path_valid_ranking(
     }
 }
 
-pub proof fn snapshot_tight_image_restrict_domain_same(
-    records: Map<Address, JournalRecord>,
-    snapshot: JournalSnapshot,
-)
-    ensures
-        snapshot_tight_image(records, snapshot)
-            == snapshot_tight_image(
-                records.restrict(snapshot_walk_domain(
-                    records,
-                    snapshot.boundary_lsn,
-                    snapshot.freshest_rec(),
-                )),
-                snapshot,
-            ),
-{
-    let domain = snapshot_walk_domain(records, snapshot.boundary_lsn, snapshot.freshest_rec());
-    let restricted = records.restrict(domain);
-    let full_dv = DiskView{boundary_lsn: snapshot.boundary_lsn, entries: records};
-    let restricted_dv = DiskView{boundary_lsn: snapshot.boundary_lsn, entries: restricted};
-    snapshot_walk_domain_restrict_domain_same(records, snapshot.boundary_lsn, snapshot.freshest_rec());
-    if full_dv.path_decodable(snapshot.freshest_rec()) {
-        let ranking = choose |ranking: Ranking|
-            full_dv.path_valid_ranking(snapshot.freshest_rec(), ranking);
-        snapshot_restrict_preserves_path_valid_ranking(
-            records,
-            snapshot.boundary_lsn,
-            snapshot.freshest_rec(),
-            ranking,
-        );
-        assert(restricted_dv.path_valid_ranking(snapshot.freshest_rec(), ranking));
-        assert(restricted_dv.path_decodable(snapshot.freshest_rec()));
-        assert(restricted_dv.entries <= full_dv.entries) by {
-            assert forall |addr: Address| #[trigger] restricted_dv.entries.contains_key(addr)
-                implies full_dv.entries.contains_key(addr) && restricted_dv.entries[addr] == full_dv.entries[addr] by {
-                assert(restricted.contains_key(addr));
-                assert(records.contains_key(addr));
-            }
-        }
-        restricted_dv.path_build_tight_extends_same(full_dv, snapshot.freshest_rec());
-        assert(full_dv.path_build_tight(snapshot.freshest_rec())
-            == restricted_dv.path_build_tight(snapshot.freshest_rec()));
-    } else {
-        if restricted_dv.path_decodable(snapshot.freshest_rec()) {
-            let ranking = choose |ranking: Ranking|
-                restricted_dv.path_valid_ranking(snapshot.freshest_rec(), ranking);
-            assert(restricted_dv.is_sub_disk(full_dv)) by {
-                assert(restricted_dv.entries <= full_dv.entries);
-            }
-            full_dv.path_valid_ranking_lifts_from_sub_disk(
-                restricted_dv,
-                snapshot.freshest_rec(),
-                ranking,
-            );
-            assert(full_dv.path_valid_ranking(snapshot.freshest_rec(), ranking));
-            assert(full_dv.path_decodable(snapshot.freshest_rec()));
-            assert(false);
-        }
-    }
-    assert(snapshot_tight_tj(records, snapshot) == snapshot_tight_tj(restricted, snapshot));
-    assert(snapshot_tight_image(records, snapshot) == snapshot_tight_image(restricted, snapshot));
-}
-
-pub proof fn snapshot_tight_tj_matches_path_build_tight(
-    records: Map<Address, JournalRecord>,
-    snapshot: JournalSnapshot,
-)
-    ensures
-        snapshot_tight_tj(records, snapshot)
-            == (TruncatedJournal{
-                freshest_rec: snapshot.freshest_rec(),
-                disk_view: (DiskView{
-                    boundary_lsn: snapshot.boundary_lsn,
-                    entries: records,
-                }).path_build_tight(snapshot.freshest_rec()),
-            }),
-{
-}
-
-pub proof fn snapshot_tight_image_extends_same(
-    records: Map<Address, JournalRecord>,
-    bigger_records: Map<Address, JournalRecord>,
-    snapshot: JournalSnapshot,
-    )
-        requires
-            (JournalImage{
-                tj: TruncatedJournal{
-                    freshest_rec: snapshot.freshest_rec(),
-                    disk_view: DiskView{
-                        boundary_lsn: snapshot.boundary_lsn,
-                        entries: records,
-                    },
-                },
-                first: snapshot.first(),
-            }).valid_image(),
-            snapshot_tight_tj(records, snapshot).disk_view.entries <= bigger_records,
-    ensures
-        snapshot_tight_image(records, snapshot) == snapshot_tight_image(bigger_records, snapshot),
-{
-    let loose = DiskView{boundary_lsn: snapshot.boundary_lsn, entries: records};
-    let tight = snapshot_tight_tj(records, snapshot);
-    let image = JournalImage{
-        tj: TruncatedJournal{
-            freshest_rec: snapshot.freshest_rec(),
-            disk_view: loose,
-        },
-        first: snapshot.first(),
-    };
-    let big = DiskView{boundary_lsn: snapshot.boundary_lsn, entries: bigger_records};
-    assert(image.valid_image());
-    assert(loose.path_decodable(snapshot.freshest_rec()));
-    loose.path_build_tight_path_decodable(snapshot.freshest_rec());
-    loose.path_build_tight_idempotent(snapshot.freshest_rec());
-    assert(tight.disk_view == loose.path_build_tight(snapshot.freshest_rec()));
-    assert(tight.disk_view.path_decodable(tight.freshest_rec));
-    assert(tight.disk_view.path_build_tight(tight.freshest_rec) == tight.disk_view);
-    assert(tight.disk_view.is_sub_disk(big)) by {
-        assert(tight.disk_view.boundary_lsn == big.boundary_lsn);
-        assert(tight.disk_view.entries <= big.entries);
-    }
-    tight.disk_view.path_build_tight_preserved_in_superdisk(big, tight.freshest_rec);
-    assert(big.path_build_tight(snapshot.freshest_rec()) == tight.disk_view);
-    assert(snapshot_tight_tj(bigger_records, snapshot) == tight);
-    assert(snapshot_tight_image(records, snapshot) == snapshot_tight_image(bigger_records, snapshot));
-}
-
 state_machine!{ CachingDiskJournal {
     fields {
         pub journal: CachedJournal::State,
@@ -628,7 +482,7 @@ state_machine!{ CachingDiskJournal {
         };
         let init_image = init_base.backing_journal_image();
         require init_image.valid_image();
-        let init_bounds = init_image.tj.disk_view.path_build_au_page_bounds_au_walk(
+        let init_bounds = init_image.tj.disk_view.loose_build_au_page_bounds_au_walk(
             init_image.tj.freshest_rec,
             init_image.first,
         );
@@ -893,7 +747,7 @@ state_machine!{ CachingDiskJournal {
             self.journal.snapshot.first(),
         );
         &&& self.journal_tj().decodable()
-        &&& self.journal_backing_disk_view().wf_addrs()
+        &&& self.journal_disk_view().wf_addrs()
         &&& self.journal_tj().disk_view.wf_addrs()
         &&& self.journal_tj().freshest_rec is Some
             ==> self.journal_tj().disk_view.valid_first_au(self.journal.snapshot.first())
@@ -918,11 +772,11 @@ state_machine!{ CachingDiskJournal {
             &&& addr.page <= self.au_page_bounds[addr.au]
         }
         &&& forall |addr: Address| {
-            &&& #[trigger] self.journal_backing_disk_view().entries.contains_key(addr)
+            &&& #[trigger] self.journal_disk_view().entries.contains_key(addr)
             &&& self.au_page_bounds.contains_key(addr.au)
             &&& addr.page <= self.au_page_bounds[addr.au]
-            &&& self.journal_backing_disk_view().boundary_lsn
-                < self.journal_backing_disk_view().entries[addr].message_seq.seq_end
+            &&& self.journal_disk_view().boundary_lsn
+                < self.journal_disk_view().entries[addr].message_seq.seq_end
         } ==> self.journal_tj().disk_view.entries.contains_key(addr)
         &&& AllocationJournal::State::disk_domain_not_free(
             self.journal_tj().disk_view,
@@ -1225,7 +1079,7 @@ impl CachingDiskJournal::State {
             au_page_bounds: Map::empty(),
         };
         Self{
-            au_page_bounds: base.journal_backing_disk_view().path_build_au_page_bounds_au_walk(
+            au_page_bounds: base.journal_disk_view().loose_build_au_page_bounds_au_walk(
                 base.journal.snapshot.freshest_rec(),
                 snapshot.first(),
             ),
@@ -1289,12 +1143,8 @@ impl CachingDiskJournal::State {
         if self.journal.status is Some {
             cj_lsn_au_index(self.journal)
         } else {
-            let tj = snapshot_tight_tj(
-                self.raw_visible_records(),
-                self.journal.snapshot,
-            );
-            tj.disk_view.build_lsn_au_index_au_walk(
-                tj.freshest_rec,
+            self.journal_disk_view().loose_build_lsn_au_index_au_walk(
+                self.journal.snapshot.freshest_rec(),
                 self.journal.snapshot.first(),
             )
         }
@@ -1304,7 +1154,7 @@ impl CachingDiskJournal::State {
         self.journal_disk_view().entries
     }
 
-    pub open spec fn journal_backing_disk_view(self) -> DiskView {
+    pub open spec fn journal_disk_view(self) -> DiskView {
         DiskView{
             boundary_lsn: cj_boundary_lsn(self.journal),
             entries: self.raw_visible_records(),
@@ -1314,12 +1164,8 @@ impl CachingDiskJournal::State {
     pub open spec fn journal_backing_tj(self) -> TruncatedJournal {
         TruncatedJournal{
             freshest_rec: cj_freshest_rec(self.journal),
-            disk_view: self.journal_backing_disk_view(),
+            disk_view: self.journal_disk_view(),
         }
-    }
-
-    pub open spec fn journal_disk_view(self) -> DiskView {
-        self.journal_backing_disk_view()
     }
 
     pub open spec fn journal_tj(self) -> TruncatedJournal {
@@ -1327,41 +1173,6 @@ impl CachingDiskJournal::State {
             freshest_rec: cj_freshest_rec(self.journal),
             disk_view: self.journal_disk_view().path_build_tight(cj_freshest_rec(self.journal)),
         }
-    }
-
-    pub proof fn journal_tj_matches_snapshot_tight(self)
-        ensures
-            self.journal_tj()
-                == snapshot_tight_tj(self.raw_visible_records(), self.journal.snapshot),
-            snapshot_tight_image(self.raw_visible_records(), self.journal.snapshot)
-                == (JournalImage{
-                    tj: self.journal_tj(),
-                    first: self.journal.snapshot.first(),
-                }),
-            (JournalImage{
-                tj: self.journal_backing_tj(),
-                first: self.journal.snapshot.first(),
-            }).tight_tj() == self.journal_tj(),
-    {
-        let records = self.raw_visible_records();
-        let snapshot = self.journal.snapshot;
-        let dv = DiskView{
-            boundary_lsn: snapshot.boundary_lsn,
-            entries: records,
-        };
-        snapshot_tight_tj_matches_path_build_tight(records, snapshot);
-        assert(self.journal_disk_view() == dv);
-        assert(cj_freshest_rec(self.journal) == snapshot.freshest_rec());
-        assert(self.journal_tj() == snapshot_tight_tj(records, snapshot));
-        let image = JournalImage{
-            tj: self.journal_backing_tj(),
-            first: snapshot.first(),
-        };
-        assert(image.tj.disk_view == dv);
-        assert(image.tj.freshest_rec == snapshot.freshest_rec());
-        assert(image.tight_tj() == self.journal_tj());
-        assert(snapshot_tight_image(records, snapshot)
-            == (JournalImage{tj: self.journal_tj(), first: snapshot.first()}));
     }
 
     pub open spec fn accessible_aus(self) -> Set<AU> {
@@ -1486,7 +1297,7 @@ impl CachingDiskJournal::State {
         assert(self.disk.persistent.restrict(addrs) == self.disk.visible().restrict(addrs));
         assert(addrs.contains(addr));
         assert(self.journal_tj().disk_view.entries.contains_key(addr));
-        assert(self.journal_backing_disk_view().path_decodable(cj_freshest_rec(self.journal))) by {
+        assert(self.journal_disk_view().path_decodable(cj_freshest_rec(self.journal))) by {
             let image = JournalImage{
                 tj: self.journal_backing_tj(),
                 first: self.journal.snapshot.first(),
@@ -1496,7 +1307,7 @@ impl CachingDiskJournal::State {
                 assert(image.tj.disk_view.path_decodable(image.tj.freshest_rec));
             }
         }
-        self.journal_backing_disk_view().path_build_tight_is_sub_disk(cj_freshest_rec(self.journal));
+        self.journal_disk_view().path_build_tight_is_sub_disk(cj_freshest_rec(self.journal));
         assert(self.journal_disk_view().entries.contains_key(addr));
         assert(self.disk.visible().contains_key(addr));
         assert(self.disk.visible().restrict(addrs).contains_key(addr));
@@ -1665,7 +1476,7 @@ impl CachingDiskJournal::State {
             self.i().tj() == self.journal_tj(),
     {
         let aj = self.i();
-        assert(aj.disk_view == self.journal_backing_disk_view());
+        assert(aj.disk_view == self.journal_disk_view());
         assert(aj.freshest_rec == cj_freshest_rec(self.journal));
         assert(aj.tj() == self.journal_tj());
     }
@@ -2085,123 +1896,6 @@ impl CachingDiskJournal::State {
         assert(self.frozen_snapshot_valid(frozen, seq_end));
     }
 
-    pub proof fn frozen_snapshot_valid_image(
-        self,
-        frozen: JournalSnapshot,
-        seq_end: LSN,
-    )
-        requires
-            self.inv(),
-            self.i().inv(),
-            self.i().semantic_inv(),
-            self.frozen_snapshot_valid(frozen, seq_end),
-            self.i().frozen_metadata_valid(self.frozen_metadata(frozen)),
-        ensures
-            (JournalImage{tj: self.frozen_tj(frozen), first: frozen.first()}).valid_image(),
-            (JournalImage{tj: self.frozen_tj(frozen), first: frozen.first()}).tight_tj().disk_view.is_sub_disk_with_newer_lsn(
-                self.journal_tj().disk_view,
-            ),
-            self.frozen_tj(frozen).freshest_rec is Some ==>
-                (JournalImage{tj: self.frozen_tj(frozen), first: frozen.first()}).tight_tj().seq_end()
-                    <= self.journal_tj().seq_end(),
-    {
-        let meta = self.frozen_metadata(frozen);
-        let frozen_journal = JournalImage{tj: self.frozen_tj(frozen), first: frozen.first()};
-        self.interpreted_tj_matches();
-        let aj = self.i();
-        assert(meta.seq_end == seq_end);
-        assert(aj.frozen_metadata_valid(meta));
-        let alloc_lbl = AllocationJournal::Label::FreezeForCommit{frozen_journal: meta};
-        assert(AllocationJournal::State::next_by(
-            aj,
-            aj,
-            alloc_lbl,
-            AllocationJournal::Step::freeze_for_commit(),
-        )) by {
-            reveal(AllocationJournal::State::next_by);
-        }
-        reveal(AllocationJournal::State::next);
-        assert(AllocationJournal::State::next(aj, aj, alloc_lbl));
-        AllocationJournal::State::frozen_journal_is_valid_image(aj, aj, alloc_lbl);
-        assert(aj.frozen_image(meta) == frozen_journal);
-        assert(aj.tj() == self.journal_tj());
-        assert(frozen_journal.valid_image());
-        frozen_journal.valid_image_implies_tight_valid_image();
-        if self.frozen_tj(frozen).freshest_rec is Some {
-            let root = self.frozen_tj(frozen).freshest_rec.unwrap();
-            assert(frozen_journal.tight_tj().disk_view.entries.contains_key(root));
-            assert(frozen_journal.tight_tj().disk_view.entries[root]
-                == self.frozen_tj(frozen).disk_view.entries[root]);
-            assert(self.frozen_tj(frozen).disk_view.entries[root].message_seq.seq_end == meta.seq_end);
-            assert(frozen_journal.tight_tj().seq_end() == meta.seq_end);
-            assert(meta.seq_end <= self.journal_tj().seq_end());
-        }
-    }
-
-    pub proof fn frozen_tight_domain_clean_watermark(
-        self,
-        frozen: JournalSnapshot,
-        seq_end: LSN,
-    )
-        requires
-            self.inv(),
-            self.i().inv(),
-            self.i().semantic_inv(),
-            self.visible_journal_structure(),
-            self.journal.status is Some ==> self.loaded_journal_structure(),
-            self.frozen_snapshot_valid(frozen, seq_end),
-            self.i().frozen_metadata_valid(self.frozen_metadata(frozen)),
-            frozen.freshest_rec() is Some,
-            frozen.freshest_rec() is Some ==> seq_end <= self.journal.clean_watermark(),
-        ensures
-            (JournalImage{tj: self.frozen_tj(frozen), first: frozen.first()}).tight_tj().disk_view.entries.dom()
-                <= self.clean_watermark_pages(),
-    {
-        let frozen_tj = self.frozen_tj(frozen);
-        let frozen_image = JournalImage{tj: frozen_tj, first: frozen.first()};
-        let tight_tj = frozen_image.tight_tj();
-        let root = frozen.freshest_rec().unwrap();
-        assert(seq_end == self.frozen_seq_end(frozen));
-        self.frozen_snapshot_valid_image(frozen, seq_end);
-        assert(frozen_image.valid_image());
-        frozen_image.valid_image_implies_tight_valid_image();
-        assert(tight_tj.decodable());
-        assert(tight_tj.disk_view.acyclic());
-        assert(tight_tj.disk_view.upstream(root));
-        frozen_tj.disk_view.path_build_tight_idempotent(frozen_tj.freshest_rec);
-        assert(frozen_tj.disk_view.path_build_tight(frozen_tj.freshest_rec)
-            == tight_tj.disk_view);
-        tight_tj.disk_view.decodable_implies_path_decodable(tight_tj.freshest_rec);
-        assert(tight_tj.disk_view.path_decodable(tight_tj.freshest_rec));
-        assert(tight_tj.disk_view.path_build_tight(tight_tj.freshest_rec)
-            == tight_tj.disk_view);
-        tight_tj.disk_view.path_build_tight_equals_build_tight(tight_tj.freshest_rec);
-        assert(tight_tj.disk_view.build_tight(tight_tj.freshest_rec)
-            == tight_tj.disk_view);
-        assert forall |addr: Address| #[trigger] tight_tj.disk_view.entries.dom().contains(addr)
-            implies self.clean_watermark_pages().contains(addr) by {
-            assert(tight_tj.disk_view.entries.contains_key(addr));
-            assert(tight_tj.disk_view.build_tight(tight_tj.freshest_rec).entries.contains_key(addr));
-            tight_tj.disk_view.build_tight_entry_active_bounded(tight_tj.freshest_rec, addr);
-            assert(tight_tj.disk_view.build_tight(tight_tj.freshest_rec).entries[addr]
-                == tight_tj.disk_view.entries[addr]);
-            assert(frozen_tj.disk_view.boundary_lsn
-                < tight_tj.disk_view.entries[addr].message_seq.seq_end);
-            assert(tight_tj.disk_view.seq_end(tight_tj.freshest_rec) == tight_tj.seq_end());
-            assert(tight_tj.disk_view.entries[addr].message_seq.seq_end
-                <= tight_tj.seq_end());
-            frozen_image.valid_image_implies_tight_seq_bounds();
-            assert(tight_tj.seq_end() == seq_end);
-            assert(seq_end <= self.journal.clean_watermark());
-            assert(frozen_tj.disk_view.entries.contains_key(addr)) by {
-                frozen_tj.disk_view.path_build_tight_is_sub_disk(frozen_tj.freshest_rec);
-            }
-            assert(self.journal_disk_view().entries.contains_key(addr));
-            assert(frozen_tj.disk_view.entries[addr]
-                == self.journal_disk_view().entries[addr]);
-        }
-    }
-
     pub proof fn load_index_visible_unchanged(
         pre: Self,
         post: Self,
@@ -2345,7 +2039,7 @@ impl CachingDiskJournal::State {
                 });
                 assert(post.journal_tj().disk_view.boundary_lsn == pre.journal_tj().disk_view.boundary_lsn);
                 let pre_tight_dv = pre.journal_tj().disk_view;
-                let post_backing_dv = post.journal_backing_disk_view();
+                let post_backing_dv = post.journal_disk_view();
                 assert(pre.journal_tj().decodable());
                 assert(pre_tight_dv.wf());
                 assert(pre_tight_dv.acyclic());
@@ -2353,9 +2047,9 @@ impl CachingDiskJournal::State {
                 pre.interpreted_tj_matches();
                 let pre_aj = pre.i();
                 pre_aj.tj_view_is_valid_acyclic_subdisk();
-                assert(pre_aj.disk_view == pre.journal_backing_disk_view());
+                assert(pre_aj.disk_view == pre.journal_disk_view());
                 assert(pre_aj.tj().disk_view == pre_tight_dv);
-                assert(pre_tight_dv.is_sub_disk(pre.journal_backing_disk_view()));
+                assert(pre_tight_dv.is_sub_disk(pre.journal_disk_view()));
                 pre_tight_dv.decodable_implies_path_decodable(pre.journal_tj().freshest_rec);
                 assert(pre_tight_dv.path_decodable(pre.journal_tj().freshest_rec));
                 assert(pre_tight_dv.boundary_lsn == post_backing_dv.boundary_lsn);
@@ -2363,7 +2057,7 @@ impl CachingDiskJournal::State {
                     assert forall |old_addr: Address| #[trigger] pre_tight_dv.entries.dom().contains(old_addr)
                         implies post_backing_dv.entries.contains_key(old_addr)
                             && post_backing_dv.entries[old_addr] == pre_tight_dv.entries[old_addr] by {
-                        assert(pre.journal_backing_disk_view().entries.contains_key(old_addr));
+                        assert(pre.journal_disk_view().entries.contains_key(old_addr));
                         assert(pre.disk.visible().contains_key(old_addr));
                         assert(!writes.contains_key(old_addr)) by {
                             if writes.contains_key(old_addr) {
@@ -2455,7 +2149,7 @@ impl CachingDiskJournal::State {
                         implies post.journal_tj().disk_view.entries.dom().contains(old_addr)
                             && pre.journal_tj().disk_view.entries[old_addr]
                                 == post.journal_tj().disk_view.entries[old_addr] by {
-                        assert(pre.journal_backing_disk_view().entries.contains_key(old_addr));
+                        assert(pre.journal_disk_view().entries.contains_key(old_addr));
                         assert(pre.disk.visible().contains_key(old_addr));
                         assert(!writes.contains_key(old_addr)) by {
                             if writes.contains_key(old_addr) {

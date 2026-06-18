@@ -32,7 +32,7 @@ use crate::implementation::CrashAwareCachingDiskBranchRefinement_v::*;
 use crate::implementation::CrashAwareCachingDiskJournal_v::{
     CachingDiskJournalImage, EphemeralCachingDiskJournal,
     CrashAwareCachingDiskJournal, caching_disk_journal_accessible_aus,
-    prepared_snapshot_image_matches_visible, snapshot_tight_image,
+    prepared_snapshot_image_matches_visible,
 };
 use crate::implementation::CrashAwareCachingDiskJournalRefinement_v::*;
 use crate::implementation::CachedJournal_v::{CachedJournal, JournalSnapshot};
@@ -2076,21 +2076,12 @@ state_machine!{ CrashAwareCachingDiskSystem {
                 prepared_journal_image,
                 frozen.seq_end,
             );
-            assert(prepared_journal_image.i()
-                == snapshot_tight_image(
-                    pre.journal.ephemeral->v.journal_disk_view().entries,
-                    frozen.snapshot,
-                ));
             assert(prepared_journal_image.i().tj.disk_view.entries.dom()
                 <= pre.journal.ephemeral->v.journal_disk_view().entries.dom()) by {
                 assert forall |addr: Address|
                     #[trigger] prepared_journal_image.i().tj.disk_view.entries.dom().contains(addr)
                     implies pre.journal.ephemeral->v.journal_disk_view().entries.dom().contains(addr) by {
                     assert(prepared_journal_image.i().tj.disk_view.entries.contains_key(addr));
-                    assert(snapshot_tight_image(
-                        pre.journal.ephemeral->v.journal_disk_view().entries,
-                        frozen.snapshot,
-                    ).tj.disk_view.entries.contains_key(addr));
                 }
             }
             to_aus_preserves_lte(

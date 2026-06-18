@@ -21,8 +21,7 @@ use crate::disk::GenericDisk_v::{Address, AU};
 use crate::implementation::CachedJournal_v::*;
 use crate::implementation::CachingDisk_v::CachingDiskRawPage as RawPage;
 use crate::implementation::CachingDiskJournal_v::{
-    CachingDiskJournal, cj_lsn_au_index, snapshot_tight_image_restrict_domain_same,
-    snapshot_tight_tj, snapshot_tight_tj_matches_path_build_tight,
+    CachingDiskJournal, cj_lsn_au_index,
 };
 use crate::implementation::CachingDiskJournalRefinement_v::*;
 use crate::implementation::CrashAwareCachingDiskJournal_v::*;
