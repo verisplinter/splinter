@@ -2224,7 +2224,7 @@ pub proof fn journal_fill_aus_refines(
         src.ephemeral->v,
         dst.ephemeral->v,
         cj_lbl,
-        CachingDiskJournal::Step::mini_allocator_fill(),
+        CachingDiskJournal::Step::mini_allocator_fill(src.ephemeral->v.disk),
     )) by {
         reveal(CachingDiskJournal::State::next_by);
     }

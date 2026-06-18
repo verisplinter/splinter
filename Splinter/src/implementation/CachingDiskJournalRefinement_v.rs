@@ -11,8 +11,10 @@ use vstd::assert_maps_equal;
 use crate::abstract_system::MsgHistory_v::*;
 use crate::abstract_system::StampedMap_v::LSN;
 use crate::allocation_layer::AllocationJournal_v::{
-    AllocationJournal, JournalImage, lsn_au_index_append_record, lsn_au_index_discard_up_to,
+    AllocationJournal, JournalMetadata, JournalImage, lsn_au_index_append_record,
+    lsn_au_index_discard_up_to,
 };
+use crate::allocation_layer::AllocationJournalRefinement_v::*;
 use crate::allocation_layer::LikesJournal_v::{LsnAddrIndex, largest_lsn_plus_one, maxmax};
 use crate::allocation_layer::MiniAllocator_v::MiniAllocator;
 use crate::disk::GenericDisk_v::{Address, AU, Pointer, to_aus};
@@ -30,78 +32,27 @@ impl CachingDiskJournal::State {
         self.journal_tj().build_lsn_addr_index()
     }
 
-    pub open spec fn tj_at(self, snapshot: JournalSnapshot) -> TruncatedJournal {
-        TruncatedJournal{
-            freshest_rec: snapshot.freshest_rec(),
-            disk_view: DiskView{
-                boundary_lsn: snapshot.boundary_lsn,
-                entries: self.journal_disk_view().entries,
-            },
-        }
-    }
-
-    pub open spec fn frozen_seq_end_i(self, snapshot: JournalSnapshot) -> LSN {
-        if snapshot.freshest_rec() is Some {
-            self.journal_disk_view().entries[snapshot.freshest_rec().unwrap()].message_seq.seq_end
-        } else {
-            snapshot.boundary_lsn
-        }
-    }
-
-    pub open spec fn frozen_lsns_i(self, snapshot: JournalSnapshot) -> Set<LSN> {
-        Set::new(|lsn: LSN| snapshot.boundary_lsn <= lsn < self.frozen_seq_end_i(snapshot))
-    }
-
-    pub open spec fn frozen_tj_i(self, snapshot: JournalSnapshot) -> TruncatedJournal {
-        let frozen_index = self.i().lsn_au_index.restrict(self.frozen_lsns_i(snapshot));
-        let frozen_domain = self.i().tj().disk_view.tight_domain(
-            frozen_index,
-            snapshot.freshest_rec(),
-        );
-        let frozen_tj = TruncatedJournal{
-            freshest_rec: snapshot.freshest_rec(),
-            disk_view: DiskView{
-                boundary_lsn: snapshot.boundary_lsn,
-                entries: self.i().tj().disk_view.entries.restrict(frozen_domain),
-            },
-        };
-        frozen_tj.build_tight()
-    }
-
-    pub proof fn frozen_tj_i_matches_native_tight(self, snapshot: JournalSnapshot)
-        requires
-            self.inv(),
-        ensures
-            self.frozen_tj_i(snapshot) == self.frozen_tj(snapshot).build_tight(),
-    {
-        assert(self.i().journal.truncated_journal == self.journal_tj());
-        assert(self.i().tj() == self.journal_tj());
-        assert(self.i().lsn_au_index == self.lsn_au_index_or_empty()) by {
-            self.lsn_au_index_or_empty_matches_full();
-        }
-        assert(self.frozen_seq_end_i(snapshot) == self.frozen_seq_end(snapshot));
-        assert(self.frozen_lsns_i(snapshot) =~= self.frozen_lsns(snapshot));
-        let i_index = self.i().lsn_au_index.restrict(self.frozen_lsns_i(snapshot));
-        let native_index = self.lsn_au_index_or_empty().restrict(self.frozen_lsns(snapshot));
-        assert(i_index == native_index);
-        assert(self.i().tj().disk_view == self.journal_tj().disk_view);
-        assert(self.frozen_tj_i(snapshot) == self.frozen_tj(snapshot).build_tight());
-    }
-
     pub proof fn journal_tj_ensures(self)
         requires
             self.inv(),
+            self.semantic_inv(),
             self.journal.status is Some,
         ensures
             self.journal_tj().decodable(),
             self.journal_tj().seq_end() == cj_unmarshalled_tail(self.journal).seq_start,
-            self.journal_tj().disk_view.pointer_is_upstream(
-                self.journal_tj().freshest_rec,
-                self.journal.snapshot.first(),
-            ),
-            cj_lsn_au_index(self.journal) == self.journal_tj().build_lsn_au_index_from_first(
-                self.journal.snapshot.first(),
-            ),
+            ({
+                let first = if self.i().freshest_rec is Some {
+                    self.i().lsn_au_index[self.i().seq_start()]
+                } else {
+                    0
+                };
+                &&& self.journal_tj().disk_view.pointer_is_upstream(
+                    self.journal_tj().freshest_rec,
+                    first,
+                )
+                &&& self.i().lsn_au_index == self.journal_tj().build_lsn_au_index_from_first(first)
+            }),
+            cj_lsn_au_index(self.journal) == self.i().lsn_au_index,
             self.journal_tj().index_domain_valid(self.journal_lsn_addr_index()),
             self.journal_tj().disk_view.index_keys_map_to_valid_entries(self.journal_lsn_addr_index()),
             self.journal_tj().index_range_valid(self.journal_lsn_addr_index()),
@@ -109,39 +60,139 @@ impl CachingDiskJournal::State {
                 ==> self.journal_lsn_addr_index().contains_value(self.journal_tj().freshest_rec.unwrap()),
     {
         let tj = self.journal_tj();
+        self.semantic_inv_implies_i_inv();
+        self.interpreted_tj_matches();
+        let aj = self.i();
+        aj.tj_inherits_semantic_structure();
+        assert(aj.tj() == tj);
         assert(tj.decodable());
+        assert(cj_lsn_au_index(self.journal) == self.i().lsn_au_index);
+        assert(tj.seq_end() == cj_unmarshalled_tail(self.journal).seq_start) by {
+            assert(aj.tj().seq_end() == aj.unmarshalled_tail.seq_start);
+            assert(aj.unmarshalled_tail == cj_unmarshalled_tail(self.journal));
+        }
         tj.build_lsn_addr_index_ensures();
-        tj.build_lsn_au_index_from_first_ensures(self.journal.snapshot.first());
+        let first = if self.i().freshest_rec is Some {
+            self.i().lsn_au_index[self.i().seq_start()]
+        } else {
+            0
+        };
+        tj.build_lsn_au_index_from_first_ensures(first);
     }
 
-    pub proof fn interpreted_inv(self)
-        requires
-            self.inv(),
-        ensures
-            self.i().inv(),
-    {
-        let first = self.journal.snapshot.first();
-        let tj = self.journal_tj();
-        assert(self.i().journal.truncated_journal == tj);
-        assert(self.i().journal.unmarshalled_tail == if self.journal.status is Some {
+    pub open spec fn allocation_unmarshalled_tail(self) -> MsgHistory {
+        if self.journal.status is Some {
             cj_unmarshalled_tail(self.journal)
         } else {
-            MsgHistory::empty_history_at(tj.seq_end())
-        });
-        assert(self.i().journal.wf());
-        assert(self.i().journal.inv());
-        assert(self.i().lsn_au_index == tj.build_lsn_au_index_from_first(first));
-        tj.build_lsn_au_index_from_first_ensures(first);
-        if tj.freshest_rec is Some {
-            assert(self.i().lsn_au_index.contains_key(tj.seq_start()));
-            assert(self.i().lsn_au_index[tj.seq_start()] == first);
+            MsgHistory::empty_history_at(self.journal_tj().seq_end())
         }
-        assert(AllocationJournal::State::disk_domain_not_free(self.i().tj().disk_view, self.i().mini_allocator));
-        assert(AllocationJournal::State::mini_allocator_follows_freshest_rec(
-            self.i().tj().freshest_rec,
-            self.i().mini_allocator,
-        ));
-        assert(self.i().inv());
+    }
+
+    pub open spec fn allocation_first(self) -> AU {
+        if cj_freshest_rec(self.journal) is Some {
+            self.lsn_au_index_or_empty()[self.journal_backing_disk_view().boundary_lsn]
+        } else {
+            0
+        }
+    }
+
+    pub open spec fn allocation_semantic_disk_view(self) -> DiskView {
+        self.journal_backing_disk_view().path_build_tight(cj_freshest_rec(self.journal))
+    }
+
+    pub open spec fn allocation_view_inv(self) -> bool {
+        let disk_view = self.journal_backing_disk_view();
+        let unmarshalled_tail = self.allocation_unmarshalled_tail();
+        let lsn_au_index = self.lsn_au_index_or_empty();
+        &&& unmarshalled_tail.wf()
+        &&& disk_view.wf_addrs()
+        &&& self.mini_allocator.wf()
+        &&& forall |lsn: LSN| #[trigger] lsn_au_index.contains_key(lsn)
+            ==> lsn < unmarshalled_tail.seq_start
+        &&& AllocationJournal::State::disk_domain_bounded_by_owned_aus(
+            disk_view,
+            lsn_au_index,
+            self.mini_allocator,
+        )
+    }
+
+    pub open spec fn allocation_view_semantic_inv(self) -> bool {
+        let disk_view = self.journal_backing_disk_view();
+        let semantic_dv = self.allocation_semantic_disk_view();
+        let freshest_rec = cj_freshest_rec(self.journal);
+        let unmarshalled_tail = self.allocation_unmarshalled_tail();
+        let lsn_au_index = self.lsn_au_index_or_empty();
+        let first = self.allocation_first();
+        let computed_index = semantic_dv.build_lsn_au_index_au_walk(freshest_rec, first);
+        &&& unmarshalled_tail.wf()
+        &&& disk_view.wf_addrs()
+        &&& self.mini_allocator.wf()
+        &&& disk_view.path_decodable(freshest_rec)
+        &&& semantic_dv.wf()
+        &&& semantic_dv.wf_addrs()
+        &&& semantic_dv.acyclic()
+        &&& semantic_dv.is_nondangling_pointer(freshest_rec)
+        &&& semantic_dv.block_in_bounds(freshest_rec)
+        &&& semantic_dv.seq_start() <= semantic_dv.seq_end(freshest_rec)
+        &&& semantic_dv.seq_end(freshest_rec) == unmarshalled_tail.seq_start
+        &&& self.au_page_bounds.dom() =~= lsn_au_index.values()
+        &&& freshest_rec is Some ==> {
+            let root = freshest_rec.unwrap();
+            &&& self.au_page_bounds.contains_key(root.au)
+            &&& self.au_page_bounds[root.au] == root.page
+            &&& lsn_au_index.contains_key(disk_view.boundary_lsn)
+        }
+        &&& AllocationJournal::State::semantic_journal_structure(
+            semantic_dv,
+            freshest_rec,
+            computed_index,
+            first,
+        )
+        &&& lsn_au_index == computed_index
+        &&& AllocationJournal::State::disk_domain_bounded_by_owned_aus(
+            disk_view,
+            lsn_au_index,
+            self.mini_allocator,
+        )
+        &&& AllocationJournal::State::disk_domain_not_free(semantic_dv, self.mini_allocator)
+        &&& AllocationJournal::State::mini_allocator_follows_freshest_rec(
+            freshest_rec,
+            self.mini_allocator,
+        )
+        &&& semantic_dv.is_sub_disk(disk_view)
+        &&& semantic_dv.domain_tight_wrt_index(lsn_au_index, freshest_rec)
+        &&& forall |addr: Address| {
+            &&& #[trigger] disk_view.entries.contains_key(addr)
+            &&& self.au_page_bounds.contains_key(addr.au)
+            &&& addr.page <= self.au_page_bounds[addr.au]
+            &&& disk_view.boundary_lsn < disk_view.entries[addr].message_seq.seq_end
+        } ==> semantic_dv.entries.contains_key(addr)
+        &&& forall |addr: Address| #[trigger] semantic_dv.entries.contains_key(addr) ==> {
+            &&& self.au_page_bounds.contains_key(addr.au)
+            &&& addr.page <= self.au_page_bounds[addr.au]
+        }
+    }
+
+    pub open spec(checked) fn semantic_inv(self) -> bool {
+        &&& self.allocation_view_inv()
+        &&& self.allocation_view_semantic_inv()
+        &&& self.unloaded_backing_image_valid()
+    }
+
+    pub open spec(checked) fn refinement_inv(self) -> bool {
+        &&& self.inv()
+        &&& self.semantic_inv()
+    }
+
+    pub proof fn semantic_inv_implies_i_inv(self)
+        requires
+            self.semantic_inv(),
+        ensures
+            self.i().refinement_inv(),
+            self.i().inv(),
+            self.i().semantic_inv(),
+            self.unloaded_backing_image_valid(),
+    {
     }
 
     pub proof fn disk_reads_ensures(self, reads: Map<Address, RawPage>)
@@ -170,6 +221,7 @@ impl CachingDiskJournal::State {
     pub proof fn largest_lsn_plus_one_matches_seq_end(self, addr: Address)
         requires
             self.inv(),
+            self.semantic_inv(),
             self.journal.status is Some,
             self.journal_lsn_addr_index().contains_value(addr),
         ensures
@@ -226,6 +278,7 @@ impl CachingDiskJournal::State {
     pub proof fn indexed_addr_refines_to_allocation_addr(self, addr: Address)
         requires
             self.inv(),
+            self.semantic_inv(),
             self.journal.status is Some,
             self.journal_lsn_addr_index().contains_value(addr),
         ensures
@@ -266,9 +319,15 @@ impl CachingDiskJournal::State {
         assert(dv.addr_supports_lsn(addr, start_lsn));
         assert(start_lsn < record.message_seq.seq_end);
 
-        self.interpreted_inv();
-        assert(au_index == tj.build_lsn_au_index_from_first(self.journal.snapshot.first()));
-        tj.build_lsn_au_index_from_first_ensures(self.journal.snapshot.first());
+        self.semantic_inv_implies_i_inv();
+        self.i().tj_inherits_semantic_structure();
+        let first = if self.i().freshest_rec is Some {
+            self.i().lsn_au_index[self.i().seq_start()]
+        } else {
+            0
+        };
+        assert(au_index == tj.build_lsn_au_index_from_first(first));
+        tj.build_lsn_au_index_from_first_ensures(first);
         reveal(TruncatedJournal::au_domain_valid);
         assert(au_index.contains_key(start_lsn));
         dv.addr_supports_lsn_consistent_with_index(au_index, start_lsn, addr);
@@ -284,7 +343,12 @@ impl CachingDiskJournal::Label {
             },
             Self::FreezeForCommit{frozen, seq_end} => {
                 AllocationJournal::Label::FreezeForCommit{
-                    frozen_journal: JournalImage{tj: state.frozen_tj_i(frozen), first: frozen.first()},
+                    frozen_journal: JournalMetadata{
+                        boundary_lsn: frozen.boundary_lsn,
+                        seq_end,
+                        freshest_rec: frozen.freshest_rec(),
+                        first: frozen.first(),
+                    },
                 }
             },
             Self::QueryEndLsn{end_lsn} => {
@@ -326,7 +390,7 @@ impl CachingDiskJournal::Label {
                 }
             },
             Self::InternalAlloc{allocs, deallocs, prune_aus} => {
-                AllocationJournal::Label::InternalAllocations{allocs, deallocs: prune_aus}
+                AllocationJournal::Label::InternalAllocations{allocs, deallocs}
             },
         }
     }
@@ -340,28 +404,56 @@ impl CachingDiskJournal::State {
     )
         requires
             CachingDiskJournal::State::initialize(self, snapshot, disk),
+            self.backing_journal_image().valid_image(),
         ensures
+            self.inv(),
+            self.semantic_inv(),
+            self.refinement_inv(),
             AllocationJournal::State::initialize(
                 self.i(),
-                self.i().journal,
-                JournalImage{tj: self.journal_tj(), first: snapshot.first()},
+                self.backing_journal_image(),
             ),
     {
         reveal(CachingDiskJournal::State::initialize);
         reveal(AllocationJournal::State::initialize);
-        reveal(LinkedJournal::State::initialize);
 
         CachingDiskJournal::State::initialize_inductive(self, snapshot, disk);
-        let image = JournalImage{tj: self.journal_tj(), first: snapshot.first()};
+        let image = self.backing_journal_image();
+        image.valid_image_implies_tight_valid_image();
+        image.tj.disk_view.path_build_bookkeeping_matches_tight(
+            image.tj.freshest_rec,
+            snapshot.first(),
+        );
         assert(self.inv());
-        assert(self.visible_journal_structure());
         assert(self.journal == CachedJournal::State{snapshot, status: Option::None});
-        assert(self.i().journal == self.linked_journal_i());
-        assert(self.i().journal.truncated_journal == self.journal_tj());
-        assert(self.i().journal.unmarshalled_tail
+        self.journal_tj_matches_snapshot_tight();
+        assert(self.i().disk_view == self.journal_backing_disk_view());
+        assert(self.i().freshest_rec == image.tj.freshest_rec);
+        assert(image.tight_tj() == self.journal_tj());
+        assert(self.journal_backing_tj().seq_end() == self.journal_tj().seq_end());
+        assert_maps_equal!(
+            self.lsn_au_index_or_empty(),
+            self.journal_tj().build_lsn_au_index_from_first(snapshot.first())
+        );
+        assert(self.i().lsn_au_index == self.lsn_au_index_or_empty());
+        assert(self.i().lsn_au_index
+            == image.tj.disk_view.path_build_lsn_au_index_au_walk(
+                image.tj.freshest_rec,
+                snapshot.first(),
+            ));
+        assert(self.i().au_page_bounds
+            == image.tj.disk_view.path_build_au_page_bounds_au_walk(
+                image.tj.freshest_rec,
+                snapshot.first(),
+            ));
+        assert(self.i().unmarshalled_tail
             == MsgHistory::empty_history_at(self.journal_tj().seq_end()));
-        assert(LinkedJournal::State::initialize(self.i().journal, image.tj));
         assert(image.valid_image());
+        AllocationJournal::State::initialize_inductive(self.i(), image);
+        AllocationJournal::State::initialize_semantic_inv(self.i(), image);
+        assert(self.unloaded_backing_image_valid());
+        assert(self.semantic_inv());
+        assert(self.refinement_inv());
     }
 
     pub proof fn query_end_lsn_refines(
@@ -372,6 +464,7 @@ impl CachingDiskJournal::State {
         requires
             self.inv(),
             post.inv(),
+            self.semantic_inv(),
             CachingDiskJournal::State::query_end_lsn(self, post, lbl),
         ensures
             AllocationJournal::State::next(self.i(), post.i(), lbl.i(self)),
@@ -392,21 +485,9 @@ impl CachingDiskJournal::State {
             },
         }
         let i_lbl = lbl.i(self);
-        let linked_lbl = AllocationJournal::State::linked_lbl(i_lbl);
         self.journal_tj_ensures();
         assert(post == self);
-        assert(self.i().journal.wf());
-        assert(self.i().journal.seq_end() == self.journal.seq_end());
-        assert(LinkedJournal::State::next_by(
-            self.i().journal,
-            post.i().journal,
-            linked_lbl,
-            LinkedJournal::Step::query_end_lsn(),
-        )) by {
-            reveal(LinkedJournal::State::next_by);
-        }
-        reveal(LinkedJournal::State::next);
-        assert(LinkedJournal::State::next(self.i().journal, post.i().journal, linked_lbl));
+        assert(self.i().seq_end() == self.journal.seq_end());
         assert(AllocationJournal::State::next_by(
             self.i(),
             post.i(),
@@ -427,6 +508,7 @@ impl CachingDiskJournal::State {
         requires
             self.inv(),
             post.inv(),
+            self.semantic_inv(),
             CachingDiskJournal::State::put(self, post, lbl, new_journal),
         ensures
             AllocationJournal::State::next(self.i(), post.i(), lbl.i(self)),
@@ -447,28 +529,14 @@ impl CachingDiskJournal::State {
             },
         }
         let i_lbl = lbl.i(self);
-        let linked_lbl = AllocationJournal::State::linked_lbl(i_lbl);
         self.journal_tj_ensures();
         assert(post.journal == new_journal);
         assert(post.disk == self.disk);
         assert(post.mini_allocator == self.mini_allocator);
         assert(post.journal.snapshot == self.journal.snapshot);
         assert(post.journal_tj() == self.journal_tj());
-        assert(self.i().journal.wf());
-        assert(self.i().journal.seq_end() == self.journal.seq_end());
-        assert(post.i().journal.truncated_journal == self.i().journal.truncated_journal);
-        assert(post.i().journal.unmarshalled_tail
-            == self.i().journal.unmarshalled_tail.concat(messages));
-        assert(LinkedJournal::State::next_by(
-            self.i().journal,
-            post.i().journal,
-            linked_lbl,
-            LinkedJournal::Step::put(),
-        )) by {
-            reveal(LinkedJournal::State::next_by);
-        }
-        reveal(LinkedJournal::State::next);
-        assert(LinkedJournal::State::next(self.i().journal, post.i().journal, linked_lbl));
+        assert(self.i().seq_end() == self.journal.seq_end());
+        assert(post.i().unmarshalled_tail == self.i().unmarshalled_tail.concat(messages));
         assert(AllocationJournal::State::next_by(
             self.i(),
             post.i(),
@@ -489,6 +557,7 @@ impl CachingDiskJournal::State {
         requires
             self.inv(),
             post.inv(),
+            self.semantic_inv(),
             CachingDiskJournal::State::read_for_recovery(self, post, lbl, reads),
         ensures
             AllocationJournal::State::next(self.i(), post.i(), lbl.i(self)),
@@ -513,19 +582,21 @@ impl CachingDiskJournal::State {
                 assert(messages == to_journal_records(reads)[addr].message_seq.maybe_discard_old(
                     self.journal.snapshot.boundary_lsn,
                 ));
-                assert(self.i().tj().disk_view.entries.contains_key(addr));
+                assert(self.i().disk_view.entries.contains_key(addr));
                 assert(to_journal_records(reads)[addr] == self.visible_records()[addr]);
-                assert(self.visible_records()[addr] == self.i().tj().disk_view.entries[addr]);
-                let record = self.i().tj().disk_view.entries[addr];
+                assert(self.visible_records()[addr] == self.i().disk_view.entries[addr]);
+                assert(self.i().au_page_bounds.contains_key(addr.au));
+                assert(addr.page <= self.i().au_page_bounds[addr.au]);
+                let record = self.i().disk_view.entries[addr];
                 let actual_start_lsn = record.message_seq.maybe_discard_old(
-                    self.i().tj().disk_view.boundary_lsn,
+                    self.i().disk_view.boundary_lsn,
                 ).seq_start;
                 assert(start_lsn == actual_start_lsn);
                 assert(start_lsn < record.message_seq.seq_end);
                 assert(self.i().lsn_au_index.contains_key(start_lsn));
                 assert(self.i().lsn_au_index[start_lsn] == addr.au);
                 assert(messages == record.message_seq.maybe_discard_old(
-                    self.i().tj().disk_view.boundary_lsn,
+                    self.i().disk_view.boundary_lsn,
                 ));
                 assert(post == self);
                 assert(AllocationJournal::State::next_by(
@@ -553,6 +624,7 @@ impl CachingDiskJournal::State {
         requires
             self.inv(),
             post.inv(),
+            self.semantic_inv(),
             CachingDiskJournal::State::freeze_for_commit(self, post, lbl, reads),
         ensures
             AllocationJournal::State::next(self.i(), post.i(), lbl.i(self)),
@@ -565,8 +637,12 @@ impl CachingDiskJournal::State {
 
         let frozen = lbl.arrow_FreezeForCommit_frozen();
         let seq_end = lbl.arrow_FreezeForCommit_seq_end();
-        let frozen_tj = self.frozen_tj_i(frozen);
-        let frozen_journal = JournalImage{tj: frozen_tj, first: frozen.first()};
+        let meta = JournalMetadata{
+            boundary_lsn: frozen.boundary_lsn,
+            seq_end,
+            freshest_rec: frozen.freshest_rec(),
+            first: frozen.first(),
+        };
         assert(seq_end == self.frozen_seq_end(frozen));
         let journal_lbl = CachedJournal::Label::FreezeForCommit{
             frozen,
@@ -597,13 +673,10 @@ impl CachingDiskJournal::State {
             assert(self.visible_records().contains_key(root));
             assert(to_journal_records(reads)[root] == self.visible_records()[root]);
             assert(self.i().tj().disk_view.entries.contains_key(root));
-            assert(frozen_seq_end == self.frozen_seq_end_i(frozen));
+            assert(frozen_seq_end == self.frozen_seq_end(frozen));
             assert(frozen.boundary_lsn < to_journal_records(reads)[root].message_seq.seq_end);
         }
 
-        self.frozen_tj_i_matches_native_tight(frozen);
-        let native_frozen_tj = self.frozen_tj(frozen);
-        let native_frozen_journal = JournalImage{tj: native_frozen_tj, first: frozen.first()};
         assert(CachingDiskJournal::State::freeze_for_commit(self, self, lbl, reads));
         assert(lbl == CachingDiskJournal::Label::FreezeForCommit{frozen, seq_end});
         assert(CachingDiskJournal::State::next_by(
@@ -616,34 +689,63 @@ impl CachingDiskJournal::State {
         };
         reveal(CachingDiskJournal::State::next);
         assert(CachingDiskJournal::State::next(self, self, lbl));
-        self.freeze_for_commit_image_valid(frozen, seq_end);
-        assert(native_frozen_journal.valid_image());
-        native_frozen_journal.valid_image_implies_tight_valid_image();
-        assert(frozen_journal == JournalImage{
-            tj: native_frozen_tj.build_tight(),
-            first: frozen.first(),
-        });
-        assert(frozen_journal.valid_image());
-        native_frozen_tj.disk_view.build_tight_ensures(native_frozen_tj.freshest_rec);
-        assert(native_frozen_tj.build_tight().disk_view.is_sub_disk(native_frozen_tj.disk_view));
-        assert(native_frozen_tj.disk_view.is_sub_disk_with_newer_lsn(self.journal_tj().disk_view));
-        assert(frozen_tj.disk_view.is_sub_disk_with_newer_lsn(self.i().tj().disk_view)) by {
-            assert(frozen_tj == native_frozen_tj.build_tight());
-            assert(self.i().tj().disk_view == self.journal_tj().disk_view);
-            assert(frozen_tj.disk_view.boundary_lsn == native_frozen_tj.disk_view.boundary_lsn);
-            assert(self.i().tj().disk_view.boundary_lsn <= native_frozen_tj.disk_view.boundary_lsn);
-            assert(frozen_tj.disk_view.entries <= native_frozen_tj.disk_view.entries);
-            assert(native_frozen_tj.disk_view.entries <= self.journal_tj().disk_view.entries);
-        };
-        if frozen.freshest_rec() is None {
-            assert(frozen_tj.seq_start() == frozen_tj.seq_end());
-            assert(frozen_tj.seq_start() <= self.i().journal.seq_end()) by {
-                assert(self.journal.wf());
-                assert(frozen.freshest_rec() is None);
-                assert(frozen.boundary_lsn <= self.journal.seq_end());
-                assert(self.i().journal.wf());
+        self.interpreted_tj_matches();
+        self.semantic_inv_implies_i_inv();
+        self.i().tj_inherits_semantic_structure();
+        assert(self.i().frozen_metadata_valid(meta)) by {
+            assert(meta.boundary_lsn == frozen.boundary_lsn);
+            assert(meta.seq_end == seq_end);
+            assert(meta.freshest_rec == frozen.freshest_rec());
+            assert(meta.first == frozen.first());
+            assert(self.i().seq_start() == self.journal.snapshot.boundary_lsn);
+            assert(self.i().seq_end() == self.journal.seq_end());
+            assert(self.journal.seq_start() <= frozen.boundary_lsn);
+            assert(frozen.boundary_lsn <= self.journal.seq_end());
+            if meta.freshest_rec is Some {
+                let root = meta.freshest_rec.unwrap();
+                let last_lsn = (meta.seq_end - 1) as nat;
+                assert(self.i().disk_view.entries.contains_key(root)) by {
+                    self.i().disk_view.path_build_tight_is_sub_disk(
+                        self.journal.snapshot.freshest_rec(),
+                    );
+                    assert(self.journal_tj().disk_view.entries.contains_key(root));
+                    assert(self.i().disk_view == self.journal_backing_disk_view());
+                    assert(self.journal_tj().disk_view.entries <= self.i().disk_view.entries);
+                }
+                assert(self.i().disk_view.entries[root] == self.journal_tj().disk_view.entries[root]);
+                assert(meta.boundary_lsn < meta.seq_end);
+                assert(self.i().lsn_au_index.contains_key(meta.boundary_lsn));
+                assert(self.i().lsn_au_index[meta.boundary_lsn] == meta.first);
+                assert(self.i().disk_view.entries[root].message_seq.seq_end == meta.seq_end);
+                assert(self.i().au_page_bounds.contains_key(root.au));
+                assert(root.page <= self.i().au_page_bounds[root.au]);
+                assert(self.journal_tj().disk_view.entries[root].message_seq.contains(last_lsn));
+                assert(self.journal_tj().disk_view.addr_supports_lsn(root, last_lsn));
+                let aj = self.i();
+                let first = if aj.freshest_rec is Some {
+                    aj.lsn_au_index[aj.seq_start()]
+                } else {
+                    0
+                };
+                aj.tj_inherits_semantic_structure();
+                assert(aj.lsn_au_index
+                    == aj.tj().build_lsn_au_index_from_first(first));
+                aj.tj().build_lsn_au_index_from_first_ensures(first);
+                assert(self.journal_tj().disk_view.index_keys_exist_valid_entries(
+                    self.i().lsn_au_index,
+                ));
+                self.journal_tj().disk_view.addr_supports_lsn_consistent_with_index(
+                    self.i().lsn_au_index,
+                    last_lsn,
+                    root,
+                );
+                assert(self.i().lsn_au_index.contains_key(last_lsn));
+                assert(self.i().lsn_au_index[last_lsn] == root.au);
+            } else {
+                assert(meta.first == 0);
+                assert(meta.boundary_lsn == meta.seq_end);
             }
-        }
+        };
         assert(AllocationJournal::State::next_by(
             self.i(),
             post.i(),
@@ -663,6 +765,7 @@ impl CachingDiskJournal::State {
         requires
             self.inv(),
             post.inv(),
+            self.semantic_inv(),
             CachingDiskJournal::State::internal_noop(self, post, lbl),
         ensures
             AllocationJournal::State::next(self.i(), post.i(), lbl.i(self)),
@@ -689,6 +792,7 @@ impl CachingDiskJournal::State {
         requires
             self.inv(),
             post.inv(),
+            self.semantic_inv(),
             CachingDiskJournal::State::caching_disk_internal(
                 self,
                 post,
@@ -706,7 +810,6 @@ impl CachingDiskJournal::State {
         assert(post.visible_records() == self.visible_records());
         assert(post.journal_disk_view() == self.journal_disk_view());
         assert(post.journal_tj() == self.journal_tj());
-        assert(post.linked_journal_i() == self.linked_journal_i());
         assert(post.i() == self.i());
         assert(AllocationJournal::State::next_by(
             self.i(),
@@ -729,6 +832,7 @@ impl CachingDiskJournal::State {
         requires
             self.inv(),
             post.inv(),
+            self.semantic_inv(),
             CachingDiskJournal::State::load_index(
                 self,
                 post,
@@ -744,6 +848,8 @@ impl CachingDiskJournal::State {
         reveal(CachedJournal::State::next_by);
         assert(lbl is LoadIndex);
         let discovered_aus = lbl.arrow_LoadIndex_discovered_aus();
+        self.disk_reads_ensures(reads);
+        self.journal_tj_matches_snapshot_tight();
         let journal_lbl = CachedJournal::Label::LoadIndex{
             reads: to_journal_records(reads),
             discovered_aus,
@@ -765,22 +871,59 @@ impl CachingDiskJournal::State {
         assert(post.journal.status is Some);
         assert(post.journal.snapshot == self.journal.snapshot);
         assert(post.journal_tj() == self.journal_tj());
+        let entries = self.journal_tj().disk_view.entries;
+        let snapshot = self.journal.snapshot;
+        let image = self.backing_journal_image();
+        assert(image.valid_image());
+        image.valid_image_implies_tight_valid_image();
+        assert(image.tight_tj() == self.journal_tj());
+        assert(self.journal_tj().disk_view.pointer_is_upstream(
+            self.journal_tj().freshest_rec,
+            snapshot.first(),
+        ));
+        assert forall |addr: Address| #[trigger] to_journal_records(reads).contains_key(addr)
+            && entries.contains_key(addr)
+            implies to_journal_records(reads)[addr] == entries[addr] by {
+            assert(reads.contains_key(addr));
+            assert(self.journal_tj().disk_view.entries.contains_key(addr));
+            self.i().disk_view.path_build_tight_is_sub_disk(
+                self.journal.snapshot.freshest_rec(),
+            );
+            assert(self.journal_tj().disk_view.entries <= self.visible_records());
+            assert(self.visible_records()[addr] == self.journal_tj().disk_view.entries[addr]);
+            assert(to_journal_records(reads)[addr] == self.visible_records()[addr]);
+        };
+        CachedJournal::State::load_index_matches_full(
+            self.journal,
+            post.journal,
+            to_journal_records(reads),
+            discovered_aus,
+            entries,
+        );
+        assert_maps_equal!(
+            cj_lsn_au_index(post.journal),
+            post.journal_tj().build_lsn_au_index_from_first(post.journal.snapshot.first())
+        );
+        assert(post.journal_tj().seq_end() == cj_unmarshalled_tail(post.journal).seq_start);
+        assert(post.loaded_journal_structure());
 
-        assert(post.i().journal.truncated_journal == self.i().journal.truncated_journal);
-        assert(post.i().journal.unmarshalled_tail == self.i().journal.unmarshalled_tail) by {
-            assert(post.loaded_journal_structure());
+        assert(post.i().tj() == self.i().tj());
+        assert(post.i().unmarshalled_tail == self.i().unmarshalled_tail) by {
             assert(post.journal_tj().seq_end() == cj_unmarshalled_tail(post.journal).seq_start);
             assert(post.journal_tj().seq_end() == self.journal_tj().seq_end());
             assert(cj_unmarshalled_tail(post.journal)
                 == MsgHistory::empty_history_at(post.journal_tj().seq_end()));
         }
-        assert(post.i().journal == self.i().journal);
         assert(post.i().mini_allocator == self.i().mini_allocator);
-        assert(post.i().lsn_au_index == self.i().tj().build_lsn_au_index_from_first(self.journal.snapshot.first())) by {
-            post.interpreted_inv();
-            assert(post.i().tj() == self.i().tj());
-        }
-        assert(post.i().lsn_au_index == self.i().lsn_au_index);
+        assert_maps_equal!(
+            post.i().lsn_au_index,
+            self.i().tj().build_lsn_au_index_from_first(self.journal.snapshot.first())
+        );
+        assert_maps_equal!(
+            self.i().lsn_au_index,
+            self.i().tj().build_lsn_au_index_from_first(self.journal.snapshot.first())
+        );
+        assert_maps_equal!(post.i().lsn_au_index, self.i().lsn_au_index);
         assert(lbl.i(self).arrow_InternalAllocations_allocs() == Set::<AU>::empty());
         assert(lbl.i(self).arrow_InternalAllocations_deallocs() == Set::<AU>::empty());
         assert(AllocationJournal::State::next_by(
@@ -803,6 +946,7 @@ impl CachingDiskJournal::State {
         requires
             self.inv(),
             post.inv(),
+            self.semantic_inv(),
             CachingDiskJournal::State::observe_clean_aus(
                 self,
                 post,
@@ -840,7 +984,6 @@ impl CachingDiskJournal::State {
         assert(post.visible_records() == self.visible_records());
         assert(post.journal_disk_view() == self.journal_disk_view());
         assert(post.journal_tj() == self.journal_tj());
-        assert(post.linked_journal_i() == self.linked_journal_i());
         assert(post.i() == self.i());
         assert(AllocationJournal::State::next_by(
             self.i(),
@@ -865,6 +1008,7 @@ impl CachingDiskJournal::State {
         requires
             self.inv(),
             post.inv(),
+            self.semantic_inv(),
             CachingDiskJournal::State::journal_marshal(
                 self,
                 post,
@@ -939,33 +1083,48 @@ impl CachingDiskJournal::State {
             }
         );
         assert_maps_equal!(
-            post.journal_tj().disk_view.entries,
-            self.journal_tj().append_record(addr, marshalled_msgs).disk_view.entries,
+            post.i().disk_view.entries,
+            self.i().disk_view.entries.insert(addr, expected_record),
             a => {
                 if a == addr {
                     assert(to_journal_records(writes).contains_key(addr));
                     assert(to_journal_records(writes)[addr] == expected_record);
+                    assert(post.visible_records().contains_key(addr));
+                    assert(post.visible_records()[addr] == expected_record);
                 } else {
+                    assert(!writes.contains_key(a)) by {
+                        if writes.contains_key(a) {
+                            assert(writes.dom().contains(a));
+                            assert(writes.dom() =~= Set::new(|x: Address| x == addr));
+                            assert(a == addr);
+                            assert(false);
+                        }
+                    }
                 }
             }
         );
-        assert(post.journal_tj().freshest_rec == Some(addr));
-        assert(post.journal_tj().disk_view.boundary_lsn == self.journal_tj().disk_view.boundary_lsn);
-        assert(post.i().journal.truncated_journal
-            == self.i().journal.truncated_journal.append_record(addr, marshalled_msgs));
-        assert(post.i().journal.unmarshalled_tail
-            == self.i().journal.unmarshalled_tail.discard_old(cut));
+        assert(post.i().disk_view == DiskView{
+            entries: self.i().disk_view.entries.insert(addr, expected_record),
+            ..self.i().disk_view
+        });
+        assert(post.i().freshest_rec == Some(addr));
+        assert(post.i().unmarshalled_tail == self.i().unmarshalled_tail.discard_old(cut));
         assert_maps_equal!(
             post.i().lsn_au_index,
             lsn_au_index_append_record(self.i().lsn_au_index, marshalled_msgs, addr.au),
             lsn => {
             }
         );
+        assert(post.i().au_page_bounds == self.i().au_page_bounds.insert(addr.au, addr.page));
+        assert(post.i().mini_allocator == self.i().mini_allocator.allocate(addr).observe(addr));
+        assert(self.i().mini_allocator.tight_next_addr(self.i().freshest_rec, addr));
+        assert(lbl.i(self).arrow_InternalAllocations_allocs() == Set::<AU>::empty());
+        assert(lbl.i(self).arrow_InternalAllocations_deallocs() == Set::<AU>::empty());
         assert(AllocationJournal::State::next_by(
             self.i(),
             post.i(),
             lbl.i(self),
-            AllocationJournal::Step::internal_journal_marshal(cut, addr, post.i().journal),
+            AllocationJournal::Step::internal_journal_marshal(cut, addr),
         )) by {
             reveal(AllocationJournal::State::next_by);
         }
@@ -980,6 +1139,7 @@ impl CachingDiskJournal::State {
         requires
             self.inv(),
             post.inv(),
+            self.semantic_inv(),
             CachingDiskJournal::State::commit_prepared(self, post, lbl),
         ensures
             AllocationJournal::State::next(self.i(), post.i(), lbl.i(self)),
@@ -1007,6 +1167,7 @@ impl CachingDiskJournal::State {
         requires
             self.inv(),
             post.inv(),
+            self.semantic_inv(),
             CachingDiskJournal::State::discard_old(
                 self,
             post,
@@ -1041,118 +1202,64 @@ impl CachingDiskJournal::State {
         let new_au_index = cj_lsn_au_index(post.journal);
         let deallocs = old_au_index.values().difference(new_au_index.values());
         let discard_addrs = addresses_in_aus(deallocs);
-        let keep_addrs = Set::new(|addr: Address|
-            self.i().tj().disk_view.entries.contains_key(addr)
-                && expected_new_au_index.values().contains(addr.au));
-        post.journal_tj_ensures();
+        self.journal_tj_ensures();
         assert(post.journal == new_journal);
         assert(post.mini_allocator == self.mini_allocator.prune(deallocs));
         assert(self.i().lsn_au_index == old_au_index);
-        assert(new_au_index =~= expected_new_au_index);
-        assert(post.i().lsn_au_index =~= expected_new_au_index);
+        assert_maps_equal!(new_au_index, expected_new_au_index);
+        assert_maps_equal!(post.i().lsn_au_index, expected_new_au_index);
         assert(lbl.i(self).arrow_DiscardOld_deallocs()
             == self.i().lsn_au_index.values().difference(expected_new_au_index.values()));
         assert(post.i().mini_allocator
             == self.i().mini_allocator.prune(lbl.i(self).arrow_DiscardOld_deallocs()));
-        assert(post.i().journal.unmarshalled_tail
-            == self.i().journal.unmarshalled_tail.bounded_discard(start_lsn));
+        assert(post.i().unmarshalled_tail
+            == self.i().unmarshalled_tail.bounded_discard(start_lsn));
+        assert(post.i().au_page_bounds
+            == AllocationJournal::State::au_page_bounds_restrict(
+                self.i().au_page_bounds,
+                expected_new_au_index.values(),
+            ));
 
         assert_maps_equal!(post.disk.visible(), self.disk.visible().remove_keys(discard_addrs), addr => {
             if discard_addrs.contains(addr) {
             } else {
             }
         });
+        let post_disk_view = DiskView{
+            boundary_lsn: start_lsn,
+            entries: AllocationJournal::State::disk_view_without_aus(
+                self.i().disk_view,
+                deallocs,
+            ).entries,
+        };
         assert_maps_equal!(
-            post.i().tj().disk_view.entries,
-            self.i().tj().disk_view.entries.restrict(keep_addrs),
+            post.i().disk_view.entries,
+            post_disk_view.entries,
             addr => {
-                if post.i().tj().disk_view.entries.contains_key(addr) {
+                if post.i().disk_view.entries.contains_key(addr) {
                     assert(post.disk.visible().contains_key(addr));
-                    assert(self.disk.visible().contains_key(addr));
-                    assert(self.i().tj().disk_view.entries.contains_key(addr));
                     assert(!discard_addrs.contains(addr));
-                    assert(self.i().lsn_au_index.values().contains(addr.au)) by {
-                        self.interpreted_inv();
-                        assert(self.i().tj().disk_view.domain_tight_wrt_index(
-                            self.i().lsn_au_index,
-                            self.i().tj().freshest_rec,
-                        ));
-                    }
+                    assert(self.disk.visible().contains_key(addr));
+                    assert(self.i().disk_view.entries.contains_key(addr));
                     assert(!deallocs.contains(addr.au));
-                    if !expected_new_au_index.values().contains(addr.au) {
-                        assert(deallocs.contains(addr.au));
-                        assert(false);
-                    }
-                    assert(expected_new_au_index.values().contains(addr.au));
-                    assert(keep_addrs.contains(addr));
+                    assert(post.disk.visible()[addr] == self.disk.visible()[addr]);
                 }
-                if self.i().tj().disk_view.entries.restrict(keep_addrs).contains_key(addr) {
-                    assert(keep_addrs.contains(addr));
-                    assert(self.disk.visible().contains_key(addr));
+                if post_disk_view.entries.contains_key(addr) {
+                    assert(self.i().disk_view.entries.contains_key(addr));
                     assert(!deallocs.contains(addr.au));
                     assert(!discard_addrs.contains(addr));
+                    assert(self.disk.visible().contains_key(addr));
                     assert(post.disk.visible().contains_key(addr));
                 }
             }
         );
-
-        if start_lsn < self.i().tj().seq_end() {
-            assert(post.i().journal.truncated_journal.wf());
-            assert(post.i().journal.truncated_journal.disk_view.boundary_lsn == start_lsn);
-            assert(post.i().journal.truncated_journal.disk_view.entries
-                <= self.i().tj().disk_view.entries);
-            assert(keep_addrs <= post.i().journal.truncated_journal.disk_view.entries.dom());
-            assert(post.i().journal.truncated_journal.freshest_rec == self.i().tj().freshest_rec);
-            assert(self.i().tj().discard_old_cond(
-                start_lsn,
-                keep_addrs,
-                post.i().journal.truncated_journal,
-            ));
-            assert(keep_addrs =~= post.i().journal.truncated_journal.disk_view.entries.dom()) by {
-                assert_maps_equal!(
-                    post.i().journal.truncated_journal.disk_view.entries,
-                    self.i().tj().disk_view.entries.restrict(keep_addrs),
-                );
-            }
-        } else {
-            assert(post.i().journal.truncated_journal.wf());
-            assert(post.i().journal.truncated_journal.freshest_rec is None);
-            assert(post.i().journal.truncated_journal.disk_view.boundary_lsn == start_lsn);
-            assert(post.i().journal.truncated_journal.disk_view.entries.dom()
-                =~= Set::<Address>::empty()) by {
-                assert forall |addr: Address|
-                    #[trigger] post.i().journal.truncated_journal.disk_view.entries.dom().contains(addr)
-                    implies false by {
-                    assert(post.i().journal.truncated_journal.disk_view.entries.contains_key(addr));
-                    assert(post.i().lsn_au_index.values().contains(addr.au)) by {
-                        post.interpreted_inv();
-                        assert(post.i().tj().disk_view.domain_tight_wrt_index(
-                            post.i().lsn_au_index,
-                            post.i().tj().freshest_rec,
-                        ));
-                    }
-                    assert(post.i().lsn_au_index.contains_value(addr.au));
-                    let lsn = choose |lsn: LSN| #![auto]
-                        post.i().lsn_au_index.contains_key(lsn)
-                            && post.i().lsn_au_index[lsn] == addr.au;
-                    assert(expected_new_au_index.contains_key(lsn));
-                    assert(self.i().lsn_au_index.contains_key(lsn));
-                    assert(start_lsn <= lsn);
-                    assert(self.i().tj().seq_start() <= lsn < self.i().tj().seq_end()) by {
-                        self.i().tj().build_lsn_au_index_ensures(self.i().tj().seq_start());
-                        reveal(TruncatedJournal::au_domain_valid);
-                    }
-                    assert(false);
-                }
-            }
-            assert(post.i().journal.truncated_journal == TruncatedJournal::empty_at(start_lsn));
-        }
+        assert(post.i().disk_view == post_disk_view);
 
         assert(AllocationJournal::State::next_by(
             self.i(),
             post.i(),
             lbl.i(self),
-            AllocationJournal::Step::discard_old(post.i().journal),
+            AllocationJournal::Step::discard_old(),
         )) by {
             reveal(AllocationJournal::State::next_by);
         }
@@ -1163,11 +1270,13 @@ impl CachingDiskJournal::State {
         self,
         post: Self,
         lbl: CachingDiskJournal::Label,
+        new_disk: CachingDisk::State,
     )
         requires
             self.inv(),
             post.inv(),
-            CachingDiskJournal::State::mini_allocator_fill(self, post, lbl),
+            self.semantic_inv(),
+            CachingDiskJournal::State::mini_allocator_fill(self, post, lbl, new_disk),
         ensures
             AllocationJournal::State::next(self.i(), post.i(), lbl.i(self)),
     {
@@ -1176,18 +1285,96 @@ impl CachingDiskJournal::State {
         assert(lbl.arrow_InternalAlloc_deallocs() == Set::<AU>::empty());
         assert(lbl.arrow_InternalAlloc_prune_aus() == Set::<AU>::empty());
         assert(post.journal == self.journal);
-        assert(post.disk == self.disk);
+        assert(post.disk == new_disk);
         assert(post.mini_allocator == self.mini_allocator.add_aus(allocs));
         assert(allocs.disjoint(self.mini_allocator.allocs.dom()));
-        assert(allocs.disjoint(to_aus(self.journal_disk_view().entries.dom())));
-        assert(post.linked_journal_i() == self.linked_journal_i());
-        assert(post.i().journal == self.i().journal);
+        assert(allocs.disjoint(self.i().lsn_au_index.values()));
+        assert(post.i().disk_view.wf_addrs()) by {
+            assert forall |addr: Address| #[trigger] post.i().disk_view.entries.contains_key(addr)
+                implies addr.wf() by {
+                assert(post.disk.visible().contains_key(addr));
+                if post.disk.cache.contains_key(addr) {
+                    assert(post.disk.cache.dom().contains(addr));
+                } else {
+                    assert(post.disk.persistent.contains_key(addr));
+                    assert(post.disk.persistent.dom().contains(addr));
+                }
+            }
+        }
+        assert(self.i().disk_view.is_sub_disk(post.i().disk_view)) by {
+            assert(self.i().disk_view.boundary_lsn == post.i().disk_view.boundary_lsn);
+            assert(self.i().disk_view.entries <= post.i().disk_view.entries) by {
+                assert forall |addr: Address| #[trigger] self.i().disk_view.entries.contains_key(addr)
+                    implies post.i().disk_view.entries.contains_key(addr)
+                        && post.i().disk_view.entries[addr] == self.i().disk_view.entries[addr] by {
+                    assert(self.disk.visible().contains_key(addr));
+                    assert(self.accessible_aus().contains(addr.au));
+                    assert(!allocs.contains(addr.au)) by {
+                        assert(allocs.disjoint(self.accessible_aus()));
+                    }
+                    if self.disk.cache.contains_key(addr) {
+                        assert(post.disk.cache.contains_key(addr));
+                        assert(post.disk.cache[addr] == self.disk.cache[addr]);
+                        assert(post.disk.visible()[addr] == self.disk.visible()[addr]);
+                    } else {
+                        assert(self.disk.persistent.contains_key(addr));
+                        assert(post.disk.persistent.contains_key(addr));
+                        assert(post.disk.persistent[addr] == self.disk.persistent[addr]);
+                        assert(!post.disk.cache.contains_key(addr)) by {
+                            if post.disk.cache.contains_key(addr) {
+                                assert(!self.disk.cache.contains_key(addr));
+                                assert((post.disk.cache.dom() - self.disk.cache.dom()).contains(addr));
+                                assert(addresses_in_aus(allocs).contains(addr));
+                                assert(allocs.contains(addr.au));
+                                assert(false);
+                            }
+                        }
+                        assert(post.disk.visible()[addr] == self.disk.visible()[addr]);
+                    }
+                }
+            }
+        }
+        assert(AllocationJournal::State::disk_domain_bounded_by_owned_aus(
+            post.i().disk_view,
+            self.i().lsn_au_index,
+            post.i().mini_allocator,
+        )) by {
+            assert forall |addr: Address| #[trigger] post.i().disk_view.entries.dom().contains(addr)
+                implies self.i().lsn_au_index.values().contains(addr.au)
+                    || post.i().mini_allocator.all_aus().contains(addr.au) by {
+                assert(post.disk.visible().contains_key(addr));
+                assert(post.accessible_aus().contains(addr.au));
+                if post.lsn_au_index_or_empty().values().contains(addr.au) {
+                    assert(post.i().lsn_au_index.values().contains(addr.au));
+                    assert(post.i().lsn_au_index == self.i().lsn_au_index);
+                } else {
+                    assert(post.mini_allocator.all_aus().contains(addr.au));
+                }
+            }
+        }
+        assert forall |addr: Address| {
+            &&& #[trigger] post.i().disk_view.entries.contains_key(addr)
+            &&& !self.i().disk_view.entries.contains_key(addr)
+        } implies allocs.contains(addr.au) by {
+            assert(post.disk.visible().contains_key(addr));
+            assert(!self.disk.visible().contains_key(addr));
+            if post.disk.cache.contains_key(addr) {
+                assert(!self.disk.cache.contains_key(addr));
+                assert((post.disk.cache.dom() - self.disk.cache.dom()).contains(addr));
+                assert(addresses_in_aus(allocs).contains(addr));
+            } else {
+                assert(post.disk.persistent.contains_key(addr));
+                assert(!self.disk.persistent.contains_key(addr));
+                assert((post.disk.persistent.dom() - self.disk.persistent.dom()).contains(addr));
+                assert(addresses_in_aus(allocs).contains(addr));
+            }
+        }
         assert(post.i().lsn_au_index == self.i().lsn_au_index);
         assert(AllocationJournal::State::next_by(
             self.i(),
             post.i(),
             lbl.i(self),
-            AllocationJournal::Step::internal_mini_allocator_fill(),
+            AllocationJournal::Step::internal_mini_allocator_fill(post.i().disk_view),
         )) by {
             reveal(AllocationJournal::State::next_by);
         }
@@ -1198,11 +1385,13 @@ impl CachingDiskJournal::State {
         self,
         post: Self,
         lbl: CachingDiskJournal::Label,
+        new_disk: CachingDisk::State,
     )
         requires
             self.inv(),
             post.inv(),
-            CachingDiskJournal::State::mini_allocator_prune(self, post, lbl),
+            self.semantic_inv(),
+            CachingDiskJournal::State::mini_allocator_prune(self, post, lbl, new_disk),
         ensures
             AllocationJournal::State::next(self.i(), post.i(), lbl.i(self)),
     {
@@ -1210,19 +1399,16 @@ impl CachingDiskJournal::State {
         let deallocs = lbl.arrow_InternalAlloc_deallocs();
         let prune_aus = lbl.arrow_InternalAlloc_prune_aus();
         assert(lbl.arrow_InternalAlloc_allocs() == Set::<AU>::empty());
+        CachingDisk::State::forget_effect(self.disk, post.disk, deallocs);
         assert(post.journal == self.journal);
-        assert(post.disk == self.disk);
         assert(post.mini_allocator == self.mini_allocator.prune(prune_aus));
         assert(self.i().mini_allocator == self.mini_allocator);
-        assert(post.linked_journal_i() == self.linked_journal_i());
-        assert(post.i().journal == self.i().journal);
         assert(post.i().lsn_au_index == self.i().lsn_au_index);
-        assert(lbl.i(self).arrow_InternalAllocations_deallocs() == prune_aus);
-        assert forall |au: AU| #[trigger] lbl.i(self).arrow_InternalAllocations_deallocs().contains(au)
+        assert(lbl.i(self).arrow_InternalAllocations_deallocs() == deallocs);
+        assert forall |au: AU| #[trigger] prune_aus.contains(au)
             implies self.i().mini_allocator.can_remove(au) by {
             match lbl {
                 CachingDiskJournal::Label::InternalAlloc{allocs, deallocs, prune_aus} => {
-                    assert(lbl.i(self).arrow_InternalAllocations_deallocs() == prune_aus);
                     assert(prune_aus.contains(au));
                     assert(self.mini_allocator.can_remove(au));
                     assert(self.i().mini_allocator == self.mini_allocator);
@@ -1232,28 +1418,205 @@ impl CachingDiskJournal::State {
                 },
             }
         }
+        assert forall |au: AU| #[trigger] deallocs.contains(au)
+            implies self.i().mini_allocator.allocs.contains_key(au)
+                && self.i().mini_allocator.allocs[au].all_pages_free() by {
+            assert(deallocs <= prune_aus);
+            assert(prune_aus.contains(au));
+            assert(self.mini_allocator.can_remove(au));
+            assert(self.mini_allocator.allocs.contains_key(au));
+            assert(self.mini_allocator.allocs[au].all_pages_free());
+            assert(self.i().mini_allocator == self.mini_allocator);
+        }
+        assert_maps_equal!(
+            AllocationJournal::State::disk_view_without_aus(self.i().disk_view, deallocs).entries,
+            post.i().disk_view.entries,
+            addr => {
+                if AllocationJournal::State::disk_view_without_aus(
+                    self.i().disk_view,
+                    deallocs,
+                ).entries.contains_key(addr) {
+                    assert(self.i().disk_view.entries.contains_key(addr));
+                    assert(!deallocs.contains(addr.au));
+                    assert(!addresses_in_aus(deallocs).contains(addr));
+                    assert(post.disk.visible().contains_key(addr));
+                    assert(post.disk.visible()[addr] == self.disk.visible()[addr]);
+                    assert(post.i().disk_view.entries[addr] == self.i().disk_view.entries[addr]);
+                }
+                if post.i().disk_view.entries.contains_key(addr) {
+                    assert(post.disk.visible().contains_key(addr));
+                    assert(!addresses_in_aus(deallocs).contains(addr));
+                    assert(!deallocs.contains(addr.au));
+                    assert(self.disk.visible().contains_key(addr));
+                    assert(self.i().disk_view.entries.contains_key(addr));
+                }
+            }
+        );
+        assert(post.i().disk_view.boundary_lsn == self.i().disk_view.boundary_lsn);
+        assert(post.i().disk_view
+            == AllocationJournal::State::disk_view_without_aus(self.i().disk_view, deallocs));
+        assert(post.i().mini_allocator == self.i().mini_allocator.prune(prune_aus));
         assert(AllocationJournal::State::next_by(
             self.i(),
             post.i(),
             lbl.i(self),
-            AllocationJournal::Step::internal_mini_allocator_prune(),
+            AllocationJournal::Step::internal_mini_allocator_prune(prune_aus),
         )) by {
             reveal(AllocationJournal::State::next_by);
         }
         reveal(AllocationJournal::State::next);
     }
 
+    pub proof fn unloaded_backing_image_valid_next(
+        self,
+        post: Self,
+        lbl: CachingDiskJournal::Label,
+    )
+        requires
+            self.inv(),
+            self.unloaded_backing_image_valid(),
+            CachingDiskJournal::State::next(self, post, lbl),
+        ensures
+            post.unloaded_backing_image_valid(),
+    {
+        reveal(CachingDiskJournal::State::next);
+        let step = choose |step: CachingDiskJournal::Step| #![auto]
+            CachingDiskJournal::State::next_by(self, post, lbl, step);
+        reveal(CachingDiskJournal::State::next_by);
+        if post.journal.status is None {
+            match step {
+                CachingDiskJournal::Step::caching_disk_internal(new_disk) => {
+                    reveal(CachingDiskJournal::State::caching_disk_internal);
+                    CachingDisk::State::internal_visible_unchanged(self.disk, post.disk);
+                    assert(post.journal == self.journal);
+                    assert(post.raw_visible_records() == self.raw_visible_records());
+                    assert(post.journal_backing_disk_view() == self.journal_backing_disk_view());
+                    assert(post.backing_journal_image() == self.backing_journal_image());
+                    assert(self.backing_journal_image().valid_image());
+                },
+                CachingDiskJournal::Step::load_index(new_journal, reads) => {
+                    reveal(CachingDiskJournal::State::load_index);
+                    CachedJournal::State::load_index_effect(
+                        self.journal,
+                        post.journal,
+                        to_journal_records(reads),
+                        lbl.arrow_LoadIndex_discovered_aus(),
+                    );
+                    assert(post.journal.status is Some);
+                    assert(false);
+                },
+                CachingDiskJournal::Step::read_for_recovery(reads) => {
+                    reveal(CachingDiskJournal::State::read_for_recovery);
+                    assert(post == self);
+                },
+                CachingDiskJournal::Step::freeze_for_commit(reads) => {
+                    reveal(CachingDiskJournal::State::freeze_for_commit);
+                    assert(post == self);
+                },
+                CachingDiskJournal::Step::query_end_lsn() => {
+                    reveal(CachingDiskJournal::State::query_end_lsn);
+                    assert(post == self);
+                },
+                CachingDiskJournal::Step::put(new_journal) => {
+                    reveal(CachingDiskJournal::State::put);
+                    CachedJournal::State::put_effect(
+                        self.journal,
+                        post.journal,
+                        lbl.arrow_Put_messages(),
+                    );
+                    assert(post.journal.status is Some);
+                    assert(false);
+                },
+                CachingDiskJournal::Step::journal_marshal(new_journal, new_disk, addr, writes) => {
+                    reveal(CachingDiskJournal::State::journal_marshal);
+                    reveal(CachedJournal::State::next);
+                    reveal(CachedJournal::State::next_by);
+                    let journal_lbl = CachedJournal::Label::JournalMarshal{
+                        writes: to_journal_records(writes),
+                    };
+                    let cj_step = choose |step: CachedJournal::Step|
+                        CachedJournal::State::next_by(self.journal, post.journal, journal_lbl, step);
+                    match cj_step {
+                        CachedJournal::Step::internal_journal_marshal(cut, hidden_addr) => {},
+                        _ => { assert(false); },
+                    }
+                    assert(post.journal.status is Some);
+                    assert(false);
+                },
+                CachingDiskJournal::Step::observe_clean_aus(new_journal) => {
+                    reveal(CachingDiskJournal::State::observe_clean_aus);
+                    CachedJournal::State::observe_clean_aus_effect(
+                        self.journal,
+                        post.journal,
+                        lbl.arrow_ObserveCleanAUs_aus(),
+                    );
+                    assert(post.journal.status is Some);
+                    assert(false);
+                },
+                CachingDiskJournal::Step::commit_prepared() => {
+                    reveal(CachingDiskJournal::State::commit_prepared);
+                    assert(post == self);
+                },
+                CachingDiskJournal::Step::discard_old(new_journal, new_disk) => {
+                    reveal(CachingDiskJournal::State::discard_old);
+                    reveal(CachedJournal::State::next);
+                    reveal(CachedJournal::State::next_by);
+                    let journal_lbl = CachedJournal::Label::DiscardOld{
+                        start_lsn: lbl.arrow_DiscardOld_start_lsn(),
+                        require_end: lbl.arrow_DiscardOld_require_end(),
+                        deallocs: self.lsn_au_index_or_empty().values().difference(
+                            lsn_au_index_discard_up_to(
+                                self.lsn_au_index_or_empty(),
+                                lbl.arrow_DiscardOld_start_lsn(),
+                            ).values(),
+                        ),
+                    };
+                    let cj_step = choose |step: CachedJournal::Step|
+                        CachedJournal::State::next_by(self.journal, post.journal, journal_lbl, step);
+                    match cj_step {
+                        CachedJournal::Step::discard_old() => {},
+                        _ => { assert(false); },
+                    }
+                    assert(post.journal.status is Some);
+                    assert(false);
+                },
+                CachingDiskJournal::Step::mini_allocator_fill(new_disk) => {
+                    reveal(CachingDiskJournal::State::mini_allocator_fill);
+                    assert(post.journal == self.journal);
+                    assert(post.backing_journal_image() == self.backing_journal_image()) by {
+                        assert(post.journal_backing_disk_view() == self.journal_backing_disk_view());
+                    }
+                    assert(self.backing_journal_image().valid_image());
+                },
+                CachingDiskJournal::Step::mini_allocator_prune(new_disk) => {
+                    reveal(CachingDiskJournal::State::mini_allocator_prune);
+                    assert(self.journal.status is Some);
+                    assert(post.journal.status is Some);
+                    assert(false);
+                },
+                CachingDiskJournal::Step::internal_noop() => {
+                    reveal(CachingDiskJournal::State::internal_noop);
+                    assert(post == self);
+                },
+                CachingDiskJournal::Step::dummy_to_use_type_params(_) => {
+                    assert(false);
+                },
+            }
+        }
+    }
+
     pub proof fn next_refines(self, post: Self, lbl: CachingDiskJournal::Label)
         requires
             self.inv(),
+            self.semantic_inv(),
             CachingDiskJournal::State::next(self, post, lbl),
         ensures
             post.inv(),
+            post.semantic_inv(),
+            post.refinement_inv(),
             AllocationJournal::State::next(self.i(), post.i(), lbl.i(self)),
     {
         CachingDiskJournal::State::inv_next(self, post, lbl);
-        self.interpreted_inv();
-        post.interpreted_inv();
         reveal(CachingDiskJournal::State::next);
         let step = choose |step: CachingDiskJournal::Step| #![auto]
             CachingDiskJournal::State::next_by(self, post, lbl, step);
@@ -1289,11 +1652,11 @@ impl CachingDiskJournal::State {
             CachingDiskJournal::Step::discard_old(new_journal, new_disk) => {
                 self.discard_old_refines(post, lbl, new_journal, new_disk);
             },
-            CachingDiskJournal::Step::mini_allocator_fill() => {
-                self.mini_allocator_fill_refines(post, lbl);
+            CachingDiskJournal::Step::mini_allocator_fill(new_disk) => {
+                self.mini_allocator_fill_refines(post, lbl, new_disk);
             },
-            CachingDiskJournal::Step::mini_allocator_prune() => {
-                self.mini_allocator_prune_refines(post, lbl);
+            CachingDiskJournal::Step::mini_allocator_prune(new_disk) => {
+                self.mini_allocator_prune_refines(post, lbl, new_disk);
             },
             CachingDiskJournal::Step::internal_noop() => {
                 self.internal_noop_refines(post, lbl);
@@ -1302,6 +1665,11 @@ impl CachingDiskJournal::State {
                 assert(false);
             },
         }
+        self.semantic_inv_implies_i_inv();
+        self.i().next_refines(post.i(), lbl.i(self));
+        self.unloaded_backing_image_valid_next(post, lbl);
+        assert(post.semantic_inv());
+        assert(post.refinement_inv());
     }
 }
 

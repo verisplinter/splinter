@@ -22,6 +22,7 @@ use crate::implementation::CachingDisk_v::{addresses_in_aus, CachingDisk, Cachin
 use crate::implementation::CachingDiskJournal_v::{
     CachingDiskJournal, cj_lsn_au_index,
 };
+use crate::implementation::CachingDiskJournalRefinement_v::*;
 use crate::implementation::JournalTypes_v::to_journal_records;
 use crate::journal::LinkedJournalRefinement_v::*;
 use crate::journal::LinkedJournal_v::*;
@@ -47,18 +48,13 @@ pub open spec fn snapshot_walk_ptr(
     root: Pointer,
     depth: nat,
 ) -> Pointer
-    decreases depth
 {
-    if depth == 0 {
-        root
-    } else {
-        let prev = snapshot_walk_ptr(records, boundary_lsn, root, (depth - 1) as nat);
-        if prev is Some && records.contains_key(prev.unwrap()) {
-            records[prev.unwrap()].cropped_prior(boundary_lsn)
-        } else {
-            None
-        }
-    }
+    crate::implementation::CachingDiskJournal_v::snapshot_walk_ptr(
+        records,
+        boundary_lsn,
+        root,
+        depth,
+    )
 }
 
 pub open spec fn snapshot_walk_domain(
@@ -66,32 +62,25 @@ pub open spec fn snapshot_walk_domain(
     boundary_lsn: LSN,
     root: Pointer,
 ) -> Set<Address> {
-    Set::new(|addr: Address| exists |depth: nat|
-        snapshot_walk_ptr(records, boundary_lsn, root, depth) == Some(addr))
+    crate::implementation::CachingDiskJournal_v::snapshot_walk_domain(
+        records,
+        boundary_lsn,
+        root,
+    )
 }
 
 pub open spec fn snapshot_tight_tj(
     records: Map<Address, JournalRecord>,
     snapshot: JournalSnapshot,
 ) -> TruncatedJournal {
-    TruncatedJournal{
-        freshest_rec: snapshot.freshest_rec(),
-        disk_view: DiskView{
-            boundary_lsn: snapshot.boundary_lsn,
-            entries: records.restrict(snapshot_walk_domain(
-                records,
-                snapshot.boundary_lsn,
-                snapshot.freshest_rec(),
-            )),
-        },
-    }
+    crate::implementation::CachingDiskJournal_v::snapshot_tight_tj(records, snapshot)
 }
 
 pub open spec fn snapshot_tight_image(
     records: Map<Address, JournalRecord>,
     snapshot: JournalSnapshot,
 ) -> JournalImage {
-    JournalImage{tj: snapshot_tight_tj(records, snapshot), first: snapshot.first()}
+    crate::implementation::CachingDiskJournal_v::snapshot_tight_image(records, snapshot)
 }
 
 pub proof fn snapshot_walk_restrict_domain_same(
@@ -109,25 +98,12 @@ pub proof fn snapshot_walk_restrict_domain_same(
         ) == snapshot_walk_ptr(records, boundary_lsn, root, depth),
     decreases depth,
 {
-    let domain = snapshot_walk_domain(records, boundary_lsn, root);
-    let restricted = records.restrict(domain);
-    if depth == 0 {
-    } else {
-        snapshot_walk_restrict_domain_same(records, boundary_lsn, root, (depth - 1) as nat);
-        let prev = snapshot_walk_ptr(records, boundary_lsn, root, (depth - 1) as nat);
-        assert(snapshot_walk_ptr(restricted, boundary_lsn, root, (depth - 1) as nat) == prev);
-        if prev is Some {
-            let prev_addr = prev.unwrap();
-            assert(domain.contains(prev_addr)) by {
-                assert(snapshot_walk_ptr(records, boundary_lsn, root, (depth - 1) as nat)
-                    == Some(prev_addr));
-            }
-            assert(restricted.contains_key(prev_addr) == records.contains_key(prev_addr));
-            if records.contains_key(prev_addr) {
-                assert(restricted[prev_addr] == records[prev_addr]);
-            }
-        }
-    }
+    crate::implementation::CachingDiskJournal_v::snapshot_walk_restrict_domain_same(
+        records,
+        boundary_lsn,
+        root,
+        depth,
+    );
 }
 
 pub proof fn snapshot_walk_domain_restrict_domain_same(
@@ -142,25 +118,11 @@ pub proof fn snapshot_walk_domain_restrict_domain_same(
             root,
         ) =~= snapshot_walk_domain(records, boundary_lsn, root),
 {
-    let domain = snapshot_walk_domain(records, boundary_lsn, root);
-    let restricted = records.restrict(domain);
-    assert forall |addr: Address|
-        #[trigger] snapshot_walk_domain(restricted, boundary_lsn, root).contains(addr)
-            <==> domain.contains(addr)
-    by {
-        if snapshot_walk_domain(restricted, boundary_lsn, root).contains(addr) {
-            let depth = choose |depth: nat|
-                snapshot_walk_ptr(restricted, boundary_lsn, root, depth) == Some(addr);
-            snapshot_walk_restrict_domain_same(records, boundary_lsn, root, depth);
-            assert(snapshot_walk_ptr(records, boundary_lsn, root, depth) == Some(addr));
-        }
-        if domain.contains(addr) {
-            let depth = choose |depth: nat|
-                snapshot_walk_ptr(records, boundary_lsn, root, depth) == Some(addr);
-            snapshot_walk_restrict_domain_same(records, boundary_lsn, root, depth);
-            assert(snapshot_walk_ptr(restricted, boundary_lsn, root, depth) == Some(addr));
-        }
-    }
+    crate::implementation::CachingDiskJournal_v::snapshot_walk_domain_restrict_domain_same(
+        records,
+        boundary_lsn,
+        root,
+    );
 }
 
 pub proof fn snapshot_walk_ptr_in_disk_view(
@@ -177,22 +139,7 @@ pub proof fn snapshot_walk_ptr_in_disk_view(
             dv.entries.contains_key(snapshot_walk_ptr(dv.entries, dv.boundary_lsn, root, depth).unwrap()),
     decreases depth,
 {
-    if depth == 0 {
-        if root is Some {
-            assert(dv.entries.contains_key(root.unwrap()));
-        }
-    } else {
-        snapshot_walk_ptr_in_disk_view(dv, root, (depth - 1) as nat);
-        let prev = snapshot_walk_ptr(dv.entries, dv.boundary_lsn, root, (depth - 1) as nat);
-        if prev is Some {
-            assert(dv.entries.contains_key(prev.unwrap()));
-            let next = dv.entries[prev.unwrap()].cropped_prior(dv.boundary_lsn);
-            if next is Some {
-                assert(dv.nondangling_pointers());
-                assert(dv.entries.contains_key(next.unwrap()));
-            }
-        }
-    }
+    crate::implementation::CachingDiskJournal_v::snapshot_walk_ptr_in_disk_view(dv, root, depth);
 }
 
 pub proof fn snapshot_walk_ptr_step(
@@ -212,20 +159,12 @@ pub proof fn snapshot_walk_ptr_step(
             ),
     decreases depth,
 {
-    if depth > 0 && root is Some && records.contains_key(root.unwrap()) {
-        let next = records[root.unwrap()].cropped_prior(boundary_lsn);
-        snapshot_walk_ptr_step(
-            records,
-            boundary_lsn,
-            root,
-            (depth - 1) as nat,
-        );
-        assert(snapshot_walk_ptr(records, boundary_lsn, root, depth)
-            == snapshot_walk_ptr(records, boundary_lsn, next, (depth - 1) as nat));
-        let prev = snapshot_walk_ptr(records, boundary_lsn, root, depth);
-        let next_prev = snapshot_walk_ptr(records, boundary_lsn, next, (depth - 1) as nat);
-        assert(prev == next_prev);
-    }
+    crate::implementation::CachingDiskJournal_v::snapshot_walk_ptr_step(
+        records,
+        boundary_lsn,
+        root,
+        depth,
+    );
 }
 
 pub proof fn snapshot_walk_ptr_extends_same(
@@ -244,19 +183,12 @@ pub proof fn snapshot_walk_ptr_extends_same(
             == snapshot_walk_ptr(records, base_dv.boundary_lsn, root, depth),
     decreases depth,
 {
-    if depth == 0 {
-    } else {
-        snapshot_walk_ptr_extends_same(base_dv, records, root, (depth - 1) as nat);
-        snapshot_walk_ptr_in_disk_view(base_dv, root, (depth - 1) as nat);
-        let prev = snapshot_walk_ptr(base_dv.entries, base_dv.boundary_lsn, root, (depth - 1) as nat);
-        assert(prev == snapshot_walk_ptr(records, base_dv.boundary_lsn, root, (depth - 1) as nat));
-        if prev is Some {
-            let prev_addr = prev.unwrap();
-            assert(base_dv.entries.contains_key(prev_addr));
-            assert(records.contains_key(prev_addr));
-            assert(records[prev_addr] == base_dv.entries[prev_addr]);
-        }
-    }
+    crate::implementation::CachingDiskJournal_v::snapshot_walk_ptr_extends_same(
+        base_dv,
+        records,
+        root,
+        depth,
+    );
 }
 
 pub proof fn snapshot_tight_image_restrict_domain_same(
@@ -274,112 +206,10 @@ pub proof fn snapshot_tight_image_restrict_domain_same(
                 snapshot,
             ),
 {
-    let domain = snapshot_walk_domain(records, snapshot.boundary_lsn, snapshot.freshest_rec());
-    let restricted = records.restrict(domain);
-    assert_maps_equal!(
-        snapshot_tight_tj(records, snapshot).disk_view.entries,
-        snapshot_tight_tj(restricted, snapshot).disk_view.entries,
-        addr => {
-            if snapshot_tight_tj(records, snapshot).disk_view.entries.contains_key(addr) {
-                let depth = choose |depth: nat|
-                    snapshot_walk_ptr(records, snapshot.boundary_lsn, snapshot.freshest_rec(), depth)
-                        == Some(addr);
-                snapshot_walk_restrict_domain_same(
-                    records,
-                    snapshot.boundary_lsn,
-                    snapshot.freshest_rec(),
-                    depth,
-                );
-                assert(snapshot_walk_ptr(restricted, snapshot.boundary_lsn, snapshot.freshest_rec(), depth)
-                    == Some(addr));
-                assert(snapshot_tight_tj(restricted, snapshot).disk_view.entries.contains_key(addr));
-                assert(restricted.contains_key(addr));
-                assert(snapshot_tight_tj(records, snapshot).disk_view.entries[addr] == records[addr]);
-                assert(snapshot_tight_tj(restricted, snapshot).disk_view.entries[addr] == restricted[addr]);
-                assert(restricted[addr] == records[addr]);
-            }
-            if snapshot_tight_tj(restricted, snapshot).disk_view.entries.contains_key(addr) {
-                let depth = choose |depth: nat|
-                    snapshot_walk_ptr(restricted, snapshot.boundary_lsn, snapshot.freshest_rec(), depth)
-                        == Some(addr);
-                snapshot_walk_restrict_domain_same(
-                    records,
-                    snapshot.boundary_lsn,
-                    snapshot.freshest_rec(),
-                    depth,
-                );
-                assert(snapshot_walk_ptr(records, snapshot.boundary_lsn, snapshot.freshest_rec(), depth)
-                    == Some(addr));
-                assert(snapshot_tight_tj(records, snapshot).disk_view.entries.contains_key(addr));
-                assert(restricted.contains_key(addr));
-                assert(snapshot_tight_tj(records, snapshot).disk_view.entries[addr] == records[addr]);
-                assert(snapshot_tight_tj(restricted, snapshot).disk_view.entries[addr] == restricted[addr]);
-                assert(restricted[addr] == records[addr]);
-            }
-        }
+    crate::implementation::CachingDiskJournal_v::snapshot_tight_image_restrict_domain_same(
+        records,
+        snapshot,
     );
-    assert(snapshot_tight_tj(records, snapshot) == snapshot_tight_tj(restricted, snapshot));
-    assert(snapshot_tight_image(records, snapshot) == snapshot_tight_image(restricted, snapshot));
-}
-
-pub proof fn snapshot_tight_image_extends_same(
-    records: Map<Address, JournalRecord>,
-    bigger_records: Map<Address, JournalRecord>,
-    snapshot: JournalSnapshot,
-)
-    requires
-        snapshot_tight_image(records, snapshot).valid_image(),
-        snapshot_tight_tj(records, snapshot).disk_view.entries <= bigger_records,
-    ensures
-        snapshot_tight_image(records, snapshot) == snapshot_tight_image(bigger_records, snapshot),
-{
-    let tight = snapshot_tight_tj(records, snapshot);
-    let base_records = tight.disk_view.entries;
-    let base_image = snapshot_tight_image(base_records, snapshot);
-    snapshot_tight_image_restrict_domain_same(records, snapshot);
-    assert(snapshot_tight_image(records, snapshot) == base_image);
-    assert(tight.decodable());
-    assert(tight.wf());
-    assert(tight.disk_view.wf());
-    assert(tight.disk_view.acyclic());
-    assert(tight.disk_view.is_nondangling_pointer(tight.freshest_rec));
-    assert_maps_equal!(
-        snapshot_tight_tj(base_records, snapshot).disk_view.entries,
-        snapshot_tight_tj(bigger_records, snapshot).disk_view.entries,
-        addr => {
-            if snapshot_tight_tj(base_records, snapshot).disk_view.entries.contains_key(addr) {
-                let depth = choose |depth: nat|
-                    snapshot_walk_ptr(base_records, snapshot.boundary_lsn, snapshot.freshest_rec(), depth)
-                        == Some(addr);
-                snapshot_walk_ptr_extends_same(tight.disk_view, bigger_records, snapshot.freshest_rec(), depth);
-                assert(snapshot_walk_ptr(bigger_records, snapshot.boundary_lsn, snapshot.freshest_rec(), depth)
-                    == Some(addr));
-                assert(snapshot_tight_tj(bigger_records, snapshot).disk_view.entries.contains_key(addr));
-                assert(base_records.contains_key(addr));
-                assert(bigger_records.contains_key(addr));
-                assert(bigger_records[addr] == base_records[addr]);
-                assert(snapshot_tight_tj(base_records, snapshot).disk_view.entries[addr] == base_records[addr]);
-                assert(snapshot_tight_tj(bigger_records, snapshot).disk_view.entries[addr] == bigger_records[addr]);
-            }
-            if snapshot_tight_tj(bigger_records, snapshot).disk_view.entries.contains_key(addr) {
-                let depth = choose |depth: nat|
-                    snapshot_walk_ptr(bigger_records, snapshot.boundary_lsn, snapshot.freshest_rec(), depth)
-                        == Some(addr);
-                snapshot_walk_ptr_extends_same(tight.disk_view, bigger_records, snapshot.freshest_rec(), depth);
-                assert(snapshot_walk_ptr(base_records, snapshot.boundary_lsn, snapshot.freshest_rec(), depth)
-                    == Some(addr));
-                assert(snapshot_tight_tj(base_records, snapshot).disk_view.entries.contains_key(addr));
-                assert(base_records.contains_key(addr));
-                assert(bigger_records.contains_key(addr));
-                assert(bigger_records[addr] == base_records[addr]);
-                assert(snapshot_tight_tj(base_records, snapshot).disk_view.entries[addr] == base_records[addr]);
-                assert(snapshot_tight_tj(bigger_records, snapshot).disk_view.entries[addr] == bigger_records[addr]);
-            }
-        }
-    );
-    assert(snapshot_tight_tj(base_records, snapshot) == snapshot_tight_tj(bigger_records, snapshot));
-    assert(base_image == snapshot_tight_image(bigger_records, snapshot));
-    assert(snapshot_tight_image(records, snapshot) == snapshot_tight_image(bigger_records, snapshot));
 }
 
 pub proof fn build_tight_entry_has_walk_depth(
@@ -526,212 +356,6 @@ pub proof fn build_tight_entry_not_after_root(
     }
 }
 
-pub proof fn snapshot_walk_persistent_visible_frozen_agree(
-    state: CachingDiskJournal::State,
-    frozen: JournalSnapshot,
-    seq_end: LSN,
-    depth: nat,
-)
-    requires
-        state.inv(),
-        state.frozen_snapshot_valid(frozen, seq_end),
-        frozen.freshest_rec() is Some ==> seq_end <= state.journal.clean_watermark(),
-    ensures
-        snapshot_walk_ptr(
-            to_journal_records(state.disk.persistent),
-            frozen.boundary_lsn,
-            frozen.freshest_rec(),
-            depth,
-        ) == snapshot_walk_ptr(
-            state.journal_disk_view().entries,
-            frozen.boundary_lsn,
-            frozen.freshest_rec(),
-            depth,
-        ),
-        snapshot_walk_ptr(
-            to_journal_records(state.disk.persistent),
-            frozen.boundary_lsn,
-            frozen.freshest_rec(),
-            depth,
-        ) == snapshot_walk_ptr(
-            state.frozen_tj(frozen).disk_view.entries,
-            frozen.boundary_lsn,
-            frozen.freshest_rec(),
-            depth,
-        ),
-        snapshot_walk_ptr(
-            to_journal_records(state.disk.persistent),
-            frozen.boundary_lsn,
-            frozen.freshest_rec(),
-            depth,
-        ) is Some ==> state.clean_watermark_pages().contains(
-            snapshot_walk_ptr(
-                to_journal_records(state.disk.persistent),
-                frozen.boundary_lsn,
-                frozen.freshest_rec(),
-                depth,
-            ).unwrap(),
-        ),
-    decreases depth,
-{
-    let persistent_records = to_journal_records(state.disk.persistent);
-    let visible_records = state.journal_disk_view().entries;
-    let frozen_tj = state.frozen_tj(frozen);
-    let frozen_records = frozen_tj.disk_view.entries;
-    let root = frozen.freshest_rec();
-
-    state.frozen_snapshot_valid_image(frozen, seq_end);
-    state.frozen_tight_domain_clean_watermark(frozen, seq_end);
-
-    if depth == 0 {
-        if root is Some {
-            let root_addr = root.unwrap();
-            assert(state.frozen_snapshot_valid(frozen, seq_end));
-            assert(visible_records.contains_key(root_addr));
-            assert(frozen.boundary_lsn < seq_end);
-            assert(seq_end == state.frozen_seq_end(frozen));
-            assert(seq_end == visible_records[root_addr].message_seq.seq_end);
-            assert(seq_end <= state.journal.clean_watermark());
-            assert(state.clean_watermark_pages().contains(root_addr));
-            state.clean_watermark_record_eq(root_addr);
-            assert(persistent_records[root_addr] == visible_records[root_addr]);
-            assert(frozen_records.contains_key(root_addr));
-            assert(frozen_records[root_addr] == visible_records[root_addr]);
-        }
-    } else {
-        snapshot_walk_persistent_visible_frozen_agree(state, frozen, seq_end, (depth - 1) as nat);
-        let prev_persistent = snapshot_walk_ptr(
-            persistent_records,
-            frozen.boundary_lsn,
-            root,
-            (depth - 1) as nat,
-        );
-        let prev_visible = snapshot_walk_ptr(
-            visible_records,
-            frozen.boundary_lsn,
-            root,
-            (depth - 1) as nat,
-        );
-        let prev_frozen = snapshot_walk_ptr(
-            frozen_records,
-            frozen.boundary_lsn,
-            root,
-            (depth - 1) as nat,
-        );
-        assert(prev_persistent == prev_visible);
-        assert(prev_persistent == prev_frozen);
-        if prev_persistent is Some {
-            let prev = prev_persistent.unwrap();
-            state.clean_watermark_record_eq(prev);
-            assert(persistent_records[prev] == visible_records[prev]);
-            snapshot_walk_ptr_in_disk_view(frozen_tj.disk_view, root, (depth - 1) as nat);
-            assert(frozen_records.contains_key(prev));
-            assert(frozen_records[prev] == visible_records[prev]) by {
-                assert(frozen_tj.disk_view.entries <= state.journal_tj().disk_view.entries);
-                assert(state.journal_tj().disk_view.entries == visible_records);
-            }
-            assert(persistent_records[prev] == frozen_records[prev]);
-            assert(snapshot_walk_ptr(
-                persistent_records,
-                frozen.boundary_lsn,
-                root,
-                depth,
-            ) == persistent_records[prev].cropped_prior(frozen.boundary_lsn));
-            assert(snapshot_walk_ptr(
-                visible_records,
-                frozen.boundary_lsn,
-                root,
-                depth,
-            ) == visible_records[prev].cropped_prior(frozen.boundary_lsn));
-            assert(snapshot_walk_ptr(
-                frozen_records,
-                frozen.boundary_lsn,
-                root,
-                depth,
-            ) == frozen_records[prev].cropped_prior(frozen.boundary_lsn));
-        }
-        let current = snapshot_walk_ptr(
-            persistent_records,
-            frozen.boundary_lsn,
-            root,
-            depth,
-        );
-        if current is Some {
-            snapshot_walk_ptr_in_build_tight(frozen_tj.disk_view, root, depth);
-            assert(frozen_tj.disk_view.build_tight(root).entries.contains_key(current.unwrap()));
-            assert(frozen_tj.build_tight().disk_view.entries.contains_key(current.unwrap()));
-            assert(state.clean_watermark_pages().contains(current.unwrap()));
-        }
-    }
-}
-
-pub proof fn snapshot_walk_visible_frozen_agree(
-    state: CachingDiskJournal::State,
-    frozen: JournalSnapshot,
-    seq_end: LSN,
-    depth: nat,
-)
-    requires
-        state.inv(),
-        state.frozen_snapshot_valid(frozen, seq_end),
-    ensures
-        snapshot_walk_ptr(
-            state.journal_disk_view().entries,
-            frozen.boundary_lsn,
-            frozen.freshest_rec(),
-            depth,
-        ) == snapshot_walk_ptr(
-            state.frozen_tj(frozen).disk_view.entries,
-            frozen.boundary_lsn,
-            frozen.freshest_rec(),
-            depth,
-        ),
-    decreases depth,
-{
-    let visible_records = state.journal_disk_view().entries;
-    let frozen_tj = state.frozen_tj(frozen);
-    let frozen_records = frozen_tj.disk_view.entries;
-    let root = frozen.freshest_rec();
-
-    state.frozen_snapshot_valid_image(frozen, seq_end);
-
-    if depth == 0 {
-        if root is Some {
-            let root_addr = root.unwrap();
-            assert(visible_records.contains_key(root_addr));
-            assert(frozen_records.contains_key(root_addr));
-            assert(frozen_records[root_addr] == visible_records[root_addr]) by {
-                assert(frozen_tj.disk_view.entries <= state.journal_tj().disk_view.entries);
-                assert(state.journal_tj().disk_view.entries == visible_records);
-            }
-        }
-    } else {
-        snapshot_walk_visible_frozen_agree(state, frozen, seq_end, (depth - 1) as nat);
-        let prev_visible = snapshot_walk_ptr(
-            visible_records,
-            frozen.boundary_lsn,
-            root,
-            (depth - 1) as nat,
-        );
-        let prev_frozen = snapshot_walk_ptr(
-            frozen_records,
-            frozen.boundary_lsn,
-            root,
-            (depth - 1) as nat,
-        );
-        assert(prev_visible == prev_frozen);
-        if prev_visible is Some {
-            let prev = prev_visible.unwrap();
-            snapshot_walk_ptr_in_disk_view(frozen_tj.disk_view, root, (depth - 1) as nat);
-            assert(frozen_records.contains_key(prev));
-            assert(frozen_records[prev] == visible_records[prev]) by {
-                assert(frozen_tj.disk_view.entries <= state.journal_tj().disk_view.entries);
-                assert(state.journal_tj().disk_view.entries == visible_records);
-            }
-        }
-    }
-}
-
 impl CachingDiskJournalImage {
     pub open spec fn empty() -> Self {
         Self{
@@ -741,51 +365,23 @@ impl CachingDiskJournalImage {
         }
     }
 
-    pub open spec fn full_tj(self) -> TruncatedJournal {
-        TruncatedJournal{
-            freshest_rec: self.snapshot.freshest_rec(),
-            disk_view: DiskView{
-                boundary_lsn: self.snapshot.boundary_lsn,
-                entries: to_journal_records(self.persistent),
-            },
-        }
-    }
-
     pub open spec fn stable_persistent_domain(self) -> Set<Address> {
-        let records = to_journal_records(self.persistent);
-        snapshot_walk_domain(records, self.snapshot.boundary_lsn, self.snapshot.freshest_rec())
-    }
-
-    pub open spec fn stable_persistent(self) -> Map<Address, RawPage> {
-        self.persistent.restrict(self.stable_persistent_domain())
+        self.stable_tj().disk_view.entries.dom()
     }
 
     pub open spec fn stable_tj(self) -> TruncatedJournal {
-        snapshot_tight_tj(to_journal_records(self.persistent), self.snapshot)
+        crate::implementation::CachingDiskJournal_v::snapshot_tight_tj(
+            to_journal_records(self.persistent),
+            self.snapshot,
+        )
     }
 
-    pub open spec fn image_persistent_domain(self) -> Set<Address> {
-        let full_tj = self.full_tj();
-        let index = full_tj.build_lsn_au_index_from_first(self.snapshot.first());
-        full_tj.disk_view.au_domain(index)
-    }
-
-    pub open spec fn relaxed_tj(self) -> TruncatedJournal {
-        TruncatedJournal{
-            freshest_rec: self.snapshot.freshest_rec(),
-            disk_view: DiskView{
-                boundary_lsn: self.snapshot.boundary_lsn,
-                entries: to_journal_records(self.image_persistent()),
-            },
-        }
+    pub open spec fn stable_lsn_au_index(self) -> LsnAUIndex {
+        self.stable_tj().build_lsn_au_index_from_first(self.snapshot.first())
     }
 
     pub open spec fn live_persistent_domain(self) -> Set<Address> {
-        self.stable_persistent_domain()
-    }
-
-    pub open spec fn image_persistent(self) -> Map<Address, RawPage> {
-        self.persistent.restrict(self.image_persistent_domain())
+        self.stable_persistent_domain() + addresses_in_aus(self.stable_lsn_au_index().values())
     }
 
     pub open spec fn live_persistent(self) -> Map<Address, RawPage> {
@@ -793,11 +389,17 @@ impl CachingDiskJournalImage {
     }
 
     pub open spec fn tj(self) -> TruncatedJournal {
-        self.live_tj()
+        TruncatedJournal{
+            freshest_rec: self.snapshot.freshest_rec(),
+            disk_view: DiskView{
+                boundary_lsn: self.snapshot.boundary_lsn,
+                entries: to_journal_records(self.live_persistent()),
+            },
+        }
     }
 
     pub open spec fn live_tj(self) -> TruncatedJournal {
-        self.stable_tj()
+        self.tj()
     }
 
     pub open spec fn tight_tj(self) -> TruncatedJournal {
@@ -805,334 +407,25 @@ impl CachingDiskJournalImage {
     }
 
     pub open spec fn i(self) -> JournalImage {
-        snapshot_tight_image(to_journal_records(self.persistent), self.snapshot)
+        JournalImage{tj: self.tj(), first: self.snapshot.first()}
     }
 
     pub open spec fn seq_end(self) -> LSN {
-        self.tj().seq_end()
+        self.seq_end
     }
 
     pub open spec fn valid_image(self) -> bool {
-        &&& self.tj().decodable()
-        &&& self.tj().disk_view.wf_addrs()
-        &&& self.tj().disk_view.pointer_is_upstream(self.tj().freshest_rec, self.snapshot.first())
-        &&& self.tj().disk_view.domain_au_bounded_wrt_index(
-            self.tj().build_lsn_au_index_from_first(self.snapshot.first()),
-        )
-        &&& self.tj().disk_view.bounded_inactive_lsns(
-            self.tj().build_lsn_au_index_from_first(self.snapshot.first()),
-            self.tj().freshest_rec,
-        )
+        &&& self.i().valid_image()
+        &&& self.stable_tj().disk_view.entries <= to_journal_records(self.persistent)
+        &&& self.seq_end == self.i().tj.seq_end()
     }
 
     pub open spec fn wf(self) -> bool {
         self.valid_image()
     }
 
-    pub proof fn valid_image_implies_live_valid_image(self)
-        requires
-            self.valid_image(),
-        ensures
-            (JournalImage{tj: self.live_tj(), first: self.snapshot.first()}).live_valid_image(),
-    {
-        let image_tj = self.tj();
-        let live_tj = self.live_tj();
-        let first = self.snapshot.first();
-        let index = image_tj.build_lsn_au_index_from_first(first);
-        let live_index = live_tj.build_lsn_au_index_from_first(first);
-        assert(live_tj == image_tj);
-        assert(image_tj.valid_structure(index, first));
-        image_tj.build_lsn_au_index_from_first_ensures(first);
-        assert(live_index == index);
-        assert(live_tj.disk_view.domain_tight_wrt_index(
-            live_index,
-            live_tj.freshest_rec,
-        )) by {
-            assert forall |addr: Address| #[trigger] live_tj.disk_view.entries.dom().contains(addr)
-                implies {
-                    &&& live_index.values().contains(addr.au)
-                    &&& live_tj.freshest_rec is Some ==> !live_tj.freshest_rec.unwrap().after_page(addr)
-                } by {
-                assert(live_tj.disk_view.domain_au_bounded_wrt_index(live_index));
-                assert(live_index.values().contains(addr.au));
-                if live_tj.freshest_rec is Some {
-                    let records = to_journal_records(self.persistent);
-                    let depth = choose |depth: nat|
-                        snapshot_walk_ptr(
-                            records,
-                            self.snapshot.boundary_lsn,
-                            self.snapshot.freshest_rec(),
-                            depth,
-                        ) == Some(addr);
-                    snapshot_walk_restrict_domain_same(
-                        records,
-                        self.snapshot.boundary_lsn,
-                        self.snapshot.freshest_rec(),
-                        depth,
-                    );
-                    assert(snapshot_walk_ptr(
-                        live_tj.disk_view.entries,
-                        live_tj.disk_view.boundary_lsn,
-                        live_tj.freshest_rec,
-                        depth,
-                    ) == Some(addr));
-                    assert(live_tj.disk_view.decodable(live_tj.freshest_rec));
-                    assert(live_tj.disk_view.acyclic());
-                    snapshot_walk_ptr_in_build_tight(live_tj.disk_view, live_tj.freshest_rec, depth);
-                    assert(snapshot_walk_ptr(
-                        live_tj.disk_view.entries,
-                        live_tj.disk_view.boundary_lsn,
-                        live_tj.freshest_rec,
-                        depth,
-                    ) is Some);
-                    assert(snapshot_walk_ptr(
-                        live_tj.disk_view.entries,
-                        live_tj.disk_view.boundary_lsn,
-                        live_tj.freshest_rec,
-                        depth,
-                    ).unwrap() == addr);
-                    assert(live_tj.disk_view.build_tight(live_tj.freshest_rec).entries.contains_key(addr));
-                    build_tight_entry_not_after_root(
-                        live_tj.disk_view,
-                        live_tj.freshest_rec,
-                        first,
-                        addr,
-                    );
-                }
-            }
-        }
-        assert((JournalImage{tj: live_tj, first}).live_valid_image());
-    }
-
-    pub proof fn valid_image_implies_tight_structure(self)
-        requires
-            self.valid_image(),
-        ensures
-            (JournalImage{tj: self.tight_tj(), first: self.snapshot.first()}).valid_image(),
-            self.tight_tj().decodable(),
-            self.tight_tj().disk_view.wf_addrs(),
-            self.tight_tj().disk_view.internal_au_pages_fully_linked(),
-            self.tight_tj().disk_view.has_unique_lsns(),
-            self.tight_tj().freshest_rec is Some ==>
-                self.tight_tj().disk_view.upstream(self.tight_tj().freshest_rec.unwrap()),
-    {
-        let image_tj = self.tj();
-        let tight_tj = self.tight_tj();
-        let first = self.snapshot.first();
-        let index = image_tj.build_lsn_au_index_from_first(first);
-
-        assert(image_tj.valid_structure(index, first));
-        image_tj.build_lsn_au_index_from_first_ensures(first);
-        image_tj.disk_view.build_tight_is_awesome(image_tj.freshest_rec);
-        let image_dv = image_tj.disk_view;
-        let tight_dv = tight_tj.disk_view;
-        assert(tight_dv.is_sub_disk(image_dv));
-        assert forall |addr: Address| #[trigger] tight_dv.entries.dom().contains(addr)
-            implies image_dv.entries.dom().contains(addr) && tight_dv.entries[addr] == image_dv.entries[addr] by {
-            assert(tight_dv.entries <= image_dv.entries);
-        }
-        assert(tight_tj.wf());
-        assert(tight_tj.decodable());
-        assert(tight_dv.wf_addrs()) by {
-            assert forall |addr: Address| #[trigger] tight_dv.entries.dom().contains(addr)
-                implies addr.wf() by {
-                assert(image_dv.entries.dom().contains(addr));
-                assert(image_dv.wf_addrs());
-            }
-        }
-        assert(tight_dv.nonzero_pages_point_backward()) by {
-            assert forall |addr: Address| #![auto]
-                ({
-                    &&& addr.page != 0
-                    &&& tight_dv.entries.dom().contains(addr)
-                }) ==> tight_dv.entries[addr].prior_rec == Some(addr.previous()) by {
-                if addr.page != 0 && tight_dv.entries.dom().contains(addr) {
-                    assert(image_dv.entries.dom().contains(addr));
-                    assert(tight_dv.entries[addr] == image_dv.entries[addr]);
-                    assert(image_dv.internal_au_pages_fully_linked());
-                    assert(image_dv.nonzero_pages_point_backward());
-                }
-            }
-        }
-        reveal(DiskView::pages_allocated_in_lsn_order);
-        assert(tight_dv.pages_allocated_in_lsn_order()) by {
-            assert forall |alo: Address, ahi: Address| #![auto]
-                ({
-                    &&& alo.au == ahi.au
-                    &&& alo.page < ahi.page
-                    &&& tight_dv.entries.dom().contains(alo)
-                    &&& tight_dv.entries.dom().contains(ahi)
-                }) ==> tight_dv.entries[alo].message_seq.seq_end
-                    <= tight_dv.entries[ahi].message_seq.seq_start by {
-                if alo.au == ahi.au && alo.page < ahi.page
-                    && tight_dv.entries.dom().contains(alo)
-                    && tight_dv.entries.dom().contains(ahi) {
-                    assert(image_dv.entries.dom().contains(alo));
-                    assert(image_dv.entries.dom().contains(ahi));
-                    assert(tight_dv.entries[alo] == image_dv.entries[alo]);
-                    assert(tight_dv.entries[ahi] == image_dv.entries[ahi]);
-                    assert(image_dv.internal_au_pages_fully_linked());
-                    assert(image_dv.pages_allocated_in_lsn_order());
-                }
-            }
-        }
-        assert(tight_dv.internal_au_pages_fully_linked());
-        assert(tight_dv.has_unique_lsns()) by {
-            assert forall |lsn: LSN, addr1: Address, addr2: Address|
-                tight_dv.addr_supports_lsn(addr1, lsn)
-                && tight_dv.addr_supports_lsn(addr2, lsn)
-                implies addr1 == addr2 by {
-                assert(image_dv.addr_supports_lsn(addr1, lsn));
-                assert(image_dv.addr_supports_lsn(addr2, lsn));
-                assert(image_dv.has_unique_lsns());
-            }
-        }
-        if tight_tj.freshest_rec is Some {
-            let root = tight_tj.freshest_rec.unwrap();
-            assert(tight_dv.entries.contains_key(root));
-            assert(tight_dv.upstream(root));
-
-            tight_dv.decodable_implies_lsns_have_entries(tight_tj.freshest_rec);
-            assert(tight_dv.lsns_have_entries(tight_tj.freshest_rec));
-            assert(tight_dv.lsn_has_entry(tight_dv.boundary_lsn));
-            let tight_first_addr = choose |addr: Address|
-                tight_dv.lsn_has_entry_at(tight_dv.boundary_lsn, addr);
-            assert(tight_dv.addr_supports_lsn(tight_first_addr, tight_dv.boundary_lsn));
-
-            assert(image_dv.addr_supports_lsn(tight_first_addr, image_dv.boundary_lsn));
-            assert(image_dv.valid_first_au(first));
-            let image_first_addr = choose |addr: Address| #![auto]
-                addr.au == first && image_dv.addr_supports_lsn(addr, image_dv.boundary_lsn);
-            assert(image_dv.addr_supports_lsn(image_first_addr, image_dv.boundary_lsn));
-            assert(image_dv.has_unique_lsns());
-            assert(tight_first_addr == image_first_addr);
-            assert(tight_dv.valid_first_au(first));
-        }
-        assert(tight_dv.pointer_is_upstream(tight_tj.freshest_rec, first));
-        let tight_index = tight_tj.build_lsn_au_index_from_first(first);
-        tight_tj.build_lsn_au_index_from_first_ensures(first);
-        tight_dv.build_lsn_au_index_equiv_page_walk(tight_tj.freshest_rec, first);
-        image_dv.build_lsn_au_index_equiv_page_walk(image_tj.freshest_rec, first);
-        tight_dv.build_lsn_au_index_page_walk_sub_disk(image_dv, tight_tj.freshest_rec);
-        assert(tight_dv.build_lsn_au_index_page_walk(tight_tj.freshest_rec)
-            == image_dv.build_lsn_au_index_page_walk(image_tj.freshest_rec));
-        assert(tight_index == index);
-        assert(tight_dv.domain_au_bounded_wrt_index(tight_index)) by {
-            assert forall |addr: Address| #[trigger] tight_dv.entries.dom().contains(addr)
-                implies tight_index.values().contains(addr.au) by {
-                assert(image_dv.entries.dom().contains(addr));
-                assert(image_dv.domain_au_bounded_wrt_index(index));
-                assert(index.values().contains(addr.au));
-            }
-        }
-        assert(tight_dv.bounded_inactive_lsns(tight_index, tight_tj.freshest_rec)) by {
-            assert forall |addr: Address, lsn: LSN|
-                ({
-                    &&& tight_dv.entries.dom().contains(addr)
-                    &&& tight_dv.entries[addr].message_seq.contains(lsn)
-                    &&& tight_index.values().contains(addr.au)
-                    &&& !tight_index.contains_key(lsn)
-                    &&& tight_tj.freshest_rec is Some ==> !tight_tj.freshest_rec.unwrap().after_page(addr)
-                }) implies lsn < tight_dv.boundary_lsn by {
-                assert(image_dv.entries.dom().contains(addr));
-                assert(tight_dv.entries[addr] == image_dv.entries[addr]);
-                assert(index.values().contains(addr.au));
-                assert(!index.contains_key(lsn));
-                assert(image_dv.bounded_inactive_lsns(index, image_tj.freshest_rec));
-            }
-        }
-        assert((JournalImage{tj: tight_tj, first}).valid_image());
-    }
-
     pub open spec fn accessible_aus(self) -> Set<AU> {
         to_aus(self.persistent.dom())
-    }
-
-    pub proof fn live_persistent_aus_match_i(self)
-        ensures
-            to_aus(self.live_persistent().dom()) <= self.i().accessible_aus(),
-    {
-        assert forall |au: AU| #[trigger] to_aus(self.live_persistent().dom()).contains(au)
-            implies self.i().accessible_aus().contains(au) by {
-            crate::disk::GenericDisk_v::to_aus_domain(self.live_persistent().dom());
-            let addr = choose |addr: Address| self.live_persistent().dom().contains(addr) && addr.au == au;
-            assert(self.live_persistent().contains_key(addr));
-            assert(self.persistent.contains_key(addr));
-            assert(self.stable_persistent_domain().contains(addr));
-            assert(to_journal_records(self.persistent).contains_key(addr));
-            assert(self.live_tj().disk_view.entries.contains_key(addr));
-            assert(self.i().tj.disk_view.entries.contains_key(addr));
-            crate::disk::GenericDisk_v::to_aus_domain(self.i().tj.disk_view.entries.dom());
-        }
-    }
-
-    pub proof fn valid_image_snapshot_walk_ptr_present(self, depth: nat)
-        requires
-            self.valid_image(),
-            snapshot_walk_ptr(
-                to_journal_records(self.persistent),
-                self.snapshot.boundary_lsn,
-                self.snapshot.freshest_rec(),
-                depth,
-            ) is Some,
-        ensures
-            to_journal_records(self.persistent).contains_key(snapshot_walk_ptr(
-                to_journal_records(self.persistent),
-                self.snapshot.boundary_lsn,
-                self.snapshot.freshest_rec(),
-                depth,
-            ).unwrap()),
-        decreases depth,
-    {
-        let records = to_journal_records(self.persistent);
-        let root = self.snapshot.freshest_rec();
-        let ptr = snapshot_walk_ptr(records, self.snapshot.boundary_lsn, root, depth);
-        if depth == 0 {
-            assert(ptr == root);
-            assert(self.tj().disk_view.is_nondangling_pointer(self.tj().freshest_rec));
-            assert(self.tj().freshest_rec == root);
-            assert(self.tj().disk_view.entries.contains_key(ptr.unwrap()));
-            assert(records.contains_key(ptr.unwrap()));
-        } else {
-            let prev = snapshot_walk_ptr(records, self.snapshot.boundary_lsn, root, (depth - 1) as nat);
-            assert(ptr == if prev is Some && records.contains_key(prev.unwrap()) {
-                records[prev.unwrap()].cropped_prior(self.snapshot.boundary_lsn)
-            } else {
-                None
-            });
-            assert(prev is Some);
-            self.valid_image_snapshot_walk_ptr_present((depth - 1) as nat);
-            let prev_addr = prev.unwrap();
-            assert(records.contains_key(prev_addr));
-            assert(snapshot_walk_domain(records, self.snapshot.boundary_lsn, root).contains(prev_addr));
-            assert(self.tj().disk_view.entries.contains_key(prev_addr));
-            assert(self.tj().disk_view.entries[prev_addr] == records[prev_addr]);
-            assert(self.tj().disk_view.nondangling_pointers());
-            assert(self.tj().disk_view.is_nondangling_pointer(
-                self.tj().disk_view.entries[prev_addr].cropped_prior(self.snapshot.boundary_lsn),
-            ));
-            assert(ptr == self.tj().disk_view.entries[prev_addr].cropped_prior(self.snapshot.boundary_lsn));
-            assert(self.tj().disk_view.entries.contains_key(ptr.unwrap()));
-            assert(records.contains_key(ptr.unwrap()));
-        }
-    }
-
-    pub proof fn valid_image_stable_domain_materialized(self)
-        requires
-            self.valid_image(),
-        ensures
-            self.stable_persistent_domain() <= self.persistent.dom(),
-    {
-        assert forall |addr: Address| #[trigger] self.stable_persistent_domain().contains(addr)
-            implies self.persistent.dom().contains(addr) by {
-            let records = to_journal_records(self.persistent);
-            let depth = choose |depth: nat|
-                snapshot_walk_ptr(records, self.snapshot.boundary_lsn, self.snapshot.freshest_rec(), depth)
-                    == Some(addr);
-            self.valid_image_snapshot_walk_ptr_present(depth);
-            assert(records.contains_key(addr));
-            assert(self.persistent.contains_key(addr));
-        }
     }
 }
 
@@ -1174,141 +467,6 @@ pub open spec fn concrete_frozen_image(
     snapshot: JournalSnapshot,
 ) -> JournalImage {
     JournalImage{tj: concrete_frozen_tj(state, snapshot), first: snapshot.first()}
-}
-
-pub proof fn visible_snapshot_image_matches_concrete_frozen(
-    state: CachingDiskJournal::State,
-    frozen: JournalSnapshot,
-    seq_end: LSN,
-)
-    requires
-        state.inv(),
-        state.frozen_snapshot_valid(frozen, seq_end),
-    ensures
-        snapshot_tight_image(state.journal_disk_view().entries, frozen)
-            == concrete_frozen_image(state, frozen),
-{
-    let visible_records = state.journal_disk_view().entries;
-    let visible_image = snapshot_tight_image(visible_records, frozen);
-    let frozen_tj = state.frozen_tj(frozen);
-    let concrete_image = concrete_frozen_image(state, frozen);
-    let root = frozen.freshest_rec();
-
-    state.frozen_snapshot_valid_image(frozen, seq_end);
-    frozen_tj.disk_view.build_tight_ensures(root);
-
-    assert_maps_equal!(
-        visible_image.tj.disk_view.entries,
-        concrete_image.tj.disk_view.entries,
-        addr => {
-            if visible_image.tj.disk_view.entries.contains_key(addr) {
-                assert(snapshot_walk_domain(visible_records, frozen.boundary_lsn, root).contains(addr));
-                let depth = choose |depth: nat|
-                    snapshot_walk_ptr(visible_records, frozen.boundary_lsn, root, depth) == Some(addr);
-                snapshot_walk_visible_frozen_agree(state, frozen, seq_end, depth);
-                assert(snapshot_walk_ptr(
-                    frozen_tj.disk_view.entries,
-                    frozen.boundary_lsn,
-                    root,
-                    depth,
-                ) == Some(addr));
-                snapshot_walk_ptr_in_build_tight(frozen_tj.disk_view, root, depth);
-                assert(concrete_image.tj.disk_view.entries.contains_key(addr));
-                assert(frozen_tj.disk_view.entries.contains_key(addr));
-                assert(frozen_tj.disk_view.entries[addr] == visible_records[addr]) by {
-                    assert(frozen_tj.disk_view.entries <= state.journal_tj().disk_view.entries);
-                    assert(state.journal_tj().disk_view.entries == visible_records);
-                }
-                assert(concrete_image.tj.disk_view.entries[addr] == frozen_tj.disk_view.entries[addr]);
-                assert(visible_image.tj.disk_view.entries[addr] == visible_records[addr]);
-            }
-            if concrete_image.tj.disk_view.entries.contains_key(addr) {
-                let depth = build_tight_entry_has_walk_depth(frozen_tj.disk_view, root, addr);
-                snapshot_walk_visible_frozen_agree(state, frozen, seq_end, depth);
-                assert(snapshot_walk_ptr(
-                    frozen_tj.disk_view.entries,
-                    frozen.boundary_lsn,
-                    root,
-                    depth,
-                ) == Some(addr));
-                assert(snapshot_walk_ptr(visible_records, frozen.boundary_lsn, root, depth) == Some(addr));
-                assert(snapshot_walk_domain(visible_records, frozen.boundary_lsn, root).contains(addr));
-                assert(visible_image.tj.disk_view.entries.contains_key(addr));
-                assert(frozen_tj.disk_view.entries.contains_key(addr));
-                assert(frozen_tj.disk_view.entries[addr] == visible_records[addr]) by {
-                    assert(frozen_tj.disk_view.entries <= state.journal_tj().disk_view.entries);
-                    assert(state.journal_tj().disk_view.entries == visible_records);
-                }
-                assert(concrete_image.tj.disk_view.entries[addr] == frozen_tj.disk_view.entries[addr]);
-                assert(visible_image.tj.disk_view.entries[addr] == visible_records[addr]);
-            }
-        }
-    );
-    assert(visible_image.tj == concrete_image.tj);
-    assert(visible_image == concrete_image);
-}
-
-pub proof fn prepared_snapshot_image_matches_visible(
-    state: CachingDiskJournal::State,
-    prepared_image: CachingDiskJournalImage,
-    seq_end: LSN,
-)
-    requires
-        state.inv(),
-        state.frozen_snapshot_valid(prepared_image.snapshot, seq_end),
-        prepared_image.seq_end == seq_end,
-        prepared_image.persistent == state.disk.persistent,
-        prepared_image.snapshot.freshest_rec() is Some ==>
-            seq_end <= state.journal.clean_watermark(),
-    ensures
-        prepared_image.i()
-            == snapshot_tight_image(state.journal_disk_view().entries, prepared_image.snapshot),
-{
-    let frozen = prepared_image.snapshot;
-    let persistent_records = to_journal_records(prepared_image.persistent);
-    let state_persistent_records = to_journal_records(state.disk.persistent);
-    let visible_records = state.journal_disk_view().entries;
-    let persistent_image = prepared_image.i();
-    let visible_image = snapshot_tight_image(visible_records, frozen);
-    let root = frozen.freshest_rec();
-
-    assert(persistent_records == state_persistent_records);
-    assert_maps_equal!(
-        persistent_image.tj.disk_view.entries,
-        visible_image.tj.disk_view.entries,
-        addr => {
-            if persistent_image.tj.disk_view.entries.contains_key(addr) {
-                assert(snapshot_walk_domain(persistent_records, frozen.boundary_lsn, root).contains(addr));
-                let depth = choose |depth: nat|
-                    snapshot_walk_ptr(persistent_records, frozen.boundary_lsn, root, depth) == Some(addr);
-                snapshot_walk_persistent_visible_frozen_agree(state, frozen, seq_end, depth);
-                assert(snapshot_walk_ptr(visible_records, frozen.boundary_lsn, root, depth) == Some(addr));
-                assert(snapshot_walk_domain(visible_records, frozen.boundary_lsn, root).contains(addr));
-                assert(visible_image.tj.disk_view.entries.contains_key(addr));
-                assert(state.clean_watermark_pages().contains(addr));
-                state.clean_watermark_record_eq(addr);
-                assert(persistent_records[addr] == visible_records[addr]);
-                assert(persistent_image.tj.disk_view.entries[addr] == persistent_records[addr]);
-                assert(visible_image.tj.disk_view.entries[addr] == visible_records[addr]);
-            }
-            if visible_image.tj.disk_view.entries.contains_key(addr) {
-                assert(snapshot_walk_domain(visible_records, frozen.boundary_lsn, root).contains(addr));
-                let depth = choose |depth: nat|
-                    snapshot_walk_ptr(visible_records, frozen.boundary_lsn, root, depth) == Some(addr);
-                snapshot_walk_persistent_visible_frozen_agree(state, frozen, seq_end, depth);
-                assert(snapshot_walk_ptr(persistent_records, frozen.boundary_lsn, root, depth) == Some(addr));
-                assert(snapshot_walk_domain(persistent_records, frozen.boundary_lsn, root).contains(addr));
-                assert(persistent_image.tj.disk_view.entries.contains_key(addr));
-                assert(state.clean_watermark_pages().contains(addr));
-                state.clean_watermark_record_eq(addr);
-                assert(persistent_records[addr] == visible_records[addr]);
-                assert(persistent_image.tj.disk_view.entries[addr] == persistent_records[addr]);
-                assert(visible_image.tj.disk_view.entries[addr] == visible_records[addr]);
-            }
-        }
-    );
-    assert(persistent_image.tj == visible_image.tj);
-    assert(persistent_image == visible_image);
 }
 
 pub proof fn caching_disk_journal_freeze_image_facts(
@@ -1539,7 +697,9 @@ state_machine!{ CrashAwareCachingDiskJournal {
         let frozen_image = pre.frozen.unwrap();
         require prepared_image.snapshot == frozen_image.snapshot;
         require prepared_image.seq_end == frozen_image.seq_end;
-        require prepared_image.persistent == pre.ephemeral->v.disk.persistent;
+        require prepared_image.persistent == pre.ephemeral->v.disk.persistent.restrict(
+            pre.ephemeral->v.frozen_loose_domain(frozen_image.snapshot),
+        );
         require CachingDiskJournal::State::next(
             pre.ephemeral->v,
             pre.ephemeral->v,
@@ -1576,7 +736,9 @@ state_machine!{ CrashAwareCachingDiskJournal {
         require keep_in_flight ==> pre.ephemeral is Known;
         require keep_in_flight ==> prepared_image.snapshot == pre.frozen.unwrap().snapshot;
         require keep_in_flight ==> prepared_image.seq_end == pre.frozen.unwrap().seq_end;
-        require keep_in_flight ==> prepared_image.persistent == pre.ephemeral->v.disk.persistent;
+        require keep_in_flight ==> prepared_image.persistent == pre.ephemeral->v.disk.persistent.restrict(
+            pre.ephemeral->v.frozen_loose_domain(pre.frozen.unwrap().snapshot),
+        );
         require keep_in_flight ==> CachingDiskJournal::State::next(
             pre.ephemeral->v,
             pre.ephemeral->v,
@@ -1599,25 +761,18 @@ state_machine!{ CrashAwareCachingDiskJournal {
     #[invariant]
     pub open spec fn inv(self) -> bool {
         &&& self.ephemeral is Unknown ==> self.frozen is None && !self.prepared
-        &&& self.persistent.wf()
         &&& self.ephemeral is Known ==> self.ephemeral->v.inv()
-        &&& self.ephemeral is Known ==> self.persistent.live_tj().disk_view.entries.dom()
-            <= self.ephemeral->v.journal_disk_view().entries.dom()
         &&& self.frozen is Some && self.ephemeral is Known ==> self.ephemeral->v.journal.status is Some
-        &&& self.frozen is Some && self.ephemeral is Known ==>
-            self.ephemeral->v.frozen_snapshot_valid(
-                self.frozen.unwrap().snapshot,
-                self.frozen.unwrap().seq_end,
-            )
         &&& self.prepared ==> self.frozen is Some
         &&& self.prepared ==> self.ephemeral is Known
+        &&& self.prepared && self.ephemeral is Known ==> self.ephemeral->v.journal.status is Some
         &&& self.prepared && self.ephemeral is Known && self.frozen is Some ==>
             self.frozen.unwrap().snapshot.freshest_rec() is Some ==>
                 self.frozen.unwrap().seq_end <= self.ephemeral->v.journal.clean_watermark()
     }
 
     #[inductive(initialize)]
-    fn initialize_inductive(post: Self) {
+    pub fn initialize_inductive(post: Self) {
         JournalImage::empty_is_valid_image();
         TruncatedJournal::mkfs_ensures();
         assert(post.persistent.i() == JournalImage::empty());
@@ -1656,59 +811,48 @@ state_machine!{ CrashAwareCachingDiskJournal {
                 assert(loaded.visible_records().contains_key(addr));
             }
         }
-        assert(loaded.journal_tj() == pre.persistent.live_tj());
-        pre.persistent.valid_image_implies_live_valid_image();
-        assert(loaded.visible_journal_structure()) by {
-            assert(loaded.journal_tj().decodable());
-            assert(loaded.journal_tj().disk_view.wf_addrs());
-            assert(loaded.journal_tj().disk_view.pointer_is_upstream(
-                loaded.journal_tj().freshest_rec,
-                loaded.journal.snapshot.first(),
-            ));
-            assert(loaded.journal_tj().disk_view.domain_tight_wrt_index(
-                loaded.journal_tj().build_lsn_au_index_from_first(loaded.journal.snapshot.first()),
-                loaded.journal_tj().freshest_rec,
-            ));
-            assert(loaded.journal_tj().disk_view.bounded_inactive_lsns(
-                loaded.journal_tj().build_lsn_au_index_from_first(loaded.journal.snapshot.first()),
-                loaded.journal_tj().freshest_rec,
-            ));
-            assert(AllocationJournal::State::disk_domain_not_free(
-                loaded.journal_tj().disk_view,
-                loaded.mini_allocator,
-            )) by {
-                assert forall |addr: Address| #[trigger] loaded.journal_tj().disk_view.entries.dom().contains(addr)
-                    implies !loaded.mini_allocator.can_allocate(addr) by {
-                    assert(loaded.visible_records().dom().contains(addr));
-                    assert(pre.persistent.live_persistent().dom().contains(addr));
-                    assert(to_aus(loaded.disk.visible().dom()).contains(addr.au)) by {
-                        let m = Map::new(
-                            |addr| loaded.disk.visible().dom().contains(addr),
-                            |addr: Address| addr.au,
-                        );
-                        assert(m.contains_key(addr));
-                        assert(m[addr] == addr.au);
-                        assert(m.values().contains(addr.au));
+        let snapshot = pre.persistent.snapshot;
+        let full_records = to_journal_records(pre.persistent.persistent);
+        let live_domain = pre.persistent.live_persistent_domain();
+        assert(loaded.raw_visible_records() == full_records.restrict(live_domain)) by {
+            assert_maps_equal!(
+                loaded.raw_visible_records(),
+                full_records.restrict(live_domain),
+                addr => {
+                    if loaded.raw_visible_records().contains_key(addr) {
+                        assert(loaded.disk.visible().contains_key(addr));
+                        assert(pre.persistent.live_persistent().contains_key(addr));
+                        assert(pre.persistent.persistent.contains_key(addr));
+                        assert(live_domain.contains(addr));
+                        assert(loaded.disk.visible()[addr] == pre.persistent.live_persistent()[addr]);
+                        assert(pre.persistent.live_persistent()[addr] == pre.persistent.persistent[addr]);
                     }
-                    assert(loaded.mini_allocator == MiniAllocator::empty());
-                    assert(!loaded.mini_allocator.allocs.contains_key(addr.au));
+                    if full_records.restrict(live_domain).contains_key(addr) {
+                        assert(full_records.contains_key(addr));
+                        assert(pre.persistent.persistent.contains_key(addr));
+                        assert(live_domain.contains(addr));
+                        assert(pre.persistent.live_persistent().contains_key(addr));
+                        assert(loaded.disk.visible().contains_key(addr));
+                        assert(loaded.disk.visible()[addr] == pre.persistent.live_persistent()[addr]);
+                    }
                 }
-            }
-            assert(AllocationJournal::State::mini_allocator_follows_freshest_rec(
-                loaded.journal_tj().freshest_rec,
-                loaded.mini_allocator,
-            ));
+            );
         }
+        crate::implementation::CachingDiskJournal_v::snapshot_tight_tj_matches_path_build_tight(
+            loaded.raw_visible_records(),
+            snapshot,
+        );
+        assert(loaded.journal_tj()
+            == crate::implementation::CachingDiskJournal_v::snapshot_tight_tj(
+                loaded.raw_visible_records(),
+                snapshot,
+            )) by {
+            loaded.journal_tj_matches_snapshot_tight();
+        }
+        assert(loaded.journal.wf());
+        assert(loaded.disk.inv());
+        assert(loaded.mini_allocator.wf());
         assert(loaded.inv());
-        assert(pre.persistent.live_tj().disk_view.entries.dom()
-            <= loaded.journal_disk_view().entries.dom()) by {
-            assert forall |addr: Address| #[trigger] pre.persistent.live_tj().disk_view.entries.dom().contains(addr)
-                implies loaded.journal_disk_view().entries.dom().contains(addr) by {
-                assert(pre.persistent.live_tj().disk_view.entries.contains_key(addr));
-                assert(pre.persistent.persistent.contains_key(addr));
-                assert(loaded.visible_records().contains_key(addr));
-            }
-        }
     }
 
     #[inductive(read_for_recovery)]
@@ -1728,15 +872,47 @@ state_machine!{ CrashAwareCachingDiskJournal {
         match step {
             CachingDiskJournal::Step::put(new_journal) => {
                 reveal(CachingDiskJournal::State::put);
+                reveal(CachedJournal::State::next);
+                reveal(CachedJournal::State::next_by);
+                let journal_lbl = CachedJournal::Label::Put{messages: lbl.arrow_Put_records()};
+                let journal_step = choose |step: CachedJournal::Step|
+                    CachedJournal::State::next_by(
+                        pre.ephemeral->v.journal,
+                        new_ephemeral.journal,
+                        journal_lbl,
+                        step,
+                    );
+                match journal_step {
+                    CachedJournal::Step::put() => {
+                        reveal(CachedJournal::State::put);
+                    },
+                    _ => {
+                        assert(false);
+                    },
+                }
                 CachedJournal::State::put_effect(
                     pre.ephemeral->v.journal,
                     new_ephemeral.journal,
                     lbl.arrow_Put_records(),
                 );
+                assert(pre.ephemeral->v.journal.seq_end() <= new_ephemeral.journal.seq_end()) by {
+                    assert(lbl.arrow_Put_records().wf());
+                    assert(lbl.arrow_Put_records().seq_start == pre.ephemeral->v.journal.seq_end());
+                    assert(lbl.arrow_Put_records().seq_start <= lbl.arrow_Put_records().seq_end);
+                    assert(new_ephemeral.journal.status.unwrap().unmarshalled_tail
+                        == pre.ephemeral->v.journal.status.unwrap().unmarshalled_tail.concat(
+                            lbl.arrow_Put_records(),
+                        ));
+                    assert(new_ephemeral.journal.seq_end() == lbl.arrow_Put_records().seq_end);
+                }
             },
             _ => {
                 assert(false);
             },
+        }
+        if pre.prepared && pre.frozen is Some && pre.frozen.unwrap().snapshot.freshest_rec() is Some {
+            assert(pre.frozen.unwrap().seq_end <= pre.ephemeral->v.journal.clean_watermark());
+            assert(new_ephemeral.journal.clean_watermark() == pre.ephemeral->v.journal.clean_watermark());
         }
         assert(caching_disk_journal_accessible_aus(pre.ephemeral->v)
             <= caching_disk_journal_accessible_aus(new_ephemeral)) by {
@@ -1745,14 +921,6 @@ state_machine!{ CrashAwareCachingDiskJournal {
                 assert(new_ephemeral.disk == pre.ephemeral->v.disk);
                 assert(new_ephemeral.mini_allocator == pre.ephemeral->v.mini_allocator);
                 assert(new_ephemeral.journal.snapshot == pre.ephemeral->v.journal.snapshot);
-                assert(new_ephemeral.journal_disk_view() == pre.ephemeral->v.journal_disk_view());
-            }
-        }
-        assert(pre.persistent.live_tj().disk_view.entries.dom()
-            <= new_ephemeral.journal_disk_view().entries.dom()) by {
-            assert forall |addr: Address| #[trigger] pre.persistent.live_tj().disk_view.entries.dom().contains(addr)
-                implies new_ephemeral.journal_disk_view().entries.dom().contains(addr) by {
-                assert(pre.ephemeral->v.journal_disk_view().entries.dom().contains(addr));
                 assert(new_ephemeral.journal_disk_view() == pre.ephemeral->v.journal_disk_view());
             }
         }
@@ -1787,12 +955,8 @@ state_machine!{ CrashAwareCachingDiskJournal {
         assert(new_ephemeral.disk == pre.ephemeral->v.disk);
         assert(new_ephemeral.journal.snapshot == pre.ephemeral->v.journal.snapshot);
         assert(new_ephemeral.journal_disk_view() == pre.ephemeral->v.journal_disk_view());
-        assert(pre.persistent.live_tj().disk_view.entries.dom()
-            <= new_ephemeral.journal_disk_view().entries.dom()) by {
-            assert forall |addr: Address| #[trigger] pre.persistent.live_tj().disk_view.entries.dom().contains(addr)
-                implies new_ephemeral.journal_disk_view().entries.dom().contains(addr) by {
-                assert(pre.ephemeral->v.journal_disk_view().entries.dom().contains(addr));
-            }
+        if pre.prepared {
+            assert(false);
         }
     }
 
@@ -1831,13 +995,6 @@ state_machine!{ CrashAwareCachingDiskJournal {
         assert(new_ephemeral.disk == pre.ephemeral->v.disk);
         assert(new_ephemeral.journal.snapshot == pre.ephemeral->v.journal.snapshot);
         assert(new_ephemeral.journal_disk_view() == pre.ephemeral->v.journal_disk_view());
-        assert(pre.persistent.live_tj().disk_view.entries.dom()
-            <= new_ephemeral.journal_disk_view().entries.dom()) by {
-            assert forall |addr: Address| #[trigger] pre.persistent.live_tj().disk_view.entries.dom().contains(addr)
-                implies new_ephemeral.journal_disk_view().entries.dom().contains(addr) by {
-                assert(pre.ephemeral->v.journal_disk_view().entries.dom().contains(addr));
-            }
-        }
     }
 
     #[inductive(internal)]
@@ -1847,6 +1004,7 @@ state_machine!{ CrashAwareCachingDiskJournal {
         assert(post.frozen == pre.frozen);
         let cj_lbl = CachingDiskJournal::Label::Internal;
         CachingDiskJournal::State::inv_next(pre.ephemeral->v, new_ephemeral, cj_lbl);
+        assert(pre.ephemeral->v.i().disk_view == pre.ephemeral->v.journal_disk_view());
         reveal(CachingDiskJournal::State::next);
         reveal(CachingDiskJournal::State::next_by);
         let step = choose |step: CachingDiskJournal::Step|
@@ -1937,15 +1095,14 @@ state_machine!{ CrashAwareCachingDiskJournal {
                 }
             }
         }
-        assert(pre.persistent.live_tj().disk_view.entries.dom()
-            <= new_ephemeral.journal_disk_view().entries.dom());
         if pre.frozen is Some {
-            CachingDiskJournal::State::internal_extends_journal_view(pre.ephemeral->v, new_ephemeral);
+            assert(pre.ephemeral->v.journal.status is Some);
             assert(new_ephemeral.journal.status is Some) by {
                 match step {
                     CachingDiskJournal::Step::caching_disk_internal(new_disk) => {
                         reveal(CachingDiskJournal::State::caching_disk_internal);
                         assert(new_ephemeral.journal == pre.ephemeral->v.journal);
+                        assert(new_ephemeral.journal.status == pre.ephemeral->v.journal.status);
                     },
                     CachingDiskJournal::Step::load_index(new_journal, reads) => {
                         reveal(CachingDiskJournal::State::load_index);
@@ -1963,6 +1120,7 @@ state_machine!{ CrashAwareCachingDiskJournal {
                         match cj_step {
                             CachedJournal::Step::internal_journal_marshal(cut, addr) => {
                                 reveal(CachedJournal::State::internal_journal_marshal);
+                                assert(new_ephemeral.journal.status is Some);
                             },
                             _ => {
                                 assert(false);
@@ -1972,27 +1130,24 @@ state_machine!{ CrashAwareCachingDiskJournal {
                     CachingDiskJournal::Step::internal_noop() => {
                         reveal(CachingDiskJournal::State::internal_noop);
                         assert(new_ephemeral == pre.ephemeral->v);
+                        assert(new_ephemeral.journal.status == pre.ephemeral->v.journal.status);
                     },
                     _ => {
                         assert(false);
                     },
                 }
             }
-            {
+            if pre.prepared {
                 let frozen = pre.frozen.unwrap();
-                assert(pre.ephemeral->v.frozen_snapshot_valid(frozen.snapshot, frozen.seq_end));
                 match step {
                     CachingDiskJournal::Step::caching_disk_internal(new_disk) => {
                         reveal(CachingDiskJournal::State::caching_disk_internal);
                         CachingDisk::State::internal_visible_unchanged(pre.ephemeral->v.disk, new_ephemeral.disk);
                         assert(new_ephemeral.journal == pre.ephemeral->v.journal);
-                        assert(new_ephemeral.journal_tj() == pre.ephemeral->v.journal_tj());
-                        assert(new_ephemeral.frozen_snapshot_valid(frozen.snapshot, frozen.seq_end));
                     },
                     CachingDiskJournal::Step::internal_noop() => {
                         reveal(CachingDiskJournal::State::internal_noop);
                         assert(new_ephemeral == pre.ephemeral->v);
-                        assert(new_ephemeral.frozen_snapshot_valid(frozen.snapshot, frozen.seq_end));
                     },
                     CachingDiskJournal::Step::journal_marshal(new_journal, new_disk, new_addr, writes) => {
                         reveal(CachingDiskJournal::State::journal_marshal);
@@ -2021,63 +1176,18 @@ state_machine!{ CrashAwareCachingDiskJournal {
                                 addr.au,
                             ));
                         assert(new_ephemeral.journal.status is Some);
-                        assert(new_ephemeral.journal_tj().seq_start()
-                            == pre.ephemeral->v.journal_tj().seq_start());
-                        assert(pre.ephemeral->v.journal_tj().seq_start() <= frozen.snapshot.boundary_lsn);
-                        if frozen.snapshot.freshest_rec() is Some {
-                            let root = frozen.snapshot.freshest_rec().unwrap();
-                            assert(pre.ephemeral->v.journal_tj().disk_view.entries.contains_key(root));
-                            assert(pre.ephemeral->v.journal_tj().disk_view.entries
-                                <= new_ephemeral.journal_tj().disk_view.entries);
-                            assert(new_ephemeral.journal_tj().disk_view.entries.contains_key(root));
-                            assert(new_ephemeral.journal_tj().disk_view.entries[root]
-                                == pre.ephemeral->v.journal_tj().disk_view.entries[root]);
-                            assert(new_ephemeral.frozen_seq_end(frozen.snapshot)
-                                == pre.ephemeral->v.frozen_seq_end(frozen.snapshot));
-                            assert(frozen.seq_end <= pre.ephemeral->v.journal_tj().seq_end());
-                            assert(pre.ephemeral->v.journal_tj().seq_end()
-                                <= new_ephemeral.journal_tj().seq_end());
-                            assert(pre.ephemeral->v.journal.status.unwrap().lsn_au_index.contains_key(
-                                frozen.snapshot.boundary_lsn,
-                            ));
-                            assert(pre.ephemeral->v.journal.status.unwrap().lsn_au_index[frozen.snapshot.boundary_lsn]
-                                == frozen.snapshot.first());
-                            assert(frozen.snapshot.boundary_lsn < marshalled_msgs.seq_start) by {
-                                assert(frozen.seq_end
-                                    == pre.ephemeral->v.frozen_seq_end(frozen.snapshot));
-                                assert(frozen.seq_end <= pre.ephemeral->v.journal_tj().seq_end());
-                                assert(pre.ephemeral->v.journal_tj().seq_end()
-                                    == pre.ephemeral->v.journal.marshalled_seq_end());
-                                assert(marshalled_msgs.seq_start
-                                    == pre.ephemeral->v.journal.marshalled_seq_end());
-                            }
-                            assert(!singleton_index(
-                                marshalled_msgs.seq_start,
-                                marshalled_msgs.seq_end,
-                                addr.au,
-                            ).contains_key(frozen.snapshot.boundary_lsn));
-                            assert(new_ephemeral.lsn_au_index_or_empty().contains_key(
-                                frozen.snapshot.boundary_lsn,
-                            ));
-                            assert(new_ephemeral.lsn_au_index_or_empty()[frozen.snapshot.boundary_lsn]
-                                == frozen.snapshot.first());
-                        } else {
-                            assert(new_ephemeral.frozen_seq_end(frozen.snapshot)
-                                == pre.ephemeral->v.frozen_seq_end(frozen.snapshot));
+                        if pre.prepared && frozen.snapshot.freshest_rec() is Some {
+                            assert(frozen.seq_end <= pre.ephemeral->v.journal.clean_watermark());
+                            assert(new_ephemeral.journal.clean_watermark()
+                                == pre.ephemeral->v.journal.clean_watermark());
                         }
-                        assert(new_ephemeral.frozen_snapshot_valid(frozen.snapshot, frozen.seq_end));
                     },
                     _ => {
                         assert(false);
                     },
                 }
-                assert(new_ephemeral.frozen_snapshot_valid(frozen.snapshot, frozen.seq_end));
                 assert(post.frozen.unwrap() == frozen);
                 assert(post.ephemeral->v == new_ephemeral);
-                assert(post.ephemeral->v.frozen_snapshot_valid(
-                    post.frozen.unwrap().snapshot,
-                    post.frozen.unwrap().seq_end,
-                ));
             }
         }
     }
@@ -2095,10 +1205,10 @@ state_machine!{ CrashAwareCachingDiskJournal {
         let step = choose |step: CachingDiskJournal::Step|
             CachingDiskJournal::State::next_by(pre.ephemeral->v, new_ephemeral, cj_lbl, step);
         match step {
-            CachingDiskJournal::Step::mini_allocator_fill() => {
+            CachingDiskJournal::Step::mini_allocator_fill(new_disk) => {
                 reveal(CachingDiskJournal::State::mini_allocator_fill);
             },
-            CachingDiskJournal::Step::mini_allocator_prune() => {
+            CachingDiskJournal::Step::mini_allocator_prune(new_disk) => {
                 reveal(CachingDiskJournal::State::mini_allocator_prune);
             },
             _ => {
@@ -2106,8 +1216,10 @@ state_machine!{ CrashAwareCachingDiskJournal {
             },
         }
         assert(new_ephemeral.journal == pre.ephemeral->v.journal);
-        assert(new_ephemeral.disk == pre.ephemeral->v.disk);
-        assert(new_ephemeral.journal_disk_view() == pre.ephemeral->v.journal_disk_view());
+        if pre.prepared && pre.frozen is Some && pre.frozen.unwrap().snapshot.freshest_rec() is Some {
+            assert(new_ephemeral.journal.clean_watermark()
+                == pre.ephemeral->v.journal.clean_watermark());
+        }
     }
 
     #[inductive(query_lsn_persistence)]
@@ -2159,10 +1271,6 @@ state_machine!{ CrashAwareCachingDiskJournal {
         );
         caching_disk_journal_freeze_image_facts(pre.ephemeral->v, frozen_image);
         assert(frozen_image.seq_end == pre.ephemeral->v.frozen_seq_end(frozen_image.snapshot));
-        assert((JournalImage{
-            tj: pre.ephemeral->v.frozen_tj(frozen_image.snapshot),
-            first: frozen_image.snapshot.first(),
-        }).valid_image());
     }
 
     #[inductive(commit_prepared)]
@@ -2202,30 +1310,6 @@ state_machine!{ CrashAwareCachingDiskJournal {
     ) {
         let frozen_image = prepared_image;
         let frozen = pre.frozen.unwrap();
-        prepared_snapshot_image_matches_visible(
-            pre.ephemeral->v,
-            prepared_image,
-            frozen.seq_end,
-        );
-        let visible_image = snapshot_tight_image(
-            pre.ephemeral->v.journal_disk_view().entries,
-            frozen.snapshot,
-        );
-        pre.ephemeral->v.frozen_snapshot_valid_image(frozen.snapshot, frozen.seq_end);
-        let base_frozen = JournalImage{
-            tj: pre.ephemeral->v.frozen_tj(frozen.snapshot),
-            first: frozen.snapshot.first(),
-        };
-        base_frozen.valid_image_implies_tight_valid_image();
-        visible_snapshot_image_matches_concrete_frozen(
-            pre.ephemeral->v,
-            frozen.snapshot,
-            frozen.seq_end,
-        );
-        assert(visible_image == concrete_frozen_image(pre.ephemeral->v, frozen.snapshot));
-        assert(concrete_frozen_image(pre.ephemeral->v, frozen.snapshot).valid_image());
-        assert(prepared_image.i() == visible_image);
-        assert(prepared_image.i().valid_image());
         let cj_lbl = CachingDiskJournal::Label::DiscardOld{
             start_lsn: frozen_image.snapshot.boundary_lsn,
             require_end: lbl.arrow_CommitComplete_require_end(),
@@ -2249,68 +1333,10 @@ state_machine!{ CrashAwareCachingDiskJournal {
                     new_ephemeral.disk,
                     deallocs,
                 );
-                let frozen_index = frozen_image.i().tj.build_lsn_au_index_from_first(
-                    frozen_image.snapshot.first(),
-                );
-                frozen_image.i().tj.build_lsn_au_index_from_first_ensures(
-                    frozen_image.snapshot.first(),
-                );
                 lsn_au_index_discard_up_to_ensures(
                     old_au_index,
                     frozen_image.snapshot.boundary_lsn,
                 );
-                if frozen_image.i().tj.freshest_rec is Some {
-                    assert(frozen_index <= old_au_index) by {
-                        frozen_image.i().tj.sub_disk_build_sub_lsn_au_index(
-                            frozen_image.snapshot.first(),
-                            pre.ephemeral->v.journal_tj(),
-                            pre.ephemeral->v.journal.snapshot.first(),
-                        );
-                    }
-                }
-                assert(frozen_image.i().tj.disk_view.entries.dom()
-                    <= new_ephemeral.journal_disk_view().entries.dom()) by {
-                    assert forall |addr: Address| #[trigger] frozen_image.i().tj.disk_view.entries.dom().contains(addr)
-                        implies new_ephemeral.journal_disk_view().entries.dom().contains(addr) by {
-                        assert(frozen_image.i().tj.disk_view.entries.contains_key(addr));
-                        if frozen_image.i().tj.freshest_rec is None {
-                            assert(frozen_index.values().contains(addr.au)) by {
-                                assert(frozen_image.i().valid_image());
-                                assert(frozen_image.i().tj.disk_view.domain_au_bounded_wrt_index(
-                                    frozen_index,
-                                ));
-                            }
-                            assert(false);
-                        } else {
-                            assert(frozen_index.values().contains(addr.au)) by {
-                                assert(frozen_image.i().valid_image());
-                                assert(frozen_image.i().tj.disk_view.domain_au_bounded_wrt_index(
-                                    frozen_index,
-                                ));
-                            }
-                            let lsn = choose |lsn: LSN| #![auto]
-                                frozen_index.contains_key(lsn) && frozen_index[lsn] == addr.au;
-                            assert(frozen_index.contains_key(lsn));
-                            assert(old_au_index.contains_key(lsn));
-                            assert(old_au_index[lsn] == addr.au);
-                            reveal(TruncatedJournal::au_domain_valid);
-                            assert(frozen_image.i().tj.seq_start() <= lsn);
-                            assert(frozen_image.snapshot.boundary_lsn <= lsn);
-                            assert(new_au_index.contains_key(lsn));
-                            assert(new_au_index[lsn] == addr.au);
-                            assert(new_au_index.values().contains(addr.au));
-                            assert(!deallocs.contains(addr.au));
-                            assert(!addresses_in_aus(deallocs).contains(addr));
-                            assert(frozen_image.i().tj.disk_view.entries
-                                <= pre.ephemeral->v.journal_tj().disk_view.entries);
-                            assert(pre.ephemeral->v.journal_tj().disk_view.entries.dom().contains(addr));
-                            assert(pre.ephemeral->v.visible_records().contains_key(addr));
-                            assert(pre.ephemeral->v.disk.visible().contains_key(addr));
-                            assert(new_ephemeral.disk.visible().contains_key(addr));
-                            assert(new_ephemeral.visible_records().contains_key(addr));
-                        }
-                    }
-                }
             },
             _ => {
                 assert(false);
@@ -2322,32 +1348,7 @@ state_machine!{ CrashAwareCachingDiskJournal {
     fn crash_inductive(pre: Self, post: Self, lbl: Label, prepared_image: CachingDiskJournalImage) {
         let keep_in_flight = lbl.arrow_Crash_keep_in_flight();
         if keep_in_flight {
-            let frozen = pre.frozen.unwrap();
-            prepared_snapshot_image_matches_visible(
-                pre.ephemeral->v,
-                prepared_image,
-                frozen.seq_end,
-            );
-            let visible_image = snapshot_tight_image(
-                pre.ephemeral->v.journal_disk_view().entries,
-                frozen.snapshot,
-            );
-            pre.ephemeral->v.frozen_snapshot_valid_image(frozen.snapshot, frozen.seq_end);
-            let base_frozen = JournalImage{
-                tj: pre.ephemeral->v.frozen_tj(frozen.snapshot),
-                first: frozen.snapshot.first(),
-            };
-            base_frozen.valid_image_implies_tight_valid_image();
-            visible_snapshot_image_matches_concrete_frozen(
-                pre.ephemeral->v,
-                frozen.snapshot,
-                frozen.seq_end,
-            );
-            assert(visible_image == concrete_frozen_image(pre.ephemeral->v, frozen.snapshot));
-            assert(concrete_frozen_image(pre.ephemeral->v, frozen.snapshot).valid_image());
-            assert(prepared_image.i() == visible_image);
-            assert(prepared_image.i().valid_image());
-            assert(prepared_image.valid_image());
+            assert(post.persistent == prepared_image);
         } else {
             assert(post.persistent == pre.persistent);
         }

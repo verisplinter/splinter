@@ -2203,7 +2203,8 @@ state_machine!{ CachedJournal {
                 post,
                 CachedJournal::Label::LoadIndex{reads, discovered_aus},
             ),
-            reads <= entries,
+            forall |addr: Address| #[trigger] reads.contains_key(addr)
+                && entries.contains_key(addr) ==> reads[addr] == entries[addr],
             (DiskView{boundary_lsn: pre.snapshot.boundary_lsn, entries}).pointer_is_upstream(
                 pre.snapshot.freshest_rec(),
                 pre.snapshot.first(),
@@ -2229,7 +2230,7 @@ state_machine!{ CachedJournal {
                 let bdy = pre.snapshot.boundary_lsn;
                 let first = pre.snapshot.first();
                 assert(au_walk_reads_cover(reads, bdy, ptr, first, au_depth, page_depth));
-                build_lsn_au_index_from_reads_au_walk_matches_full(
+                au_walk_reads_cover_build_matches_full_by_value(
                     reads,
                     entries,
                     bdy,

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Verified BetrFS Proof"
+  short_description: "Proof workflow for verified-betrfs"
+  default_prompt: "Use $verified-betrfs-proof to continue verified-betrfs Verus proof work."

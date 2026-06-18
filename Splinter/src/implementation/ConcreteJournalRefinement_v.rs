@@ -584,7 +584,7 @@ impl ConcreteJournal::State {
             self.i(),
             post.i(),
             lbl.i(self),
-            AllocationJournal::Step::internal_mini_allocator_fill(),
+            AllocationJournal::Step::internal_mini_allocator_fill(post.i().journal),
         ));
         reveal(AllocationJournal::State::next);
     }
