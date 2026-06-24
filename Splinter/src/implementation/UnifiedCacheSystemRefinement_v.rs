@@ -604,6 +604,122 @@ pub proof fn cache_resps_coherent_from_disk_response_inv(
     }
 }
 
+pub proof fn cache_io_begin_preserves_cache_disk_response_inv(
+    pre: SystemModel::State<UnifiedCacheProgramModel>,
+    post: SystemModel::State<UnifiedCacheProgramModel>,
+    req_map: Map<ID, DiskRequest>,
+)
+    requires
+        inv(pre),
+        post.disk.responses == pre.disk.responses,
+        post.disk.content == pre.disk.content,
+        req_map.dom().disjoint(pre.disk.responses.dom()),
+        post.program.state.outstanding_cache_reqs == pre.program.state.outstanding_cache_reqs
+            .union_prefer_right(Map::new(|id| req_map.contains_key(id), |id| req_map[id].addr())),
+        Cache::State::next(
+            pre.program.state.cache,
+            post.program.state.cache,
+            Cache::Label::DiskOps{requests: req_map.values(), responses: Map::empty()},
+        ),
+    ensures
+        unified_cache_cache_disk_response_inv(post),
+{
+    let pre_state = pre.program.state;
+    let post_state = post.program.state;
+    assert forall |id: ID| {
+        &&& #[trigger] post.disk.responses.contains_key(id)
+        &&& post.program.state.outstanding_cache_reqs.contains_key(id)
+    } implies {
+        let addr = post.program.state.outstanding_cache_reqs[id];
+        let resp = post.disk.responses[id];
+        &&& resp is ReadResp ==> {
+            &&& post.disk.content.contains_key(addr)
+            &&& resp->data == post.disk.content[addr]
+        }
+        &&& resp is WriteResp ==> {
+            &&& post.disk.content.contains_key(addr)
+            &&& cache_filled_addr(post.program.state.cache, addr)
+            &&& post.disk.content[addr] == cache_filled_page(post.program.state.cache, addr)
+        }
+    } by {
+        assert(pre.disk.responses.contains_key(id));
+        assert(!req_map.contains_key(id));
+        assert(pre_state.outstanding_cache_reqs.contains_key(id));
+        assert(post_state.outstanding_cache_reqs[id]
+            == pre_state.outstanding_cache_reqs[id]);
+        let addr = pre_state.outstanding_cache_reqs[id];
+        assert(unified_cache_cache_disk_response_inv(pre));
+        assert(post.disk.responses[id] == pre.disk.responses[id]);
+        assert(post.disk.content == pre.disk.content);
+        if pre.disk.responses[id] is WriteResp {
+            cache_disk_ops_begin_preserves_filled_page(
+                pre_state.cache,
+                post_state.cache,
+                req_map.values(),
+                addr,
+            );
+        }
+    }
+}
+
+pub proof fn cache_io_end_preserves_cache_disk_response_inv(
+    pre: SystemModel::State<UnifiedCacheProgramModel>,
+    post: SystemModel::State<UnifiedCacheProgramModel>,
+    resp_map: Map<ID, DiskResponse>,
+    cache_resps: Map<Address, DiskResponse>,
+)
+    requires
+        inv(pre),
+        post.disk.responses == pre.disk.responses.remove_keys(resp_map.dom()),
+        post.disk.content == pre.disk.content,
+        post.program.state.outstanding_cache_reqs == pre.program.state.outstanding_cache_reqs
+            .remove_keys(resp_map.dom()),
+        Cache::State::next(
+            pre.program.state.cache,
+            post.program.state.cache,
+            Cache::Label::DiskOps{requests: Set::empty(), responses: cache_resps},
+        ),
+    ensures
+        unified_cache_cache_disk_response_inv(post),
+{
+    let pre_state = pre.program.state;
+    let post_state = post.program.state;
+    assert forall |id: ID| {
+        &&& #[trigger] post.disk.responses.contains_key(id)
+        &&& post.program.state.outstanding_cache_reqs.contains_key(id)
+    } implies {
+        let addr = post.program.state.outstanding_cache_reqs[id];
+        let resp = post.disk.responses[id];
+        &&& resp is ReadResp ==> {
+            &&& post.disk.content.contains_key(addr)
+            &&& resp->data == post.disk.content[addr]
+        }
+        &&& resp is WriteResp ==> {
+            &&& post.disk.content.contains_key(addr)
+            &&& cache_filled_addr(post.program.state.cache, addr)
+            &&& post.disk.content[addr] == cache_filled_page(post.program.state.cache, addr)
+        }
+    } by {
+        assert(!resp_map.contains_key(id));
+        assert(pre.disk.responses.contains_key(id));
+        assert(pre_state.outstanding_cache_reqs.contains_key(id));
+        assert(post_state.outstanding_cache_reqs[id]
+            == pre_state.outstanding_cache_reqs[id]);
+        let addr = pre_state.outstanding_cache_reqs[id];
+        assert(unified_cache_cache_disk_response_inv(pre));
+        assert(post.disk.responses[id] == pre.disk.responses[id]);
+        assert(post.disk.content == pre.disk.content);
+        if pre.disk.responses[id] is WriteResp {
+            cache_disk_ops_end_preserves_filled_page(
+                pre_state.cache,
+                post_state.cache,
+                cache_resps,
+                addr,
+            );
+        }
+    }
+}
+
 pub proof fn init_refines(pre: SystemModel::State<UnifiedCacheProgramModel>)
     requires
         SystemModel::State::initialize(pre, pre.program, pre.disk),
@@ -2457,48 +2573,14 @@ pub proof fn program_disk_cache_io_begin_refines(
         assert(post_state.persistent_image == pre_state.persistent_image);
         assert(post_state.journal == pre_state.journal);
     }
-    assert(unified_cache_cache_disk_response_inv(post)) by {
-        assert(post.disk.responses == pre.disk.responses) by {
-            reveal(AsyncDisk::State::disk_ops);
-        }
-        assert(req_map.dom().disjoint(pre.disk.responses.dom())) by {
-            reveal(AsyncDisk::State::disk_ops);
-        }
-        assert forall |id: ID| {
-            &&& #[trigger] post.disk.responses.contains_key(id)
-            &&& post.program.state.outstanding_cache_reqs.contains_key(id)
-        } implies {
-            let addr = post.program.state.outstanding_cache_reqs[id];
-            let resp = post.disk.responses[id];
-            &&& resp is ReadResp ==> {
-                &&& post.disk.content.contains_key(addr)
-                &&& resp->data == post.disk.content[addr]
-            }
-            &&& resp is WriteResp ==> {
-                &&& post.disk.content.contains_key(addr)
-                &&& cache_filled_addr(post.program.state.cache, addr)
-                &&& post.disk.content[addr] == cache_filled_page(post.program.state.cache, addr)
-            }
-        } by {
-            assert(pre.disk.responses.contains_key(id));
-            assert(!req_map.contains_key(id));
-            assert(pre_state.outstanding_cache_reqs.contains_key(id));
-            assert(post_state.outstanding_cache_reqs[id]
-                == pre_state.outstanding_cache_reqs[id]);
-            let addr = pre_state.outstanding_cache_reqs[id];
-            assert(unified_cache_cache_disk_response_inv(pre));
-            assert(post.disk.responses[id] == pre.disk.responses[id]);
-            assert(post.disk.content == pre.disk.content);
-            if pre.disk.responses[id] is WriteResp {
-                cache_disk_ops_begin_preserves_filled_page(
-                    pre_state.cache,
-                    post_state.cache,
-                    req_map.values(),
-                    addr,
-                );
-            }
-        }
+    assert(post.disk.responses == pre.disk.responses) by {
+        reveal(AsyncDisk::State::disk_ops);
     }
+    assert(req_map.dom().disjoint(pre.disk.responses.dom())) by {
+        reveal(AsyncDisk::State::disk_ops);
+    }
+    cache_io_begin_preserves_cache_disk_response_inv(pre, post, req_map);
+    assert(unified_cache_cache_disk_response_inv(post));
     assert(system_model_progress_history_inv(post)) by {
         assert forall |req: Request| #[trigger] post.requests.contains(req)
             implies post.id_history.contains(req.id) by {
@@ -2804,42 +2886,8 @@ pub proof fn program_disk_cache_io_end_refines(
         assert(post_state.persistent_image == pre_state.persistent_image);
         assert(post_state.journal == pre_state.journal);
     }
-    assert(unified_cache_cache_disk_response_inv(post)) by {
-        assert forall |id: ID| {
-            &&& #[trigger] post.disk.responses.contains_key(id)
-            &&& post.program.state.outstanding_cache_reqs.contains_key(id)
-        } implies {
-            let addr = post.program.state.outstanding_cache_reqs[id];
-            let resp = post.disk.responses[id];
-            &&& resp is ReadResp ==> {
-                &&& post.disk.content.contains_key(addr)
-                &&& resp->data == post.disk.content[addr]
-            }
-            &&& resp is WriteResp ==> {
-                &&& post.disk.content.contains_key(addr)
-                &&& cache_filled_addr(post.program.state.cache, addr)
-                &&& post.disk.content[addr] == cache_filled_page(post.program.state.cache, addr)
-            }
-        } by {
-            assert(!resp_map.contains_key(id));
-            assert(pre.disk.responses.contains_key(id));
-            assert(pre_state.outstanding_cache_reqs.contains_key(id));
-            assert(post_state.outstanding_cache_reqs[id]
-                == pre_state.outstanding_cache_reqs[id]);
-            let addr = pre_state.outstanding_cache_reqs[id];
-            assert(unified_cache_cache_disk_response_inv(pre));
-            assert(post.disk.responses[id] == pre.disk.responses[id]);
-            assert(post.disk.content == pre.disk.content);
-            if pre.disk.responses[id] is WriteResp {
-                cache_disk_ops_end_preserves_filled_page(
-                    pre_state.cache,
-                    post_state.cache,
-                    cache_resps,
-                    addr,
-                );
-            }
-        }
-    }
+    cache_io_end_preserves_cache_disk_response_inv(pre, post, resp_map, cache_resps);
+    assert(unified_cache_cache_disk_response_inv(post));
     assert(system_model_progress_history_inv(post)) by {
         assert forall |req: Request| #[trigger] post.requests.contains(req)
             implies post.id_history.contains(req.id) by {
