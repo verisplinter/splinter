@@ -1027,6 +1027,19 @@ verus! {
             },
             CoordinationSystem::Step::map_internal(..) => {
             },
+            CoordinationSystem::Step::component_internals(..) => {
+                let jstep = choose |s| AbstractCrashAwareJournal::State::next_by(
+                    v.journal,
+                    vp.journal,
+                    AbstractCrashAwareJournal::Label::InternalLabel,
+                    s,
+                );
+                match jstep {
+                    AbstractCrashAwareJournal::Step::internal(new_journal) => {
+                    }
+                    _ => {}
+                }
+            },
             CoordinationSystem::Step::req_sync(..) => {
             },
             CoordinationSystem::Step::reply_sync(..) => {
@@ -1427,6 +1440,7 @@ verus! {
                 CoordinationSystem::Step::recover(..) => true,
                 CoordinationSystem::Step::journal_internal(..) => true,
                 CoordinationSystem::Step::map_internal(..) => true,
+                CoordinationSystem::Step::component_internals(..) => true,
                 CoordinationSystem::Step::commit_start(..) => true,
                 _ => false,
             },
@@ -1873,6 +1887,8 @@ verus! {
             CoordinationSystem::Step::journal_internal(..) =>
                 noop_steps_refine(v, vp, label, step),
             CoordinationSystem::Step::map_internal(..) =>
+                noop_steps_refine(v, vp, label, step),
+            CoordinationSystem::Step::component_internals(..) =>
                 noop_steps_refine(v, vp, label, step),
             CoordinationSystem::Step::req_sync(..) =>
                 req_sync_step_and_reply_sync_step_refine(v, vp, label, step),

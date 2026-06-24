@@ -399,11 +399,11 @@ state_machine!{ CoordinationSystem {
     }
   }
 
-  transition! {
-    map_internal(
-      label: Label,
-      new_mapadt: AbstractCrashAwareMap::State,
-    ) {
+	  transition! {
+	    map_internal(
+	      label: Label,
+	      new_mapadt: AbstractCrashAwareMap::State,
+	    ) {
       let ctam_label = label->ctam_label;
       require ctam_label is Noop;
 
@@ -413,9 +413,35 @@ state_machine!{ CoordinationSystem {
         AbstractCrashAwareMap::Label::InternalLabel,
       );
 
-      update mapadt = new_mapadt;
-    }
-  }
+	      update mapadt = new_mapadt;
+	    }
+	  }
+
+	  transition! {
+	    component_internals(
+	      label: Label,
+	      new_journal: AbstractCrashAwareJournal::State,
+	      new_mapadt: AbstractCrashAwareMap::State,
+	    ) {
+	      let ctam_label = label->ctam_label;
+	      require ctam_label is Noop;
+
+	      require AbstractCrashAwareJournal::State::next(
+	        pre.journal,
+	        new_journal,
+	        AbstractCrashAwareJournal::Label::InternalLabel,
+	      );
+
+	      require AbstractCrashAwareMap::State::next(
+	        pre.mapadt,
+	        new_mapadt,
+	        AbstractCrashAwareMap::Label::InternalLabel,
+	      );
+
+	      update journal = new_journal;
+	      update mapadt = new_mapadt;
+	    }
+	  }
 
   transition! {
     req_sync(

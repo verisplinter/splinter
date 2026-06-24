@@ -1515,6 +1515,68 @@ proof fn map_internal_refines_coordination(
     ));
 }
 
+proof fn component_internals_refines_coordination(
+    pre: CrashAwareCachingDiskSystem::State,
+    post: CrashAwareCachingDiskSystem::State,
+    lbl: CrashAwareCachingDiskSystem::Label,
+    new_journal: CrashAwareCachingDiskJournal::State,
+    new_branch: CrashAwareCachingDiskBranch::State,
+)
+    requires
+        refinement_inv(pre),
+        CrashAwareCachingDiskSystem::State::component_internals(
+            pre,
+            post,
+            lbl,
+            new_journal,
+            new_branch,
+        ),
+    ensures
+        CoordinationSystem::State::next(
+            caching_disk_system_coordination_i(pre),
+            caching_disk_system_coordination_i(post),
+            CoordinationSystem::Label::Label{ctam_label: caching_disk_system_i_lbl(pre, post, lbl)},
+        ),
+{
+    reveal(CrashAwareCachingDiskSystem::State::component_internals);
+    reveal(CoordinationSystem::State::next);
+    reveal(CoordinationSystem::State::next_by);
+    reveal(caching_disk_system_coordination_i);
+
+    let cpre = caching_disk_system_coordination_i(pre);
+    let cpost = caching_disk_system_coordination_i(post);
+    let clbl = CoordinationSystem::Label::Label{ctam_label: caching_disk_system_i_lbl(pre, post, lbl)};
+    let journal_lbl = CrashAwareCachingDiskJournal::Label::Internal;
+    let branch_lbl = CrashAwareCachingDiskBranch::Label::Internal;
+
+    pre.journal.next_refines_abstract(new_journal, journal_lbl);
+    pre.branch.next_refines_to_abstract_map(new_branch, branch_lbl);
+    journal_step_preserves_frozen(pre.journal, new_journal, journal_lbl);
+    branch_step_preserves_frozen(pre.branch, new_branch, branch_lbl);
+    assert(post.journal.frozen == pre.journal.frozen);
+    assert(post.branch.frozen == pre.branch.frozen);
+    assert(post.superblockstore == pre.superblockstore);
+    caching_disk_system_commit_flags_unchanged(pre, post);
+    assert(CoordinationSystem::State::component_internals(
+        cpre,
+        cpost,
+        clbl,
+        new_journal.i_abstract(),
+        new_branch.abstract_i(),
+    )) by {
+        reveal(CoordinationSystem::State::component_internals);
+    }
+    assert(CoordinationSystem::State::next_by(
+        cpre,
+        cpost,
+        clbl,
+        CoordinationSystem::Step::component_internals(
+            new_journal.i_abstract(),
+            new_branch.abstract_i(),
+        ),
+    ));
+}
+
 proof fn map_load_metadata_refines_coordination(
     pre: CrashAwareCachingDiskSystem::State,
     post: CrashAwareCachingDiskSystem::State,
@@ -2504,11 +2566,10 @@ pub proof fn init_refines_ctam(model: CrashAwareCachingDiskSystem::State)
             assert(model.branch == branch);
             reveal(CrashAwareCachingDiskJournal::State::initialize);
             JournalImage::empty_is_valid_image();
-            assert(journal.persistent == CachingDiskJournalImage::empty().metadata());
-            assert(journal.persistent_image is Some);
-            assert(journal.persistent_image.unwrap() == CachingDiskJournalImage::empty());
-            assert(journal.persistent_image.unwrap().i() == JournalImage::empty());
-            assert(journal.persistent_image.unwrap().wf());
+            assert(journal.persistent is Image);
+            assert(journal.persistent->image == CachingDiskJournalImage::empty());
+            assert(journal.persistent->image.i() == JournalImage::empty());
+            assert(journal.persistent->image.wf());
             assert(journal.inv());
             reveal(CrashAwareCachingDiskBranch::State::initialize);
             empty_caching_disk_branch_image_wf();
@@ -2655,6 +2716,18 @@ pub proof fn next_refines_coordination(
                 reveal(CrashAwareCachingDiskSystem::State::map_internal);
             }
             map_internal_refines_coordination(pre, post, lbl, new_branch);
+        },
+        CrashAwareCachingDiskSystem::Step::component_internals(new_journal, new_branch) => {
+            assert(CrashAwareCachingDiskSystem::State::component_internals(
+                pre,
+                post,
+                lbl,
+                new_journal,
+                new_branch,
+            )) by {
+                reveal(CrashAwareCachingDiskSystem::State::component_internals);
+            }
+            component_internals_refines_coordination(pre, post, lbl, new_journal, new_branch);
         },
         CrashAwareCachingDiskSystem::Step::map_load_metadata(new_branch, root, discovered_aus) => {
             assert(CrashAwareCachingDiskSystem::State::map_load_metadata(

@@ -132,7 +132,7 @@ state_machine!{ CachingDiskJournal {
         FreezeForCommit{frozen: JournalSnapshot, seq_end: LSN},
         QueryEndLsn{end_lsn: LSN},
         Put{messages: MsgHistory},
-        DiscardOld{start_lsn: LSN, require_end: LSN},
+        DiscardOld{start_lsn: LSN, require_end: LSN, deallocs: Set<AU>},
         ObserveCleanAUs{aus: Set<AU>},
         CommitPrepared{frozen: JournalSnapshot, seq_end: LSN},
         LoadIndex{discovered_aus: Set<AU>},
@@ -327,13 +327,12 @@ state_machine!{ CachingDiskJournal {
         new_journal: CachedJournal::State,
         new_disk: CachingDisk::State,
     ) {
-        require lbl is DiscardOld;
+        require let Label::DiscardOld{start_lsn, require_end, deallocs} = lbl;
         let old_au_index = cj_lsn_au_index(pre.journal);
-        let new_au_index = lsn_au_index_discard_up_to(old_au_index, lbl->start_lsn);
-        let deallocs = old_au_index.values().difference(new_au_index.values());
+        let new_au_index = lsn_au_index_discard_up_to(old_au_index, start_lsn);
         let journal_lbl = CachedJournal::Label::DiscardOld{
-            start_lsn: lbl->start_lsn,
-            require_end: lbl->require_end,
+            start_lsn,
+            require_end,
             deallocs,
         };
         require CachedJournal::State::next(
@@ -358,56 +357,62 @@ state_machine!{ CachingDiskJournal {
 
     transition!{ mini_allocator_fill(lbl: Label, new_disk: CachingDisk::State) {
         require lbl is InternalAlloc;
-        require lbl->deallocs == Set::<AU>::empty();
-        require lbl->prune_aus == Set::<AU>::empty();
+        require lbl.arrow_InternalAlloc_deallocs() == Set::<AU>::empty();
+        require lbl.arrow_InternalAlloc_prune_aus() == Set::<AU>::empty();
         require pre.journal.status is Some;
-        require lbl->allocs.disjoint(pre.mini_allocator.all_aus());
-        require lbl->allocs.disjoint(cj_lsn_au_index(pre.journal).values());
+        require lbl.arrow_InternalAlloc_allocs().disjoint(pre.mini_allocator.all_aus());
+        require lbl.arrow_InternalAlloc_allocs().disjoint(cj_lsn_au_index(pre.journal).values());
         require new_disk.inv();
         require pre.disk.cache <= new_disk.cache;
         require pre.disk.persistent <= new_disk.persistent;
         require pre.disk.status <= new_disk.status;
         require new_disk.cache.dom() <= addresses_in_aus(
-            cj_lsn_au_index(pre.journal).values() + pre.mini_allocator.all_aus() + lbl->allocs,
+            cj_lsn_au_index(pre.journal).values() + pre.mini_allocator.all_aus()
+                + lbl.arrow_InternalAlloc_allocs(),
         );
         require new_disk.persistent.dom() <= addresses_in_aus(
-            cj_lsn_au_index(pre.journal).values() + pre.mini_allocator.all_aus() + lbl->allocs,
+            cj_lsn_au_index(pre.journal).values() + pre.mini_allocator.all_aus()
+                + lbl.arrow_InternalAlloc_allocs(),
         );
         require new_disk.status.dom() <= addresses_in_aus(
-            cj_lsn_au_index(pre.journal).values() + pre.mini_allocator.all_aus() + lbl->allocs,
+            cj_lsn_au_index(pre.journal).values() + pre.mini_allocator.all_aus()
+                + lbl.arrow_InternalAlloc_allocs(),
         );
-        require new_disk.cache.dom() - pre.disk.cache.dom() <= addresses_in_aus(lbl->allocs);
-        require new_disk.persistent.dom() - pre.disk.persistent.dom() <= addresses_in_aus(lbl->allocs);
-        require new_disk.status.dom() - pre.disk.status.dom() <= addresses_in_aus(lbl->allocs);
+        require new_disk.cache.dom() - pre.disk.cache.dom()
+            <= addresses_in_aus(lbl.arrow_InternalAlloc_allocs());
+        require new_disk.persistent.dom() - pre.disk.persistent.dom()
+            <= addresses_in_aus(lbl.arrow_InternalAlloc_allocs());
+        require new_disk.status.dom() - pre.disk.status.dom()
+            <= addresses_in_aus(lbl.arrow_InternalAlloc_allocs());
         require new_disk.cache.dom() <= Set::new(|addr: Address| addr.wf());
         require new_disk.persistent.dom() <= Set::new(|addr: Address| addr.wf());
 
         update disk = new_disk;
-        update mini_allocator = pre.mini_allocator.add_aus(lbl->allocs);
+        update mini_allocator = pre.mini_allocator.add_aus(lbl.arrow_InternalAlloc_allocs());
     }}
 
     transition!{ mini_allocator_prune(lbl: Label, new_disk: CachingDisk::State) {
         require lbl is InternalAlloc;
         require pre.journal.status is Some;
-        require lbl->allocs == Set::<AU>::empty();
-        require lbl->deallocs <= lbl->prune_aus;
+        require lbl.arrow_InternalAlloc_allocs() == Set::<AU>::empty();
+        require lbl.arrow_InternalAlloc_deallocs() <= lbl.arrow_InternalAlloc_prune_aus();
         require CachingDisk::State::next(
             pre.disk,
             new_disk,
-            CachingDisk::Label::Forget{aus: lbl->deallocs},
+            CachingDisk::Label::Forget{aus: lbl.arrow_InternalAlloc_deallocs()},
         );
-        require forall |au: AU| #[trigger] lbl->prune_aus.contains(au)
+        require forall |au: AU| #[trigger] lbl.arrow_InternalAlloc_prune_aus().contains(au)
             ==> pre.mini_allocator.can_remove(au);
-        require forall |au: AU| #[trigger] lbl->deallocs.contains(au)
+        require forall |au: AU| #[trigger] lbl.arrow_InternalAlloc_deallocs().contains(au)
             ==> pre.mini_allocator.allocs[au].all_pages_free();
         require forall |addr: Address| {
             &&& #[trigger] pre.disk.visible().contains_key(addr)
-            &&& lbl->prune_aus.contains(addr.au)
-            &&& !lbl->deallocs.contains(addr.au)
+            &&& lbl.arrow_InternalAlloc_prune_aus().contains(addr.au)
+            &&& !lbl.arrow_InternalAlloc_deallocs().contains(addr.au)
         } ==> cj_lsn_au_index(pre.journal).values().contains(addr.au);
 
         update disk = new_disk;
-        update mini_allocator = pre.mini_allocator.prune(lbl->prune_aus);
+        update mini_allocator = pre.mini_allocator.prune(lbl.arrow_InternalAlloc_prune_aus());
     }}
 
     transition!{ internal_noop(lbl: Label) {
@@ -701,9 +706,9 @@ state_machine!{ CachingDiskJournal {
     fn discard_old_inductive(pre: Self, post: Self, lbl: Label, new_journal: CachedJournal::State, new_disk: CachingDisk::State) {
         let start_lsn = lbl.arrow_DiscardOld_start_lsn();
         let require_end = lbl.arrow_DiscardOld_require_end();
+        let deallocs = lbl.arrow_DiscardOld_deallocs();
         let old_au_index = cj_lsn_au_index(pre.journal);
         let new_au_index = lsn_au_index_discard_up_to(old_au_index, start_lsn);
-        let deallocs = old_au_index.values().difference(new_au_index.values());
         let journal_lbl = CachedJournal::Label::DiscardOld{
             start_lsn,
             require_end,
@@ -719,9 +724,12 @@ state_machine!{ CachingDiskJournal {
         let cj_step = choose |step: CachedJournal::Step|
             CachedJournal::State::next_by(pre.journal, post.journal, journal_lbl, step);
         match cj_step {
-            CachedJournal::Step::discard_old() => {},
+            CachedJournal::Step::discard_old() => {
+                reveal(CachedJournal::State::discard_old);
+            },
             _ => { assert(false); },
         }
+        assert(deallocs == old_au_index.values().difference(new_au_index.values()));
         lsn_au_index_discard_up_to_ensures(old_au_index, start_lsn);
         assert(post.mini_allocator.all_aus()
             == pre.mini_allocator.all_aus().difference(deallocs));
@@ -987,12 +995,16 @@ impl CachingDiskJournal::State {
         self.disk.addrs_clean_or_evictable(self.clean_watermark_pages())
     }
 
+    pub open spec fn persistent_visible_agree_on(self, addrs: Set<Address>) -> bool {
+        self.disk.persistent.restrict(addrs) == self.disk.visible().restrict(addrs)
+    }
+
     pub proof fn persistent_visible_eq_on_clean_or_evictable(self, addrs: Set<Address>)
         requires
             self.inv(),
             self.disk.addrs_clean_or_evictable(addrs),
         ensures
-            self.disk.persistent.restrict(addrs) == self.disk.visible().restrict(addrs),
+            self.persistent_visible_agree_on(addrs),
     {
         assert_maps_equal!(
             self.disk.persistent.restrict(addrs),
@@ -1027,7 +1039,9 @@ impl CachingDiskJournal::State {
         let update = singleton_index(msgs.seq_start, msgs.seq_end, au);
         assert forall |v: AU| #[trigger] out.values().contains(v)
             implies index.values().insert(au).contains(v) by {
-            let lsn = choose |lsn: LSN| out.contains_key(lsn) && out[lsn] == v;
+            let lsn = choose |lsn: LSN| #![trigger out.contains_key(lsn)] {
+                out.contains_key(lsn) && out[lsn] == v
+            };
             if update.contains_key(lsn) {
                 assert(update[lsn] == au);
                 assert(out[lsn] == au);
@@ -1245,8 +1259,9 @@ impl CachingDiskJournal::State {
         assert forall |au: AU|
             #[trigger] to_aus(addrs).contains(au)
             implies self.accessible_aus().contains(au) by {
-            let addr = choose |addr: Address|
-                addrs.contains(addr) && addr.au == au;
+            let addr = choose |addr: Address| #![trigger addrs.contains(addr)] {
+                addrs.contains(addr) && addr.au == au
+            };
             if self.journal.status is Some {
                 assert(addrs.contains(addr));
                 assert(self.frozen_loose_domain(snapshot).contains(addr));
@@ -1344,25 +1359,23 @@ impl CachingDiskJournal::State {
         post: Self,
         start_lsn: LSN,
         require_end: LSN,
+        deallocs: Set<AU>,
     )
         requires
             pre.inv(),
             CachingDiskJournal::State::next(
                 pre,
                 post,
-                CachingDiskJournal::Label::DiscardOld{start_lsn, require_end},
+                CachingDiskJournal::Label::DiscardOld{start_lsn, require_end, deallocs},
             ),
         ensures
             ({
-                let old_au_index = cj_lsn_au_index(pre.journal);
-                let new_au_index = lsn_au_index_discard_up_to(old_au_index, start_lsn);
-                let deallocs = old_au_index.values().difference(new_au_index.values());
                 &&& deallocs <= pre.accessible_aus()
                 &&& post.accessible_aus() <= pre.accessible_aus()
                 &&& deallocs.disjoint(post.accessible_aus())
             }),
     {
-        let lbl = CachingDiskJournal::Label::DiscardOld{start_lsn, require_end};
+        let lbl = CachingDiskJournal::Label::DiscardOld{start_lsn, require_end, deallocs};
         reveal(CachingDiskJournal::State::next);
         reveal(CachingDiskJournal::State::next_by);
         let step = choose |step: CachingDiskJournal::Step|
@@ -1374,7 +1387,6 @@ impl CachingDiskJournal::State {
                 }
                 let old_au_index = cj_lsn_au_index(pre.journal);
                 let new_au_index = lsn_au_index_discard_up_to(old_au_index, start_lsn);
-                let deallocs = old_au_index.values().difference(new_au_index.values());
                 let journal_lbl = CachedJournal::Label::DiscardOld{start_lsn, require_end, deallocs};
                 assert(pre.journal.status is Some) by {
                     reveal(CachedJournal::State::next);
@@ -1396,6 +1408,7 @@ impl CachingDiskJournal::State {
                     },
                     _ => { assert(false); },
                 }
+                assert(deallocs == old_au_index.values().difference(new_au_index.values()));
                 assert(post.lsn_au_index_or_empty() == new_au_index);
                 pre.loaded_index_values_accessible();
                 assert(deallocs <= pre.accessible_aus());
@@ -1921,6 +1934,7 @@ impl CachingDiskJournal::State {
         ensures
             state.journal.status is Some,
             frozen.freshest_rec() is Some ==> seq_end <= state.journal.clean_watermark(),
+            state.disk.addrs_clean_or_evictable(state.frozen_prefix_domain(frozen)),
     {
         let lbl = CachingDiskJournal::Label::CommitPrepared{frozen, seq_end};
         reveal(CachingDiskJournal::State::next);
@@ -2021,6 +2035,42 @@ impl CachingDiskJournal::State {
         }
     }
 
+    pub proof fn internal_alloc_requires_loaded(
+        pre: Self,
+        post: Self,
+        allocs: Set<AU>,
+        deallocs: Set<AU>,
+        prune_aus: Set<AU>,
+    )
+        requires
+            CachingDiskJournal::State::next(
+                pre,
+                post,
+                CachingDiskJournal::Label::InternalAlloc{allocs, deallocs, prune_aus},
+            ),
+        ensures
+            pre.journal.status is Some,
+            post.journal.status is Some,
+    {
+        let lbl = CachingDiskJournal::Label::InternalAlloc{allocs, deallocs, prune_aus};
+        reveal(CachingDiskJournal::State::next);
+        reveal(CachingDiskJournal::State::next_by);
+        let step = choose |step: CachingDiskJournal::Step|
+            CachingDiskJournal::State::next_by(pre, post, lbl, step);
+        match step {
+            CachingDiskJournal::Step::mini_allocator_fill(new_disk) => {
+                reveal(CachingDiskJournal::State::mini_allocator_fill);
+                assert(post.journal == pre.journal);
+            },
+            CachingDiskJournal::Step::mini_allocator_prune(new_disk) => {
+                reveal(CachingDiskJournal::State::mini_allocator_prune);
+                assert(post.journal == pre.journal);
+            },
+            _ => {
+                assert(false);
+            },
+        }
+    }
 
 }
 

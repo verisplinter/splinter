@@ -2808,6 +2808,8 @@ state_machine!{ CachingDiskBranch {
 	        &&& self.branch_summary.values().finite()
 	        &&& self.loaded_branch_summary_agrees()
 	        &&& self.metadata_loaded ==> self.branch_metadata_loaded()
+	        &&& self.metadata_loaded ==>
+                summary_aus(self.branch_summary).disjoint(self.mini_allocator.all_aus())
 	        &&& self.sealed_stack_i().wf(self.interpreted_branch_summary())
         &&& self.active_branch_i().inv()
         &&& summary_aus(self.interpreted_branch_summary()).disjoint(self.mini_allocator.all_aus())
@@ -4664,11 +4666,11 @@ state_machine!{ CachingDiskBranch {
 }}
 
 impl CachingDiskBranch::State {
-	    pub proof fn loaded_interpreted_wf(self)
-	        requires
-	            self.inv(),
-	            self.metadata_loaded,
-	        ensures
+    pub proof fn loaded_interpreted_wf(self)
+        requires
+            self.inv(),
+            self.metadata_loaded,
+        ensures
 	            self.i().wf(),
 	            self.i().sealed_stack == self.sealed_stack_i(),
 	            self.i().branch_summary == self.branch_summary,
@@ -4678,6 +4680,17 @@ impl CachingDiskBranch::State {
         assert(self.i().branch_summary == self.branch_summary);
         assert(summary_aus(self.i().branch_summary).disjoint(self.i().active_branch.mini_allocator.all_aus()));
         assert(self.i().wf());
+    }
+
+    pub proof fn loaded_summary_aus_disjoint_mini_allocator(self)
+        requires
+            self.inv(),
+            self.metadata_loaded,
+        ensures
+            summary_aus(self.branch_summary).disjoint(self.mini_allocator.all_aus()),
+    {
+        assert(self.branch_metadata_loaded());
+        assert(self.branch_summary == self.interpreted_branch_summary());
     }
 
     pub proof fn loaded_index_root_aux_in_summary(self, root: Address, aux: Address)
@@ -6017,6 +6030,8 @@ impl CachingDiskBranch::State {
                 },
             ),
         ensures
+            image.loadable(),
+            image.stack_wf(),
             image.sealed_stack_i().wf(image.branch_summary()),
             image.branch_summary() == image.branch_summary(),
             image.branch_summary()

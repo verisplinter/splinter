@@ -49,6 +49,10 @@ state_machine!{ CachingDisk {
         self.persistent.union_prefer_right(self.cache)
     }
 
+    pub open spec fn persistent_visible_agree_on(self, addrs: Set<Address>) -> bool {
+        self.persistent.restrict(addrs) == self.visible().restrict(addrs)
+    }
+
     pub open spec fn all_status(self, addrs: Set<Address>, page_status: PageStatus) -> bool {
         forall |addr: Address| #[trigger] addrs.contains(addr) ==> {
             &&& self.status.contains_key(addr)
@@ -803,6 +807,358 @@ impl CachingDisk::State {
                 assert(false);
             },
         }
+    }
+
+    pub proof fn internal_preserves_persistent_visible_agree_on(
+        pre: Self,
+        post: Self,
+        addrs: Set<Address>,
+    )
+        requires
+            pre.inv(),
+            post.inv(),
+            pre.persistent_visible_agree_on(addrs),
+            CachingDisk::State::next(pre, post, CachingDisk::Label::Internal{}),
+        ensures
+            post.persistent_visible_agree_on(addrs),
+    {
+        reveal(CachingDisk::State::next);
+        reveal(CachingDisk::State::next_by);
+        let lbl = CachingDisk::Label::Internal{};
+        let step = choose |step| CachingDisk::State::next_by(pre, post, lbl, step);
+        match step {
+            CachingDisk::Step::load(loaded_addrs) => {
+                Self::load_visible_unchanged(pre, post, loaded_addrs);
+            },
+            CachingDisk::Step::begin_writeback(writeback_addrs) => {
+                Self::begin_writeback_visible_unchanged(pre, post, writeback_addrs);
+            },
+            CachingDisk::Step::persist_writeback(persist_addrs) => {
+                Self::persist_writeback_visible_unchanged(pre, post, persist_addrs);
+            },
+            CachingDisk::Step::mark_clean(clean_addrs) => {
+                Self::mark_clean_visible_unchanged(pre, post, clean_addrs);
+            },
+            CachingDisk::Step::evict_clean(evict_addrs) => {
+                Self::evict_clean_visible_unchanged(pre, post, evict_addrs);
+            },
+            CachingDisk::Step::internal_noop() => {
+                assert(post == pre);
+                assert_maps_equal!(post.visible(), pre.visible());
+            },
+            _ => {
+                assert(false);
+            },
+        }
+
+        assert_maps_equal!(
+            post.persistent.restrict(addrs),
+            post.visible().restrict(addrs),
+            addr => {
+                if addrs.contains(addr) {
+                    assert(pre.persistent.restrict(addrs)
+                        == pre.visible().restrict(addrs));
+                    match step {
+                        CachingDisk::Step::persist_writeback(persist_addrs) => {
+                            Self::persist_writeback_effect(pre, post, persist_addrs);
+                            if persist_addrs.contains(addr) {
+                                assert(pre.all_status(persist_addrs, PageStatus::Writeback));
+                                assert(pre.status.contains_key(addr));
+                                assert(pre.status[addr] == PageStatus::Writeback);
+                                assert(pre.status.dom().contains(addr));
+                                assert(pre.cache.dom().contains(addr));
+                                assert(pre.cache.contains_key(addr));
+                                assert(post.persistent.contains_key(addr));
+                                assert(post.persistent[addr] == pre.cache[addr]);
+                                assert(pre.visible().contains_key(addr));
+                                assert(pre.visible()[addr] == pre.cache[addr]);
+                                assert(post.visible() == pre.visible());
+                                assert(post.visible()[addr] == pre.visible()[addr]);
+                            } else {
+                                assert(post.persistent == pre.persistent.union_prefer_right(
+                                    pre.cache.restrict(persist_addrs),
+                                ));
+                                if post.persistent.contains_key(addr) {
+                                    assert(pre.persistent.contains_key(addr));
+                                    assert(post.persistent[addr] == pre.persistent[addr]);
+                                    assert(pre.visible().restrict(addrs).contains_key(addr));
+                                    assert(pre.persistent.restrict(addrs).contains_key(addr));
+                                    assert(pre.persistent.restrict(addrs)[addr]
+                                        == pre.visible().restrict(addrs)[addr]);
+                                    assert(pre.persistent.restrict(addrs)[addr]
+                                        == pre.persistent[addr]);
+                                    assert(pre.visible().restrict(addrs)[addr]
+                                        == pre.visible()[addr]);
+                                    assert(pre.persistent[addr] == pre.visible()[addr]);
+                                    assert(post.visible() == pre.visible());
+                                }
+                            }
+                        },
+                        _ => {
+                            assert(post.visible() == pre.visible());
+                            assert(post.persistent == pre.persistent);
+                            if post.persistent.contains_key(addr) {
+                                assert(pre.persistent.contains_key(addr));
+                                assert(pre.visible().restrict(addrs).contains_key(addr));
+                                assert(pre.persistent.restrict(addrs).contains_key(addr));
+                                assert(pre.persistent.restrict(addrs)[addr]
+                                    == pre.visible().restrict(addrs)[addr]);
+                                assert(pre.persistent.restrict(addrs)[addr]
+                                    == pre.persistent[addr]);
+                                assert(pre.visible().restrict(addrs)[addr]
+                                    == pre.visible()[addr]);
+                                assert(pre.persistent[addr] == pre.visible()[addr]);
+                            }
+                        },
+                    }
+                }
+            }
+        );
+    }
+
+    pub proof fn persistent_visible_agree_on_equal_addrs(
+        self,
+        addrs: Set<Address>,
+        other: Set<Address>,
+    )
+        requires
+            self.persistent_visible_agree_on(addrs),
+            other =~= addrs,
+        ensures
+            self.persistent_visible_agree_on(other),
+    {
+        assert_maps_equal!(
+            self.persistent.restrict(other),
+            self.visible().restrict(other),
+            addr => {
+                if other.contains(addr) {
+                    assert(addrs.contains(addr));
+                    assert(self.persistent.restrict(addrs)
+                        == self.visible().restrict(addrs));
+                    if self.persistent.contains_key(addr) {
+                        assert(self.persistent.restrict(addrs).contains_key(addr));
+                        assert(self.visible().restrict(addrs).contains_key(addr));
+                        assert(self.persistent.restrict(addrs)[addr]
+                            == self.visible().restrict(addrs)[addr]);
+                        assert(self.persistent.restrict(addrs)[addr]
+                            == self.persistent[addr]);
+                        assert(self.visible().restrict(addrs)[addr]
+                            == self.visible()[addr]);
+                    }
+                    if self.visible().contains_key(addr) {
+                        assert(self.visible().restrict(addrs).contains_key(addr));
+                        assert(self.persistent.restrict(addrs).contains_key(addr));
+                        assert(self.persistent.contains_key(addr));
+                    }
+                }
+            }
+        );
+    }
+
+    pub proof fn same_views_preserve_persistent_visible_agree_on(
+        pre: Self,
+        post: Self,
+        addrs: Set<Address>,
+    )
+        requires
+            pre.persistent_visible_agree_on(addrs),
+            post.persistent.restrict(addrs) == pre.persistent.restrict(addrs),
+            post.visible().restrict(addrs) == pre.visible().restrict(addrs),
+        ensures
+            post.persistent_visible_agree_on(addrs),
+    {
+        assert(post.persistent.restrict(addrs) == post.visible().restrict(addrs));
+    }
+
+    pub proof fn extension_preserves_persistent_visible_agree_on(
+        pre: Self,
+        post: Self,
+        addrs: Set<Address>,
+    )
+        requires
+            pre.persistent_visible_agree_on(addrs),
+            pre.cache <= post.cache,
+            pre.persistent <= post.persistent,
+            (post.cache.dom() - pre.cache.dom()).disjoint(addrs),
+            (post.persistent.dom() - pre.persistent.dom()).disjoint(addrs),
+        ensures
+            post.persistent_visible_agree_on(addrs),
+    {
+        assert(post.persistent.restrict(addrs) == pre.persistent.restrict(addrs)) by {
+            assert_maps_equal!(
+                post.persistent.restrict(addrs),
+                pre.persistent.restrict(addrs),
+                addr => {
+                    if addrs.contains(addr) {
+                        if post.persistent.contains_key(addr) {
+                            assert(pre.persistent.contains_key(addr)) by {
+                                if !pre.persistent.contains_key(addr) {
+                                    assert((post.persistent.dom() - pre.persistent.dom()).contains(addr));
+                                    assert(false);
+                                }
+                            }
+                        }
+                    }
+                }
+            );
+        }
+        assert(post.visible().restrict(addrs) == pre.visible().restrict(addrs)) by {
+            assert_maps_equal!(
+                post.visible().restrict(addrs),
+                pre.visible().restrict(addrs),
+                addr => {
+                    if addrs.contains(addr) {
+                        if post.cache.contains_key(addr) {
+                            assert(pre.cache.contains_key(addr)) by {
+                                if !pre.cache.contains_key(addr) {
+                                    assert((post.cache.dom() - pre.cache.dom()).contains(addr));
+                                    assert(false);
+                                }
+                            }
+                            assert(post.cache[addr] == pre.cache[addr]);
+                            assert(post.visible()[addr] == pre.visible()[addr]);
+                        } else if post.persistent.contains_key(addr) {
+                            assert(!pre.cache.contains_key(addr)) by {
+                                if pre.cache.contains_key(addr) {
+                                    assert(post.cache.contains_key(addr));
+                                    assert(false);
+                                }
+                            }
+                            assert(pre.persistent.contains_key(addr)) by {
+                                if !pre.persistent.contains_key(addr) {
+                                    assert((post.persistent.dom() - pre.persistent.dom()).contains(addr));
+                                    assert(false);
+                                }
+                            }
+                            assert(post.visible()[addr] == pre.visible()[addr]);
+                        }
+                        if pre.cache.contains_key(addr) {
+                            assert(post.cache.contains_key(addr));
+                            assert(post.cache[addr] == pre.cache[addr]);
+                            assert(post.visible()[addr] == pre.visible()[addr]);
+                        } else if pre.persistent.contains_key(addr) {
+                            assert(post.persistent.contains_key(addr));
+                            assert(!post.cache.contains_key(addr)) by {
+                                if post.cache.contains_key(addr) {
+                                    assert(!pre.cache.contains_key(addr));
+                                    assert((post.cache.dom() - pre.cache.dom()).contains(addr));
+                                    assert(false);
+                                }
+                            }
+                            assert(post.visible()[addr] == pre.visible()[addr]);
+                        }
+                    }
+                }
+            );
+        }
+        Self::same_views_preserve_persistent_visible_agree_on(pre, post, addrs);
+    }
+
+    pub proof fn access_preserves_persistent_visible_agree_on(
+        pre: Self,
+        post: Self,
+        reads: Map<Address, RawPage>,
+        writes: Map<Address, RawPage>,
+        addrs: Set<Address>,
+    )
+        requires
+            pre.persistent_visible_agree_on(addrs),
+            writes.dom().disjoint(addrs),
+            CachingDisk::State::next(
+                pre,
+                post,
+                CachingDisk::Label::Access{reads, writes},
+            ),
+        ensures
+            post.persistent_visible_agree_on(addrs),
+    {
+        Self::access_visible_effect(pre, post, reads, writes);
+        assert(post.persistent == pre.persistent) by {
+            Self::access_effect(pre, post, reads, writes);
+        }
+        assert_maps_equal!(
+            post.persistent.restrict(addrs),
+            post.visible().restrict(addrs),
+            addr => {
+                if addrs.contains(addr) {
+                    assert(!writes.contains_key(addr)) by {
+                        if writes.contains_key(addr) {
+                            assert(writes.dom().contains(addr));
+                            assert(writes.dom().disjoint(addrs));
+                            assert(false);
+                        }
+                    }
+                    assert(post.visible() == pre.visible().union_prefer_right(writes));
+                    if post.persistent.contains_key(addr) {
+                        assert(pre.persistent.contains_key(addr));
+                        assert(post.persistent[addr] == pre.persistent[addr]);
+                        assert(pre.persistent.restrict(addrs)
+                            == pre.visible().restrict(addrs));
+                        assert(pre.persistent.restrict(addrs).contains_key(addr));
+                        assert(pre.visible().restrict(addrs).contains_key(addr));
+                        assert(pre.persistent.restrict(addrs)[addr]
+                            == pre.visible().restrict(addrs)[addr]);
+                        assert(pre.persistent.restrict(addrs)[addr]
+                            == pre.persistent[addr]);
+                        assert(pre.visible().restrict(addrs)[addr]
+                            == pre.visible()[addr]);
+                        assert(pre.persistent[addr] == pre.visible()[addr]);
+                    }
+                    if post.visible().contains_key(addr) {
+                        assert(pre.visible().contains_key(addr));
+                        assert(pre.persistent.restrict(addrs)
+                            == pre.visible().restrict(addrs));
+                        assert(pre.visible().restrict(addrs).contains_key(addr));
+                        assert(pre.persistent.restrict(addrs).contains_key(addr));
+                        assert(pre.persistent.contains_key(addr));
+                        assert(post.persistent.contains_key(addr));
+                    }
+                }
+            }
+        );
+    }
+
+    pub proof fn forget_preserves_persistent_visible_agree_on(
+        pre: Self,
+        post: Self,
+        aus: Set<AU>,
+        addrs: Set<Address>,
+    )
+        requires
+            pre.persistent_visible_agree_on(addrs),
+            addresses_in_aus(aus).disjoint(addrs),
+            CachingDisk::State::next(
+                pre,
+                post,
+                CachingDisk::Label::Forget{aus},
+            ),
+        ensures
+            post.persistent_visible_agree_on(addrs),
+    {
+        Self::forget_effect(pre, post, aus);
+        assert(post.persistent.restrict(addrs) == pre.persistent.restrict(addrs)) by {
+            assert_maps_equal!(
+                post.persistent.restrict(addrs),
+                pre.persistent.restrict(addrs),
+                addr => {
+                    if addrs.contains(addr) {
+                        assert(!addresses_in_aus(aus).contains(addr));
+                    }
+                }
+            );
+        }
+        assert(post.visible().restrict(addrs) == pre.visible().restrict(addrs)) by {
+            assert_maps_equal!(
+                post.visible().restrict(addrs),
+                pre.visible().restrict(addrs),
+                addr => {
+                    if addrs.contains(addr) {
+                        assert(!addresses_in_aus(aus).contains(addr));
+                    }
+                }
+            );
+        }
+        Self::same_views_preserve_persistent_visible_agree_on(pre, post, addrs);
     }
 
     pub proof fn internal_preserves_aus_clean_or_evictable(pre: Self, post: Self, aus: Set<AU>)

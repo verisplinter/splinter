@@ -30,7 +30,7 @@ use crate::implementation::CachingDiskBranch_v::{
 };
 use crate::implementation::CrashAwareCachingDiskBranchRefinement_v::*;
 use crate::implementation::CrashAwareCachingDiskJournal_v::{
-    CachingDiskJournalImage, EphemeralCachingDiskJournal,
+    CachingDiskJournalImage, EphemeralCachingDiskJournal, PersistentCachingDiskJournal,
     CrashAwareCachingDiskJournal, caching_disk_journal_accessible_aus,
 };
 use crate::implementation::CrashAwareCachingDiskJournalRefinement_v::*;
@@ -394,6 +394,27 @@ state_machine!{ CrashAwareCachingDiskSystem {
         update branch = new_branch;
     }}
 
+    transition!{ component_internals(
+        lbl: Label,
+        new_journal: CrashAwareCachingDiskJournal::State,
+        new_branch: CrashAwareCachingDiskBranch::State,
+    ) {
+        require lbl is Noop;
+        require CrashAwareCachingDiskJournal::State::next(
+            pre.journal,
+            new_journal,
+            CrashAwareCachingDiskJournal::Label::Internal,
+        );
+        require CrashAwareCachingDiskBranch::State::next(
+            pre.branch,
+            new_branch,
+            CrashAwareCachingDiskBranch::Label::Internal,
+        );
+
+        update journal = new_journal;
+        update branch = new_branch;
+    }}
+
     transition!{ map_load_metadata(
         lbl: Label,
         new_branch: CrashAwareCachingDiskBranch::State,
@@ -636,7 +657,7 @@ state_machine!{ CrashAwareCachingDiskSystem {
         if self.journal.ephemeral is Known && self.journal.ephemeral->v.journal.status is Some {
             self.journal.ephemeral->v.journal.seq_end()
         } else {
-            self.journal.persistent.seq_end
+            self.journal.persistent.metadata().seq_end
         }
     }
 
@@ -647,8 +668,8 @@ state_machine!{ CrashAwareCachingDiskSystem {
         } else {
             Set::empty()
         };
-        let persistent_aus = if journal.ephemeral is Unknown && journal.persistent_image is Some {
-            journal.persistent_image.unwrap().accessible_aus()
+        let persistent_aus = if journal.ephemeral is Unknown && journal.persistent is Image {
+            journal.persistent->image.accessible_aus()
         } else {
             Set::empty()
         };
@@ -744,11 +765,10 @@ state_machine!{ CrashAwareCachingDiskSystem {
     ) {
         reveal(CrashAwareCachingDiskJournal::State::initialize);
         JournalImage::empty_is_valid_image();
-        assert(journal.persistent == CachingDiskJournalImage::empty().metadata());
-        assert(journal.persistent_image is Some);
-        assert(journal.persistent_image.unwrap() == CachingDiskJournalImage::empty());
-        assert(journal.persistent_image.unwrap().i() == JournalImage::empty());
-        assert(journal.persistent_image.unwrap().wf());
+        assert(journal.persistent is Image);
+        assert(journal.persistent->image == CachingDiskJournalImage::empty());
+        assert(journal.persistent->image.i() == JournalImage::empty());
+        assert(journal.persistent->image.wf());
         assert(journal.inv());
         journal.init_refines();
         reveal(CrashAwareCachingDiskBranch::State::initialize);
@@ -1271,6 +1291,71 @@ state_machine!{ CrashAwareCachingDiskSystem {
         Self::allocation_wf_from_subset(pre, post);
     }
 
+    #[inductive(component_internals)]
+    fn component_internals_inductive(
+        pre: Self,
+        post: Self,
+        lbl: Label,
+        new_journal: CrashAwareCachingDiskJournal::State,
+        new_branch: CrashAwareCachingDiskBranch::State,
+    ) {
+        let journal_lbl = CrashAwareCachingDiskJournal::Label::Internal;
+        let branch_lbl = CrashAwareCachingDiskBranch::Label::Internal;
+        CrashAwareCachingDiskJournal::State::inv_next(pre.journal, new_journal, journal_lbl);
+        CrashAwareCachingDiskBranch::State::inv_next(pre.branch, new_branch, branch_lbl);
+        Self::journal_next_knownness(pre.journal, new_journal, journal_lbl);
+        Self::branch_next_knownness(pre.branch, new_branch, branch_lbl);
+        assert(CrashAwareCachingDiskJournal::State::internal(
+            pre.journal,
+            new_journal,
+            journal_lbl,
+            new_journal.ephemeral->v,
+        )) by {
+            reveal(CrashAwareCachingDiskJournal::State::next);
+            reveal(CrashAwareCachingDiskJournal::State::next_by);
+            let step = choose |step: CrashAwareCachingDiskJournal::Step|
+                CrashAwareCachingDiskJournal::State::next_by(pre.journal, new_journal, journal_lbl, step);
+            match step {
+                CrashAwareCachingDiskJournal::Step::internal(new_ephemeral) => {},
+                _ => { assert(false); },
+            }
+        }
+        assert(CrashAwareCachingDiskBranch::State::internal(
+            pre.branch,
+            new_branch,
+            branch_lbl,
+            new_branch.ephemeral->v,
+        )) by {
+            reveal(CrashAwareCachingDiskBranch::State::next);
+            reveal(CrashAwareCachingDiskBranch::State::next_by);
+            let step = choose |step: CrashAwareCachingDiskBranch::Step|
+                CrashAwareCachingDiskBranch::State::next_by(pre.branch, new_branch, branch_lbl, step);
+            match step {
+                CrashAwareCachingDiskBranch::Step::internal(new_ephemeral) => {},
+                _ => { assert(false); },
+            }
+        }
+        if pre.journal.ephemeral is Known {
+            let old_e = pre.journal.ephemeral->v;
+            let new_e = new_journal.ephemeral->v;
+            assert(CachingDiskJournal::State::next(old_e, new_e, CachingDiskJournal::Label::Internal));
+            CachingDiskJournal::State::internal_preserves_accessible_aus(old_e, new_e);
+        }
+        if pre.branch.ephemeral is Known {
+            let old_b = pre.branch.ephemeral->v;
+            let new_b = new_branch.ephemeral->v;
+            assert(CachingDiskBranch::State::next(old_b, new_b, CachingDiskBranch::Label::Internal));
+            CachingDiskBranch::State::internal_preserves_accessible_aus(old_b, new_b);
+            CachingDiskBranch::State::internal_preserves_full_accessible_aus(old_b, new_b);
+            assert(new_b.full_accessible_aus() <= old_b.full_accessible_aus());
+        }
+        assert(post.free_aus == pre.free_aus);
+        assert(post.journal_owned_aus() <= pre.journal_owned_aus());
+        Self::branch_owned_aus_ephemeral_subset(pre.branch, post.branch);
+        assert(post.branch_owned_aus() <= pre.branch_owned_aus());
+        Self::allocation_wf_from_subset(pre, post);
+    }
+
     #[inductive(map_load_metadata)]
     fn map_load_metadata_inductive(
         pre: Self,
@@ -1429,7 +1514,7 @@ state_machine!{ CrashAwareCachingDiskSystem {
                 _ => { assert(false); },
             }
         }
-        let journal_image = pre.journal.persistent_image.unwrap();
+        let journal_image = pre.journal.persistent->image;
         let loaded_journal = CachingDiskJournal::State::load_from_persistent(
             journal_image.snapshot,
             journal_image.persistent,
@@ -1451,8 +1536,8 @@ state_machine!{ CrashAwareCachingDiskSystem {
         assert(new_journal.prepared == pre.journal.prepared);
         assert(new_journal.ephemeral is Known);
         assert(new_journal.ephemeral->v == CachingDiskJournal::State::load_from_persistent(
-            pre.journal.persistent_image.unwrap().snapshot,
-            pre.journal.persistent_image.unwrap().persistent,
+            pre.journal.persistent->image.snapshot,
+            pre.journal.persistent->image.persistent,
         ));
         assert(CachingDiskBranch::State::initialize(new_branch.ephemeral->v, pre.branch.persistent));
         reveal(CachingDiskBranch::State::initialize);
@@ -1475,13 +1560,12 @@ state_machine!{ CrashAwareCachingDiskSystem {
             assert forall |au: AU| #[trigger] post.journal_owned_aus().contains(au)
                 implies pre.journal_owned_aus().contains(au) by {
                 if new_journal.ephemeral->v.accessible_aus().contains(au) {
-                    assert(pre.journal.persistent_image is Some);
                     assert(CachingDiskJournal::State::load_from_persistent(
-                        pre.journal.persistent_image.unwrap().snapshot,
-                        pre.journal.persistent_image.unwrap().persistent,
+                        pre.journal.persistent->image.snapshot,
+                        pre.journal.persistent->image.persistent,
                     ).accessible_aus().contains(au));
-                    assert(to_aus(pre.journal.persistent_image.unwrap().persistent.dom()).contains(au));
-                    assert(pre.journal.persistent_image.unwrap().accessible_aus().contains(au));
+                    assert(to_aus(pre.journal.persistent->image.persistent.dom()).contains(au));
+                    assert(pre.journal.persistent->image.accessible_aus().contains(au));
                 }
             }
         };
@@ -1831,6 +1915,7 @@ state_machine!{ CrashAwareCachingDiskSystem {
             let cj_lbl = CachingDiskJournal::Label::DiscardOld{
                 start_lsn: frozen.snapshot.boundary_lsn,
                 require_end: pre.branch_lsn(),
+                deallocs: discarded,
             };
             assert(CachingDiskJournal::State::next(old_e, new_e, cj_lbl));
             CachingDiskJournal::State::discard_old_accessible_aus(
@@ -1838,6 +1923,7 @@ state_machine!{ CrashAwareCachingDiskSystem {
                 new_e,
                 frozen.snapshot.boundary_lsn,
                 pre.branch_lsn(),
+                discarded,
             );
         }
         let prepared_branch_image = choose |prepared_image: CachingDiskBranchImage|
@@ -2058,15 +2144,15 @@ state_machine!{ CrashAwareCachingDiskSystem {
         assert(post.journal_owned_aus() <= pre.journal_owned_aus()) by {
             assert(post.journal == new_journal);
             assert(post.journal.ephemeral is Unknown);
-            assert(post.journal.persistent_image is Some);
+            assert(post.journal.persistent is Image);
             assert forall |au: AU| #[trigger] post.journal_owned_aus().contains(au)
                 implies pre.journal_owned_aus().contains(au) by {
                 if pre.journal.ephemeral is Known {
-                    assert(post.journal.persistent_image.unwrap().accessible_aus()
+                    assert(post.journal.persistent->image.accessible_aus()
                         <= caching_disk_journal_accessible_aus(pre.journal.ephemeral->v));
                     assert(caching_disk_journal_accessible_aus(pre.journal.ephemeral->v).contains(au));
                 } else {
-                    assert(post.journal.persistent_image == pre.journal.persistent_image);
+                    assert(post.journal.persistent == pre.journal.persistent);
                 }
             }
         };
@@ -2495,8 +2581,9 @@ impl CrashAwareCachingDiskSystem::State {
     pub open spec fn empty_journal() -> CrashAwareCachingDiskJournal::State
     {
         CrashAwareCachingDiskJournal::State{
-            persistent: CachingDiskJournalImage::empty().metadata(),
-            persistent_image: Option::Some(CachingDiskJournalImage::empty()),
+            persistent: PersistentCachingDiskJournal::Image{
+                image: CachingDiskJournalImage::empty(),
+            },
             ephemeral: EphemeralCachingDiskJournal::Unknown,
             frozen: None,
             prepared: false,
