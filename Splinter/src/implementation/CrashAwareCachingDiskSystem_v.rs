@@ -22,7 +22,7 @@ use crate::implementation::CachingDiskJournal_v::CachingDiskJournal;
 use crate::implementation::CrashAwareAllocationBranchStackRefinement_v::*;
 use crate::implementation::CrashAwareAllocationBranchStack_v::FrozenAllocationBranchStack;
 use crate::implementation::CrashAwareCachingDiskBranch_v::{
-    EphemeralCachingDiskBranch, CrashAwareCachingDiskBranch,
+    EphemeralCachingDiskBranch, PersistentCachingDiskBranch, CrashAwareCachingDiskBranch,
 };
 use crate::implementation::CachingDiskBranch_v::{
     CachingDiskBranch, CachingDiskBranchFrozenImage, CachingDiskBranchImage,
@@ -156,7 +156,7 @@ impl SuperblockStore::State {
             SuperblockStore::Step::dummy_to_use_type_params(_) => {
                 assert(false);
             },
-        }
+        };
     }
 }
 
@@ -689,9 +689,13 @@ state_machine!{ CrashAwareCachingDiskSystem {
         } else {
             Set::empty()
         };
-        to_aus(branch.persistent.persistent.dom())
-            + summary_aus(branch.persistent.branch_summary())
-            + ephemeral_aus
+        let persistent_aus = if branch.ephemeral is Unknown && branch.persistent is Image {
+            to_aus(branch.persistent->image.persistent.dom())
+                + summary_aus(branch.persistent->image.branch_summary())
+        } else {
+            Set::empty()
+        };
+        persistent_aus + ephemeral_aus
     }
 
     pub open spec fn branch_owned_aus(self) -> Set<AU>
@@ -774,21 +778,23 @@ state_machine!{ CrashAwareCachingDiskSystem {
         journal.init_refines();
         reveal(CrashAwareCachingDiskBranch::State::initialize);
         empty_caching_disk_branch_image_wf();
-        assert(branch.persistent == empty_caching_disk_branch_image());
-        assert(branch.persistent.stack_wf());
+        assert(branch.persistent == PersistentCachingDiskBranch::Image{
+            image: empty_caching_disk_branch_image(),
+        });
         branch.init_refines();
         assert(post.journal_owned_aus() == Set::<AU>::empty());
         assert(post.branch_owned_aus() == Set::<AU>::empty()) by {
-            assert(branch.persistent.branch_summary() == Map::<AU, Set<AU>>::empty());
-            assert(summary_aus(branch.persistent.branch_summary()) =~= Set::<AU>::empty()) by {
-                lemma_values_finite(branch.persistent.branch_summary());
-                assert forall |au: AU| #[trigger] summary_aus(branch.persistent.branch_summary()).contains(au)
+            let image = branch.persistent->image;
+            assert(image.branch_summary() == Map::<AU, Set<AU>>::empty());
+            assert(summary_aus(image.branch_summary()) =~= Set::<AU>::empty()) by {
+                lemma_values_finite(image.branch_summary());
+                assert forall |au: AU| #[trigger] summary_aus(image.branch_summary()).contains(au)
                     implies false by {
                     let s = lemma_union_set_of_sets_contains(
-                        branch.persistent.branch_summary().values(),
+                        image.branch_summary().values(),
                         au,
                     );
-                    assert(branch.persistent.branch_summary().values().contains(s));
+                    assert(image.branch_summary().values().contains(s));
                     assert(false);
                 }
             };
@@ -827,7 +833,7 @@ state_machine!{ CrashAwareCachingDiskSystem {
             if post_branch.ephemeral->v.full_accessible_aus().contains(au) {
                 assert((pre_branch.ephemeral->v.full_accessible_aus() + growth).contains(au));
             }
-        }
+        };
     }
 
     proof fn branch_owned_aus_ephemeral_subset(
@@ -1525,7 +1531,7 @@ state_machine!{ CrashAwareCachingDiskSystem {
             journal_image.persistent,
         );
         CachingDiskBranch::State::load_from_persistent_accessible_aus(
-            pre.branch.persistent,
+            pre.branch.persistent->image,
         );
         reveal(CrashAwareCachingDiskJournal::State::load_ephemeral);
         reveal(CrashAwareCachingDiskBranch::State::load_ephemeral);
@@ -1539,14 +1545,19 @@ state_machine!{ CrashAwareCachingDiskSystem {
             pre.journal.persistent->image.snapshot,
             pre.journal.persistent->image.persistent,
         ));
-        assert(CachingDiskBranch::State::initialize(new_branch.ephemeral->v, pre.branch.persistent));
+        assert(CachingDiskBranch::State::initialize(
+            new_branch.ephemeral->v,
+            pre.branch.persistent->image,
+        ));
         reveal(CachingDiskBranch::State::initialize);
-        assert(new_branch.persistent == pre.branch.persistent);
+        assert(new_branch.persistent == PersistentCachingDiskBranch::Metadata{
+            meta: pre.branch.persistent->image.metadata(),
+        });
         assert(new_branch.frozen == pre.branch.frozen);
         assert(new_branch.prepared == pre.branch.prepared);
         assert(new_branch.ephemeral is Known);
         assert(new_branch.ephemeral->v == CachingDiskBranch::State::load_from_persistent(
-            pre.branch.persistent,
+            pre.branch.persistent->image,
         ));
         assert(post.free_aus <= pre.free_aus) by {
             assert forall |au: AU| #[trigger] post.free_aus.contains(au)
@@ -1573,8 +1584,9 @@ state_machine!{ CrashAwareCachingDiskSystem {
             assert forall |au: AU| #[trigger] post.branch_owned_aus().contains(au)
                 implies pre.branch_owned_aus().contains(au) by {
                 if new_branch.ephemeral->v.full_accessible_aus().contains(au) {
-                    assert((to_aus(pre.branch.persistent.persistent.dom())
-                        + summary_aus(pre.branch.persistent.branch_summary())).contains(au));
+                    let image = pre.branch.persistent->image;
+                    assert((to_aus(image.persistent.dom())
+                        + summary_aus(image.branch_summary())).contains(au));
                 }
             }
         };
@@ -1694,10 +1706,7 @@ state_machine!{ CrashAwareCachingDiskSystem {
         assert(post.branch_owned_aus() <= pre.branch_owned_aus()) by {
             assert forall |au: AU| #[trigger] post.branch_owned_aus().contains(au)
                 implies pre.branch_owned_aus().contains(au) by {
-                if to_aus(new_branch.persistent.persistent.dom()).contains(au)
-                    || summary_aus(new_branch.persistent.branch_summary()).contains(au) {
-                    assert(new_branch.persistent == pre.branch.persistent);
-                } else {
+                if new_branch.ephemeral->v.full_accessible_aus().contains(au) {
                     assert(new_branch.ephemeral == pre.branch.ephemeral);
                 }
             }
@@ -1823,10 +1832,7 @@ state_machine!{ CrashAwareCachingDiskSystem {
         assert(post.branch_owned_aus() <= pre.branch_owned_aus()) by {
             assert forall |au: AU| #[trigger] post.branch_owned_aus().contains(au)
                 implies pre.branch_owned_aus().contains(au) by {
-                if to_aus(post.branch.persistent.persistent.dom()).contains(au)
-                    || summary_aus(post.branch.persistent.branch_summary()).contains(au) {
-                    assert(post.branch.persistent == pre.branch.persistent);
-                } else {
+                if post.branch.ephemeral->v.full_accessible_aus().contains(au) {
                     assert(post.branch.ephemeral == pre.branch.ephemeral);
                 }
             }
@@ -1926,27 +1932,17 @@ state_machine!{ CrashAwareCachingDiskSystem {
                 discarded,
             );
         }
-        let prepared_branch_image = choose |prepared_image: CachingDiskBranchImage|
-            CrashAwareCachingDiskBranch::State::commit_complete(
-                pre.branch,
-                new_branch,
-                branch_lbl,
-                prepared_image,
-            );
         assert(CrashAwareCachingDiskBranch::State::commit_complete(
             pre.branch,
             new_branch,
             branch_lbl,
-            prepared_branch_image,
         )) by {
             reveal(CrashAwareCachingDiskBranch::State::next);
             reveal(CrashAwareCachingDiskBranch::State::next_by);
             let step = choose |step: CrashAwareCachingDiskBranch::Step|
                 CrashAwareCachingDiskBranch::State::next_by(pre.branch, new_branch, branch_lbl, step);
             match step {
-                CrashAwareCachingDiskBranch::Step::commit_complete(prepared_image) => {
-                    assert(prepared_image == prepared_branch_image);
-                },
+                CrashAwareCachingDiskBranch::Step::commit_complete() => {},
                 _ => { assert(false); },
             }
         }
@@ -1954,34 +1950,10 @@ state_machine!{ CrashAwareCachingDiskSystem {
         assert(post.branch == new_branch);
         assert(post.free_aus <= pre.free_aus + discarded);
         assert(post.journal_owned_aus() <= pre.journal_owned_aus());
-        pre.branch.ephemeral->v.prepared_image_matches_visible_prefix(prepared_branch_image);
-        assert(to_aus(prepared_branch_image.persistent.dom())
-            <= pre.branch.ephemeral->v.full_accessible_aus()) by {
-            assert(prepared_branch_image.persistent == pre.branch.ephemeral->v.disk.persistent);
-            assert(pre.branch.ephemeral->v.disk.persistent.dom()
-                <= pre.branch.ephemeral->v.disk.visible().dom());
-            to_aus_preserves_lte(
-                pre.branch.ephemeral->v.disk.persistent.dom(),
-                pre.branch.ephemeral->v.disk.visible().dom(),
-            );
-            assert(to_aus(pre.branch.ephemeral->v.disk.visible().dom())
-                <= pre.branch.ephemeral->v.full_accessible_aus());
-        }
-        assert(summary_aus(prepared_branch_image.branch_summary())
-            <= pre.branch.ephemeral->v.full_accessible_aus()) by {
-            assert(summary_aus(prepared_branch_image.branch_summary())
-                <= summary_aus(pre.branch.ephemeral->v.interpreted_branch_summary()));
-        }
         assert(post.branch_owned_aus() <= pre.branch_owned_aus()) by {
             assert forall |au: AU| #[trigger] post.branch_owned_aus().contains(au)
                 implies pre.branch_owned_aus().contains(au) by {
-                if to_aus(post.branch.persistent.persistent.dom()).contains(au) {
-                    assert(post.branch.persistent == prepared_branch_image);
-                    assert(pre.branch.ephemeral->v.full_accessible_aus().contains(au));
-                } else if summary_aus(post.branch.persistent.branch_summary()).contains(au) {
-                    assert(post.branch.persistent == prepared_branch_image);
-                    assert(pre.branch.ephemeral->v.full_accessible_aus().contains(au));
-                } else {
+                if post.branch.ephemeral->v.full_accessible_aus().contains(au) {
                     assert(post.branch.ephemeral == pre.branch.ephemeral);
                 }
             }
@@ -2079,12 +2051,11 @@ state_machine!{ CrashAwareCachingDiskSystem {
         let branch_step = choose |step: CrashAwareCachingDiskBranch::Step|
             CrashAwareCachingDiskBranch::State::next_by(pre.branch, new_branch, branch_lbl, step);
         match branch_step {
-            CrashAwareCachingDiskBranch::Step::crash(prepared_image) => {
+            CrashAwareCachingDiskBranch::Step::crash() => {
                 assert(CrashAwareCachingDiskBranch::State::crash(
                     pre.branch,
                     new_branch,
                     branch_lbl,
-                    prepared_image,
                 ));
             },
             _ => { assert(false); },
@@ -2105,24 +2076,75 @@ state_machine!{ CrashAwareCachingDiskSystem {
             let step = choose |step: CrashAwareCachingDiskBranch::Step|
                 CrashAwareCachingDiskBranch::State::next_by(pre.branch, new_branch, branch_lbl, step);
             match step {
-                CrashAwareCachingDiskBranch::Step::crash(prepared_image) => {},
+                CrashAwareCachingDiskBranch::Step::crash() => {},
                 _ => { assert(false); },
             }
-        }
+        };
         assert(post.free_aus <= pre.free_aus);
         CrashAwareCachingDiskJournal::State::crash_persistent_image_accessible_aus(
             pre.journal,
             new_journal,
             journal_lbl,
         );
-        let prepared_branch_image = choose |prepared_image: CachingDiskBranchImage|
-            CrashAwareCachingDiskBranch::State::crash(
-                pre.branch,
-                new_branch,
-                branch_lbl,
-                prepared_image,
-            );
+        let prepared_branch_image = if keep_in_flight && pre.branch.ephemeral is Known {
+            CachingDiskBranchImage::materialized_from_persistent(
+                pre.branch.ephemeral->v,
+                pre.branch.frozen.unwrap(),
+            )
+        } else if pre.branch.ephemeral is Unknown {
+            pre.branch.persistent->image
+        } else {
+            CachingDiskBranchImage::materialized_from_persistent(
+                pre.branch.ephemeral->v,
+                pre.branch.persistent.metadata(),
+            )
+        };
         if keep_in_flight {
+            pre.branch.prepared_materialized_image_matches_visible_prefix();
+            assert(prepared_branch_image == pre.branch.prepared_materialized_image());
+            assert(to_aus(prepared_branch_image.persistent.dom())
+                <= pre.branch.ephemeral->v.full_accessible_aus()) by {
+                assert(prepared_branch_image.persistent == pre.branch.ephemeral->v.disk.persistent);
+                assert(pre.branch.ephemeral->v.disk.persistent.dom()
+                    <= pre.branch.ephemeral->v.disk.visible().dom());
+                to_aus_preserves_lte(
+                    pre.branch.ephemeral->v.disk.persistent.dom(),
+                    pre.branch.ephemeral->v.disk.visible().dom(),
+                );
+                assert(to_aus(pre.branch.ephemeral->v.disk.visible().dom())
+                    <= pre.branch.ephemeral->v.full_accessible_aus());
+            }
+            assert(summary_aus(prepared_branch_image.branch_summary())
+                <= pre.branch.ephemeral->v.full_accessible_aus()) by {
+                assert(summary_aus(prepared_branch_image.branch_summary())
+                    <= summary_aus(pre.branch.ephemeral->v.interpreted_branch_summary()));
+            }
+        } else if pre.branch.ephemeral is Known {
+            let persistent_meta = pre.branch.persistent.metadata();
+            let cb_lbl = CachingDiskBranch::Label::FreezePrepared{
+                image: persistent_meta,
+            };
+            assert(CachingDiskBranch::State::next(
+                pre.branch.ephemeral->v,
+                pre.branch.ephemeral->v,
+                cb_lbl,
+            )) by {
+                reveal(CachingDiskBranch::State::next);
+                reveal(CachingDiskBranch::State::next_by);
+                assert(CachingDiskBranch::State::freeze_prepared(
+                    pre.branch.ephemeral->v,
+                    pre.branch.ephemeral->v,
+                    cb_lbl,
+                )) by {
+                    reveal(CachingDiskBranch::State::freeze_prepared);
+                };
+                assert(CachingDiskBranch::State::next_by(
+                    pre.branch.ephemeral->v,
+                    pre.branch.ephemeral->v,
+                    cb_lbl,
+                    CachingDiskBranch::Step::freeze_prepared(),
+                ));
+            };
             pre.branch.ephemeral->v.prepared_image_matches_visible_prefix(prepared_branch_image);
             assert(to_aus(prepared_branch_image.persistent.dom())
                 <= pre.branch.ephemeral->v.full_accessible_aus()) by {
@@ -2161,14 +2183,27 @@ state_machine!{ CrashAwareCachingDiskSystem {
             assert forall |au: AU| #[trigger] post.branch_owned_aus().contains(au)
                 implies pre.branch_owned_aus().contains(au) by {
                 if keep_in_flight {
-                    assert(post.branch.persistent == prepared_branch_image);
-                    if to_aus(post.branch.persistent.persistent.dom()).contains(au) {
+                    assert(post.branch.persistent == PersistentCachingDiskBranch::Image{
+                        image: prepared_branch_image,
+                    });
+                    if to_aus(post.branch.persistent->image.persistent.dom()).contains(au) {
                         assert(pre.branch.ephemeral->v.full_accessible_aus().contains(au));
-                    } else if summary_aus(post.branch.persistent.branch_summary()).contains(au) {
+                    } else if summary_aus(post.branch.persistent->image.branch_summary()).contains(au) {
                         assert(pre.branch.ephemeral->v.full_accessible_aus().contains(au));
                     }
                 } else {
-                    assert(post.branch.persistent == pre.branch.persistent);
+                    assert(post.branch.persistent == PersistentCachingDiskBranch::Image{
+                        image: prepared_branch_image,
+                    });
+                    if pre.branch.ephemeral is Known {
+                        if to_aus(post.branch.persistent->image.persistent.dom()).contains(au) {
+                            assert(pre.branch.ephemeral->v.full_accessible_aus().contains(au));
+                        } else if summary_aus(post.branch.persistent->image.branch_summary()).contains(au) {
+                            assert(pre.branch.ephemeral->v.full_accessible_aus().contains(au));
+                        }
+                    } else {
+                        assert(post.branch.persistent == pre.branch.persistent);
+                    }
                 }
             }
         };
@@ -2562,11 +2597,11 @@ impl CrashAwareCachingDiskSystem::State {
             CrashAwareCachingDiskBranch::Step::freeze_prepared() => {
                 assert(CrashAwareCachingDiskBranch::State::freeze_prepared(pre, post, lbl));
             },
-            CrashAwareCachingDiskBranch::Step::commit_complete(prepared_image) => {
-                assert(CrashAwareCachingDiskBranch::State::commit_complete(pre, post, lbl, prepared_image));
+            CrashAwareCachingDiskBranch::Step::commit_complete() => {
+                assert(CrashAwareCachingDiskBranch::State::commit_complete(pre, post, lbl));
             },
-            CrashAwareCachingDiskBranch::Step::crash(prepared_image) => {
-                assert(CrashAwareCachingDiskBranch::State::crash(pre, post, lbl, prepared_image));
+            CrashAwareCachingDiskBranch::Step::crash() => {
+                assert(CrashAwareCachingDiskBranch::State::crash(pre, post, lbl));
             },
             _ => {
                 assert(false);
@@ -2596,7 +2631,9 @@ impl CrashAwareCachingDiskSystem::State {
     pub open spec fn empty_branch() -> CrashAwareCachingDiskBranch::State
     {
         CrashAwareCachingDiskBranch::State{
-            persistent: empty_caching_disk_branch_image(),
+            persistent: PersistentCachingDiskBranch::Image{
+                image: empty_caching_disk_branch_image(),
+            },
             ephemeral: EphemeralCachingDiskBranch::Unknown,
             frozen: None,
             prepared: false,
@@ -2635,7 +2672,7 @@ impl CrashAwareCachingDiskSystem::State {
         if self.branch.ephemeral is Known {
             self.branch.ephemeral->v.seq_end
         } else {
-            self.branch.persistent.seq_end
+            self.branch.persistent.metadata().seq_end
         }
     }
 

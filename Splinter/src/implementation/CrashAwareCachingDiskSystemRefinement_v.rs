@@ -20,7 +20,9 @@ use crate::implementation::CrashAwareCachingDiskBranchRefinement_v::*;
 use crate::implementation::CrashAwareCachingDiskJournalRefinement_v::*;
 use crate::implementation::AllocationBranchStackRefinement_v::{append_puts, append_puts_wf};
 use crate::implementation::CrashAwareCachingDiskSystem_v::{CrashAwareCachingDiskSystem, SuperblockStore};
-use crate::implementation::CrashAwareCachingDiskBranch_v::CrashAwareCachingDiskBranch;
+use crate::implementation::CrashAwareCachingDiskBranch_v::{
+    CrashAwareCachingDiskBranch, PersistentCachingDiskBranch,
+};
 use crate::implementation::CachingDiskBranch_v::{
     CachingDiskBranch, CachingDiskBranchImage, empty_caching_disk_branch_image,
     empty_caching_disk_branch_image_wf, to_branch_nodes,
@@ -53,6 +55,7 @@ pub open spec fn refinement_inv(model: CrashAwareCachingDiskSystem::State) -> bo
 {
     &&& model.inv()
     &&& model.journal.refinement_inv()
+    &&& model.branch.refinement_inv()
 }
 
 proof fn caching_disk_system_commit_flags_unchanged(pre: CrashAwareCachingDiskSystem::State, post: CrashAwareCachingDiskSystem::State)
@@ -814,14 +817,13 @@ proof fn branch_next_crash_is_crash(
         CrashAwareCachingDiskBranch::State::next(pre, post, lbl),
         lbl is Crash,
     ensures
-        exists |prepared_image: CachingDiskBranchImage|
-            CrashAwareCachingDiskBranch::State::crash(pre, post, lbl, prepared_image),
+        CrashAwareCachingDiskBranch::State::crash(pre, post, lbl),
 {
     reveal(CrashAwareCachingDiskBranch::State::next);
     reveal(CrashAwareCachingDiskBranch::State::next_by);
     let step = choose |step| CrashAwareCachingDiskBranch::State::next_by(pre, post, lbl, step);
     match step {
-        CrashAwareCachingDiskBranch::Step::crash(prepared_image) => {
+        CrashAwareCachingDiskBranch::Step::crash() => {
             reveal(CrashAwareCachingDiskBranch::State::crash);
         },
         _ => { assert(false); },
@@ -866,15 +868,13 @@ proof fn branch_crash_refines_abstract_light(
     pre: CrashAwareCachingDiskBranch::State,
     post: CrashAwareCachingDiskBranch::State,
     keep_in_flight: bool,
-    prepared_image: CachingDiskBranchImage,
 )
     requires
-        pre.inv(),
+        pre.refinement_inv(),
         CrashAwareCachingDiskBranch::State::crash(
             pre,
             post,
             CrashAwareCachingDiskBranch::Label::Crash{keep_in_flight},
-            prepared_image,
         ),
     ensures
         AbstractCrashAwareMap::State::next(
@@ -888,7 +888,7 @@ proof fn branch_crash_refines_abstract_light(
         pre,
         post,
         lbl,
-        CrashAwareCachingDiskBranch::Step::crash(prepared_image),
+        CrashAwareCachingDiskBranch::Step::crash(),
     )) by {
         reveal(CrashAwareCachingDiskBranch::State::next_by);
     }
@@ -960,13 +960,6 @@ proof fn crash_components_refine(
     let branch_lbl = CrashAwareCachingDiskBranch::Label::Crash{keep_in_flight};
     journal_next_crash_is_crash(pre.journal, new_journal, journal_lbl);
     branch_next_crash_is_crash(pre.branch, new_branch, branch_lbl);
-    let prepared_branch_image = choose |prepared_image: CachingDiskBranchImage|
-        CrashAwareCachingDiskBranch::State::crash(
-            pre.branch,
-            new_branch,
-            branch_lbl,
-            prepared_image,
-        );
     journal_crash_refines_abstract_light(
         pre.journal,
         new_journal,
@@ -976,7 +969,6 @@ proof fn crash_components_refine(
         pre.branch,
         new_branch,
         keep_in_flight,
-        prepared_branch_image,
     );
     assert(new_journal.frozen is None) by {
         reveal(CrashAwareCachingDiskJournal::State::crash);
@@ -1107,7 +1099,7 @@ proof fn recover_branch_append_component_refine(
     msgs: Seq<Message>,
 )
     requires
-        pre.branch.inv(),
+        pre.branch.refinement_inv(),
         CrashAwareCachingDiskBranch::State::next(
             pre.branch,
             new_branch,
@@ -1483,7 +1475,7 @@ proof fn map_internal_refines_coordination(
     new_branch: CrashAwareCachingDiskBranch::State,
 )
     requires
-        pre.inv(),
+        refinement_inv(pre),
         CrashAwareCachingDiskSystem::State::map_internal(pre, post, lbl, new_branch),
     ensures
         CoordinationSystem::State::next(
@@ -1595,7 +1587,7 @@ proof fn map_load_metadata_refines_coordination(
     discovered_aus: Set<AU>,
 )
     requires
-        pre.inv(),
+        refinement_inv(pre),
         CrashAwareCachingDiskSystem::State::map_load_metadata(
             pre,
             post,
@@ -1652,7 +1644,7 @@ proof fn map_internal_alloc_refines_coordination(
     deallocs: Set<AU>,
 )
     requires
-        pre.inv(),
+        refinement_inv(pre),
         CrashAwareCachingDiskSystem::State::map_internal_alloc(
             pre,
             post,
@@ -2442,7 +2434,7 @@ proof fn commit_complete_components_refine(
             step,
         );
         match branch_step {
-            CrashAwareCachingDiskBranch::Step::commit_complete(prepared_image) => {
+            CrashAwareCachingDiskBranch::Step::commit_complete() => {
                 reveal(CrashAwareCachingDiskBranch::State::commit_complete);
             },
             _ => { assert(false); },
@@ -2458,7 +2450,7 @@ proof fn commit_complete_components_refine(
             step,
         );
         match branch_step {
-            CrashAwareCachingDiskBranch::Step::commit_complete(prepared_image) => {
+            CrashAwareCachingDiskBranch::Step::commit_complete() => {
                 reveal(CrashAwareCachingDiskBranch::State::commit_complete);
             },
             _ => { assert(false); },
@@ -2582,8 +2574,9 @@ pub proof fn init_refines_ctam(model: CrashAwareCachingDiskSystem::State)
             assert(journal.inv());
             reveal(CrashAwareCachingDiskBranch::State::initialize);
             empty_caching_disk_branch_image_wf();
-            assert(branch.persistent == empty_caching_disk_branch_image());
-            assert(branch.persistent.stack_wf());
+            assert(branch.persistent == PersistentCachingDiskBranch::Image{
+                image: empty_caching_disk_branch_image(),
+            });
             assert(branch.inv());
             assert(model.journal.inv());
             assert(model.branch.inv());

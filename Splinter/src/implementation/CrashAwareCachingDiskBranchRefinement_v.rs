@@ -43,16 +43,18 @@ impl EphemeralCachingDiskBranch {
 
 pub open spec fn frozen_image_i(
     frozen: Option<CachingDiskBranchFrozenImage>,
-    persistent: CachingDiskBranchImage,
+    persistent: PersistentCachingDiskBranch,
     ephemeral: EphemeralCachingDiskBranch,
 ) -> Option<FrozenAllocationBranchStack> {
     if frozen is None {
         Option::None
     } else {
         let target = frozen.unwrap();
-        if target.sealed_roots == persistent.sealed_roots
-            && target.seq_end == persistent.seq_end {
-            Option::Some(persistent.frozen_i())
+        let persistent_image = persistent_image_i(persistent, ephemeral);
+        let persistent_meta = persistent.metadata();
+        if target.sealed_roots == persistent_meta.sealed_roots
+            && target.seq_end == persistent_meta.seq_end {
+            Option::Some(persistent_image.frozen_i())
         } else if ephemeral is Known {
             Option::Some(CachingDiskBranchImage{
                 persistent: ephemeral->v.disk.visible(),
@@ -65,12 +67,33 @@ pub open spec fn frozen_image_i(
     }
 }
 
+pub open spec fn persistent_image_i(
+    persistent: PersistentCachingDiskBranch,
+    ephemeral: EphemeralCachingDiskBranch,
+) -> CachingDiskBranchImage {
+    match persistent {
+        PersistentCachingDiskBranch::Image{image} => image,
+        PersistentCachingDiskBranch::Metadata{meta} => {
+            if ephemeral is Known {
+                ephemeral->v.visible_image_for_metadata(meta)
+            } else {
+                empty_caching_disk_branch_image()
+            }
+        },
+    }
+}
+
 impl CrashAwareCachingDiskBranch::State {
+    pub open spec fn persistent_image_i(self) -> CachingDiskBranchImage {
+        persistent_image_i(self.persistent, self.ephemeral)
+    }
+
     pub open spec fn i(self) -> CrashAwareAllocationBranchStack::State {
+        let persistent = self.persistent_image_i();
         CrashAwareAllocationBranchStack::State{
-            persistent: self.persistent.sealed_stack_i(),
-            persistent_branch_summary: self.persistent.branch_summary(),
-            persistent_seq_end: self.persistent.seq_end,
+            persistent: persistent.sealed_stack_i(),
+            persistent_branch_summary: persistent.branch_summary(),
+            persistent_seq_end: self.persistent.metadata().seq_end,
             ephemeral: self.ephemeral.i(),
             frozen: frozen_image_i(self.frozen, self.persistent, self.ephemeral),
         }
@@ -111,13 +134,15 @@ impl CrashAwareCachingDiskBranch::State {
     }
 
     pub open spec fn semantic_inv(self) -> bool {
+        let persistent = self.persistent_image_i();
+        let persistent_meta = self.persistent.metadata();
         &&& self.ephemeral is Known ==> self.ephemeral->v.refinement_inv()
-        &&& self.persistent.sealed_stack_i().wf(self.persistent.branch_summary())
+        &&& persistent.sealed_stack_i().wf(persistent.branch_summary())
         &&& self.frozen is Some && self.ephemeral is Known ==> {
             let frozen = self.frozen.unwrap();
             ||| {
-                &&& frozen.sealed_roots == self.persistent.sealed_roots
-                &&& frozen.seq_end == self.persistent.seq_end
+                &&& frozen.sealed_roots == persistent_meta.sealed_roots
+                &&& frozen.seq_end == persistent_meta.seq_end
             }
             ||| {
                 &&& self.ephemeral->v.metadata_loaded
@@ -146,10 +171,12 @@ impl CrashAwareCachingDiskBranch::State {
         }
         if self.frozen is Some {
             let frozen = self.frozen.unwrap();
-            if frozen.sealed_roots == self.persistent.sealed_roots
-                && frozen.seq_end == self.persistent.seq_end {
-                assert(self.persistent.sealed_stack_i().wf(self.persistent.branch_summary()));
-                assert(self.i().frozen.unwrap() == self.persistent.frozen_i());
+            let persistent = self.persistent_image_i();
+            let persistent_meta = self.persistent.metadata();
+            if frozen.sealed_roots == persistent_meta.sealed_roots
+                && frozen.seq_end == persistent_meta.seq_end {
+                assert(persistent.sealed_stack_i().wf(persistent.branch_summary()));
+                assert(self.i().frozen.unwrap() == persistent.frozen_i());
             } else if self.ephemeral is Known {
                 self.ephemeral->v.visible_prefix_image_matches_stack(frozen);
                 assert(self.i().frozen.unwrap()
@@ -171,9 +198,11 @@ impl CrashAwareCachingDiskBranch::State {
         }
         if self.frozen is Some {
             let frozen = self.frozen.unwrap();
-            if frozen.sealed_roots == self.persistent.sealed_roots
-                && frozen.seq_end == self.persistent.seq_end {
-                assert(self.i().frozen.unwrap() == self.persistent.frozen_i());
+            let persistent = self.persistent_image_i();
+            let persistent_meta = self.persistent.metadata();
+            if frozen.sealed_roots == persistent_meta.sealed_roots
+                && frozen.seq_end == persistent_meta.seq_end {
+                assert(self.i().frozen.unwrap() == persistent.frozen_i());
             } else if self.ephemeral is Known {
                 assert(self.i().frozen.unwrap()
                     == self.ephemeral->v.visible_image_for_metadata(frozen).frozen_i());
@@ -224,7 +253,7 @@ impl CrashAwareCachingDiskBranch::State {
         reveal(CrashAwareAllocationBranchStack::State::initialize);
         empty_caching_disk_branch_image_wf();
         let image = empty_caching_disk_branch_image();
-        assert(self.persistent == image);
+        assert(self.persistent == PersistentCachingDiskBranch::Image{image});
         assert(image.live_persistent() =~= Map::empty()) by {
             assert_maps_equal!(image.live_persistent(), Map::empty(), addr => {
                 if image.live_persistent().contains_key(addr) {
@@ -254,6 +283,46 @@ impl CrashAwareCachingDiskBranch::State {
         self.i().init_refines();
     }
 
+    proof fn loaded_step_preserves_persistent_i(
+        self,
+        post: Self,
+        old_branch: CachingDiskBranch::State,
+        new_branch: CachingDiskBranch::State,
+        branch_lbl: CachingDiskBranch::Label,
+    )
+        requires
+            self.refinement_inv(),
+            self.ephemeral == (EphemeralCachingDiskBranch::Known{ v: old_branch }),
+            post.ephemeral == (EphemeralCachingDiskBranch::Known{ v: new_branch }),
+            post.persistent == self.persistent,
+            post.frozen == self.frozen,
+            post.prepared == self.prepared,
+            CachingDiskBranch::State::next(old_branch, new_branch, branch_lbl),
+        ensures
+            post.i().persistent == self.i().persistent,
+            post.i().persistent_branch_summary == self.i().persistent_branch_summary,
+            post.i().persistent_seq_end == self.i().persistent_seq_end,
+    {
+        let persistent = self.persistent_image_i();
+        let persistent_meta = self.persistent.metadata();
+        assert(self.persistent is Metadata);
+        assert(post.persistent is Metadata);
+        assert(persistent == old_branch.visible_image_for_metadata(persistent_meta));
+        assert(persistent.sealed_roots == persistent_meta.sealed_roots);
+        assert(persistent.seq_end == persistent_meta.seq_end);
+        cdb_step_preserves_image_match(
+            old_branch,
+            new_branch,
+            branch_lbl,
+            persistent,
+        );
+        assert(post.persistent_image_i()
+            == new_branch.visible_image_for_metadata(persistent_meta));
+        assert(post.persistent_image_i().sealed_stack_i() == persistent.sealed_stack_i());
+        assert(post.persistent_image_i().branch_summary() == persistent.branch_summary());
+        assert(post.persistent_image_i().seq_end == persistent.seq_end);
+    }
+
     proof fn loaded_step_preserves_frozen_i(
         self,
         post: Self,
@@ -270,15 +339,22 @@ impl CrashAwareCachingDiskBranch::State {
             post.prepared == self.prepared,
             CachingDiskBranch::State::next(old_branch, new_branch, branch_lbl),
         ensures
+            post.i().persistent == self.i().persistent,
+            post.i().persistent_branch_summary == self.i().persistent_branch_summary,
+            post.i().persistent_seq_end == self.i().persistent_seq_end,
             post.i().frozen == self.i().frozen,
     {
+        self.loaded_step_preserves_persistent_i(post, old_branch, new_branch, branch_lbl);
         CachingDiskBranch::State::inv_next(old_branch, new_branch, branch_lbl);
         if self.frozen is Some {
             let frozen = self.frozen.unwrap();
-            if frozen.sealed_roots == self.persistent.sealed_roots
-                && frozen.seq_end == self.persistent.seq_end {
-                assert(post.i().frozen.unwrap() == self.persistent.frozen_i());
-                assert(self.i().frozen.unwrap() == self.persistent.frozen_i());
+            let persistent = self.persistent_image_i();
+            let persistent_meta = self.persistent.metadata();
+            if frozen.sealed_roots == persistent_meta.sealed_roots
+                && frozen.seq_end == persistent_meta.seq_end {
+                assert(post.persistent_image_i().frozen_i() == persistent.frozen_i());
+                assert(post.i().frozen.unwrap() == persistent.frozen_i());
+                assert(self.i().frozen.unwrap() == persistent.frozen_i());
                 assert(post.i().frozen == self.i().frozen);
             } else {
                 old_branch.next_preserves_visible_prefix_image(
@@ -606,7 +682,19 @@ impl CrashAwareCachingDiskBranch::State {
                 reveal(CrashAwareCachingDiskBranch::State::load_ephemeral);
                 match lbl {
                     CrashAwareCachingDiskBranch::Label::LoadEphemeral => {
-                        CachingDiskBranch::State::init_refines(new_ephemeral, self.persistent);
+                        let image = self.persistent->image;
+                        let meta = image.metadata();
+                        CachingDiskBranch::State::init_refines(new_ephemeral, image);
+                        assert(post.persistent == PersistentCachingDiskBranch::Metadata{meta});
+                        new_ephemeral.visible_prefix_image_matches_stack(meta);
+                        assert(post.persistent_image_i()
+                            == new_ephemeral.visible_image_for_metadata(meta));
+                        assert(post.persistent_image_i().sealed_stack_i() == image.sealed_stack_i());
+                        assert(post.persistent_image_i().branch_summary() == image.branch_summary());
+                        assert(post.persistent_image_i().seq_end == image.seq_end);
+                        assert(post.i().persistent == self.i().persistent);
+                        assert(post.i().persistent_branch_summary == self.i().persistent_branch_summary);
+                        assert(post.i().persistent_seq_end == self.i().persistent_seq_end);
                         reveal(CrashAwareAllocationBranchStack::State::load_ephemeral);
                         reveal(AllocationBranchStack::State::initialize);
                         assert(post.i().ephemeral == EphemeralAllocationBranchStack::Known{ v: new_ephemeral.i() });
@@ -686,9 +774,11 @@ impl CrashAwareCachingDiskBranch::State {
                         assert(!post.prepared);
                         assert(self.ephemeral is Known);
                         assert(post.ephemeral == self.ephemeral);
-                        if new_boundary_lsn == self.persistent.seq_end
-                            && sealed_roots == self.persistent.sealed_roots {
-                            assert(post.i().frozen.unwrap() == self.persistent.frozen_i());
+                        let persistent = self.persistent_image_i();
+                        let persistent_meta = self.persistent.metadata();
+                        if new_boundary_lsn == persistent_meta.seq_end
+                            && sealed_roots == persistent_meta.sealed_roots {
+                            assert(post.i().frozen.unwrap() == persistent.frozen_i());
                             assert(CrashAwareAllocationBranchStack::State::commit_start_persistent(
                                 self.i(),
                                 post.i(),
@@ -770,20 +860,26 @@ impl CrashAwareCachingDiskBranch::State {
                     _ => { assert(false); }
                 }
             },
-            CrashAwareCachingDiskBranch::Step::commit_complete(prepared_image) => {
-                assert(CrashAwareCachingDiskBranch::State::commit_complete(self, post, lbl, prepared_image)) by {
+            CrashAwareCachingDiskBranch::Step::commit_complete() => {
+                assert(CrashAwareCachingDiskBranch::State::commit_complete(self, post, lbl)) by {
                     reveal(CrashAwareCachingDiskBranch::State::commit_complete);
                 }
                 let frozen = self.frozen.unwrap();
+                let prepared_image = CachingDiskBranchImage::materialized_from_persistent(
+                    self.ephemeral->v,
+                    frozen,
+                );
                 self.ephemeral->v.prepared_image_matches_visible_prefix(prepared_image);
-                if frozen.sealed_roots == self.persistent.sealed_roots
-                    && frozen.seq_end == self.persistent.seq_end {
-                    assert(self.i().frozen.unwrap() == self.persistent.frozen_i());
+                let persistent = self.persistent_image_i();
+                let persistent_meta = self.persistent.metadata();
+                if frozen.sealed_roots == persistent_meta.sealed_roots
+                    && frozen.seq_end == persistent_meta.seq_end {
+                    assert(self.i().frozen.unwrap() == persistent.frozen_i());
                     assert(self.ephemeral->v.visible_image_for_metadata(frozen).branch_summary()
-                        == self.persistent.branch_summary());
+                        == persistent.branch_summary());
                     assert(self.ephemeral->v.visible_image_for_metadata(frozen).sealed_stack_i()
-                        == self.persistent.sealed_stack_i());
-                    assert(prepared_image.frozen_i() == self.persistent.frozen_i());
+                        == persistent.sealed_stack_i());
+                    assert(prepared_image.frozen_i() == persistent.frozen_i());
                 } else {
                     assert(self.i().frozen.unwrap()
                         == self.ephemeral->v.visible_image_for_metadata(frozen).frozen_i());
@@ -804,27 +900,43 @@ impl CrashAwareCachingDiskBranch::State {
                     CrashAwareAllocationBranchStack::Step::commit_complete(),
                 ));
             },
-            CrashAwareCachingDiskBranch::Step::crash(prepared_image) => {
+            CrashAwareCachingDiskBranch::Step::crash() => {
                 reveal(CrashAwareCachingDiskBranch::State::crash);
                 match lbl {
                     CrashAwareCachingDiskBranch::Label::Crash{keep_in_flight} => {
+                        let prepared_image = if keep_in_flight && self.ephemeral is Known {
+                            CachingDiskBranchImage::materialized_from_persistent(
+                                self.ephemeral->v,
+                                self.frozen.unwrap(),
+                            )
+                        } else if self.ephemeral is Unknown {
+                            self.persistent->image
+                        } else {
+                            CachingDiskBranchImage::materialized_from_persistent(
+                                self.ephemeral->v,
+                                self.persistent.metadata(),
+                            )
+                        };
                         if keep_in_flight {
+                            self.prepared_materialized_image_matches_visible_prefix();
+                            assert(prepared_image == self.prepared_materialized_image());
                             let frozen = self.frozen.unwrap();
                             let image_frozen = CachingDiskBranchFrozenImage{
                                 sealed_roots: prepared_image.sealed_roots,
                                 seq_end: prepared_image.seq_end,
                             };
                             assert(image_frozen == frozen);
-                            self.ephemeral->v.prepared_image_matches_visible_prefix(prepared_image);
-                            if frozen.sealed_roots == self.persistent.sealed_roots
-                                && frozen.seq_end == self.persistent.seq_end {
+                            let persistent = self.persistent_image_i();
+                            let persistent_meta = self.persistent.metadata();
+                            if frozen.sealed_roots == persistent_meta.sealed_roots
+                                && frozen.seq_end == persistent_meta.seq_end {
                                 assert(frozen_image_i(self.frozen, self.persistent, self.ephemeral).unwrap()
-                                    == self.persistent.frozen_i());
+                                    == persistent.frozen_i());
                                 assert(self.ephemeral->v.visible_image_for_metadata(frozen).branch_summary()
-                                    == self.persistent.branch_summary());
+                                    == persistent.branch_summary());
                                 assert(self.ephemeral->v.visible_image_for_metadata(frozen).sealed_stack_i()
-                                    == self.persistent.sealed_stack_i());
-                                assert(prepared_image.frozen_i() == self.persistent.frozen_i());
+                                    == persistent.sealed_stack_i());
+                                assert(prepared_image.frozen_i() == persistent.frozen_i());
                             } else {
                                 assert(prepared_image.sealed_stack_i()
                                     == self.ephemeral->v.visible_image_for_metadata(frozen).sealed_stack_i());
@@ -836,9 +948,45 @@ impl CrashAwareCachingDiskBranch::State {
                             assert(prepared_image.frozen_i()
                                 == frozen_image_i(self.frozen, self.persistent, self.ephemeral).unwrap());
                             assert(post.i().persistent == prepared_image.sealed_stack_i());
+                            assert(post.i().persistent_branch_summary == prepared_image.branch_summary());
                             assert(self.i().frozen.unwrap().sealed_stack == prepared_image.sealed_stack_i());
+                            assert(self.i().frozen.unwrap().branch_summary == prepared_image.branch_summary());
                         } else {
-                            assert(post.persistent == self.persistent);
+                            assert(post.persistent == PersistentCachingDiskBranch::Image{image: prepared_image});
+                            if self.ephemeral is Known {
+                                let persistent_meta = self.persistent.metadata();
+                                let branch_lbl = CachingDiskBranch::Label::FreezePrepared{
+                                    image: persistent_meta,
+                                };
+                                assert(CachingDiskBranch::State::next(
+                                    self.ephemeral->v,
+                                    self.ephemeral->v,
+                                    branch_lbl,
+                                )) by {
+                                    reveal(CachingDiskBranch::State::next);
+                                    reveal(CachingDiskBranch::State::next_by);
+                                    assert(CachingDiskBranch::State::freeze_prepared(
+                                        self.ephemeral->v,
+                                        self.ephemeral->v,
+                                        branch_lbl,
+                                    )) by {
+                                        reveal(CachingDiskBranch::State::freeze_prepared);
+                                    };
+                                    assert(CachingDiskBranch::State::next_by(
+                                        self.ephemeral->v,
+                                        self.ephemeral->v,
+                                        branch_lbl,
+                                        CachingDiskBranch::Step::freeze_prepared(),
+                                    ));
+                                };
+                                self.ephemeral->v.prepared_image_matches_visible_prefix(prepared_image);
+                                assert(prepared_image.sealed_stack_i()
+                                    == self.persistent_image_i().sealed_stack_i());
+                                assert(prepared_image.branch_summary()
+                                    == self.persistent_image_i().branch_summary());
+                            }
+                            assert(post.i().persistent == self.i().persistent);
+                            assert(post.i().persistent_branch_summary == self.i().persistent_branch_summary);
                         }
                     },
                     _ => { assert(false); }
