@@ -309,6 +309,134 @@ impl UnifiedCacheBranchSource {
         &&& post.in_flight_image == self.in_flight_image
     }
 
+    pub proof fn branch_interpretation_unchanged_by_same_projection(
+        self,
+        post: Self,
+    )
+        requires
+            self.same_except_cache_and_disk(post),
+            self.persistent_branch_i() == post.persistent_branch_i(),
+            self.branch_caching_disk_i() == post.branch_caching_disk_i(),
+        ensures
+            self.i() == post.i(),
+    {
+        assert(self.superblock_loaded() == post.superblock_loaded());
+        assert(self.branch_caching_disk_state_i() == post.branch_caching_disk_state_i());
+        assert(self.ephemeral_branch_i() == post.ephemeral_branch_i());
+        assert(self.frozen_branch_metadata_i() == post.frozen_branch_metadata_i());
+        assert(self.i() == post.i());
+    }
+
+    pub proof fn unchanged_by_same_cache_and_disk_content(
+        self,
+        post: Self,
+    )
+        requires
+            inv(self),
+            self.same_except_cache_and_disk(post),
+            post.cache == self.cache,
+            post.disk.content == self.disk.content,
+            post.disk.inv(),
+        ensures
+            post.i() == self.i(),
+            inv(post),
+    {
+        assert(post.superblock_loaded() == self.superblock_loaded());
+        assert(post.persistent_superblock_image_i()
+            == self.persistent_superblock_image_i()) by {
+            if self.persistent_image is Some {
+                assert(post.persistent_image == self.persistent_image);
+            } else {
+                assert(post.persistent_image is None);
+                assert(async_disk_superblock_raw_i(post.disk.content)
+                    == async_disk_superblock_raw_i(self.disk.content));
+            }
+        }
+
+        assert(post.branch_projection_aus() =~= self.branch_projection_aus()) by {
+            if self.branch.metadata_loaded() {
+                assert(post.branch == self.branch);
+            } else {
+                assert(post.persistent_superblock_image_i()
+                    == self.persistent_superblock_image_i());
+                assert(post.disk.content == self.disk.content);
+            }
+        }
+
+        assert(post.persistent_branch_image_i() == self.persistent_branch_image_i()) by {
+            let image = self.persistent_superblock_image_i();
+            assert(post.persistent_superblock_image_i() == image);
+            assert(UnifiedCacheBranchSource::branch_image_projection_addrs_i(
+                post.disk.content,
+                image.branch_roots,
+            ) =~= UnifiedCacheBranchSource::branch_image_projection_addrs_i(
+                self.disk.content,
+                image.branch_roots,
+            ));
+            assert_maps_equal!(
+                post.persistent_branch_image_i().persistent,
+                self.persistent_branch_image_i().persistent,
+                addr => {
+                    if post.persistent_branch_image_i().persistent.contains_key(addr) {
+                        assert(self.persistent_branch_image_i().persistent.contains_key(addr));
+                    }
+                    if self.persistent_branch_image_i().persistent.contains_key(addr) {
+                        assert(post.persistent_branch_image_i().persistent.contains_key(addr));
+                    }
+                }
+            );
+        }
+        assert(post.persistent_branch_i() == self.persistent_branch_i());
+
+        assert(post.branch_caching_disk_i() == self.branch_caching_disk_i()) by {
+            assert(post.branch_projection_aus() =~= self.branch_projection_aus());
+            assert_maps_equal!(
+                post.branch_caching_disk_i().cache,
+                self.branch_caching_disk_i().cache,
+                addr => {}
+            );
+            assert_maps_equal!(
+                post.branch_caching_disk_i().status,
+                self.branch_caching_disk_i().status,
+                addr => {}
+            );
+            assert_maps_equal!(
+                post.branch_caching_disk_i().persistent,
+                self.branch_caching_disk_i().persistent,
+                addr => {
+                    if post.branch_caching_disk_i().persistent.contains_key(addr) {
+                        assert(self.branch_caching_disk_i().persistent.contains_key(addr));
+                    }
+                    if self.branch_caching_disk_i().persistent.contains_key(addr) {
+                        assert(post.branch_caching_disk_i().persistent.contains_key(addr));
+                    }
+                }
+            );
+        }
+        self.branch_interpretation_unchanged_by_same_projection(post);
+        assert(post.i() == self.i());
+
+        assert(post.inv()) by {
+            assert(post.branch.wf());
+            assert(async_disk_superblock_page_wf(post.disk.content));
+            assert(post.persistent_superblock_image_i().wf());
+            assert(post.cache.inv());
+            assert(post.disk.inv());
+            assert(post.branch_caching_disk_i().inv());
+            if !post.superblock_loaded() {
+                assert(!self.superblock_loaded());
+                assert(post.branch == AtomicBranchState::State::empty());
+                assert(post.in_flight is None);
+                assert(post.in_flight_image is None);
+            }
+        }
+        assert(post.semantic_inv()) by {
+            assert(self.semantic_inv());
+            assert(post.i() == self.i());
+        }
+        assert(inv(post));
+    }
+
     pub proof fn loaded_cache_disk_ops_begin_refines_branch_internal(
         self,
         post: Self,

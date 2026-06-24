@@ -521,6 +521,111 @@ impl UnifiedCacheJournalSource {
         assert(self.i() == post.i());
     }
 
+    pub proof fn unchanged_by_same_cache_and_disk_content(
+        self,
+        post: Self,
+    )
+        requires
+            inv(self),
+            self.same_except_cache_and_disk(post),
+            post.cache == self.cache,
+            post.disk.content == self.disk.content,
+            post.disk.inv(),
+        ensures
+            post.i() == self.i(),
+            inv(post),
+    {
+        assert(post.superblock_loaded() == self.superblock_loaded());
+        assert(post.persistent_superblock_image_i()
+            == self.persistent_superblock_image_i()) by {
+            if self.persistent_image is Some {
+                assert(post.persistent_image == self.persistent_image);
+            } else {
+                assert(post.persistent_image is None);
+                assert(async_disk_superblock_raw_i(post.disk.content)
+                    == async_disk_superblock_raw_i(self.disk.content));
+            }
+        }
+
+        assert(post.journal_projection_aus() =~= self.journal_projection_aus()) by {
+            if self.journal.ready() {
+                assert(post.journal == self.journal);
+            } else {
+                assert(post.persistent_superblock_image_i()
+                    == self.persistent_superblock_image_i());
+                assert(post.disk.content == self.disk.content);
+            }
+        }
+
+        assert(post.persistent_journal_image_i() == self.persistent_journal_image_i()) by {
+            let image = self.persistent_superblock_image_i();
+            assert(post.persistent_superblock_image_i() == image);
+            assert(post.journal_image_projection_aus_i(image)
+                =~= self.journal_image_projection_aus_i(image));
+            assert_maps_equal!(
+                post.persistent_journal_image_i().persistent,
+                self.persistent_journal_image_i().persistent,
+                addr => {
+                    if post.persistent_journal_image_i().persistent.contains_key(addr) {
+                        assert(self.persistent_journal_image_i().persistent.contains_key(addr));
+                    }
+                    if self.persistent_journal_image_i().persistent.contains_key(addr) {
+                        assert(post.persistent_journal_image_i().persistent.contains_key(addr));
+                    }
+                }
+            );
+        }
+        assert(post.persistent_journal_i() == self.persistent_journal_i());
+
+        assert(post.journal_caching_disk_i() == self.journal_caching_disk_i()) by {
+            assert(post.journal_projection_aus() =~= self.journal_projection_aus());
+            assert_maps_equal!(
+                post.journal_caching_disk_i().cache,
+                self.journal_caching_disk_i().cache,
+                addr => {}
+            );
+            assert_maps_equal!(
+                post.journal_caching_disk_i().status,
+                self.journal_caching_disk_i().status,
+                addr => {}
+            );
+            assert_maps_equal!(
+                post.journal_caching_disk_i().persistent,
+                self.journal_caching_disk_i().persistent,
+                addr => {
+                    if post.journal_caching_disk_i().persistent.contains_key(addr) {
+                        assert(self.journal_caching_disk_i().persistent.contains_key(addr));
+                    }
+                    if self.journal_caching_disk_i().persistent.contains_key(addr) {
+                        assert(post.journal_caching_disk_i().persistent.contains_key(addr));
+                    }
+                }
+            );
+        }
+        self.journal_interpretation_unchanged_by_same_projection(post);
+        assert(post.i() == self.i());
+
+        assert(post.inv()) by {
+            assert(post.journal.wf());
+            assert(async_disk_superblock_page_wf(post.disk.content));
+            assert(post.persistent_superblock_image_i().wf());
+            assert(post.cache.inv());
+            assert(post.disk.inv());
+            assert(post.journal_caching_disk_i().inv());
+            if !post.superblock_loaded() {
+                assert(!self.superblock_loaded());
+                assert(post.journal == AtomicJournalState::State::empty());
+                assert(post.in_flight is None);
+                assert(post.in_flight_image is None);
+            }
+        }
+        assert(post.semantic_inv()) by {
+            assert(self.semantic_inv());
+            assert(post.i() == self.i());
+        }
+        assert(inv(post));
+    }
+
     pub proof fn loaded_caching_disk_internal_refines_journal_internal(
         self,
         post: Self,
