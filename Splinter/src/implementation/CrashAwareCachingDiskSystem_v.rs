@@ -610,9 +610,10 @@ state_machine!{ CrashAwareCachingDiskSystem {
         new_journal: CrashAwareCachingDiskJournal::State,
         new_branch: CrashAwareCachingDiskBranch::State,
         new_superblock: SuperblockStore::State,
+        keep_in_flight: bool,
     ) {
         require lbl is Crash;
-        let keep_in_flight = pre.superblockstore.landed;
+        require keep_in_flight == pre.superblockstore.landed;
         require CrashAwareCachingDiskJournal::State::next(
             pre.journal,
             new_journal,
@@ -2048,8 +2049,9 @@ state_machine!{ CrashAwareCachingDiskSystem {
         new_journal: CrashAwareCachingDiskJournal::State,
         new_branch: CrashAwareCachingDiskBranch::State,
         new_superblock: SuperblockStore::State,
+        keep_in_flight: bool,
     ) {
-        let keep_in_flight = pre.superblockstore.landed;
+        assert(keep_in_flight == pre.superblockstore.landed);
         let journal_lbl = CrashAwareCachingDiskJournal::Label::Crash{keep_in_flight};
         let branch_lbl = CrashAwareCachingDiskBranch::Label::Crash{keep_in_flight};
         CrashAwareCachingDiskJournal::State::inv_next(pre.journal, new_journal, journal_lbl);
@@ -2575,7 +2577,9 @@ impl CrashAwareCachingDiskSystem::State {
 
     pub open spec fn empty_superblock_page() -> RawPage
     {
-        seq![]
+        crate::implementation::AbstractSuperblock_v::marshal_abstract_superblock(
+            empty_abstract_superblock_image(),
+        )
     }
 
     pub open spec fn empty_journal() -> CrashAwareCachingDiskJournal::State

@@ -7,10 +7,16 @@
 // pub mod Implementation_v;
 pub mod MultisetMapRelation_v;
 // pub mod AtomicState_v;
-// pub mod AnotherAtomicState_v;
+pub mod AnotherAtomicState_v;
 // pub mod AnotherAtomicJournalRefinement_v;
 // pub mod AnotherAtomicBranchRefinement_v;
+// pub mod AnotherAtomicCachingDiskSystemRefinement_v;
 // pub mod AnotherProgramModel_v;
+pub mod UnifiedCacheSystem_v;
+pub mod UnifiedCacheProgramModel_v;
+pub mod UnifiedCacheSystemRefinement_v;
+pub mod UnifiedCacheJournalRefinement_v;
+pub mod UnifiedCacheBranchRefinement_v;
 pub mod AbstractSuperblock_v;
 pub mod RecoveryState_v;
 pub mod DiskLayout_v;

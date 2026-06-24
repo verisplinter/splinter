@@ -27,8 +27,10 @@ use crate::implementation::Cache_v::Cache;
 use crate::implementation::CachedBranch_v::LoadedPathReceipt;
 use crate::implementation::CachingDiskAdapterRefinement_v::{
     cache_access_refines_caching_disk_access, cache_evictable_refines_observe_clean_aus,
-    cache_filled_addr, filled_cache_pages,
+    cache_filled_addr, cache_internal_refines_caching_disk_internal,
+    cache_internal_refines_caching_disk_internal_by_domains, filled_cache_pages,
     caching_disk_i as adapter_caching_disk_i, caching_disk_i_by_domains,
+    projected_cache_internal_refines_caching_disk_internal,
     project_cache_pages, project_cache_pages_by_addrs, project_cache_status,
     project_cache_status_by_addrs, project_persistent, project_persistent_by_addrs,
     filled_cache_access_effect, filled_cache_read_only_access_unchanged,
@@ -45,7 +47,7 @@ use crate::implementation::CachingDiskJournal_v::{
     CachingDiskJournal, cj_lsn_au_index,
 };
 use crate::implementation::CrashAwareCachingDiskJournal_v::{
-    caching_disk_journal_accessible_aus, CachingDiskJournalFrozenImage, CachingDiskJournalImage,
+    caching_disk_journal_accessible_aus, CachingDiskJournalFrozenMetadata, CachingDiskJournalImage,
     CrashAwareCachingDiskJournal, EphemeralCachingDiskJournal,
 };
 use crate::implementation::DiskLayout_v::spec_superblock_addr;
@@ -354,11 +356,11 @@ pub open spec fn frozen_journal_image_i(
 
 pub open spec fn frozen_journal_metadata_i(
     model: SystemModel::State<AnotherProgramModel>,
-) -> Option<CachingDiskJournalFrozenImage>
+) -> Option<CachingDiskJournalFrozenMetadata>
 {
     if model.program.state.in_flight is Some {
         let image = model.program.state.atomic_inflight_superblock_i();
-        Option::Some(CachingDiskJournalFrozenImage{
+        Option::Some(CachingDiskJournalFrozenMetadata{
             snapshot: image.journal_snapshot,
             seq_end: image.journal_seq_end,
         })
@@ -529,6 +531,27 @@ pub open spec fn journal_projection_uses_shared_async_disk(
         frozen_journal_image_i(model).unwrap().persistent <= model.disk.content
 }
 
+pub open spec fn journal_component_domains_within_owned_aus(
+    model: SystemModel::State<AnotherProgramModel>,
+) -> bool
+{
+    let owned = model.program.state.journal_owned_aus();
+    &&& journal_projection_uses_live(model) ==> journal_projection_aus(model) <= owned
+    &&& journal_projection_uses_live(model) ==> to_aus(journal_projection_addrs(model)) <= owned
+    &&& journal_projection_uses_live(model) ==> to_aus(journal_disk_persistent_i(model).dom()) <= owned
+    &&& journal_projection_uses_live(model) ==> to_aus(journal_disk_cache_i(model).dom()) <= owned
+    &&& journal_projection_uses_live(model) ==> to_aus(journal_disk_status_i(model).dom()) <= owned
+    &&& journal_projection_uses_live(model) ==>
+        to_aus(persistent_journal_image_i(model).persistent.dom()) <= owned
+    &&& journal_projection_uses_live(model) && frozen_journal_image_i(model) is Some ==>
+        to_aus(frozen_journal_image_i(model).unwrap().persistent.dom()) <= owned
+    &&& journal_projection_uses_live(model) && model.program.state.in_flight is Some ==>
+        to_aus(journal_image_projection_domain_i(
+            model,
+            model.program.state.atomic_inflight_superblock_i(),
+        )) <= owned
+}
+
 pub open spec fn journal_owned_disk_records_do_not_impersonate_index(
     model: SystemModel::State<AnotherProgramModel>,
 ) -> bool
@@ -599,6 +622,292 @@ pub open spec fn journal_component_refinement_inv(
         to_aus(journal_projection_addrs(model)) <= model.program.state.journal_owned_aus()
     &&& journal_projection_uses_live(model) ==>
         journal_projection_aus(model) <= model.program.state.journal_owned_aus()
+}
+
+pub open spec fn journal_projected_aus_are_component_data(
+    model: SystemModel::State<AnotherProgramModel>,
+) -> bool
+{
+    &&& AnotherAtomicState::reserved_aus().disjoint(journal_projection_aus(model))
+    &&& model.program.state.branch_owned_aus().disjoint(journal_projection_aus(model))
+    &&& model.program.state.free_aus.disjoint(journal_projection_aus(model))
+}
+
+pub open spec fn journal_cache_internal_component_env(
+    pre: SystemModel::State<AnotherProgramModel>,
+    post: SystemModel::State<AnotherProgramModel>,
+) -> bool
+{
+    &&& journal_component_refinement_inv(pre)
+    &&& journal_projected_aus_are_component_data(pre)
+    &&& post.program.state.wf()
+    &&& Cache::State::next(
+        pre.program.state.cache,
+        post.program.state.cache,
+        Cache::Label::Internal{},
+    )
+    &&& post.disk == pre.disk
+    &&& post.program.state.journal == pre.program.state.journal
+    &&& post.program.state.branch == pre.program.state.branch
+    &&& post.program.state.free_aus == pre.program.state.free_aus
+    &&& post.program.state.recovery_state == pre.program.state.recovery_state
+    &&& post.program.state.in_flight == pre.program.state.in_flight
+    &&& pre.program.state.in_flight is Some ==>
+        post.program.state.atomic_inflight_superblock_i()
+            == pre.program.state.atomic_inflight_superblock_i()
+    &&& post.program.state.persistent_image == pre.program.state.persistent_image
+    &&& journal_caching_disk_i(pre).inv()
+}
+
+pub proof fn journal_cache_internal_refines_component_internal(
+    pre: SystemModel::State<AnotherProgramModel>,
+    post: SystemModel::State<AnotherProgramModel>,
+)
+    requires
+        journal_cache_internal_component_env(pre, post),
+    ensures
+        journal_component_refinement_inv(post),
+        journal_projected_aus_are_component_data(post),
+        journal_projection_aus(post) == journal_projection_aus(pre),
+        crash_aware_caching_disk_journal_i(post) == crash_aware_caching_disk_journal_i(pre)
+            || CrashAwareCachingDiskJournal::State::next(
+                crash_aware_caching_disk_journal_i(pre),
+                crash_aware_caching_disk_journal_i(post),
+                CrashAwareCachingDiskJournal::Label::Internal,
+            ),
+{
+    journal_cache_internal_preserves_component_refinement(pre, post);
+}
+
+pub proof fn journal_cache_internal_preserves_component_refinement(
+    pre: SystemModel::State<AnotherProgramModel>,
+    post: SystemModel::State<AnotherProgramModel>,
+)
+    requires
+        journal_component_refinement_inv(pre),
+        journal_projected_aus_are_component_data(pre),
+        post.program.state.wf(),
+        Cache::State::next(
+            pre.program.state.cache,
+            post.program.state.cache,
+            Cache::Label::Internal{},
+        ),
+        post.disk == pre.disk,
+        post.program.state.journal == pre.program.state.journal,
+        post.program.state.branch == pre.program.state.branch,
+        post.program.state.free_aus == pre.program.state.free_aus,
+        post.program.state.recovery_state == pre.program.state.recovery_state,
+        post.program.state.in_flight == pre.program.state.in_flight,
+        pre.program.state.in_flight is Some ==>
+            post.program.state.atomic_inflight_superblock_i()
+                == pre.program.state.atomic_inflight_superblock_i(),
+        post.program.state.persistent_image == pre.program.state.persistent_image,
+        journal_caching_disk_i(pre).inv(),
+    ensures
+        journal_component_refinement_inv(post),
+        journal_projected_aus_are_component_data(post),
+        journal_projection_aus(post) == journal_projection_aus(pre),
+        crash_aware_caching_disk_journal_i(post) == crash_aware_caching_disk_journal_i(pre)
+            || CrashAwareCachingDiskJournal::State::next(
+                crash_aware_caching_disk_journal_i(pre),
+                crash_aware_caching_disk_journal_i(post),
+                CrashAwareCachingDiskJournal::Label::Internal,
+            ),
+{
+    assert(post.program.state.wf());
+    assert(post.disk.inv());
+    assert(async_disk_superblock_page_wf(post.disk.content));
+    pre.program.state.cache.build_lookup_map_ensures();
+    post.program.state.cache.build_lookup_map_ensures();
+    assert(journal_projection_uses_live(post) == journal_projection_uses_live(pre));
+    assert(journal_projection_addrs(post) =~= journal_projection_addrs(pre));
+    assert(journal_projection_aus(post) == journal_projection_aus(pre));
+    assert(journal_projected_aus_are_component_data(post)) by {
+        assert(post.program.state.branch_owned_aus() == pre.program.state.branch_owned_aus());
+        assert(post.program.state.free_aus == pre.program.state.free_aus);
+    }
+    cache_internal_refines_caching_disk_internal(
+        pre.program.state.cache,
+        post.program.state.cache,
+        pre.disk,
+        journal_projection_aus(pre),
+    );
+    assert(journal_caching_disk_i(post).visible()
+        == journal_caching_disk_i(pre).visible()) by {
+        assert(post.disk == pre.disk);
+        assert(journal_projection_aus(post) == journal_projection_aus(pre));
+        CachingDisk::State::internal_visible_unchanged(
+            journal_caching_disk_i(pre),
+            journal_caching_disk_i(post),
+        );
+    }
+    assert(journal_caching_disk_state_i(post).journal_disk_view()
+        == journal_caching_disk_state_i(pre).journal_disk_view()) by {
+        assert(journal_caching_disk_i(post).visible()
+            == journal_caching_disk_i(pre).visible());
+    }
+    assert(journal_caching_disk_state_i(post).au_page_bounds
+        == journal_caching_disk_state_i(pre).au_page_bounds) by {
+        assert(journal_caching_disk_i(post).visible()
+            == journal_caching_disk_i(pre).visible());
+    }
+    assert(journal_owned_disk_records_do_not_impersonate_index(post)) by {
+        if post.program.state.journal_metadata_loaded() {
+            assert(pre.program.state.journal_metadata_loaded());
+            assert(journal_owned_disk_records_do_not_impersonate_index(pre));
+            assert forall |addr: Address, lsn: LSN|
+                #![trigger journal_caching_disk_state_i(post).journal_disk_view().entries.contains_key(addr),
+                    post.program.state.journal.journal.status.unwrap().lsn_au_index.contains_key(lsn)]
+                {
+                    let disk_view = journal_caching_disk_state_i(post).journal_disk_view();
+                    let index = post.program.state.journal.journal.status.unwrap().lsn_au_index;
+                    let record = disk_view.entries[addr];
+                    &&& disk_view.entries.contains_key(addr)
+                    &&& index.contains_key(lsn)
+                    &&& index[lsn] == addr.au
+                    &&& record.contains_lsn(disk_view.boundary_lsn, lsn)
+                } implies {
+                    &&& journal_caching_disk_state_i(post).au_page_bounds.contains_key(addr.au)
+                    &&& addr.page <= journal_caching_disk_state_i(post).au_page_bounds[addr.au]
+                } by {
+                let post_disk_view = journal_caching_disk_state_i(post).journal_disk_view();
+                let pre_disk_view = journal_caching_disk_state_i(pre).journal_disk_view();
+                let post_index = post.program.state.journal.journal.status.unwrap().lsn_au_index;
+                let pre_index = pre.program.state.journal.journal.status.unwrap().lsn_au_index;
+                assert(post_disk_view == pre_disk_view);
+                assert(post_index == pre_index);
+                assert(journal_caching_disk_state_i(post).au_page_bounds
+                    == journal_caching_disk_state_i(pre).au_page_bounds);
+            }
+        }
+    }
+    if crash_aware_caching_disk_journal_i(pre).ephemeral is Unknown {
+        assert(crash_aware_caching_disk_journal_i(post) == crash_aware_caching_disk_journal_i(pre));
+        assert(journal_owned_disk_records_do_not_impersonate_index(post));
+    } else {
+        assert(journal_persistent_projection_addrs(post) =~= journal_persistent_projection_addrs(pre));
+        projected_cache_internal_refines_caching_disk_internal(
+            pre.program.state.cache,
+            post.program.state.cache,
+            pre.disk,
+            journal_projection_addrs(pre),
+            journal_persistent_projection_addrs(pre),
+        );
+        let src = crash_aware_caching_disk_journal_i(pre);
+        let dst = crash_aware_caching_disk_journal_i(post);
+        assert(src.ephemeral is Known);
+        assert(dst.ephemeral is Known);
+        assert(src.ephemeral->v.disk == journal_caching_disk_i(pre));
+        assert(dst.ephemeral->v.disk == journal_caching_disk_i(post));
+        assert(CachingDisk::State::next(
+            src.ephemeral->v.disk,
+            dst.ephemeral->v.disk,
+            CachingDisk::Label::Internal{},
+        ));
+        CachingDisk::State::internal_visible_unchanged(src.ephemeral->v.disk, dst.ephemeral->v.disk);
+        assert(journal_caching_disk_i(post).visible()
+            == journal_caching_disk_i(pre).visible()) by {
+            assert(src.ephemeral->v.disk == journal_caching_disk_i(pre));
+            assert(dst.ephemeral->v.disk == journal_caching_disk_i(post));
+        }
+        assert(journal_caching_disk_state_i(post).journal_disk_view()
+            == journal_caching_disk_state_i(pre).journal_disk_view()) by {
+            assert(journal_caching_disk_i(post).visible()
+                == journal_caching_disk_i(pre).visible());
+        }
+        assert(journal_caching_disk_state_i(post).au_page_bounds
+            == journal_caching_disk_state_i(pre).au_page_bounds) by {
+            assert(journal_caching_disk_i(post).visible()
+                == journal_caching_disk_i(pre).visible());
+        }
+        assert(dst.ephemeral->v.journal == src.ephemeral->v.journal);
+        assert(dst.ephemeral->v.mini_allocator == src.ephemeral->v.mini_allocator);
+        assert(dst.ephemeral->v.au_page_bounds == src.ephemeral->v.au_page_bounds) by {
+            let index_addrs = addresses_in_aus(pre.program.state.journal.loaded_index_aus());
+            assert(post.program.state.journal == pre.program.state.journal);
+            assert(post.program.state.journal.loaded_index_aus()
+                == pre.program.state.journal.loaded_index_aus());
+            assert(dst.ephemeral->v.disk.visible() == src.ephemeral->v.disk.visible());
+            assert(to_journal_records(dst.ephemeral->v.disk.visible()).restrict(index_addrs)
+                =~= to_journal_records(src.ephemeral->v.disk.visible()).restrict(index_addrs)) by {
+                assert_maps_equal!(
+                    to_journal_records(dst.ephemeral->v.disk.visible()).restrict(index_addrs),
+                    to_journal_records(src.ephemeral->v.disk.visible()).restrict(index_addrs),
+                    addr => {}
+                );
+            }
+        }
+        assert(CachingDiskJournal::State::caching_disk_internal(
+            src.ephemeral->v,
+            dst.ephemeral->v,
+            CachingDiskJournal::Label::Internal,
+            dst.ephemeral->v.disk,
+        )) by {
+            reveal(CachingDiskJournal::State::caching_disk_internal);
+        }
+        assert(CachingDiskJournal::State::next_by(
+            src.ephemeral->v,
+            dst.ephemeral->v,
+            CachingDiskJournal::Label::Internal,
+            CachingDiskJournal::Step::caching_disk_internal(dst.ephemeral->v.disk),
+        )) by {
+            reveal(CachingDiskJournal::State::next_by);
+        }
+        reveal(CachingDiskJournal::State::next);
+        assert(CrashAwareCachingDiskJournal::State::next_by(
+            src,
+            dst,
+            CrashAwareCachingDiskJournal::Label::Internal,
+            CrashAwareCachingDiskJournal::Step::internal(dst.ephemeral->v),
+        )) by {
+            reveal(CrashAwareCachingDiskJournal::State::next_by);
+        }
+        reveal(CrashAwareCachingDiskJournal::State::next);
+        CrashAwareCachingDiskJournal::State::inv_next(
+            src,
+            dst,
+            CrashAwareCachingDiskJournal::Label::Internal,
+        );
+        assert(src.ephemeral->v == journal_caching_disk_state_i(pre));
+        assert(dst.ephemeral->v == journal_caching_disk_state_i(post));
+        assert(journal_owned_disk_records_do_not_impersonate_index(post)) by {
+            if post.program.state.journal_metadata_loaded() {
+                assert(pre.program.state.journal_metadata_loaded());
+                assert(journal_owned_disk_records_do_not_impersonate_index(pre));
+                assert forall |addr: Address, lsn: LSN|
+                    #![trigger journal_caching_disk_state_i(post).journal_disk_view().entries.contains_key(addr),
+                        post.program.state.journal.journal.status.unwrap().lsn_au_index.contains_key(lsn)]
+                    {
+                        let disk_view = journal_caching_disk_state_i(post).journal_disk_view();
+                        let index = post.program.state.journal.journal.status.unwrap().lsn_au_index;
+                        let record = disk_view.entries[addr];
+                        &&& disk_view.entries.contains_key(addr)
+                        &&& index.contains_key(lsn)
+                        &&& index[lsn] == addr.au
+                        &&& record.contains_lsn(disk_view.boundary_lsn, lsn)
+                    } implies {
+                        &&& journal_caching_disk_state_i(post).au_page_bounds.contains_key(addr.au)
+                        &&& addr.page <= journal_caching_disk_state_i(post).au_page_bounds[addr.au]
+                    } by {
+                    let post_disk_view = journal_caching_disk_state_i(post).journal_disk_view();
+                    let pre_disk_view = journal_caching_disk_state_i(pre).journal_disk_view();
+                    let post_index = post.program.state.journal.journal.status.unwrap().lsn_au_index;
+                    let pre_index = pre.program.state.journal.journal.status.unwrap().lsn_au_index;
+                    assert(post_disk_view == pre_disk_view);
+                    assert(post_index == pre_index);
+                    assert(journal_caching_disk_state_i(post).au_page_bounds
+                        == journal_caching_disk_state_i(pre).au_page_bounds);
+                }
+            }
+        }
+    }
+    assert(crash_aware_caching_disk_journal_i(post) == crash_aware_caching_disk_journal_i(pre)
+        || CrashAwareCachingDiskJournal::State::next(
+            crash_aware_caching_disk_journal_i(pre),
+            crash_aware_caching_disk_journal_i(post),
+            CrashAwareCachingDiskJournal::Label::Internal,
+        ));
+    assert(journal_component_refinement_inv(post));
 }
 
 pub proof fn branch_writes_disjoint_from_journal_projection(

@@ -28,10 +28,11 @@ Do not independently prove a large `semantic_inv_next` path if the same fact can
 ## Transitions
 
 - Do not change transition definitions without explicit user approval.
+- Do not add or strengthen transition preconditions without explicit user permission. Extra proof facts must be derived from invariants or component lemmas, not smuggled into the transition contract.
 - If a transition seems semantically wrong, stop and explain the exact issue.
 - Do not use `.i()` inside transition definitions.
 - Composers should invoke submachines through `State::next(...)`, not named inner transitions or `next_by(...)` in specs. Proofs may reveal `next`/`next_by` when necessary.
-- Avoid revealing transition bodies that are not state-machine `next`/`next_by`; it usually adds noise.
+- Reveal only the state-machine macro dispatch predicates `State::next` and `State::next_by`; do not reveal named transition predicates such as `UnifiedCacheSystem::State::recovery_complete`.
 
 ## Loose vs Tight Journal
 

@@ -26,20 +26,23 @@ use crate::implementation::AnotherAtomicJournalRefinement_v::{
     atomic_persistent_superblock_image_i, atomic_superblock_prepared_i,
 };
 use crate::implementation::AnotherAtomicState_v::{
-    AnotherAtomicState, AtomicBranchImage, AtomicBranchState,
+    atomic_branch_support_addrs, AnotherAtomicState, AtomicBranchImage, AtomicBranchState,
 };
 use crate::implementation::AnotherProgramModel_v::AnotherProgramModel;
 use crate::implementation::Cache_v::Cache;
 use crate::implementation::CachedBranch_v::{
     CachedBranch, LoadedBranch, LoadedPathReceipt, loaded_grow_write_nodes,
+    root_summary_from_read, root_summary_read_valid,
 };
 use crate::implementation::CachingDiskAdapterRefinement_v::{
     cache_access_refines_caching_disk_access_by_domains,
     cache_access_refines_caching_disk_access_by_growing_domains,
     cache_access_refines_caching_disk_access_by_growing_domains_with_component_reads,
+    cache_internal_refines_caching_disk_internal_by_domains,
     cache_evictable_refines_observe_clean_aus_by_domains,
     cache_evictable_refines_observe_clean_aus_by_tight_domains,
-    cache_filled_addr, filled_cache_pages, filled_cache_status,
+    projected_cache_internal_refines_caching_disk_internal,
+    cache_filled_addr, cache_filled_page, filled_cache_pages, filled_cache_status,
     filled_cache_read_only_access_unchanged,
     caching_disk_i_by_domains as adapter_caching_disk_i_by_domains,
     project_cache_pages_by_addrs, project_cache_status_by_addrs,
@@ -161,8 +164,9 @@ pub open spec fn branch_projection_addrs(
     model: SystemModel::State<AnotherProgramModel>,
 ) -> Set<Address>
 {
-    addresses_in_aus(summary_aus(branch_projection_summary_i(model)))
-        + branch_mini_allocator_allocated_addrs(model.program.state.branch.mini_allocator)
+    (addresses_in_aus(summary_aus(branch_projection_summary_i(model)))
+        + branch_mini_allocator_allocated_addrs(model.program.state.branch.mini_allocator))
+        * Set::new(|addr: Address| addr.wf())
 }
 
 pub open spec fn branch_backing_projection_addrs(
@@ -172,7 +176,7 @@ pub open spec fn branch_backing_projection_addrs(
     addresses_in_aus(
         summary_aus(branch_projection_summary_i(model))
             + model.program.state.branch.mini_allocator.all_aus(),
-    )
+    ) * Set::new(|addr: Address| addr.wf())
 }
 
 pub open spec fn branch_persistent_projection_addrs(
@@ -186,11 +190,20 @@ pub open spec fn branch_persistent_projection_addrs(
     })
 }
 
+pub open spec fn branch_raw_projection_addrs() -> Set<Address>
+{
+    Set::new(|addr: Address| {
+        &&& addr.wf()
+        &&& !AnotherAtomicState::reserved_aus().contains(addr.au)
+    })
+}
+
 pub open spec fn branch_raw_visible_i(
     model: SystemModel::State<AnotherProgramModel>,
 ) -> Map<Address, RawPage>
 {
     model.disk.content.union_prefer_right(filled_cache_pages(model.program.state.cache))
+        .restrict(branch_raw_projection_addrs())
 }
 
 pub open spec fn branch_visible_nodes_i(
@@ -310,12 +323,39 @@ pub open spec fn branch_image_summary_i(
     }
 }
 
+pub open spec fn branch_image_summary_aus_i(
+    disk_content: Map<Address, RawPage>,
+    roots: Seq<Address>,
+) -> Set<AU>
+{
+    let nodes = to_branch_nodes(disk_content);
+    Set::new(|au: AU| {
+        exists |i: int| {
+            &&& 0 <= i < roots.len()
+            &&& root_summary_read_valid(roots[i], nodes)
+            &&& #[trigger] root_summary_from_read(roots[i], nodes).contains(au)
+        }
+    })
+}
+
 pub open spec fn branch_image_projection_addrs_i(
     disk_content: Map<Address, RawPage>,
     roots: Seq<Address>,
 ) -> Set<Address>
 {
-    sealed_roots_pointer_domain(disk_content, roots)
+    let nodes = to_branch_nodes(disk_content);
+    let summary_read_addrs = roots.to_set() + Set::new(|addr: Address| {
+        exists |root: Address| {
+            &&& roots.contains(root)
+            &&& nodes.contains_key(root)
+            &&& nodes[root] is Index
+            &&& nodes[root]->aux_ptr is Some
+            &&& #[trigger] nodes[root]->aux_ptr.unwrap() == addr
+        }
+    });
+    addresses_in_aus(branch_image_summary_aus_i(disk_content, roots))
+        * Set::new(|addr: Address| addr.wf())
+        + summary_read_addrs
 }
 
 pub open spec fn branch_image_persistent_i(
@@ -691,6 +731,351 @@ pub open spec fn branch_component_refinement_inv(
         branch_caching_disk_state_i(model).active_branch_i().inv())
 }
 
+pub open spec fn branch_projected_aus_are_owned_data(
+    model: SystemModel::State<AnotherProgramModel>,
+) -> bool
+{
+    &&& AnotherAtomicState::reserved_aus().disjoint(branch_projection_aus(model))
+    &&& model.program.state.journal_owned_aus().disjoint(branch_projection_aus(model))
+    &&& model.program.state.free_aus.disjoint(branch_projection_aus(model))
+}
+
+pub open spec fn branch_component_domains_within_owned_aus(
+    model: SystemModel::State<AnotherProgramModel>,
+) -> bool
+{
+    let owned = model.program.state.branch_owned_aus();
+    &&& branch_projection_aus(model) <= owned
+    &&& to_aus(branch_projection_addrs(model)) <= owned
+    &&& to_aus(branch_backing_projection_addrs(model)) <= owned
+    &&& to_aus(branch_persistent_projection_addrs(model)) <= owned
+    &&& to_aus(branch_disk_cache_i(model).dom()) <= owned
+    &&& to_aus(branch_disk_status_i(model).dom()) <= owned
+    &&& to_aus(branch_disk_persistent_i(model).dom()) <= owned
+    &&& to_aus(persistent_branch_image_i(model).persistent.dom()) <= owned
+    &&& frozen_branch_image_i(model) is Some ==>
+        to_aus(branch_image_projection_addrs_i(
+            model.disk.content,
+            frozen_branch_image_i(model).unwrap().sealed_roots,
+        )) <= owned
+}
+
+pub proof fn branch_component_refinement_inv_preserved_by_unchanged_branch_projection(
+    pre: SystemModel::State<AnotherProgramModel>,
+    post: SystemModel::State<AnotherProgramModel>,
+)
+    requires
+        branch_component_refinement_inv(pre),
+        post.program.state.wf(),
+        post.disk == pre.disk,
+        post.program.state.cache == pre.program.state.cache,
+        pre.program.state.in_flight is Some ==>
+            post.program.state.atomic_inflight_superblock_i()
+                == pre.program.state.atomic_inflight_superblock_i(),
+        post.program.state.branch == pre.program.state.branch,
+        post.program.state.in_flight == pre.program.state.in_flight,
+        post.program.state.persistent_image == pre.program.state.persistent_image,
+    ensures
+        branch_component_refinement_inv(post),
+{
+    assert(async_disk_superblock_page_wf(post.disk.content));
+    assert(atomic_persistent_superblock_image_i(post)
+        == atomic_persistent_superblock_image_i(pre));
+    assert(atomic_branch_metadata_loaded_flag(post.program.state.branch)
+        == atomic_branch_metadata_loaded_flag(pre.program.state.branch));
+    assert(branch_projection_summary_i(post) == branch_projection_summary_i(pre));
+    assert(branch_projection_addrs(post) =~= branch_projection_addrs(pre)) by {
+        assert_maps_equal!(
+            branch_projection_summary_i(post),
+            branch_projection_summary_i(pre),
+            au => { }
+        );
+    }
+    assert(branch_backing_projection_addrs(post) =~= branch_backing_projection_addrs(pre)) by {
+        assert(post.program.state.branch.mini_allocator.all_aus()
+            == pre.program.state.branch.mini_allocator.all_aus());
+        branch_backing_projection_unchanged_from_summary_and_allocator(pre, post);
+    }
+    assert(branch_persistent_projection_addrs(post)
+        =~= branch_persistent_projection_addrs(pre)) by {
+        branch_backing_projection_unchanged_from_summary_and_allocator(pre, post);
+    }
+    assert(branch_disk_cache_i(post) == branch_disk_cache_i(pre)) by {
+        assert_maps_equal!(
+            branch_disk_cache_i(post),
+            branch_disk_cache_i(pre),
+            addr => {
+                assert(branch_backing_projection_addrs(post).contains(addr)
+                    <==> branch_backing_projection_addrs(pre).contains(addr));
+            }
+        );
+    }
+    assert(branch_disk_status_i(post) == branch_disk_status_i(pre)) by {
+        assert_maps_equal!(
+            branch_disk_status_i(post),
+            branch_disk_status_i(pre),
+            addr => {
+                assert(branch_backing_projection_addrs(post).contains(addr)
+                    <==> branch_backing_projection_addrs(pre).contains(addr));
+            }
+        );
+    }
+    assert(branch_disk_persistent_i(post) == branch_disk_persistent_i(pre)) by {
+        assert_maps_equal!(
+            branch_disk_persistent_i(post),
+            branch_disk_persistent_i(pre),
+            addr => {
+                assert(branch_persistent_projection_addrs(post).contains(addr)
+                    <==> branch_persistent_projection_addrs(pre).contains(addr));
+            }
+        );
+    }
+    assert(branch_caching_disk_i(post) == branch_caching_disk_i(pre));
+    assert(branch_caching_disk_state_i(post) == branch_caching_disk_state_i(pre));
+    assert(persistent_branch_image_i(post) == persistent_branch_image_i(pre));
+    assert(frozen_branch_image_i(post) == frozen_branch_image_i(pre));
+    assert(atomic_superblock_prepared_i(post) == atomic_superblock_prepared_i(pre)) by {
+        if pre.program.state.in_flight is Some {
+            assert(post.program.state.in_flight is Some);
+        }
+        assert(post.program.state.atomic_inflight_superblock_i()
+            == pre.program.state.atomic_inflight_superblock_i());
+    }
+    assert(crash_aware_caching_disk_branch_i(post)
+        == crash_aware_caching_disk_branch_i(pre));
+    assert(branch_component_refinement_inv(post));
+}
+
+pub open spec fn branch_cache_internal_component_env(
+    pre: SystemModel::State<AnotherProgramModel>,
+    post: SystemModel::State<AnotherProgramModel>,
+) -> bool
+{
+    &&& branch_component_refinement_inv(pre)
+    &&& branch_projected_aus_are_owned_data(pre)
+    &&& post.program.state.wf()
+    &&& Cache::State::next(
+        pre.program.state.cache,
+        post.program.state.cache,
+        Cache::Label::Internal{},
+    )
+    &&& post.disk == pre.disk
+    &&& post.program.state.branch == pre.program.state.branch
+    &&& post.program.state.journal == pre.program.state.journal
+    &&& post.program.state.free_aus == pre.program.state.free_aus
+    &&& post.program.state.in_flight == pre.program.state.in_flight
+    &&& pre.program.state.in_flight is Some ==>
+        post.program.state.atomic_inflight_superblock_i()
+            == pre.program.state.atomic_inflight_superblock_i()
+    &&& post.program.state.persistent_image == pre.program.state.persistent_image
+    &&& adapter_caching_disk_i_by_domains(
+        pre.program.state.cache,
+        pre.disk,
+        branch_raw_projection_addrs(),
+        branch_raw_projection_addrs(),
+    ).inv()
+    &&& branch_caching_disk_i(pre).inv()
+}
+
+pub proof fn branch_cache_internal_refines_component_internal(
+    pre: SystemModel::State<AnotherProgramModel>,
+    post: SystemModel::State<AnotherProgramModel>,
+)
+    requires
+        branch_cache_internal_component_env(pre, post),
+    ensures
+        branch_component_refinement_inv(post),
+        branch_projected_aus_are_owned_data(post),
+        branch_projection_aus(post) =~= branch_projection_aus(pre),
+        branch_caching_disk_i(post).visible() == branch_caching_disk_i(pre).visible(),
+        crash_aware_caching_disk_branch_i(post) == crash_aware_caching_disk_branch_i(pre)
+            || CrashAwareCachingDiskBranch::State::next(
+                crash_aware_caching_disk_branch_i(pre),
+                crash_aware_caching_disk_branch_i(post),
+                CrashAwareCachingDiskBranch::Label::Internal,
+            ),
+{
+    branch_cache_internal_preserves_component_refinement(pre, post);
+}
+
+pub proof fn branch_cache_internal_preserves_component_refinement(
+    pre: SystemModel::State<AnotherProgramModel>,
+    post: SystemModel::State<AnotherProgramModel>,
+)
+    requires
+        branch_component_refinement_inv(pre),
+        branch_projected_aus_are_owned_data(pre),
+        post.program.state.wf(),
+        Cache::State::next(
+            pre.program.state.cache,
+            post.program.state.cache,
+            Cache::Label::Internal{},
+        ),
+        post.disk == pre.disk,
+        post.program.state.branch == pre.program.state.branch,
+        post.program.state.journal == pre.program.state.journal,
+        post.program.state.free_aus == pre.program.state.free_aus,
+        post.program.state.in_flight == pre.program.state.in_flight,
+        pre.program.state.in_flight is Some ==>
+            post.program.state.atomic_inflight_superblock_i()
+                == pre.program.state.atomic_inflight_superblock_i(),
+        post.program.state.persistent_image == pre.program.state.persistent_image,
+        adapter_caching_disk_i_by_domains(
+            pre.program.state.cache,
+            pre.disk,
+            branch_raw_projection_addrs(),
+            branch_raw_projection_addrs(),
+        ).inv(),
+        branch_caching_disk_i(pre).inv(),
+    ensures
+        branch_component_refinement_inv(post),
+        branch_projected_aus_are_owned_data(post),
+        branch_projection_aus(post) =~= branch_projection_aus(pre),
+        branch_caching_disk_i(post).visible() == branch_caching_disk_i(pre).visible(),
+        crash_aware_caching_disk_branch_i(post) == crash_aware_caching_disk_branch_i(pre)
+            || CrashAwareCachingDiskBranch::State::next(
+                crash_aware_caching_disk_branch_i(pre),
+                crash_aware_caching_disk_branch_i(post),
+                CrashAwareCachingDiskBranch::Label::Internal,
+            ),
+{
+    projected_cache_internal_refines_caching_disk_internal(
+        pre.program.state.cache,
+        post.program.state.cache,
+        pre.disk,
+        branch_raw_projection_addrs(),
+        branch_raw_projection_addrs(),
+    );
+    let pre_raw_disk = adapter_caching_disk_i_by_domains(
+        pre.program.state.cache,
+        pre.disk,
+        branch_raw_projection_addrs(),
+        branch_raw_projection_addrs(),
+    );
+    let post_raw_disk = adapter_caching_disk_i_by_domains(
+        post.program.state.cache,
+        pre.disk,
+        branch_raw_projection_addrs(),
+        branch_raw_projection_addrs(),
+    );
+    CachingDisk::State::internal_visible_unchanged(pre_raw_disk, post_raw_disk);
+    assert(branch_raw_visible_i(pre) == pre_raw_disk.visible()) by {
+        assert_maps_equal!(branch_raw_visible_i(pre), pre_raw_disk.visible(), addr => {});
+    }
+    assert(branch_raw_visible_i(post) == post_raw_disk.visible()) by {
+        assert(post.disk == pre.disk);
+        assert_maps_equal!(branch_raw_visible_i(post), post_raw_disk.visible(), addr => {});
+    }
+    assert(branch_raw_visible_i(post) =~= branch_raw_visible_i(pre));
+    assert(branch_interpreted_summary_i(post) == branch_interpreted_summary_i(pre)) by {
+        assert(to_branch_nodes(branch_raw_visible_i(post))
+            == to_branch_nodes(branch_raw_visible_i(pre)));
+    }
+    assert(branch_projection_summary_i(post) == branch_projection_summary_i(pre)) by {
+        assert(post.program.state.branch == pre.program.state.branch);
+    }
+    assert(branch_projection_aus(post) =~= branch_projection_aus(pre)) by {
+        assert(post.program.state.branch.mini_allocator == pre.program.state.branch.mini_allocator);
+    }
+    assert(branch_projected_aus_are_owned_data(post)) by {
+        assert(post.program.state.journal_owned_aus() == pre.program.state.journal_owned_aus());
+        assert(post.program.state.free_aus == pre.program.state.free_aus);
+        assert forall |au: AU| #[trigger] branch_projection_aus(post).contains(au)
+            implies {
+                &&& !AnotherAtomicState::reserved_aus().contains(au)
+                &&& !post.program.state.journal_owned_aus().contains(au)
+                &&& !post.program.state.free_aus.contains(au)
+            } by {
+            assert(branch_projection_aus(pre).contains(au));
+            assert(branch_projected_aus_are_owned_data(pre));
+        }
+    }
+    branch_backing_projection_unchanged_from_summary_and_allocator(pre, post);
+    cache_internal_refines_caching_disk_internal_by_domains(
+        pre.program.state.cache,
+        post.program.state.cache,
+        pre.disk,
+        branch_backing_projection_addrs(pre),
+        branch_persistent_projection_addrs(pre),
+    );
+    assert(branch_caching_disk_i(post).visible() == branch_caching_disk_i(pre).visible()) by {
+        CachingDisk::State::internal_visible_unchanged(
+            branch_caching_disk_i(pre),
+            branch_caching_disk_i(post),
+        );
+    }
+    let src = crash_aware_caching_disk_branch_i(pre);
+    let dst = crash_aware_caching_disk_branch_i(post);
+    if src.ephemeral is Unknown {
+        assert(dst.ephemeral is Unknown);
+        assert(persistent_branch_image_i(post) == persistent_branch_image_i(pre));
+        assert(frozen_branch_image_i(post) == frozen_branch_image_i(pre));
+        assert(atomic_superblock_prepared_i(post) == atomic_superblock_prepared_i(pre)) by {
+            if pre.program.state.in_flight is Some {
+                assert(post.program.state.in_flight is Some);
+            }
+            assert(post.program.state.atomic_inflight_superblock_i()
+                == pre.program.state.atomic_inflight_superblock_i());
+        }
+        assert(dst == src);
+        assert(branch_component_refinement_inv(post));
+    } else {
+        assert(dst.ephemeral is Known);
+        assert(src.ephemeral->v.disk == branch_caching_disk_i(pre));
+        assert(dst.ephemeral->v.disk == branch_caching_disk_i(post));
+        assert(CachingDisk::State::next(
+            src.ephemeral->v.disk,
+            dst.ephemeral->v.disk,
+            CachingDisk::Label::Internal{},
+        ));
+        CachingDisk::State::internal_visible_unchanged(
+            src.ephemeral->v.disk,
+            dst.ephemeral->v.disk,
+        );
+        assert(dst.ephemeral->v.sealed_roots == src.ephemeral->v.sealed_roots);
+        assert(dst.ephemeral->v.branch_summary == src.ephemeral->v.branch_summary);
+        assert(dst.ephemeral->v.metadata_loaded == src.ephemeral->v.metadata_loaded);
+        assert(dst.ephemeral->v.persisted_root_count == src.ephemeral->v.persisted_root_count);
+        assert(dst.ephemeral->v.active_branch == src.ephemeral->v.active_branch);
+        assert(dst.ephemeral->v.mini_allocator == src.ephemeral->v.mini_allocator);
+        assert(dst.ephemeral->v.seq_end == src.ephemeral->v.seq_end);
+        assert(CachingDiskBranch::State::next_by(
+            src.ephemeral->v,
+            dst.ephemeral->v,
+            CachingDiskBranch::Label::Internal,
+            CachingDiskBranch::Step::disk_internal(dst.ephemeral->v.disk),
+        )) by {
+            reveal(CachingDiskBranch::State::disk_internal);
+            reveal(CachingDiskBranch::State::next_by);
+        }
+        reveal(CachingDiskBranch::State::next);
+        assert(CrashAwareCachingDiskBranch::State::next_by(
+            src,
+            dst,
+            CrashAwareCachingDiskBranch::Label::Internal,
+            CrashAwareCachingDiskBranch::Step::internal(dst.ephemeral->v),
+        )) by {
+            reveal(CrashAwareCachingDiskBranch::State::next_by);
+        }
+        reveal(CrashAwareCachingDiskBranch::State::next);
+        CrashAwareCachingDiskBranch::State::inv_next(
+            src,
+            dst,
+            CrashAwareCachingDiskBranch::Label::Internal,
+        );
+        assert(branch_caching_disk_state_i(post).active_branch_i().inv()) by {
+            assert(dst.inv());
+        }
+        assert(branch_component_refinement_inv(post));
+    }
+    assert(crash_aware_caching_disk_branch_i(post) == crash_aware_caching_disk_branch_i(pre)
+        || CrashAwareCachingDiskBranch::State::next(
+            crash_aware_caching_disk_branch_i(pre),
+            crash_aware_caching_disk_branch_i(post),
+            CrashAwareCachingDiskBranch::Label::Internal,
+        ));
+}
+
 pub proof fn atomic_branch_metadata_loaded_flag_from_metadata_loaded(
     branch: AtomicBranchState::State,
 )
@@ -831,6 +1216,411 @@ pub proof fn loaded_branch_projection_unchanged(
     }
 }
 
+pub proof fn branch_backing_projection_unchanged_from_summary_and_allocator(
+    pre: SystemModel::State<AnotherProgramModel>,
+    post: SystemModel::State<AnotherProgramModel>,
+)
+    requires
+        branch_projection_summary_i(post) == branch_projection_summary_i(pre),
+        post.program.state.branch.mini_allocator.all_aus()
+            == pre.program.state.branch.mini_allocator.all_aus(),
+        post.disk == pre.disk,
+    ensures
+        branch_backing_projection_addrs(post) =~= branch_backing_projection_addrs(pre),
+        branch_persistent_projection_addrs(post) =~= branch_persistent_projection_addrs(pre),
+{
+    assert(branch_backing_projection_addrs(post) =~= branch_backing_projection_addrs(pre)) by {
+        assert forall |addr: Address| #[trigger] branch_backing_projection_addrs(post).contains(addr)
+            implies branch_backing_projection_addrs(pre).contains(addr) by {
+            assert(addr.wf());
+        }
+        assert forall |addr: Address| #[trigger] branch_backing_projection_addrs(pre).contains(addr)
+            implies branch_backing_projection_addrs(post).contains(addr) by {
+            assert(addr.wf());
+        }
+    }
+    assert(branch_persistent_projection_addrs(post) =~= branch_persistent_projection_addrs(pre)) by {
+        assert forall |addr: Address| #[trigger] branch_persistent_projection_addrs(post).contains(addr)
+            implies branch_persistent_projection_addrs(pre).contains(addr) by {
+            assert(branch_backing_projection_addrs(pre).contains(addr));
+        }
+        assert forall |addr: Address| #[trigger] branch_persistent_projection_addrs(pre).contains(addr)
+            implies branch_persistent_projection_addrs(post).contains(addr) by {
+            assert(branch_backing_projection_addrs(post).contains(addr));
+        }
+    }
+}
+
+pub proof fn loaded_branch_backing_projection_unchanged_by_all_aus(
+    pre: SystemModel::State<AnotherProgramModel>,
+    post: SystemModel::State<AnotherProgramModel>,
+)
+    requires
+        atomic_branch_metadata_loaded_flag(pre.program.state.branch),
+        atomic_branch_metadata_loaded_flag(post.program.state.branch),
+        post.program.state.branch.branch_summary == pre.program.state.branch.branch_summary,
+        post.program.state.branch.mini_allocator.all_aus()
+            == pre.program.state.branch.mini_allocator.all_aus(),
+        post.disk == pre.disk,
+    ensures
+        branch_backing_projection_addrs(post) =~= branch_backing_projection_addrs(pre),
+        branch_persistent_projection_addrs(post) =~= branch_persistent_projection_addrs(pre),
+{
+    assert(branch_projection_summary_i(post) == post.program.state.branch.branch_summary);
+    assert(branch_projection_summary_i(pre) == pre.program.state.branch.branch_summary);
+    branch_backing_projection_unchanged_from_summary_and_allocator(pre, post);
+}
+
+pub proof fn branch_projection_addrs_subset_backing(
+    model: SystemModel::State<AnotherProgramModel>,
+)
+    ensures
+        branch_projection_addrs(model) <= branch_backing_projection_addrs(model),
+{
+    assert forall |addr: Address| #[trigger] branch_projection_addrs(model).contains(addr)
+        implies branch_backing_projection_addrs(model).contains(addr)
+    by {
+        assert(addr.wf());
+        if branch_mini_allocator_allocated_addrs(model.program.state.branch.mini_allocator).contains(addr) {
+            assert(model.program.state.branch.mini_allocator.allocs.contains_key(addr.au));
+            assert(model.program.state.branch.mini_allocator.all_aus().contains(addr.au));
+        }
+    }
+}
+
+pub proof fn atomic_branch_support_addrs_subset_branch_projection(
+    model: SystemModel::State<AnotherProgramModel>,
+)
+    requires
+        atomic_branch_metadata_loaded_flag(model.program.state.branch),
+    ensures
+        atomic_branch_support_addrs(model.program.state.branch)
+            * Set::new(|addr: Address| addr.wf()) <= branch_projection_addrs(model),
+{
+    assert(branch_projection_summary_i(model) == model.program.state.branch.branch_summary);
+    assert forall |addr: Address|
+        #[trigger] atomic_branch_support_addrs(model.program.state.branch).contains(addr)
+        && (atomic_branch_support_addrs(model.program.state.branch)
+            * Set::new(|addr: Address| addr.wf())).contains(addr)
+        implies branch_projection_addrs(model).contains(addr)
+    by {
+        assert(atomic_branch_support_addrs(model.program.state.branch).contains(addr));
+        assert(addr.wf());
+        if addresses_in_aus(summary_aus(model.program.state.branch.branch_summary)).contains(addr) {
+            assert(addresses_in_aus(summary_aus(branch_projection_summary_i(model))).contains(addr));
+        } else {
+            assert(branch_mini_allocator_allocated_addrs(
+                model.program.state.branch.mini_allocator,
+            ).contains(addr));
+        }
+    }
+}
+
+pub proof fn cache_access_reads_available_in_branch_projection_from_support(
+    pre: SystemModel::State<AnotherProgramModel>,
+    post: SystemModel::State<AnotherProgramModel>,
+    component_reads: Map<Address, RawPage>,
+    reads: Map<Address, RawPage>,
+    writes: Map<Address, RawPage>,
+)
+    requires
+        pre.program.state.cache.inv(),
+        Cache::State::next(
+            pre.program.state.cache,
+            post.program.state.cache,
+            Cache::Label::Access{reads, writes},
+        ),
+        component_reads <= reads,
+        component_reads.dom() <= atomic_branch_support_addrs(pre.program.state.branch),
+        component_reads.dom() <= Set::new(|addr: Address| addr.wf()),
+        atomic_branch_metadata_loaded_flag(pre.program.state.branch),
+    ensures
+        component_reads <= branch_disk_cache_i(pre),
+{
+    atomic_branch_support_addrs_subset_branch_projection(pre);
+    branch_projection_addrs_subset_backing(pre);
+    assert forall |addr: Address| #[trigger] component_reads.contains_key(addr)
+        implies branch_disk_cache_i(pre).contains_key(addr)
+            && branch_disk_cache_i(pre)[addr] == component_reads[addr] by {
+        assert(reads.contains_key(addr));
+        assert(reads[addr] == component_reads[addr]);
+        Cache::State::access_read_valid(
+            pre.program.state.cache,
+            post.program.state.cache,
+            reads,
+            writes,
+            addr,
+        );
+        assert(pre.program.state.cache.valid_read(addr, reads[addr]));
+        pre.program.state.cache.build_lookup_map_ensures();
+        assert(pre.program.state.cache.lookup_map == pre.program.state.cache.build_lookup_map());
+        assert(cache_filled_addr(pre.program.state.cache, addr)) by {
+            assert(pre.program.state.cache.lookup_map.contains_key(addr));
+            assert(pre.program.state.cache.entries[
+                pre.program.state.cache.lookup_map[addr]
+            ] is Filled);
+            assert(pre.program.state.cache.entries.contains_key(
+                pre.program.state.cache.lookup_map[addr],
+            ));
+        }
+        assert(filled_cache_pages(pre.program.state.cache).contains_key(addr));
+        assert(filled_cache_pages(pre.program.state.cache)[addr] == reads[addr]);
+        assert(atomic_branch_support_addrs(pre.program.state.branch).contains(addr));
+        assert(addr.wf());
+        assert(branch_projection_addrs(pre).contains(addr));
+        assert(branch_backing_projection_addrs(pre).contains(addr));
+        assert(project_cache_pages_by_addrs(
+            pre.program.state.cache,
+            branch_backing_projection_addrs(pre),
+        ).contains_key(addr));
+        assert(project_cache_pages_by_addrs(
+            pre.program.state.cache,
+            branch_backing_projection_addrs(pre),
+        )[addr] == reads[addr]);
+    }
+}
+
+pub proof fn branch_grow_reads_available(
+    pre: SystemModel::State<AnotherProgramModel>,
+    post: SystemModel::State<AnotherProgramModel>,
+    new_root_addr: Address,
+    reads: Map<Address, RawPage>,
+    writes: Map<Address, RawPage>,
+    branch: AtomicBranchState::State,
+)
+    requires
+        branch_component_refinement_inv(pre),
+        AnotherAtomicState::branch_grow(
+            pre.program.state,
+            post.program.state,
+            new_root_addr,
+            reads,
+            writes,
+            branch,
+        ),
+        atomic_branch_metadata_loaded_flag(pre.program.state.branch),
+    ensures
+        reads <= branch_disk_cache_i(pre),
+{
+    let root = pre.program.state.branch.active_branch.root.unwrap();
+    let read_nodes = crate::implementation::AnotherAtomicState_v::to_branch_nodes(reads);
+    let write_nodes = crate::implementation::AnotherAtomicState_v::to_branch_nodes(writes);
+    let atomic_lbl = AtomicBranchState::Label::Grow{
+        new_root_addr,
+        read_nodes,
+        write_nodes,
+    };
+    reveal(AtomicBranchState::State::next);
+    reveal(AtomicBranchState::State::next_by);
+    let atomic_step = choose |step: AtomicBranchState::Step|
+        AtomicBranchState::State::next_by(
+            pre.program.state.branch,
+            branch,
+            atomic_lbl,
+            step,
+        );
+    match atomic_step {
+        AtomicBranchState::Step::grow(new_active_branch) => {
+            assert(AtomicBranchState::State::grow(
+                pre.program.state.branch,
+                branch,
+                atomic_lbl,
+                new_active_branch,
+            )) by {
+                reveal(AtomicBranchState::State::grow);
+            }
+            let branch_lbl = CachedBranch::Label::Grow{
+                mini_allocator: pre.program.state.branch.mini_allocator,
+                new_root_addr,
+                read_nodes,
+                write_nodes,
+            };
+            reveal(CachedBranch::State::next);
+            reveal(CachedBranch::State::next_by);
+            let cb_step = choose |step: CachedBranch::Step|
+                CachedBranch::State::next_by(
+                    pre.program.state.branch.active_branch,
+                    new_active_branch,
+                    branch_lbl,
+                    step,
+                );
+            match cb_step {
+                CachedBranch::Step::grow_step() => {
+                    assert(CachedBranch::State::grow_step(
+                        pre.program.state.branch.active_branch,
+                        new_active_branch,
+                        branch_lbl,
+                    )) by {
+                        reveal(CachedBranch::State::grow_step);
+                    }
+                    assert(pre.program.state.branch.active_branch.root is Some);
+                },
+                _ => {
+                    assert(false);
+                },
+            }
+        },
+        _ => {
+            assert(false);
+        },
+    }
+    let cdb = branch_caching_disk_state_i(pre);
+    let active_i = cdb.active_branch_i();
+    assert(pre.program.state.superblock_metadata_known()) by {
+        assert(pre.program.state.client_ready());
+        assert(pre.program.state.wf());
+        assert(pre.program.state.recovery_metadata_wf());
+    }
+    assert(crash_aware_caching_disk_branch_i(pre).ephemeral is Known);
+    assert(active_i.inv());
+    assert(active_i.branch is Some);
+    let linked = active_i.branch.unwrap();
+    assert(linked.root == root);
+    assert(linked.disk_view.entries.contains_key(root)) by {
+        assert(linked.inv());
+        assert(linked.inv_internal(linked.the_ranking()));
+        assert(linked.wf());
+        assert(linked.has_root());
+    }
+    assert(active_i.addrs_closed_under_mini_allocator());
+    assert(active_i.mini_allocator.page_is_reserved(root));
+    assert(pre.program.state.branch.mini_allocator.page_is_reserved(root));
+    assert(pre.program.state.branch.mini_allocator.wf());
+    assert(root.wf());
+    assert(branch_mini_allocator_allocated_addrs(
+        pre.program.state.branch.mini_allocator,
+    ).contains(root));
+    assert(atomic_branch_support_addrs(pre.program.state.branch).contains(root));
+    assert(reads.dom() <= atomic_branch_support_addrs(pre.program.state.branch)) by {
+        assert forall |addr: Address| #[trigger] reads.dom().contains(addr)
+            implies atomic_branch_support_addrs(pre.program.state.branch).contains(addr) by {
+            assert(reads.dom() == set![root]);
+            assert(addr == root);
+        }
+    }
+    assert(reads.dom() <= Set::new(|addr: Address| addr.wf())) by {
+        assert forall |addr: Address| #[trigger] reads.dom().contains(addr)
+            implies addr.wf() by {
+            assert(reads.dom() == set![root]);
+            assert(addr == root);
+        }
+    }
+    cache_access_reads_available_in_branch_projection_from_support(
+        pre,
+        post,
+        reads,
+        reads,
+        writes,
+    );
+}
+
+pub proof fn branch_split_reads_available(
+    pre: SystemModel::State<AnotherProgramModel>,
+    post: SystemModel::State<AnotherProgramModel>,
+    new_child_addr: Address,
+    receipt: LoadedPathReceipt,
+    split_arg: SplitArg,
+    reads: Map<Address, RawPage>,
+    writes: Map<Address, RawPage>,
+    branch: AtomicBranchState::State,
+)
+    requires
+        branch_component_refinement_inv(pre),
+        AnotherAtomicState::branch_split(
+            pre.program.state,
+            post.program.state,
+            new_child_addr,
+            receipt,
+            split_arg,
+            reads,
+            writes,
+            branch,
+        ),
+        atomic_branch_metadata_loaded_flag(pre.program.state.branch),
+    ensures
+        reads <= branch_disk_cache_i(pre),
+{
+    assert(reads.dom() <= atomic_branch_support_addrs(pre.program.state.branch));
+    assert(reads.dom() <= Set::new(|addr: Address| addr.wf()));
+    cache_access_reads_available_in_branch_projection_from_support(
+        pre,
+        post,
+        reads,
+        reads,
+        writes,
+    );
+}
+
+pub proof fn branch_preserved_backing_cache_access_preserves_atomic_wf(
+    pre: SystemModel::State<AnotherProgramModel>,
+    post: SystemModel::State<AnotherProgramModel>,
+    reads: Map<Address, RawPage>,
+    writes: Map<Address, RawPage>,
+    branch_lbl: AtomicBranchState::Label,
+)
+    requires
+        pre.program.state.wf(),
+        Cache::State::next(
+            pre.program.state.cache,
+            post.program.state.cache,
+            Cache::Label::Access{reads, writes},
+        ),
+        AtomicBranchState::State::next(
+            pre.program.state.branch,
+            post.program.state.branch,
+            branch_lbl,
+        ),
+        post.program.state == (AnotherAtomicState{
+            cache: post.program.state.cache,
+            branch: post.program.state.branch,
+            ..pre.program.state
+        }),
+        post.program.state.branch.image == pre.program.state.branch.image,
+        post.program.state.branch.branch_summary == pre.program.state.branch.branch_summary,
+        post.program.state.branch.mini_allocator.all_aus()
+            == pre.program.state.branch.mini_allocator.all_aus(),
+        post.program.state.branch.in_flight == pre.program.state.branch.in_flight,
+        post.program.state.branch.seq_end() == pre.program.state.branch.seq_end(),
+    ensures
+        post.program.state.wf(),
+{
+    Cache::State::inv_next(
+        pre.program.state.cache,
+        post.program.state.cache,
+        Cache::Label::Access{reads, writes},
+    );
+    AnotherAtomicState::cache_request_wf_preserved_by_cache_access(
+        pre.program.state,
+        post.program.state,
+        reads,
+        writes,
+    );
+    AtomicBranchState::State::wf_next(
+        pre.program.state.branch,
+        post.program.state.branch,
+        branch_lbl,
+    );
+    assert(post.program.state.journal == pre.program.state.journal);
+    assert(post.program.state.free_aus == pre.program.state.free_aus);
+    assert(post.program.state.recovery_state == pre.program.state.recovery_state);
+    assert(post.program.state.branch.owned_aus() == pre.program.state.branch.owned_aus());
+    assert(post.program.state.journal_owned_aus() == pre.program.state.journal_owned_aus());
+    assert(post.program.state.branch_owned_aus() == pre.program.state.branch_owned_aus());
+    assert(post.program.state.component_owned_aus() == pre.program.state.component_owned_aus());
+    assert(post.program.state.component_disjoint());
+    assert(post.program.state.allocation_wf());
+    assert(post.program.state.journal_metadata_loaded() == pre.program.state.journal_metadata_loaded());
+    assert(post.program.state.branch_metadata_loaded() == pre.program.state.branch_metadata_loaded());
+    assert(post.program.state.recovery_metadata_wf());
+    assert(post.program.state.in_flight_agrees()) by {
+        assert(pre.program.state.in_flight_agrees());
+        assert(post.program.state.in_flight == pre.program.state.in_flight);
+        assert(post.program.state.journal.in_flight == pre.program.state.journal.in_flight);
+        assert(post.program.state.branch.in_flight == pre.program.state.branch.in_flight);
+    }
+    assert(post.program.state.wf());
+}
+
 pub proof fn query_from_receipts_up_to_equiv(
     receipts: Seq<LoadedPathReceipt>,
     end: nat,
@@ -905,7 +1695,6 @@ pub proof fn cache_read_only_branch_projection_unchanged(
             Cache::Label::Access{reads, writes: Map::empty()},
         ),
         post.disk == pre.disk,
-        branch_projection_addrs(post) =~= branch_projection_addrs(pre),
         branch_backing_projection_addrs(post) =~= branch_backing_projection_addrs(pre),
         branch_persistent_projection_addrs(post) =~= branch_persistent_projection_addrs(pre),
     ensures
@@ -1062,7 +1851,6 @@ pub proof fn cache_access_refines_branch_caching_disk_access_same_domain(
             Cache::Label::Access{reads, writes},
         ),
         post.disk == pre.disk,
-        branch_projection_addrs(post) =~= branch_projection_addrs(pre),
         branch_backing_projection_addrs(post) =~= branch_backing_projection_addrs(pre),
         branch_persistent_projection_addrs(post) =~= branch_persistent_projection_addrs(pre),
         writes.dom() <= branch_backing_projection_addrs(pre),
@@ -1138,7 +1926,7 @@ pub proof fn branch_load_metadata_refines(
             discovered_aus,
         ),
         post.disk == pre.disk,
-        branch_projection_addrs(post) =~= branch_projection_addrs(pre),
+        branch_backing_projection_addrs(post) =~= branch_backing_projection_addrs(pre),
         branch_persistent_projection_addrs(post) =~= branch_persistent_projection_addrs(pre),
         reads <= branch_disk_cache_i(pre),
     ensures
@@ -1224,6 +2012,7 @@ pub proof fn branch_query_refines(
         ),
         post.disk == pre.disk,
         branch_projection_addrs(post) =~= branch_projection_addrs(pre),
+        branch_backing_projection_addrs(post) =~= branch_backing_projection_addrs(pre),
         branch_persistent_projection_addrs(post) =~= branch_persistent_projection_addrs(pre),
         reads <= branch_disk_cache_i(pre),
         atomic_branch_metadata_loaded_flag(pre.program.state.branch),
@@ -1369,14 +2158,25 @@ pub proof fn branch_append_refines(
     let atomic_step = choose |step: AtomicBranchState::Step|
         AtomicBranchState::State::next_by(pre.program.state.branch, branch, atomic_lbl, step);
     match atomic_step {
-        AtomicBranchState::Step::append(new_active_branch) => {
-            assert(AtomicBranchState::State::append(
+        AtomicBranchState::Step::append_nonempty(new_active_branch) => {
+            assert(AtomicBranchState::State::append_nonempty(
                 pre.program.state.branch,
                 branch,
                 atomic_lbl,
                 new_active_branch,
             )) by {
-                reveal(AtomicBranchState::State::append);
+                reveal(AtomicBranchState::State::append_nonempty);
+            }
+            assert(branch == post.program.state.branch);
+        },
+        AtomicBranchState::Step::append_empty(new_active_branch) => {
+            assert(AtomicBranchState::State::append_empty(
+                pre.program.state.branch,
+                branch,
+                atomic_lbl,
+                new_active_branch,
+            )) by {
+                reveal(AtomicBranchState::State::append_empty);
             }
             assert(branch == post.program.state.branch);
         },
@@ -1504,6 +2304,19 @@ pub proof fn branch_append_from_execute_put_refines(
     }
     assert(pre.program.state.superblock_metadata_known());
     assert(post.program.state.superblock_metadata_known());
+    AtomicBranchState::State::append_preserves_owned_aus(
+        pre.program.state.branch,
+        branch,
+        atomic_lbl,
+    );
+    assert(post.program.state.branch.branch_summary == pre.program.state.branch.branch_summary);
+    assert(post.program.state.branch.mini_allocator.all_aus()
+        == pre.program.state.branch.mini_allocator.all_aus());
+    assert(atomic_branch_metadata_loaded_flag(post.program.state.branch)) by {
+        assert(post.program.state.branch.image == pre.program.state.branch.image);
+        assert(post.program.state.branch.branch_summary == pre.program.state.branch.branch_summary);
+    }
+    loaded_branch_backing_projection_unchanged_by_all_aus(pre, post);
     branch_append_refines(
         pre,
         post,
@@ -1527,6 +2340,7 @@ pub proof fn branch_fill_aus_refines(
         branch_component_refinement_inv(pre),
         AnotherAtomicState::branch_fill_aus(pre.program.state, post.program.state, aus),
         post.disk == pre.disk,
+        branch_caching_disk_i(post).inv(),
     ensures
         CrashAwareCachingDiskBranch::State::next(
             crash_aware_caching_disk_branch_i(pre),
@@ -1624,10 +2438,7 @@ pub proof fn branch_grow_refines(
             branch,
         ),
         post.disk == pre.disk,
-        branch_projection_addrs(post) =~= branch_projection_addrs(pre),
-        branch_persistent_projection_addrs(post) =~= branch_persistent_projection_addrs(pre),
-        reads <= branch_disk_cache_i(pre),
-        writes.dom() <= branch_projection_addrs(pre),
+        writes.dom() <= branch_backing_projection_addrs(pre),
         atomic_branch_metadata_loaded_flag(pre.program.state.branch),
     ensures
         CrashAwareCachingDiskBranch::State::next(
@@ -1635,6 +2446,7 @@ pub proof fn branch_grow_refines(
             crash_aware_caching_disk_branch_i(post),
             CrashAwareCachingDiskBranch::Label::Internal,
         ),
+        branch_component_refinement_inv(post),
 {
     let read_nodes = crate::implementation::AnotherAtomicState_v::to_branch_nodes(reads);
     let write_nodes = crate::implementation::AnotherAtomicState_v::to_branch_nodes(writes);
@@ -1643,6 +2455,24 @@ pub proof fn branch_grow_refines(
         read_nodes,
         write_nodes,
     };
+    assert(AtomicBranchState::State::next(
+        pre.program.state.branch,
+        branch,
+        atomic_lbl,
+    ));
+    AtomicBranchState::State::grow_preserves_backing_aus(
+        pre.program.state.branch,
+        branch,
+        atomic_lbl,
+    );
+    assert(post.program.state.branch == branch);
+    assert(atomic_branch_metadata_loaded_flag(post.program.state.branch)) by {
+        assert(post.program.state.branch.image == pre.program.state.branch.image);
+        assert(post.program.state.branch.branch_summary == pre.program.state.branch.branch_summary);
+    }
+    loaded_branch_backing_projection_unchanged_by_all_aus(pre, post);
+    assert(writes.dom() <= branch_backing_projection_addrs(pre));
+    branch_grow_reads_available(pre, post, new_root_addr, reads, writes, branch);
     cache_access_refines_branch_caching_disk_access_same_domain(pre, post, reads, writes);
 
     reveal(AtomicBranchState::State::next);
@@ -1688,6 +2518,8 @@ pub proof fn branch_grow_refines(
                 _ => { assert(false); }
             }
             assert(branch == post.program.state.branch);
+            assert(post.program.state.branch.in_flight == pre.program.state.branch.in_flight);
+            assert(post.program.state.branch.seq_end() == pre.program.state.branch.seq_end());
         },
         _ => { assert(false); }
     }
@@ -1732,6 +2564,22 @@ pub proof fn branch_grow_refines(
         reveal(CrashAwareCachingDiskBranch::State::next_by);
     }
     reveal(CrashAwareCachingDiskBranch::State::next);
+    CrashAwareCachingDiskBranch::State::inv_next(
+        src,
+        dst,
+        CrashAwareCachingDiskBranch::Label::Internal,
+    );
+    assert(branch_caching_disk_state_i(post).active_branch_i().inv()) by {
+        assert(dst.inv());
+    }
+    branch_preserved_backing_cache_access_preserves_atomic_wf(
+        pre,
+        post,
+        reads,
+        writes,
+        atomic_lbl,
+    );
+    assert(branch_component_refinement_inv(post));
 }
 
 pub proof fn branch_split_refines(
@@ -1757,10 +2605,7 @@ pub proof fn branch_split_refines(
             branch,
         ),
         post.disk == pre.disk,
-        branch_projection_addrs(post) =~= branch_projection_addrs(pre),
-        branch_persistent_projection_addrs(post) =~= branch_persistent_projection_addrs(pre),
-        reads <= branch_disk_cache_i(pre),
-        writes.dom() <= branch_projection_addrs(pre),
+        writes.dom() <= branch_backing_projection_addrs(pre),
         atomic_branch_metadata_loaded_flag(pre.program.state.branch),
     ensures
         CrashAwareCachingDiskBranch::State::next(
@@ -1768,6 +2613,7 @@ pub proof fn branch_split_refines(
             crash_aware_caching_disk_branch_i(post),
             CrashAwareCachingDiskBranch::Label::Internal,
         ),
+        branch_component_refinement_inv(post),
 {
     let read_nodes = crate::implementation::AnotherAtomicState_v::to_branch_nodes(reads);
     let write_nodes = crate::implementation::AnotherAtomicState_v::to_branch_nodes(writes);
@@ -1778,6 +2624,24 @@ pub proof fn branch_split_refines(
         read_nodes,
         write_nodes,
     };
+    assert(AtomicBranchState::State::next(
+        pre.program.state.branch,
+        branch,
+        atomic_lbl,
+    ));
+    AtomicBranchState::State::split_preserves_backing_aus(
+        pre.program.state.branch,
+        branch,
+        atomic_lbl,
+    );
+    assert(post.program.state.branch == branch);
+    assert(atomic_branch_metadata_loaded_flag(post.program.state.branch)) by {
+        assert(post.program.state.branch.image == pre.program.state.branch.image);
+        assert(post.program.state.branch.branch_summary == pre.program.state.branch.branch_summary);
+    }
+    loaded_branch_backing_projection_unchanged_by_all_aus(pre, post);
+    assert(writes.dom() <= branch_backing_projection_addrs(pre));
+    branch_split_reads_available(pre, post, new_child_addr, receipt, split_arg, reads, writes, branch);
     cache_access_refines_branch_caching_disk_access_same_domain(pre, post, reads, writes);
 
     reveal(AtomicBranchState::State::next);
@@ -1889,6 +2753,22 @@ pub proof fn branch_split_refines(
         reveal(CrashAwareCachingDiskBranch::State::next_by);
     }
     reveal(CrashAwareCachingDiskBranch::State::next);
+    CrashAwareCachingDiskBranch::State::inv_next(
+        src,
+        dst,
+        CrashAwareCachingDiskBranch::Label::Internal,
+    );
+    assert(branch_caching_disk_state_i(post).active_branch_i().inv()) by {
+        assert(dst.inv());
+    }
+    branch_preserved_backing_cache_access_preserves_atomic_wf(
+        pre,
+        post,
+        reads,
+        writes,
+        atomic_lbl,
+    );
+    assert(branch_component_refinement_inv(post));
 }
 
 pub proof fn branch_seal_refines(
@@ -1913,6 +2793,7 @@ pub proof fn branch_seal_refines(
         ),
         post.disk == pre.disk,
         branch_projection_addrs(post) =~= branch_projection_addrs(pre),
+        branch_backing_projection_addrs(post) =~= branch_backing_projection_addrs(pre),
         branch_persistent_projection_addrs(post) =~= branch_persistent_projection_addrs(pre),
         reads <= branch_disk_cache_i(pre),
         writes.dom() <= branch_projection_addrs(pre),
@@ -1932,7 +2813,6 @@ pub proof fn branch_seal_refines(
         read_nodes,
         write_nodes,
     };
-    cache_access_refines_branch_caching_disk_access_same_domain(pre, post, reads, writes);
 
     reveal(AtomicBranchState::State::next);
     reveal(AtomicBranchState::State::next_by);
@@ -1981,6 +2861,11 @@ pub proof fn branch_seal_refines(
         },
         _ => { assert(false); }
     }
+    branch_projection_addrs_subset_backing(pre);
+    assert(writes.dom() <= branch_backing_projection_addrs(pre));
+    assert(branch_backing_projection_addrs(post) =~= branch_backing_projection_addrs(pre));
+    assert(branch_persistent_projection_addrs(post) =~= branch_persistent_projection_addrs(pre));
+    cache_access_refines_branch_caching_disk_access_same_domain(pre, post, reads, writes);
 
     let src = crash_aware_caching_disk_branch_i(pre);
     let dst = crash_aware_caching_disk_branch_i(post);
@@ -2114,7 +2999,7 @@ pub proof fn observe_persisted_branch_roots_cache_observe_refines(
     cache_evictable_refines_observe_clean_aus_by_tight_domains(
         pre.program.state.cache,
         pre.disk,
-        branch_projection_addrs(pre),
+        branch_backing_projection_addrs(pre),
         branch_persistent_projection_addrs(pre),
         aus,
     );

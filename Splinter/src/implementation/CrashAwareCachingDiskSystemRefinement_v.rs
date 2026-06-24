@@ -993,10 +993,19 @@ proof fn crash_refines_coordination(
     new_journal: CrashAwareCachingDiskJournal::State,
     new_branch: CrashAwareCachingDiskBranch::State,
     new_superblock: SuperblockStore::State,
+    keep_in_flight: bool,
 )
     requires
         refinement_inv(pre),
-        CrashAwareCachingDiskSystem::State::crash(pre, post, lbl, new_journal, new_branch, new_superblock),
+        CrashAwareCachingDiskSystem::State::crash(
+            pre,
+            post,
+            lbl,
+            new_journal,
+            new_branch,
+            new_superblock,
+            keep_in_flight,
+        ),
     ensures
         CoordinationSystem::State::next(
             caching_disk_system_coordination_i(pre),
@@ -1012,7 +1021,7 @@ proof fn crash_refines_coordination(
     let cpre = caching_disk_system_coordination_i(pre);
     let cpost = caching_disk_system_coordination_i(post);
     let clbl = CoordinationSystem::Label::Label{ctam_label: caching_disk_system_i_lbl(pre, post, lbl)};
-    let keep_in_flight = pre.superblockstore.landed;
+    assert(keep_in_flight == pre.superblockstore.landed);
     let journal_lbl = CrashAwareCachingDiskJournal::Label::Crash{keep_in_flight};
     let branch_lbl = CrashAwareCachingDiskBranch::Label::Crash{keep_in_flight};
     crash_components_refine(pre, new_journal, new_branch, keep_in_flight);
@@ -2883,7 +2892,12 @@ pub proof fn next_refines_coordination(
                 discarded,
             );
         },
-        CrashAwareCachingDiskSystem::Step::crash(new_journal, new_branch, new_superblock) => {
+        CrashAwareCachingDiskSystem::Step::crash(
+            new_journal,
+            new_branch,
+            new_superblock,
+            keep_in_flight,
+        ) => {
             assert(CrashAwareCachingDiskSystem::State::crash(
                 pre,
                 post,
@@ -2891,10 +2905,19 @@ pub proof fn next_refines_coordination(
                 new_journal,
                 new_branch,
                 new_superblock,
+                keep_in_flight,
             )) by {
                 reveal(CrashAwareCachingDiskSystem::State::crash);
             }
-            crash_refines_coordination(pre, post, lbl, new_journal, new_branch, new_superblock);
+            crash_refines_coordination(
+                pre,
+                post,
+                lbl,
+                new_journal,
+                new_branch,
+                new_superblock,
+                keep_in_flight,
+            );
         },
         CrashAwareCachingDiskSystem::Step::noop() => {
             assert(CrashAwareCachingDiskSystem::State::noop(pre, post, lbl)) by {

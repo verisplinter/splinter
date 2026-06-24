@@ -58,7 +58,7 @@ use crate::implementation::CachingDiskAdapterRefinement_v::{
     cache_filled_addr, cache_filled_page, cache_internal_refines_caching_disk_internal,
     cache_internal_refines_caching_disk_internal_by_domains,
     filled_cache_pages, filled_cache_read_only_access_unchanged, filled_cache_status,
-    project_cache_pages,
+    caching_disk_i_by_domains, project_cache_pages,
     project_cache_pages_by_addrs, project_cache_status_by_addrs, project_persistent_by_addrs,
 };
 use crate::implementation::AnotherAtomicJournalRefinement_v::{
@@ -67,7 +67,11 @@ use crate::implementation::AnotherAtomicJournalRefinement_v::{
     branch_writes_disjoint_from_journal_projection,
     cache_access_outside_journal_projection_unchanged, cache_read_only_access_projection_unchanged,
     durable_superblock_image_i,
+    journal_cache_internal_component_env,
+    journal_cache_internal_refines_component_internal,
     journal_component_refinement_inv,
+    journal_component_domains_within_owned_aus,
+    journal_projected_aus_are_component_data,
     journal_owned_disk_records_do_not_impersonate_index,
     crash_aware_caching_disk_journal_i, frozen_journal_image_i, journal_caching_disk_i,
     journal_caching_disk_state_i,
@@ -88,20 +92,26 @@ use crate::implementation::AnotherAtomicJournalRefinement_v::{
 };
 use crate::implementation::AnotherAtomicBranchRefinement_v::{
     atomic_branch_metadata_loaded_flag, atomic_branch_metadata_loaded_flag_from_metadata_loaded,
+    branch_cache_internal_component_env,
+    branch_cache_internal_refines_component_internal,
+    branch_component_refinement_inv_preserved_by_unchanged_branch_projection,
     branch_append_from_execute_put_refines, branch_append_refines,
     branch_caching_disk_i, branch_caching_disk_state_i, branch_component_refinement_inv,
+    branch_component_domains_within_owned_aus,
+    branch_projected_aus_are_owned_data,
     branch_disk_cache_i, branch_disk_persistent_i, branch_disk_status_i, branch_fill_aus_refines,
     branch_image_i, branch_image_persistent_i, branch_image_projection_addrs_i,
+    branch_image_summary_aus_i,
     branch_grow_refines, branch_interpreted_summary_i, branch_load_metadata_refines,
     branch_mini_allocator_allocated_addrs,
-    branch_persistent_projection_addrs, branch_projection_addrs, branch_projection_aus,
+    branch_backing_projection_addrs, branch_persistent_projection_addrs,
+    branch_projection_addrs, branch_projection_aus, branch_raw_projection_addrs,
     branch_projection_summary_i,
     branch_child_path_target, branch_child_path_valid,
     branch_query_refines, branch_seal_refines, branch_split_refines,
     branch_raw_visible_i, branch_visible_nodes_i, crash_aware_caching_disk_branch_i,
     frozen_branch_image_i, loaded_branch_projection_unchanged,
     observe_persisted_branch_roots_refines, persistent_branch_image_i,
-    sealed_roots_pointer_domain, sealed_roots_pointer_domain_preserved_by_write_outside,
 };
 use crate::implementation::CrashAwareCachingDiskJournal_v::{
     CrashAwareCachingDiskJournal,
@@ -109,6 +119,9 @@ use crate::implementation::CrashAwareCachingDiskJournal_v::{
 use crate::implementation::CachingDiskJournal_v::CachingDiskJournal;
 use crate::implementation::CachingDiskBranch_v as CachingDiskBranchModule;
 use crate::implementation::CrashAwareCachingDiskBranch_v::CrashAwareCachingDiskBranch;
+use crate::implementation::CrashAwareCachingDiskSystem_v::{
+    CrashAwareCachingDiskSystem, SuperblockStore,
+};
 use crate::implementation::AnotherProgramModel_v::AnotherProgramModel;
 use crate::implementation::AnotherAtomicState_v::{
     AnotherAtomicState, AtomicBranchState, AtomicJournalState, DiskEvent, InternalEvent,
@@ -168,18 +181,29 @@ pub proof fn to_aus_subset_of_aus_from_addr_subset(addrs: Set<Address>, aus: Set
     }
 }
 
+pub proof fn seq_take_prefix_implies_subrange_prefix<A>(roots: Seq<A>, prefix: Seq<A>)
+    requires
+        prefix.len() <= roots.len(),
+        roots.take(prefix.len() as int) == prefix,
+    ensures
+        roots.subrange(0, prefix.len() as int) == prefix,
+{
+    assert(roots.subrange(0, prefix.len() as int) =~= prefix);
+}
+
 pub proof fn atomic_branch_support_addrs_subset_branch_projection(
     model: SystemModel::State<AnotherProgramModel>,
 )
     requires
         atomic_branch_metadata_loaded_flag(model.program.state.branch),
     ensures
-        atomic_branch_support_addrs(model.program.state.branch) <= branch_projection_addrs(model),
+        atomic_branch_support_addrs(model.program.state.branch)
+            * Set::new(|addr: Address| addr.wf()) <= branch_projection_addrs(model),
 {
     assert(branch_projection_summary_i(model) == model.program.state.branch.branch_summary);
     assert forall |addr: Address| #[trigger] atomic_branch_support_addrs(
         model.program.state.branch,
-    ).contains(addr)
+    ).contains(addr) && addr.wf()
         implies branch_projection_addrs(model).contains(addr) by {
         if addresses_in_aus(summary_aus(model.program.state.branch.branch_summary)).contains(addr) {
             assert(addresses_in_aus(summary_aus(branch_projection_summary_i(model))).contains(addr));
@@ -200,12 +224,15 @@ pub proof fn branch_projection_addrs_eq_atomic_support_addrs(
     requires
         atomic_branch_metadata_loaded_flag(model.program.state.branch),
     ensures
-        branch_projection_addrs(model) =~= atomic_branch_support_addrs(model.program.state.branch),
+        branch_projection_addrs(model)
+            =~= atomic_branch_support_addrs(model.program.state.branch)
+                * Set::new(|addr: Address| addr.wf()),
 {
     assert(branch_projection_summary_i(model) == model.program.state.branch.branch_summary);
     assert_sets_equal!(
         branch_projection_addrs(model),
-        atomic_branch_support_addrs(model.program.state.branch),
+        atomic_branch_support_addrs(model.program.state.branch)
+            * Set::new(|addr: Address| addr.wf()),
         addr => {
             if branch_projection_addrs(model).contains(addr) {
                 if addresses_in_aus(summary_aus(branch_projection_summary_i(model))).contains(addr) {
@@ -219,7 +246,7 @@ pub proof fn branch_projection_addrs_eq_atomic_support_addrs(
                     ).contains(addr));
                 }
             }
-            if atomic_branch_support_addrs(model.program.state.branch).contains(addr) {
+            if atomic_branch_support_addrs(model.program.state.branch).contains(addr) && addr.wf() {
                 atomic_branch_support_addrs_subset_branch_projection(model);
             }
         }
@@ -242,6 +269,7 @@ pub proof fn cache_access_reads_available_in_branch_projection_from_support(
         ),
         component_reads <= reads,
         component_reads.dom() <= atomic_branch_support_addrs(pre.program.state.branch),
+        component_reads.dom() <= Set::new(|addr: Address| addr.wf()),
         atomic_branch_metadata_loaded_flag(pre.program.state.branch),
     ensures
         component_reads <= branch_disk_cache_i(pre),
@@ -274,6 +302,7 @@ pub proof fn cache_access_reads_available_in_branch_projection_from_support(
         assert(filled_cache_pages(pre.program.state.cache).contains_key(addr));
         assert(filled_cache_pages(pre.program.state.cache)[addr] == reads[addr]);
         assert(atomic_branch_support_addrs(pre.program.state.branch).contains(addr));
+        assert(addr.wf());
         assert(branch_projection_addrs(pre).contains(addr));
         assert(project_cache_pages_by_addrs(
             pre.program.state.cache,
@@ -342,6 +371,15 @@ pub open spec fn another_atomic_persistent_image_wf(model: AnotherAtomicState) -
         another_atomic_superblock_image_wf(model.persistent_image.unwrap())
 }
 
+pub open spec fn another_atomic_persistent_branch_image_agrees(model: AnotherAtomicState) -> bool
+{
+    model.persistent_image is Some ==> {
+        let image = model.persistent_image.unwrap();
+        &&& model.branch.persistent_image.sealed_roots == image.branch_roots
+        &&& model.branch.persistent_image.seq_end == image.branch_seq_end
+    }
+}
+
 pub open spec fn another_atomic_in_flight_wf(model: AnotherAtomicState) -> bool
 {
     model.in_flight is Some ==> {
@@ -386,23 +424,6 @@ pub open spec fn another_atomic_replay_progress_wf(model: AnotherAtomicState) ->
         &&& model.branch_metadata_loaded()
         &&& model.branch.seq_end() == model.journal.journal.seq_end()
     }
-}
-
-pub open spec fn branch_projected_aus_are_owned_data(
-    model: SystemModel::State<AnotherProgramModel>,
-) -> bool
-{
-    &&& AnotherAtomicState::reserved_aus().disjoint(branch_projection_aus(model))
-    &&& model.program.state.journal_owned_aus().disjoint(branch_projection_aus(model))
-    &&& model.program.state.free_aus.disjoint(branch_projection_aus(model))
-}
-
-pub open spec fn journal_projected_aus_are_component_data(
-    model: SystemModel::State<AnotherProgramModel>,
-) -> bool
-{
-    &&& AnotherAtomicState::reserved_aus().disjoint(journal_projection_aus(model))
-    &&& model.program.state.branch_owned_aus().disjoint(journal_projection_aus(model))
 }
 
 pub open spec fn branch_loaded_metadata_agrees_with_visible(
@@ -477,6 +498,7 @@ pub open spec fn another_atomic_model_refinement_invariants(model: AnotherAtomic
     &&& model.allocation_wf()
     &&& model.recovery_metadata_wf()
     &&& another_atomic_persistent_image_wf(model)
+    &&& another_atomic_persistent_branch_image_agrees(model)
     &&& another_atomic_in_flight_wf(model)
     &&& another_atomic_branch_summary_wf(model)
     &&& another_atomic_persisted_branch_prefix_metadata_wf(model)
@@ -573,6 +595,9 @@ pub open spec fn another_atomic_cache_disk_request_wf(
             &&& atomic.outstanding_cache_reqs.contains_key(id)
             &&& atomic.outstanding_cache_reqs[id] == addr
             &&& req is WriteReq ==> {
+                &&& atomic.journal_metadata_loaded()
+                &&& (atomic.recovery_state is MetadataLoadComplete
+                    || atomic.recovery_state is RecoveryComplete)
                 &&& cache_filled_addr(atomic.cache, req->to)
                 &&& cache_filled_page(atomic.cache, req->to) == req->data
                 &&& filled_cache_status(atomic.cache).contains_key(req->to)
@@ -653,16 +678,6 @@ pub open spec fn journal_image_writeback_disjoint(
     model: SystemModel::State<AnotherProgramModel>,
 ) -> bool
 {
-    &&& (forall |id: ID| #[trigger] model.disk.requests.contains_key(id)
-        && model.disk.requests[id] is WriteReq
-        && model.disk.requests[id]->to != spec_superblock_addr()
-        ==> journal_projection_uses_live(model))
-    &&& (forall |addr: Address| #[trigger] filled_cache_status(model.program.state.cache).contains_key(addr)
-        && filled_cache_status(model.program.state.cache)[addr] == CachingDiskPageStatus::Dirty
-        ==> model.program.state.journal_metadata_loaded())
-    &&& (forall |addr: Address| #[trigger] filled_cache_status(model.program.state.cache).contains_key(addr)
-        && filled_cache_status(model.program.state.cache)[addr] == CachingDiskPageStatus::Writeback
-        ==> model.program.state.journal_metadata_loaded())
     &&& (forall |addr: Address| #[trigger] filled_cache_status(model.program.state.cache).contains_key(addr) ==> {
         &&& journal_image_dirty_cache_disjoint_at(
             model,
@@ -695,11 +710,36 @@ pub open spec fn journal_dirty_writeback_pages_tracked(
         ==> mini_allocator_allocated_addrs(model.program.state.journal.mini_allocator).contains(addr)
 }
 
+pub open spec fn projected_component_owned_aus(
+    model: SystemModel::State<AnotherProgramModel>,
+) -> Set<AU>
+{
+    AnotherAtomicState::reserved_aus() + journal_projection_aus(model) + branch_projection_aus(model)
+}
+
+pub open spec fn projected_component_disjoint(
+    model: SystemModel::State<AnotherProgramModel>,
+) -> bool
+{
+    &&& AnotherAtomicState::reserved_aus().disjoint(journal_projection_aus(model))
+    &&& AnotherAtomicState::reserved_aus().disjoint(branch_projection_aus(model))
+    &&& journal_projection_aus(model).disjoint(branch_projection_aus(model))
+}
+
+pub open spec fn projected_allocation_wf(
+    model: SystemModel::State<AnotherProgramModel>,
+) -> bool
+{
+    &&& model.program.state.free_aus.disjoint(projected_component_owned_aus(model))
+    &&& projected_component_disjoint(model)
+}
+
 pub open spec fn branch_image_static_domain_i(
     model: SystemModel::State<AnotherProgramModel>,
     image: AbstractSuperblockImage,
 ) -> Set<Address>
 {
+    let pointer_domain = branch_image_projection_addrs_i(model.disk.content, image.branch_roots);
     if model.program.state.superblock_metadata_known()
         && atomic_branch_metadata_loaded_flag(model.program.state.branch)
     {
@@ -710,12 +750,278 @@ pub open spec fn branch_image_static_domain_i(
             },
         );
         if branch_image.loadable() {
-            addresses_in_aus(summary_aus(branch_image.branch_summary()))
+            addresses_in_aus(summary_aus(branch_image.branch_summary())) + pointer_domain
         } else {
-            branch_image.sealed_stack_i().sealed_disk.entries.dom()
+            branch_image.sealed_stack_i().sealed_disk.entries.dom() + pointer_domain
         }
     } else {
+        pointer_domain
+    }
+}
+
+pub proof fn branch_prepared_prefix_image_summary_subset_projection(
+    model: SystemModel::State<AnotherProgramModel>,
+    image: AbstractSuperblockImage,
+)
+    requires
+        branch_component_refinement_inv(model),
+        model.program.state.superblock_metadata_known(),
+        atomic_branch_metadata_loaded_flag(model.program.state.branch),
+        image.branch_roots.len() <= model.program.state.branch.persisted_root_count,
+        image.branch_roots.len() <= model.program.state.branch.image.sealed_roots.len(),
+        model.program.state.branch.image.sealed_roots.subrange(
+            0,
+            image.branch_roots.len() as int,
+        ) == image.branch_roots,
+    ensures
+        {
+            let cdb = branch_caching_disk_state_i(model);
+            let prepared = CachingDiskBranchModule::CachingDiskBranchImage{
+                persistent: cdb.disk.persistent,
+                sealed_roots: image.branch_roots,
+                seq_end: image.branch_seq_end,
+            };
+            &&& prepared.loadable()
+            &&& prepared.stack_wf()
+            &&& summary_aus(prepared.branch_summary())
+                <= summary_aus(branch_projection_summary_i(model))
+        },
+{
+    let cdb = branch_caching_disk_state_i(model);
+    let frozen = CachingDiskBranchModule::CachingDiskBranchFrozenImage{
+        sealed_roots: image.branch_roots,
+        seq_end: image.branch_seq_end,
+    };
+    let prepared = CachingDiskBranchModule::CachingDiskBranchImage{
+        persistent: cdb.disk.persistent,
+        sealed_roots: image.branch_roots,
+        seq_end: image.branch_seq_end,
+    };
+    assert(crash_aware_caching_disk_branch_i(model).ephemeral is Known);
+    assert(crash_aware_caching_disk_branch_i(model).ephemeral->v == cdb);
+    assert(cdb.inv());
+    assert(cdb.metadata_loaded);
+    assert(cdb.branch_summary == cdb.interpreted_branch_summary());
+    assert(branch_projection_summary_i(model) == model.program.state.branch.branch_summary);
+    assert(cdb.branch_summary == model.program.state.branch.branch_summary);
+
+    assert(CachingDiskBranchModule::CachingDiskBranch::State::freeze_prepared(
+        cdb,
+        cdb,
+        CachingDiskBranchModule::CachingDiskBranch::Label::FreezePrepared{image: frozen},
+    )) by {
+        reveal(CachingDiskBranchModule::CachingDiskBranch::State::freeze_prepared);
+    }
+    assert(CachingDiskBranchModule::CachingDiskBranch::State::next_by(
+        cdb,
+        cdb,
+        CachingDiskBranchModule::CachingDiskBranch::Label::FreezePrepared{image: frozen},
+        CachingDiskBranchModule::CachingDiskBranch::Step::freeze_prepared(),
+    )) by {
+        reveal(CachingDiskBranchModule::CachingDiskBranch::State::next_by);
+    }
+    assert(CachingDiskBranchModule::CachingDiskBranch::State::next(
+        cdb,
+        cdb,
+        CachingDiskBranchModule::CachingDiskBranch::Label::FreezePrepared{image: frozen},
+    )) by {
+        reveal(CachingDiskBranchModule::CachingDiskBranch::State::next);
+    }
+
+    cdb.prepared_image_matches_visible_prefix(prepared);
+    assert(summary_aus(prepared.branch_summary())
+        <= summary_aus(cdb.interpreted_branch_summary()));
+}
+
+pub proof fn branch_image_projection_addrs_subset_prepared_prefix(
+    model: SystemModel::State<AnotherProgramModel>,
+    image: AbstractSuperblockImage,
+)
+    requires
+        branch_component_refinement_inv(model),
+        model.program.state.superblock_metadata_known(),
+        atomic_branch_metadata_loaded_flag(model.program.state.branch),
+        image.branch_roots.len() <= model.program.state.branch.persisted_root_count,
+        image.branch_roots.len() <= model.program.state.branch.image.sealed_roots.len(),
+        model.program.state.branch.image.sealed_roots.subrange(
+            0,
+            image.branch_roots.len() as int,
+        ) == image.branch_roots,
+    ensures
         branch_image_projection_addrs_i(model.disk.content, image.branch_roots)
+            <= addresses_in_aus(branch_projection_aus(model)),
+{
+    let cdb = branch_caching_disk_state_i(model);
+    let prepared = CachingDiskBranchModule::CachingDiskBranchImage{
+        persistent: cdb.disk.persistent,
+        sealed_roots: image.branch_roots,
+        seq_end: image.branch_seq_end,
+    };
+    branch_prepared_prefix_image_summary_subset_projection(model, image);
+    let full_nodes = to_branch_nodes(model.disk.content);
+    let prepared_nodes = prepared.persistent_branch_nodes();
+    assert(prepared.stack_wf());
+    assert(prepared.sealed_stack_i().wf(prepared.branch_summary()));
+    assert(set_addrs_disjoint_aus(image.branch_roots.to_set()));
+    prepared.branch_summary_finite();
+    CachingDiskBranchModule::branch_summary_from_reads_up_to_self_ensures(
+        image.branch_roots,
+        prepared_nodes,
+        image.branch_roots.len() as nat,
+    );
+
+    assert forall |addr: Address| #[trigger] branch_image_projection_addrs_i(
+        model.disk.content,
+        image.branch_roots,
+    ).contains(addr)
+        implies addresses_in_aus(branch_projection_aus(model)).contains(addr)
+    by {
+        if (addresses_in_aus(branch_image_summary_aus_i(model.disk.content, image.branch_roots))
+            * Set::new(|addr: Address| addr.wf())).contains(addr) {
+            assert(addr.wf());
+            assert(branch_image_summary_aus_i(model.disk.content, image.branch_roots).contains(addr.au));
+            let idx = choose |i: int| {
+                &&& 0 <= i < image.branch_roots.len()
+                &&& root_summary_read_valid(image.branch_roots[i], full_nodes)
+                &&& root_summary_from_read(image.branch_roots[i], full_nodes).contains(addr.au)
+            };
+            let root = image.branch_roots[idx];
+            assert(root_summary_read_valid(root, prepared_nodes)) by {
+                assert(prepared.loadable());
+            }
+            assert(prepared.persistent.contains_key(root));
+            assert(cdb.disk.persistent.contains_key(root));
+            assert(model.disk.content.contains_key(root));
+            assert(prepared.persistent[root] == model.disk.content[root]);
+            assert(prepared_nodes[root] == full_nodes[root]);
+            if full_nodes[root] is Index {
+                let aux = full_nodes[root]->aux_ptr.unwrap();
+                assert(prepared_nodes[root] is Index);
+                assert(prepared_nodes[root]->aux_ptr == Some(aux));
+                assert(prepared_nodes.contains_key(aux));
+                assert(cdb.disk.persistent.contains_key(aux));
+                assert(model.disk.content.contains_key(aux));
+                assert(prepared.persistent[aux] == model.disk.content[aux]);
+                assert(prepared_nodes[aux] == full_nodes[aux]);
+            }
+            assert(root_summary_from_read(root, prepared_nodes)
+                == root_summary_from_read(root, full_nodes));
+            CachingDiskBranchModule::root_aus_up_to_contains(
+                image.branch_roots,
+                image.branch_roots.len() as nat,
+                idx,
+            );
+            assert(prepared.branch_summary().contains_key(root.au));
+            assert(prepared.branch_summary()[root.au]
+                == root_summary_from_read(root, prepared_nodes));
+            assert(prepared.branch_summary()[root.au].contains(addr.au));
+            assert(prepared.branch_summary().values().contains(prepared.branch_summary()[root.au]));
+            lemma_union_set_of_sets_subset(
+                prepared.branch_summary().values(),
+                prepared.branch_summary()[root.au],
+            );
+            assert(summary_aus(prepared.branch_summary()).contains(addr.au));
+            assert(summary_aus(branch_projection_summary_i(model)).contains(addr.au));
+            assert(branch_projection_aus(model).contains(addr.au));
+        } else if image.branch_roots.to_set().contains(addr) {
+            let idx = choose |i: int| 0 <= i < image.branch_roots.len()
+                && image.branch_roots[i] == addr;
+            CachingDiskBranchModule::root_aus_up_to_contains(
+                image.branch_roots,
+                image.branch_roots.len() as nat,
+                idx,
+            );
+            assert(root_summary_read_valid(addr, prepared_nodes)) by {
+                assert(prepared.loadable());
+            }
+            assert(prepared.sealed_stack_i().wf(prepared.branch_summary()));
+            prepared.sealed_stack_i().root_au_in_summary(prepared.branch_summary(), addr);
+            assert(summary_aus(prepared.branch_summary()).contains(addr.au)) by {
+                assert(prepared.branch_summary().values().contains(prepared.branch_summary()[addr.au]));
+                lemma_union_set_of_sets_subset(
+                    prepared.branch_summary().values(),
+                    prepared.branch_summary()[addr.au],
+                );
+            }
+            assert(summary_aus(branch_projection_summary_i(model)).contains(addr.au));
+            assert(branch_projection_aus(model).contains(addr.au));
+        } else {
+            let root = choose |root: Address| {
+                &&& image.branch_roots.contains(root)
+                &&& full_nodes.contains_key(root)
+                &&& full_nodes[root] is Index
+                &&& full_nodes[root]->aux_ptr is Some
+                &&& #[trigger] full_nodes[root]->aux_ptr.unwrap() == addr
+            };
+            let idx = choose |i: int| 0 <= i < image.branch_roots.len()
+                && image.branch_roots[i] == root;
+            assert(root_summary_read_valid(root, prepared_nodes)) by {
+                assert(prepared.loadable());
+            }
+            assert(prepared.persistent.contains_key(root));
+            assert(cdb.disk.persistent.contains_key(root));
+            assert(model.disk.content.contains_key(root));
+            assert(prepared.persistent[root] == model.disk.content[root]);
+            assert(prepared_nodes[root] == full_nodes[root]);
+            assert(prepared_nodes[root] is Index);
+            assert(prepared_nodes[root]->aux_ptr == Some(addr));
+            prepared.index_root_aux_in_summary(root, addr);
+            assert(summary_aus(prepared.branch_summary()).contains(addr.au));
+            assert(summary_aus(branch_projection_summary_i(model)).contains(addr.au));
+            assert(branch_projection_aus(model).contains(addr.au));
+        }
+    }
+}
+
+pub proof fn branch_image_static_domain_subset_branch_projection(
+    model: SystemModel::State<AnotherProgramModel>,
+    image: AbstractSuperblockImage,
+)
+    requires
+        branch_component_refinement_inv(model),
+        model.program.state.superblock_metadata_known(),
+        atomic_branch_metadata_loaded_flag(model.program.state.branch),
+        image.branch_roots.len() <= model.program.state.branch.persisted_root_count,
+        image.branch_roots.len() <= model.program.state.branch.image.sealed_roots.len(),
+        model.program.state.branch.image.sealed_roots.subrange(
+            0,
+            image.branch_roots.len() as int,
+        ) == image.branch_roots,
+    ensures
+        branch_image_static_domain_i(model, image)
+            <= addresses_in_aus(branch_projection_aus(model)),
+{
+    let cdb = branch_caching_disk_state_i(model);
+    let frozen = CachingDiskBranchModule::CachingDiskBranchFrozenImage{
+        sealed_roots: image.branch_roots,
+        seq_end: image.branch_seq_end,
+    };
+    branch_image_projection_addrs_subset_prepared_prefix(model, image);
+    assert(cdb.inv()) by {
+        assert(crash_aware_caching_disk_branch_i(model).ephemeral is Known);
+        assert(crash_aware_caching_disk_branch_i(model).ephemeral->v == cdb);
+    }
+    cdb.visible_prefix_image_matches_stack(frozen);
+    assert(cdb.metadata_loaded);
+    assert(cdb.branch_summary == cdb.interpreted_branch_summary());
+    assert(branch_projection_summary_i(model) == model.program.state.branch.branch_summary);
+    assert(cdb.branch_summary == model.program.state.branch.branch_summary);
+    let branch_image = cdb.visible_image_for_metadata(frozen);
+    assert(branch_image.loadable());
+    assert(summary_aus(branch_image.branch_summary())
+        <= summary_aus(branch_projection_summary_i(model)));
+
+    assert forall |addr: Address| #[trigger] branch_image_static_domain_i(model, image).contains(addr)
+        implies addresses_in_aus(branch_projection_aus(model)).contains(addr)
+    by {
+        if branch_image_projection_addrs_i(model.disk.content, image.branch_roots).contains(addr) {
+            assert(addresses_in_aus(branch_projection_aus(model)).contains(addr));
+        } else {
+            assert(addresses_in_aus(summary_aus(branch_image.branch_summary())).contains(addr));
+            assert(summary_aus(branch_image.branch_summary()).contains(addr.au));
+            assert(summary_aus(branch_projection_summary_i(model)).contains(addr.au));
+            assert(branch_projection_aus(model).contains(addr.au));
+        }
     }
 }
 
@@ -729,6 +1035,179 @@ pub open spec fn branch_image_request_writeback_disjoint_at(
         && model.disk.requests[id] is WriteReq
         && model.disk.requests[id]->to != spec_superblock_addr()
         ==> !branch_image_static_domain_i(model, image).contains(model.disk.requests[id]->to)
+}
+
+pub proof fn branch_image_static_domain_preserved_by_write_outside(
+    pre: SystemModel::State<AnotherProgramModel>,
+    post: SystemModel::State<AnotherProgramModel>,
+    image: AbstractSuperblockImage,
+    write_addr: Address,
+    data: RawPage,
+)
+    requires
+        post.program.state == pre.program.state,
+        post.disk.content == pre.disk.content.insert(write_addr, data),
+        !branch_image_static_domain_i(pre, image).contains(write_addr),
+        branch_caching_disk_state_i(post).visible_image_for_metadata(
+            CachingDiskBranchModule::CachingDiskBranchFrozenImage{
+                sealed_roots: image.branch_roots,
+                seq_end: image.branch_seq_end,
+            },
+        ) == branch_caching_disk_state_i(pre).visible_image_for_metadata(
+            CachingDiskBranchModule::CachingDiskBranchFrozenImage{
+                sealed_roots: image.branch_roots,
+                seq_end: image.branch_seq_end,
+            },
+        ),
+    ensures
+        branch_image_projection_addrs_i(post.disk.content, image.branch_roots)
+            == branch_image_projection_addrs_i(pre.disk.content, image.branch_roots),
+        branch_image_static_domain_i(post, image) == branch_image_static_domain_i(pre, image),
+{
+    let pre_nodes = to_branch_nodes(pre.disk.content);
+    let post_nodes = to_branch_nodes(post.disk.content);
+    assert(!branch_image_projection_addrs_i(pre.disk.content, image.branch_roots).contains(write_addr)) by {
+        assert(!branch_image_static_domain_i(pre, image).contains(write_addr));
+    }
+    assert forall |i: int| #![trigger image.branch_roots[i]]
+        0 <= i < image.branch_roots.len()
+        implies {
+            &&& root_summary_read_valid(image.branch_roots[i], pre_nodes)
+                <==> root_summary_read_valid(image.branch_roots[i], post_nodes)
+            &&& root_summary_read_valid(image.branch_roots[i], pre_nodes) ==>
+                root_summary_from_read(image.branch_roots[i], pre_nodes)
+                    == root_summary_from_read(image.branch_roots[i], post_nodes)
+        }
+    by {
+        let root = image.branch_roots[i];
+        assert(image.branch_roots.contains(root));
+        assert(branch_image_projection_addrs_i(pre.disk.content, image.branch_roots).contains(root));
+        assert(root != write_addr);
+        if root_summary_read_valid(root, pre_nodes) {
+            assert(pre_nodes.contains_key(root));
+            assert(pre.disk.content.contains_key(root));
+            assert(post.disk.content.contains_key(root));
+            assert(post.disk.content[root] == pre.disk.content[root]);
+            assert(pre_nodes[root]
+                == crate::marshalling::IBranchNodeFormat_v::raw_page_to_branch_node(pre.disk.content[root]));
+            assert(post_nodes[root]
+                == crate::marshalling::IBranchNodeFormat_v::raw_page_to_branch_node(post.disk.content[root]));
+            assert(post_nodes[root] == pre_nodes[root]);
+            if pre_nodes[root] is Index {
+                let aux = pre_nodes[root]->aux_ptr.unwrap();
+                assert(branch_image_projection_addrs_i(pre.disk.content, image.branch_roots).contains(aux));
+                assert(aux != write_addr);
+                assert(pre_nodes.contains_key(aux));
+                assert(pre.disk.content.contains_key(aux));
+                assert(post.disk.content.contains_key(aux));
+                assert(post.disk.content[aux] == pre.disk.content[aux]);
+                assert(pre_nodes[aux]
+                    == crate::marshalling::IBranchNodeFormat_v::raw_page_to_branch_node(pre.disk.content[aux]));
+                assert(post_nodes[aux]
+                    == crate::marshalling::IBranchNodeFormat_v::raw_page_to_branch_node(post.disk.content[aux]));
+                assert(post_nodes[aux] == pre_nodes[aux]);
+            }
+        }
+        if root_summary_read_valid(root, post_nodes) {
+            assert(post_nodes.contains_key(root));
+            assert(post.disk.content.contains_key(root));
+            assert(pre.disk.content.contains_key(root));
+            assert(post.disk.content[root] == pre.disk.content[root]);
+            assert(pre_nodes[root]
+                == crate::marshalling::IBranchNodeFormat_v::raw_page_to_branch_node(pre.disk.content[root]));
+            assert(post_nodes[root]
+                == crate::marshalling::IBranchNodeFormat_v::raw_page_to_branch_node(post.disk.content[root]));
+            assert(post_nodes[root] == pre_nodes[root]);
+            if post_nodes[root] is Index {
+                let aux = post_nodes[root]->aux_ptr.unwrap();
+                assert(pre_nodes[root] is Index);
+                assert(pre_nodes[root]->aux_ptr == Some(aux));
+                assert(branch_image_projection_addrs_i(pre.disk.content, image.branch_roots).contains(aux));
+                assert(aux != write_addr);
+                assert(post_nodes.contains_key(aux));
+                assert(post.disk.content.contains_key(aux));
+                assert(pre.disk.content.contains_key(aux));
+                assert(post.disk.content[aux] == pre.disk.content[aux]);
+                assert(pre_nodes[aux]
+                    == crate::marshalling::IBranchNodeFormat_v::raw_page_to_branch_node(pre.disk.content[aux]));
+                assert(post_nodes[aux]
+                    == crate::marshalling::IBranchNodeFormat_v::raw_page_to_branch_node(post.disk.content[aux]));
+                assert(post_nodes[aux] == pre_nodes[aux]);
+            }
+        }
+    }
+    assert(branch_image_summary_aus_i(post.disk.content, image.branch_roots)
+        =~= branch_image_summary_aus_i(pre.disk.content, image.branch_roots)) by {
+        assert forall |au: AU| #[trigger] branch_image_summary_aus_i(post.disk.content, image.branch_roots).contains(au)
+            implies branch_image_summary_aus_i(pre.disk.content, image.branch_roots).contains(au) by {
+            let i = choose |i: int| {
+                &&& 0 <= i < image.branch_roots.len()
+                &&& root_summary_read_valid(image.branch_roots[i], post_nodes)
+                &&& root_summary_from_read(image.branch_roots[i], post_nodes).contains(au)
+            };
+            assert(root_summary_read_valid(image.branch_roots[i], pre_nodes));
+            assert(root_summary_from_read(image.branch_roots[i], pre_nodes)
+                == root_summary_from_read(image.branch_roots[i], post_nodes));
+        }
+        assert forall |au: AU| #[trigger] branch_image_summary_aus_i(pre.disk.content, image.branch_roots).contains(au)
+            implies branch_image_summary_aus_i(post.disk.content, image.branch_roots).contains(au) by {
+            let i = choose |i: int| {
+                &&& 0 <= i < image.branch_roots.len()
+                &&& root_summary_read_valid(image.branch_roots[i], pre_nodes)
+                &&& root_summary_from_read(image.branch_roots[i], pre_nodes).contains(au)
+            };
+            assert(root_summary_read_valid(image.branch_roots[i], post_nodes));
+            assert(root_summary_from_read(image.branch_roots[i], pre_nodes)
+                == root_summary_from_read(image.branch_roots[i], post_nodes));
+        }
+    }
+    assert(branch_image_projection_addrs_i(post.disk.content, image.branch_roots)
+        =~= branch_image_projection_addrs_i(pre.disk.content, image.branch_roots)) by {
+        assert forall |addr: Address| #[trigger] branch_image_projection_addrs_i(post.disk.content, image.branch_roots).contains(addr)
+            implies branch_image_projection_addrs_i(pre.disk.content, image.branch_roots).contains(addr) by {
+            if (addresses_in_aus(branch_image_summary_aus_i(post.disk.content, image.branch_roots))
+                * Set::new(|addr: Address| addr.wf())).contains(addr) {
+                assert(branch_image_summary_aus_i(pre.disk.content, image.branch_roots).contains(addr.au));
+            } else {
+                if image.branch_roots.to_set().contains(addr) {
+                    assert(image.branch_roots.contains(addr));
+                } else {
+                    let root = choose |root: Address| {
+                        &&& image.branch_roots.contains(root)
+                        &&& post_nodes.contains_key(root)
+                        &&& post_nodes[root] is Index
+                        &&& post_nodes[root]->aux_ptr is Some
+                        &&& #[trigger] post_nodes[root]->aux_ptr.unwrap() == addr
+                    };
+                    let idx = choose |i: int| 0 <= i < image.branch_roots.len()
+                        && image.branch_roots[i] == root;
+                    assert(post_nodes[root] == pre_nodes[root]);
+                }
+            }
+        }
+        assert forall |addr: Address| #[trigger] branch_image_projection_addrs_i(pre.disk.content, image.branch_roots).contains(addr)
+            implies branch_image_projection_addrs_i(post.disk.content, image.branch_roots).contains(addr) by {
+            if (addresses_in_aus(branch_image_summary_aus_i(pre.disk.content, image.branch_roots))
+                * Set::new(|addr: Address| addr.wf())).contains(addr) {
+                assert(branch_image_summary_aus_i(post.disk.content, image.branch_roots).contains(addr.au));
+            } else {
+                if image.branch_roots.to_set().contains(addr) {
+                    assert(image.branch_roots.contains(addr));
+                } else {
+                    let root = choose |root: Address| {
+                        &&& image.branch_roots.contains(root)
+                        &&& pre_nodes.contains_key(root)
+                        &&& pre_nodes[root] is Index
+                        &&& pre_nodes[root]->aux_ptr is Some
+                        &&& #[trigger] pre_nodes[root]->aux_ptr.unwrap() == addr
+                    };
+                    let idx = choose |i: int| 0 <= i < image.branch_roots.len()
+                        && image.branch_roots[i] == root;
+                    assert(post_nodes[root] == pre_nodes[root]);
+                }
+            }
+        }
+    }
 }
 
 pub open spec fn branch_image_writeback_disjoint(
@@ -750,6 +1229,155 @@ pub open spec fn branch_image_writeback_disjoint(
     }
 }
 
+pub proof fn branch_caching_disk_i_inv_from_cache_disk_coupling(
+    model: SystemModel::State<AnotherProgramModel>,
+)
+    requires
+        model.program.state.cache.inv(),
+        another_atomic_cache_disk_coupling(model.program.state, model.disk),
+        branch_projected_aus_are_owned_data(model),
+    ensures
+        branch_caching_disk_i(model).inv(),
+{
+    let cd = branch_caching_disk_i(model);
+    assert(cd.status.dom() =~= cd.cache.dom()) by {
+        assert forall |addr: Address| #[trigger] cd.status.dom().contains(addr)
+            implies cd.cache.dom().contains(addr) by {
+            assert(branch_disk_status_i(model).contains_key(addr));
+            assert(project_cache_status_by_addrs(
+                model.program.state.cache,
+                branch_backing_projection_addrs(model),
+            ).contains_key(addr));
+            assert(branch_backing_projection_addrs(model).contains(addr));
+            assert(filled_cache_status(model.program.state.cache).contains_key(addr));
+            assert(cache_filled_addr(model.program.state.cache, addr));
+            assert(filled_cache_pages(model.program.state.cache).contains_key(addr));
+            assert(project_cache_pages_by_addrs(
+                model.program.state.cache,
+                branch_backing_projection_addrs(model),
+            ).contains_key(addr));
+        }
+        assert forall |addr: Address| #[trigger] cd.cache.dom().contains(addr)
+            implies cd.status.dom().contains(addr) by {
+            assert(branch_disk_cache_i(model).contains_key(addr));
+            assert(project_cache_pages_by_addrs(
+                model.program.state.cache,
+                branch_backing_projection_addrs(model),
+            ).contains_key(addr));
+            assert(branch_backing_projection_addrs(model).contains(addr));
+            assert(filled_cache_pages(model.program.state.cache).contains_key(addr));
+            assert(cache_filled_addr(model.program.state.cache, addr));
+            assert(model.program.state.cache.lookup_map.contains_key(addr));
+            assert(model.program.state.cache.status_map.contains_key(
+                model.program.state.cache.lookup_map[addr],
+            ));
+            assert(filled_cache_status(model.program.state.cache).contains_key(addr));
+            assert(project_cache_status_by_addrs(
+                model.program.state.cache,
+                branch_backing_projection_addrs(model),
+            ).contains_key(addr));
+        }
+    }
+    assert forall |addr: Address| #[trigger] cd.status.contains_key(addr)
+        && cd.status[addr] == CachingDiskPageStatus::Clean
+        implies {
+            &&& cd.persistent.contains_key(addr)
+            &&& cd.persistent[addr] == cd.cache[addr]
+        }
+    by {
+        assert(branch_disk_status_i(model).contains_key(addr));
+        assert(project_cache_status_by_addrs(
+            model.program.state.cache,
+            branch_backing_projection_addrs(model),
+        ).contains_key(addr));
+        assert(filled_cache_status(model.program.state.cache).contains_key(addr));
+        assert(filled_cache_status(model.program.state.cache)[addr] == CachingDiskPageStatus::Clean);
+        assert(branch_backing_projection_addrs(model).contains(addr));
+        assert(addr != spec_superblock_addr()) by {
+            if addr == spec_superblock_addr() {
+                assert(AnotherAtomicState::reserved_aus().contains(addr.au));
+                assert(branch_projected_aus_are_owned_data(model));
+                assert(!branch_projection_aus(model).contains(addr.au));
+                if branch_backing_projection_addrs(model).contains(addr) {
+                    assert(branch_projection_aus(model).contains(addr.au));
+                }
+            }
+        }
+        assert(another_atomic_cache_disk_coupling(model.program.state, model.disk));
+        assert(model.disk.content.contains_key(addr));
+        assert(model.disk.content[addr] == cache_filled_page(model.program.state.cache, addr));
+        assert(branch_persistent_projection_addrs(model).contains(addr)) by {
+            assert(branch_backing_projection_addrs(model).contains(addr));
+            assert(model.disk.content.contains_key(addr));
+        }
+        assert(branch_disk_persistent_i(model).contains_key(addr));
+        assert(branch_disk_cache_i(model).contains_key(addr));
+        assert(cd.persistent[addr] == model.disk.content[addr]);
+        assert(cd.cache[addr] == cache_filled_page(model.program.state.cache, addr));
+    }
+}
+
+pub proof fn caching_disk_i_by_domains_inv_from_clean_cache_coupling(
+    cache: Cache::State,
+    disk: AsyncDisk::State,
+    cache_addrs: Set<Address>,
+    persistent_addrs: Set<Address>,
+)
+    requires
+        cache.inv(),
+        forall |addr: Address| #[trigger] filled_cache_status(cache).contains_key(addr)
+            && filled_cache_status(cache)[addr] == CachingDiskPageStatus::Clean
+            && cache_addrs.contains(addr)
+            ==> {
+                &&& disk.content.contains_key(addr)
+                &&& disk.content[addr] == cache_filled_page(cache, addr)
+                &&& persistent_addrs.contains(addr)
+            },
+    ensures
+        caching_disk_i_by_domains(cache, disk, cache_addrs, persistent_addrs).inv(),
+{
+    let cd = caching_disk_i_by_domains(cache, disk, cache_addrs, persistent_addrs);
+    assert(cd.status.dom() =~= cd.cache.dom()) by {
+        assert forall |addr: Address| #[trigger] cd.status.dom().contains(addr)
+            implies cd.cache.dom().contains(addr) by {
+            assert(project_cache_status_by_addrs(cache, cache_addrs).contains_key(addr));
+            assert(cache_addrs.contains(addr));
+            assert(filled_cache_status(cache).contains_key(addr));
+            assert(cache_filled_addr(cache, addr));
+            assert(filled_cache_pages(cache).contains_key(addr));
+            assert(project_cache_pages_by_addrs(cache, cache_addrs).contains_key(addr));
+        }
+        assert forall |addr: Address| #[trigger] cd.cache.dom().contains(addr)
+            implies cd.status.dom().contains(addr) by {
+            assert(project_cache_pages_by_addrs(cache, cache_addrs).contains_key(addr));
+            assert(cache_addrs.contains(addr));
+            assert(filled_cache_pages(cache).contains_key(addr));
+            assert(cache_filled_addr(cache, addr));
+            assert(filled_cache_status(cache).contains_key(addr));
+            assert(project_cache_status_by_addrs(cache, cache_addrs).contains_key(addr));
+        }
+    }
+    assert forall |addr: Address| #[trigger] cd.status.contains_key(addr)
+        && cd.status[addr] == CachingDiskPageStatus::Clean
+        implies {
+            &&& cd.persistent.contains_key(addr)
+            &&& cd.persistent[addr] == cd.cache[addr]
+        }
+    by {
+        assert(project_cache_status_by_addrs(cache, cache_addrs).contains_key(addr));
+        assert(cache_addrs.contains(addr));
+        assert(filled_cache_status(cache).contains_key(addr));
+        assert(filled_cache_status(cache)[addr] == CachingDiskPageStatus::Clean);
+        assert(disk.content.contains_key(addr));
+        assert(disk.content[addr] == cache_filled_page(cache, addr));
+        assert(persistent_addrs.contains(addr));
+        assert(project_persistent_by_addrs(disk, persistent_addrs).contains_key(addr));
+        assert(cd.persistent.contains_key(addr));
+        assert(cd.persistent[addr] == disk.content[addr]);
+        assert(cd.cache[addr] == cache_filled_page(cache, addr));
+    }
+}
+
 pub open spec fn another_atomic_in_flight_superblock_landed(
     atomic: AnotherAtomicState,
     disk: AsyncDisk::State,
@@ -761,29 +1389,130 @@ pub open spec fn another_atomic_in_flight_superblock_landed(
         == marshal_abstract_superblock(atomic.atomic_inflight_superblock_i())
 }
 
-pub open spec fn another_atomic_disk_refinement_invariants(
+pub open spec fn another_atomic_superblockstore_i(
+    model: SystemModel::State<AnotherProgramModel>,
+) -> SuperblockStore::State
+{
+    let persistent = if model.disk.content.contains_key(spec_superblock_addr()) {
+        model.disk.content[spec_superblock_addr()]
+    } else {
+        arbitrary()
+    };
+    let landed = another_atomic_in_flight_superblock_landed(model.program.state, model.disk);
+    let pending_raw = if model.program.state.in_flight is Some {
+        marshal_abstract_superblock(model.program.state.atomic_inflight_superblock_i())
+    } else {
+        arbitrary()
+    };
+    SuperblockStore::State{
+        persistent,
+        in_flight: if another_atomic_superblock_write_pending(model) && !landed {
+            Option::Some(pending_raw)
+        } else {
+            Option::None
+        },
+        landed,
+    }
+}
+
+pub open spec fn another_atomic_caching_disk_system_i(
+    model: SystemModel::State<AnotherProgramModel>,
+) -> CrashAwareCachingDiskSystem::State
+{
+    CrashAwareCachingDiskSystem::State{
+        journal: crash_aware_caching_disk_journal_i(model),
+        branch: crash_aware_caching_disk_branch_i(model),
+        progress: requests_replies_i(model.requests, model.replies),
+        sync_reqs: model.program.state.sync_req_map,
+        superblockstore: another_atomic_superblockstore_i(model),
+        free_aus: model.program.state.free_aus,
+    }
+}
+
+pub open spec fn another_atomic_native_inv(
     model: SystemModel::State<AnotherProgramModel>,
 ) -> bool
 {
     &&& model.program.state.wf()
     &&& model.disk.inv()
     &&& async_disk_superblock_page_wf(model.disk.content)
+}
+
+pub open spec fn another_atomic_shared_cache_disk_inv(
+    model: SystemModel::State<AnotherProgramModel>,
+) -> bool
+{
     &&& another_atomic_model_refinement_invariants(model.program.state)
     &&& another_atomic_cache_disk_coupling(model.program.state, model.disk)
     &&& another_atomic_superblock_disk_coupling(model.program.state, model.disk)
     &&& another_atomic_superblock_write_request_wf(model.program.state, model.disk)
     &&& another_atomic_cache_disk_request_wf(model.program.state, model.disk)
     &&& another_atomic_inflight_cache_id_disjoint(model.program.state)
+    &&& projected_allocation_wf(model)
     &&& journal_image_writeback_disjoint(model)
     &&& journal_dirty_writeback_pages_tracked(model)
     &&& branch_image_writeback_disjoint(model)
+}
+
+pub open spec fn another_atomic_component_refinement_inv(
+    model: SystemModel::State<AnotherProgramModel>,
+) -> bool
+{
     &&& journal_component_refinement_inv(model)
     &&& branch_component_refinement_inv(model)
+}
+
+pub open spec fn another_atomic_component_projection_ownership_inv(
+    model: SystemModel::State<AnotherProgramModel>,
+) -> bool
+{
     &&& journal_projected_aus_are_component_data(model)
     &&& branch_projected_aus_are_owned_data(model)
+}
+
+pub open spec fn another_atomic_component_domain_target_inv(
+    model: SystemModel::State<AnotherProgramModel>,
+) -> bool
+{
+    &&& journal_component_domains_within_owned_aus(model)
+    &&& branch_component_domains_within_owned_aus(model)
+}
+
+pub open spec fn another_atomic_superblockstore_refinement_inv(
+    model: SystemModel::State<AnotherProgramModel>,
+) -> bool
+{
+    another_atomic_superblockstore_i(model).inv()
+}
+
+pub open spec fn another_atomic_legacy_refinement_invariants(
+    model: SystemModel::State<AnotherProgramModel>,
+) -> bool
+{
+    &&& another_atomic_native_inv(model)
+    &&& another_atomic_shared_cache_disk_inv(model)
+    &&& another_atomic_component_refinement_inv(model)
+    &&& another_atomic_component_projection_ownership_inv(model)
     &&& branch_loaded_metadata_agrees_with_visible(model)
     &&& journal_inflight_projection_wf(model)
     &&& another_atomic_recovery_image_matches_disk(model)
+}
+
+pub open spec fn another_atomic_to_caching_disk_system_refinement_inv(
+    model: SystemModel::State<AnotherProgramModel>,
+) -> bool
+{
+    &&& another_atomic_legacy_refinement_invariants(model)
+    &&& another_atomic_component_domain_target_inv(model)
+    &&& another_atomic_superblockstore_refinement_inv(model)
+    &&& another_atomic_caching_disk_system_i(model).inv()
+}
+
+pub open spec fn another_atomic_disk_refinement_invariants(
+    model: SystemModel::State<AnotherProgramModel>,
+) -> bool
+{
+    another_atomic_legacy_refinement_invariants(model)
 }
 
 pub proof fn another_atomic_disk_refinement_invariants_initialize(
@@ -919,33 +1648,17 @@ pub proof fn another_atomic_disk_refinement_invariants_initialize(
             assert forall |addr: Address|
                 #[trigger] branch_image_projection_addrs_i(model.disk.content, image.branch_roots).contains(addr)
                 implies false by {
-                assert(sealed_roots_pointer_domain(model.disk.content, image.branch_roots).contains(addr));
-                if exists |root: Address, path: Seq<int>| {
-                    &&& image.branch_roots.contains(root)
-                    &&& #[trigger] crate::implementation::AnotherAtomicBranchRefinement_v::branch_child_path_valid(
-                        to_branch_nodes(model.disk.content),
-                        root,
-                        path,
-                    )
-                    &&& crate::implementation::AnotherAtomicBranchRefinement_v::branch_child_path_target(
-                        to_branch_nodes(model.disk.content),
-                        root,
-                        path,
-                    ) == addr
-                } {
-                    let (root, path) = choose |root: Address, path: Seq<int>| {
-                        &&& image.branch_roots.contains(root)
-                        &&& #[trigger] crate::implementation::AnotherAtomicBranchRefinement_v::branch_child_path_valid(
-                            to_branch_nodes(model.disk.content),
-                            root,
-                            path,
-                        )
-                        &&& crate::implementation::AnotherAtomicBranchRefinement_v::branch_child_path_target(
-                            to_branch_nodes(model.disk.content),
-                            root,
-                            path,
-                        ) == addr
+                assert(image.branch_roots.len() == 0);
+                if addresses_in_aus(branch_image_summary_aus_i(model.disk.content, image.branch_roots))
+                    .contains(addr) {
+                    let au = addr.au;
+                    let idx = choose |i: int| {
+                        &&& 0 <= i < image.branch_roots.len()
+                        &&& root_summary_read_valid(image.branch_roots[i], to_branch_nodes(model.disk.content))
+                        &&& root_summary_from_read(image.branch_roots[i], to_branch_nodes(model.disk.content)).contains(au)
                     };
+                    assert(false);
+                } else if image.branch_roots.to_set().contains(addr) {
                     assert(false);
                 } else {
                     let root = choose |root: Address| {
@@ -1405,6 +2118,47 @@ pub proof fn superblock_write_request_wf_preserved_by_unchanged_commit_component
     }
 }
 
+pub proof fn superblock_write_request_wf_preserved_by_no_inflight(
+    pre_atomic: AnotherAtomicState,
+    post_atomic: AnotherAtomicState,
+    disk: AsyncDisk::State,
+)
+    requires
+        another_atomic_superblock_write_request_wf(pre_atomic, disk),
+        pre_atomic.in_flight is None,
+        post_atomic.in_flight is None,
+    ensures
+        another_atomic_superblock_write_request_wf(post_atomic, disk),
+{
+    assert forall |id: ID| #![trigger disk.requests.contains_key(id)]
+        disk.requests.contains_key(id)
+        && disk.requests[id] is WriteReq
+        && disk.requests[id]->to == spec_superblock_addr()
+        implies {
+            &&& post_atomic.client_ready()
+            &&& post_atomic.in_flight is Some
+            &&& post_atomic.in_flight.unwrap().req_id == id
+            &&& disk.requests[id]->data
+                == marshal_abstract_superblock(post_atomic.atomic_inflight_superblock_i())
+            &&& post_atomic.atomic_inflight_superblock_i().wf()
+            &&& AtomicJournalState::State::next(
+                post_atomic.journal,
+                post_atomic.journal,
+                AtomicJournalState::Label::CommitPrepared,
+            )
+            &&& AtomicBranchState::State::next(
+                post_atomic.branch,
+                post_atomic.branch,
+                AtomicBranchState::Label::CommitPrepared,
+            )
+        }
+    by {
+        assert(another_atomic_superblock_write_request_wf(pre_atomic, disk));
+        assert(pre_atomic.in_flight is Some);
+        assert(false);
+    }
+}
+
 pub proof fn atomic_inflight_superblock_unchanged(
     pre_atomic: AnotherAtomicState,
     post_atomic: AnotherAtomicState,
@@ -1684,99 +2438,6 @@ pub proof fn superblock_write_request_wf_when_not_client_ready(
     }
 }
 
-pub proof fn branch_component_refinement_inv_preserved_by_unchanged_branch_projection(
-    pre: SystemModel::State<AnotherProgramModel>,
-    post: SystemModel::State<AnotherProgramModel>,
-)
-    requires
-        branch_component_refinement_inv(pre),
-        post.program.state.wf(),
-        post.disk == pre.disk,
-        post.program.state.cache == pre.program.state.cache,
-        pre.program.state.in_flight is Some ==>
-            post.program.state.atomic_inflight_superblock_i()
-                == pre.program.state.atomic_inflight_superblock_i(),
-        post.program.state.branch == pre.program.state.branch,
-        post.program.state.in_flight == pre.program.state.in_flight,
-        post.program.state.persistent_image == pre.program.state.persistent_image,
-    ensures
-        branch_component_refinement_inv(post),
-{
-    assert(async_disk_superblock_page_wf(post.disk.content));
-    assert(atomic_persistent_superblock_image_i(post)
-        == atomic_persistent_superblock_image_i(pre));
-    assert(atomic_branch_metadata_loaded_flag(post.program.state.branch)
-        == atomic_branch_metadata_loaded_flag(pre.program.state.branch));
-    assert(branch_projection_summary_i(post) == branch_projection_summary_i(pre));
-    assert(branch_projection_addrs(post) =~= branch_projection_addrs(pre)) by {
-        assert_maps_equal!(
-            branch_projection_summary_i(post),
-            branch_projection_summary_i(pre),
-            au => { }
-        );
-    }
-    assert(branch_persistent_projection_addrs(post)
-        =~= branch_persistent_projection_addrs(pre)) by {
-        assert forall |addr: Address|
-            #[trigger] branch_persistent_projection_addrs(post).contains(addr)
-                <==> branch_persistent_projection_addrs(pre).contains(addr)
-        by {
-            assert(branch_projection_addrs(post).contains(addr)
-                <==> branch_projection_addrs(pre).contains(addr));
-            if post.disk.content.contains_key(addr) {
-                assert(pre.disk.content.contains_key(addr));
-            }
-            if pre.disk.content.contains_key(addr) {
-                assert(post.disk.content.contains_key(addr));
-            }
-        }
-    }
-    assert(branch_disk_cache_i(post) == branch_disk_cache_i(pre)) by {
-        assert_maps_equal!(
-            branch_disk_cache_i(post),
-            branch_disk_cache_i(pre),
-            addr => {
-                assert(branch_projection_addrs(post).contains(addr)
-                    <==> branch_projection_addrs(pre).contains(addr));
-            }
-        );
-    }
-    assert(branch_disk_status_i(post) == branch_disk_status_i(pre)) by {
-        assert_maps_equal!(
-            branch_disk_status_i(post),
-            branch_disk_status_i(pre),
-            addr => {
-                assert(branch_projection_addrs(post).contains(addr)
-                    <==> branch_projection_addrs(pre).contains(addr));
-            }
-        );
-    }
-    assert(branch_disk_persistent_i(post) == branch_disk_persistent_i(pre)) by {
-        assert_maps_equal!(
-            branch_disk_persistent_i(post),
-            branch_disk_persistent_i(pre),
-            addr => {
-                assert(branch_persistent_projection_addrs(post).contains(addr)
-                    <==> branch_persistent_projection_addrs(pre).contains(addr));
-            }
-        );
-    }
-    assert(branch_caching_disk_i(post) == branch_caching_disk_i(pre));
-    assert(branch_caching_disk_state_i(post) == branch_caching_disk_state_i(pre));
-    assert(persistent_branch_image_i(post) == persistent_branch_image_i(pre));
-    assert(frozen_branch_image_i(post) == frozen_branch_image_i(pre));
-    assert(atomic_superblock_prepared_i(post) == atomic_superblock_prepared_i(pre)) by {
-        if pre.program.state.in_flight is Some {
-            assert(post.program.state.in_flight is Some);
-        }
-        assert(post.program.state.atomic_inflight_superblock_i()
-            == pre.program.state.atomic_inflight_superblock_i());
-    }
-    assert(crash_aware_caching_disk_branch_i(post)
-        == crash_aware_caching_disk_branch_i(pre));
-    assert(branch_component_refinement_inv(post));
-}
-
 pub proof fn persistent_journal_image_projection_domain_materialized(
     model: SystemModel::State<AnotherProgramModel>,
 )
@@ -2016,10 +2677,13 @@ pub proof fn cache_disk_request_wf_preserved_by_internal(
                     let req = post_disk.requests[id];
                     let addr = req.addr();
                     &&& atomic.outstanding_cache_reqs.contains_key(id)
-                    &&& atomic.outstanding_cache_reqs[id] == addr
-                    &&& req is WriteReq ==> {
-                        &&& cache_filled_addr(atomic.cache, req->to)
-                        &&& cache_filled_page(atomic.cache, req->to) == req->data
+	                    &&& atomic.outstanding_cache_reqs[id] == addr
+	                    &&& req is WriteReq ==> {
+	                        &&& atomic.journal_metadata_loaded()
+	                        &&& (atomic.recovery_state is MetadataLoadComplete
+	                            || atomic.recovery_state is RecoveryComplete)
+	                        &&& cache_filled_addr(atomic.cache, req->to)
+	                        &&& cache_filled_page(atomic.cache, req->to) == req->data
                         &&& filled_cache_status(atomic.cache).contains_key(req->to)
                         &&& filled_cache_status(atomic.cache)[req->to]
                             == CachingDiskPageStatus::Writeback
@@ -2039,10 +2703,13 @@ pub proof fn cache_disk_request_wf_preserved_by_internal(
                     let req = post_disk.requests[id];
                     let addr = req.addr();
                     &&& atomic.outstanding_cache_reqs.contains_key(id)
-                    &&& atomic.outstanding_cache_reqs[id] == addr
-                    &&& req is WriteReq ==> {
-                        &&& cache_filled_addr(atomic.cache, req->to)
-                        &&& cache_filled_page(atomic.cache, req->to) == req->data
+	                    &&& atomic.outstanding_cache_reqs[id] == addr
+	                    &&& req is WriteReq ==> {
+	                        &&& atomic.journal_metadata_loaded()
+	                        &&& (atomic.recovery_state is MetadataLoadComplete
+	                            || atomic.recovery_state is RecoveryComplete)
+	                        &&& cache_filled_addr(atomic.cache, req->to)
+	                        &&& cache_filled_page(atomic.cache, req->to) == req->data
                         &&& filled_cache_status(atomic.cache).contains_key(req->to)
                         &&& filled_cache_status(atomic.cache)[req->to]
                             == CachingDiskPageStatus::Writeback
@@ -2065,10 +2732,62 @@ pub proof fn cache_disk_request_wf_preserved_by_unchanged(
     post_atomic: AnotherAtomicState,
     disk: AsyncDisk::State,
 )
+	    requires
+	        another_atomic_cache_disk_request_wf(pre_atomic, disk),
+	        post_atomic.cache == pre_atomic.cache,
+	        post_atomic.journal_metadata_loaded() == pre_atomic.journal_metadata_loaded(),
+	        post_atomic.recovery_state == pre_atomic.recovery_state,
+	        post_atomic.outstanding_cache_reqs == pre_atomic.outstanding_cache_reqs,
+    ensures
+        another_atomic_cache_disk_request_wf(post_atomic, disk),
+{
+    assert forall |id: ID| #[trigger] disk.requests.contains_key(id)
+        && disk.requests[id].addr() != spec_superblock_addr()
+        implies {
+            let req = disk.requests[id];
+            let addr = req.addr();
+            &&& post_atomic.outstanding_cache_reqs.contains_key(id)
+	            &&& post_atomic.outstanding_cache_reqs[id] == addr
+	            &&& req is WriteReq ==> {
+	                &&& post_atomic.journal_metadata_loaded()
+	                &&& (post_atomic.recovery_state is MetadataLoadComplete
+	                    || post_atomic.recovery_state is RecoveryComplete)
+	                &&& cache_filled_addr(post_atomic.cache, req->to)
+                &&& cache_filled_page(post_atomic.cache, req->to) == req->data
+                &&& filled_cache_status(post_atomic.cache).contains_key(req->to)
+                &&& filled_cache_status(post_atomic.cache)[req->to]
+                    == CachingDiskPageStatus::Writeback
+            }
+        }
+	    by {
+	        let req = disk.requests[id];
+	        if req is WriteReq {
+	            assert(pre_atomic.journal_metadata_loaded());
+	            assert(pre_atomic.recovery_state is MetadataLoadComplete
+	                || pre_atomic.recovery_state is RecoveryComplete);
+	            assert(post_atomic.recovery_state is MetadataLoadComplete
+	                || post_atomic.recovery_state is RecoveryComplete);
+	        }
+	    }
+}
+
+pub proof fn cache_disk_request_wf_preserved_by_unchanged_with_post_write_ready(
+    pre_atomic: AnotherAtomicState,
+    post_atomic: AnotherAtomicState,
+    disk: AsyncDisk::State,
+)
     requires
         another_atomic_cache_disk_request_wf(pre_atomic, disk),
         post_atomic.cache == pre_atomic.cache,
         post_atomic.outstanding_cache_reqs == pre_atomic.outstanding_cache_reqs,
+        forall |id: ID| #[trigger] disk.requests.contains_key(id)
+            && disk.requests[id].addr() != spec_superblock_addr()
+            && disk.requests[id] is WriteReq
+            ==> {
+                &&& post_atomic.journal_metadata_loaded()
+                &&& (post_atomic.recovery_state is MetadataLoadComplete
+                    || post_atomic.recovery_state is RecoveryComplete)
+            },
     ensures
         another_atomic_cache_disk_request_wf(post_atomic, disk),
 {
@@ -2080,6 +2799,9 @@ pub proof fn cache_disk_request_wf_preserved_by_unchanged(
             &&& post_atomic.outstanding_cache_reqs.contains_key(id)
             &&& post_atomic.outstanding_cache_reqs[id] == addr
             &&& req is WriteReq ==> {
+                &&& post_atomic.journal_metadata_loaded()
+                &&& (post_atomic.recovery_state is MetadataLoadComplete
+                    || post_atomic.recovery_state is RecoveryComplete)
                 &&& cache_filled_addr(post_atomic.cache, req->to)
                 &&& cache_filled_page(post_atomic.cache, req->to) == req->data
                 &&& filled_cache_status(post_atomic.cache).contains_key(req->to)
@@ -2087,7 +2809,15 @@ pub proof fn cache_disk_request_wf_preserved_by_unchanged(
                     == CachingDiskPageStatus::Writeback
             }
         }
-    by { }
+    by {
+        let req = disk.requests[id];
+        assert(another_atomic_cache_disk_request_wf(pre_atomic, disk));
+        if req is WriteReq {
+            assert(post_atomic.journal_metadata_loaded());
+            assert(post_atomic.recovery_state is MetadataLoadComplete
+                || post_atomic.recovery_state is RecoveryComplete);
+        }
+    }
 }
 
 pub proof fn cache_disk_request_wf_preserved_by_cache_internal(
@@ -2097,9 +2827,11 @@ pub proof fn cache_disk_request_wf_preserved_by_cache_internal(
 )
     requires
         pre_atomic.cache.inv(),
-        another_atomic_cache_disk_request_wf(pre_atomic, disk),
-        Cache::State::next(pre_atomic.cache, post_atomic.cache, Cache::Label::Internal{}),
-        post_atomic.outstanding_cache_reqs == pre_atomic.outstanding_cache_reqs,
+	        another_atomic_cache_disk_request_wf(pre_atomic, disk),
+	        Cache::State::next(pre_atomic.cache, post_atomic.cache, Cache::Label::Internal{}),
+	        post_atomic.journal_metadata_loaded() == pre_atomic.journal_metadata_loaded(),
+	        post_atomic.recovery_state == pre_atomic.recovery_state,
+	        post_atomic.outstanding_cache_reqs == pre_atomic.outstanding_cache_reqs,
     ensures
         another_atomic_cache_disk_request_wf(post_atomic, disk),
 {
@@ -2118,9 +2850,12 @@ pub proof fn cache_disk_request_wf_preserved_by_cache_internal(
             let req = disk.requests[id];
             let addr = req.addr();
             &&& post_atomic.outstanding_cache_reqs.contains_key(id)
-            &&& post_atomic.outstanding_cache_reqs[id] == addr
-            &&& req is WriteReq ==> {
-                &&& cache_filled_addr(post_atomic.cache, req->to)
+	            &&& post_atomic.outstanding_cache_reqs[id] == addr
+	            &&& req is WriteReq ==> {
+	                &&& post_atomic.journal_metadata_loaded()
+	                &&& (post_atomic.recovery_state is MetadataLoadComplete
+	                    || post_atomic.recovery_state is RecoveryComplete)
+	                &&& cache_filled_addr(post_atomic.cache, req->to)
                 &&& cache_filled_page(post_atomic.cache, req->to) == req->data
                 &&& filled_cache_status(post_atomic.cache).contains_key(req->to)
                 &&& filled_cache_status(post_atomic.cache)[req->to]
@@ -2133,8 +2868,14 @@ pub proof fn cache_disk_request_wf_preserved_by_cache_internal(
         assert(pre_atomic.outstanding_cache_reqs.contains_key(id));
         assert(post_atomic.outstanding_cache_reqs.contains_key(id));
         assert(post_atomic.outstanding_cache_reqs[id] == addr);
-        if req is WriteReq {
-            assert(cache_filled_addr(pre_atomic.cache, req->to));
+	        if req is WriteReq {
+	            assert(pre_atomic.journal_metadata_loaded());
+	            assert(post_atomic.journal_metadata_loaded());
+	            assert(pre_atomic.recovery_state is MetadataLoadComplete
+	                || pre_atomic.recovery_state is RecoveryComplete);
+	            assert(post_atomic.recovery_state is MetadataLoadComplete
+	                || post_atomic.recovery_state is RecoveryComplete);
+	            assert(cache_filled_addr(pre_atomic.cache, req->to));
             assert(cache_filled_page(pre_atomic.cache, req->to) == req->data);
             assert(filled_cache_status(pre_atomic.cache).contains_key(req->to));
             assert(filled_cache_status(pre_atomic.cache)[req->to]
@@ -2274,12 +3015,14 @@ pub proof fn cache_disk_request_wf_preserved_by_cache_access(
     requires
         pre_atomic.cache.inv(),
         another_atomic_cache_disk_request_wf(pre_atomic, disk),
-        Cache::State::next(
-            pre_atomic.cache,
-            post_atomic.cache,
-            Cache::Label::Access{reads, writes},
-        ),
-        post_atomic.outstanding_cache_reqs == pre_atomic.outstanding_cache_reqs,
+	        Cache::State::next(
+	            pre_atomic.cache,
+	            post_atomic.cache,
+	            Cache::Label::Access{reads, writes},
+	        ),
+	        post_atomic.journal_metadata_loaded() == pre_atomic.journal_metadata_loaded(),
+	        post_atomic.recovery_state == pre_atomic.recovery_state,
+	        post_atomic.outstanding_cache_reqs == pre_atomic.outstanding_cache_reqs,
     ensures
         another_atomic_cache_disk_request_wf(post_atomic, disk),
 {
@@ -2296,9 +3039,12 @@ pub proof fn cache_disk_request_wf_preserved_by_cache_access(
             let req = disk.requests[id];
             let addr = req.addr();
             &&& post_atomic.outstanding_cache_reqs.contains_key(id)
-            &&& post_atomic.outstanding_cache_reqs[id] == addr
-            &&& req is WriteReq ==> {
-                &&& cache_filled_addr(post_atomic.cache, req->to)
+	            &&& post_atomic.outstanding_cache_reqs[id] == addr
+	            &&& req is WriteReq ==> {
+	                &&& post_atomic.journal_metadata_loaded()
+	                &&& (post_atomic.recovery_state is MetadataLoadComplete
+	                    || post_atomic.recovery_state is RecoveryComplete)
+	                &&& cache_filled_addr(post_atomic.cache, req->to)
                 &&& cache_filled_page(post_atomic.cache, req->to) == req->data
                 &&& filled_cache_status(post_atomic.cache).contains_key(req->to)
                 &&& filled_cache_status(post_atomic.cache)[req->to]
@@ -2310,9 +3056,15 @@ pub proof fn cache_disk_request_wf_preserved_by_cache_access(
         let addr = req.addr();
         assert(pre_atomic.outstanding_cache_reqs.contains_key(id));
         assert(post_atomic.outstanding_cache_reqs.contains_key(id));
-        assert(post_atomic.outstanding_cache_reqs[id] == addr);
-        if req is WriteReq {
-            assert(cache_filled_addr(pre_atomic.cache, req->to));
+	        assert(post_atomic.outstanding_cache_reqs[id] == addr);
+	        if req is WriteReq {
+	            assert(pre_atomic.journal_metadata_loaded());
+	            assert(post_atomic.journal_metadata_loaded());
+	            assert(pre_atomic.recovery_state is MetadataLoadComplete
+	                || pre_atomic.recovery_state is RecoveryComplete);
+	            assert(post_atomic.recovery_state is MetadataLoadComplete
+	                || post_atomic.recovery_state is RecoveryComplete);
+	            assert(cache_filled_addr(pre_atomic.cache, req->to));
             assert(cache_filled_page(pre_atomic.cache, req->to) == req->data);
             assert(filled_cache_status(pre_atomic.cache).contains_key(req->to));
             assert(filled_cache_status(pre_atomic.cache)[req->to]
@@ -2372,8 +3124,9 @@ pub proof fn journal_image_persistent_preserved_by_disjoint_write(
 )
     requires
         post.program.state == pre.program.state,
-        pre.program.state.journal_metadata_loaded(),
         post.disk.content == pre.disk.content.insert(addr, data),
+        journal_image_projection_domain_i(post, image)
+            =~= journal_image_projection_domain_i(pre, image),
         !journal_image_static_domain_i(pre, image).contains(addr),
     ensures
         journal_image_projection_domain_i(post, image)
@@ -2427,15 +3180,7 @@ pub proof fn journal_image_persistent_preserved_by_disjoint_write(
         }
     }
     assert(journal_image_projection_domain_i(post, image)
-        =~= journal_image_projection_domain_i(pre, image)) by {
-        assert forall |a: Address|
-            journal_image_projection_domain_i(post, image).contains(a)
-                <==> journal_image_projection_domain_i(pre, image).contains(a)
-        by {
-            assert(to_journal_records(post.disk.content)
-                =~= to_journal_records(pre.disk.content).union_prefer_right(record_update));
-        }
-    }
+        =~= journal_image_projection_domain_i(pre, image));
     assert_maps_equal!(
         journal_image_persistent_i(post, image),
         journal_image_persistent_i(pre, image),
@@ -2461,14 +3206,18 @@ pub proof fn journal_image_static_domain_unchanged_by_loaded_index_preservation(
         post.disk.content == pre.disk.content,
         pre.program.state.journal_metadata_loaded(),
         post.program.state.journal_metadata_loaded(),
+        post.program.state.journal.journal.status.unwrap().lsn_au_index
+            == pre.program.state.journal.journal.status.unwrap().lsn_au_index,
     ensures
         journal_image_static_domain_i(post, image) =~= journal_image_static_domain_i(pre, image),
 {
+    journal_image_projection_aus_loaded_index_unchanged(pre, post, image);
     assert forall |addr: Address|
         journal_image_static_domain_i(post, image).contains(addr)
             <==> journal_image_static_domain_i(pre, image).contains(addr)
     by {
-        assert(post.disk.content == pre.disk.content);
+        assert(journal_image_projection_aus_i(post, image).contains(addr.au)
+            <==> journal_image_projection_aus_i(pre, image).contains(addr.au));
     }
 }
 
@@ -2616,6 +3365,112 @@ pub proof fn cache_internal_dirty_in_post_was_dirty_in_pre(
     }
 }
 
+pub proof fn cache_internal_dirty_or_writeback_in_post_was_same_in_pre(
+    pre_cache: Cache::State,
+    post_cache: Cache::State,
+    addr: Address,
+)
+    requires
+        pre_cache.inv(),
+        Cache::State::next(pre_cache, post_cache, Cache::Label::Internal{}),
+        filled_cache_status(post_cache).contains_key(addr),
+        filled_cache_status(post_cache)[addr] == CachingDiskPageStatus::Dirty
+            || filled_cache_status(post_cache)[addr] == CachingDiskPageStatus::Writeback,
+    ensures
+        filled_cache_status(pre_cache).contains_key(addr),
+        filled_cache_status(pre_cache)[addr] == filled_cache_status(post_cache)[addr],
+{
+    Cache::State::inv_next(pre_cache, post_cache, Cache::Label::Internal{});
+    pre_cache.build_lookup_map_ensures();
+    post_cache.build_lookup_map_ensures();
+    reveal(Cache::State::next);
+    reveal(Cache::State::next_by);
+    let step = choose |step: Cache::Step| Cache::State::next_by(
+        pre_cache,
+        post_cache,
+        Cache::Label::Internal{},
+        step,
+    );
+    assert(cache_filled_addr(post_cache, addr));
+    let post_slot = post_cache.lookup_map[addr];
+    match step {
+        Cache::Step::reserve(new_slots_mapping) => {
+            assert(Cache::State::reserve(pre_cache, post_cache, Cache::Label::Internal{}, new_slots_mapping)) by {
+                reveal(Cache::State::reserve);
+            }
+            let updated_entries = Map::new(
+                |slot| new_slots_mapping.contains_key(slot),
+                |slot| Entry::Reserved{addr: new_slots_mapping[slot]},
+            );
+            assert(post_cache.entries == pre_cache.entries.union_prefer_right(updated_entries));
+            assert(post_cache.status_map == pre_cache.status_map);
+            assert(!updated_entries.contains_key(post_slot)) by {
+                if updated_entries.contains_key(post_slot) {
+                    assert(post_cache.entries[post_slot] == Entry::Reserved{
+                        addr: new_slots_mapping[post_slot],
+                    });
+                    assert(post_cache.entries[post_slot] is Filled);
+                    assert(false);
+                }
+            }
+            assert(pre_cache.entries[post_slot] == post_cache.entries[post_slot]);
+            assert(pre_cache.lookup_map.contains_key(addr));
+            assert(pre_cache.lookup_map[addr] == post_slot);
+            assert(cache_filled_addr(pre_cache, addr));
+            assert(pre_cache.status_map[post_slot] == post_cache.status_map[post_slot]);
+        },
+        Cache::Step::evict(evicted_slots) => {
+            assert(Cache::State::evict(pre_cache, post_cache, Cache::Label::Internal{}, evicted_slots)) by {
+                reveal(Cache::State::evict);
+            }
+            let evicted_addrs = Map::new(
+                |slot: Slot| evicted_slots.contains(slot),
+                |slot: Slot| pre_cache.entries[slot].get_addr(),
+            ).values();
+            assert(post_cache.lookup_map == pre_cache.lookup_map.remove_keys(evicted_addrs));
+            assert(!evicted_addrs.contains(addr)) by {
+                if evicted_addrs.contains(addr) {
+                    assert(!post_cache.lookup_map.contains_key(addr));
+                    assert(cache_filled_addr(post_cache, addr));
+                    assert(false);
+                }
+            }
+            assert(pre_cache.lookup_map.contains_key(addr));
+            assert(pre_cache.lookup_map[addr] == post_slot);
+            let updated_entries = Map::new(
+                |slot| evicted_slots.contains(slot),
+                |slot| Entry::Empty,
+            );
+            let updated_status_map = Map::new(
+                |slot| evicted_slots.contains(slot),
+                |slot| CacheStatus::NotFilled,
+            );
+            assert(post_cache.entries == pre_cache.entries.union_prefer_right(updated_entries));
+            assert(post_cache.status_map == pre_cache.status_map.union_prefer_right(updated_status_map));
+            assert(!evicted_slots.contains(post_slot)) by {
+                if evicted_slots.contains(post_slot) {
+                    assert(evicted_addrs.contains(addr));
+                    assert(false);
+                }
+            }
+            assert(!updated_entries.contains_key(post_slot));
+            assert(!updated_status_map.contains_key(post_slot));
+            assert(post_cache.entries[post_slot] == pre_cache.entries[post_slot]);
+            assert(post_cache.status_map[post_slot] == pre_cache.status_map[post_slot]);
+            assert(cache_filled_addr(pre_cache, addr));
+        },
+        Cache::Step::noop() => {
+            assert(Cache::State::noop(pre_cache, post_cache, Cache::Label::Internal{})) by {
+                reveal(Cache::State::noop);
+            }
+            assert(post_cache == pre_cache);
+        },
+        _ => {
+            assert(false);
+        },
+    }
+}
+
 pub proof fn journal_image_writeback_disjoint_preserved_by_cache_internal(
     pre: SystemModel::State<AnotherProgramModel>,
     post: SystemModel::State<AnotherProgramModel>,
@@ -2631,6 +3486,7 @@ pub proof fn journal_image_writeback_disjoint_preserved_by_cache_internal(
         post.disk == pre.disk,
         post.program.state.journal == pre.program.state.journal,
         post.program.state.in_flight == pre.program.state.in_flight,
+        post.program.state.persistent_image == pre.program.state.persistent_image,
         post.program.state.journal.in_flight == pre.program.state.journal.in_flight,
         post.program.state.branch.in_flight == pre.program.state.branch.in_flight,
     ensures
@@ -2649,30 +3505,10 @@ pub proof fn journal_image_writeback_disjoint_preserved_by_cache_internal(
         );
     }
 
-    assert forall |id: ID| #[trigger] post.disk.requests.contains_key(id)
-        && post.disk.requests[id] is WriteReq
-        && post.disk.requests[id]->to != spec_superblock_addr()
-        implies post.program.state.journal_metadata_loaded()
-    by {
-        assert(pre.disk.requests.contains_key(id));
-        assert(post.disk.requests[id] == pre.disk.requests[id]);
-        assert(pre.program.state.journal_metadata_loaded());
-    }
-    assert forall |addr: Address| #[trigger] filled_cache_status(post.program.state.cache).contains_key(addr)
-        && filled_cache_status(post.program.state.cache)[addr] == CachingDiskPageStatus::Dirty
-        implies post.program.state.journal_metadata_loaded()
-    by {
-        cache_internal_dirty_in_post_was_dirty_in_pre(
-            pre.program.state.cache,
-            post.program.state.cache,
-            addr,
-        );
-        assert(pre.program.state.journal_metadata_loaded());
-    }
     assert forall |addr: Address| #[trigger] filled_cache_status(post.program.state.cache).contains_key(addr)
         implies {
             &&& journal_image_dirty_cache_disjoint_at(post, atomic_persistent_superblock_image_i(post), addr)
-            &&& another_atomic_superblock_write_pending(post) ==>
+            &&& post.program.state.in_flight is Some ==>
                 journal_image_dirty_cache_disjoint_at(
                     post,
                     post.program.state.atomic_inflight_superblock_i(),
@@ -2689,9 +3525,8 @@ pub proof fn journal_image_writeback_disjoint_preserved_by_cache_internal(
             assert(journal_image_dirty_cache_disjoint_at(pre, persistent_image, addr));
             assert(!journal_image_static_domain_i(pre, persistent_image).contains(addr));
             assert(!journal_image_static_domain_i(post, persistent_image).contains(addr));
-            if another_atomic_superblock_write_pending(post) {
+            if post.program.state.in_flight is Some {
                 assert(pre.program.state.in_flight is Some);
-                assert(another_atomic_superblock_write_pending(pre));
                 let frozen_image = pre.program.state.atomic_inflight_superblock_i();
                 assert(post.program.state.atomic_inflight_superblock_i() == frozen_image);
                 assert(journal_image_dirty_cache_disjoint_at(pre, frozen_image, addr));
@@ -2703,7 +3538,7 @@ pub proof fn journal_image_writeback_disjoint_preserved_by_cache_internal(
     assert forall |id: ID| #[trigger] post.disk.requests.contains_key(id)
         implies {
             &&& journal_image_request_writeback_disjoint_at(post, atomic_persistent_superblock_image_i(post), id)
-            &&& another_atomic_superblock_write_pending(post) ==>
+            &&& post.program.state.in_flight is Some ==>
                 journal_image_request_writeback_disjoint_at(
                     post,
                     post.program.state.atomic_inflight_superblock_i(),
@@ -2717,9 +3552,8 @@ pub proof fn journal_image_writeback_disjoint_preserved_by_cache_internal(
             assert(journal_image_request_writeback_disjoint_at(pre, persistent_image, id));
             assert(!journal_image_static_domain_i(pre, persistent_image).contains(post.disk.requests[id]->to));
             assert(!journal_image_static_domain_i(post, persistent_image).contains(post.disk.requests[id]->to));
-            if another_atomic_superblock_write_pending(post) {
+            if post.program.state.in_flight is Some {
                 assert(pre.program.state.in_flight is Some);
-                assert(another_atomic_superblock_write_pending(pre));
                 let frozen_image = pre.program.state.atomic_inflight_superblock_i();
                 assert(post.program.state.atomic_inflight_superblock_i() == frozen_image);
                 assert(journal_image_request_writeback_disjoint_at(pre, frozen_image, id));
@@ -2769,6 +3603,7 @@ pub proof fn journal_image_writeback_disjoint_preserved_by_unchanged_cache_disk_
         forall |addr: Address| #[trigger] post.program.state.journal.mini_allocator.can_allocate(addr)
             ==> pre.program.state.journal.mini_allocator.can_allocate(addr),
         post.program.state.in_flight == pre.program.state.in_flight,
+        post.program.state.persistent_image == pre.program.state.persistent_image,
         post.program.state.journal.in_flight == pre.program.state.journal.in_flight,
         post.program.state.branch.in_flight == pre.program.state.branch.in_flight,
     ensures
@@ -2795,27 +3630,10 @@ pub proof fn journal_image_writeback_disjoint_preserved_by_unchanged_cache_disk_
         );
     }
 
-    assert forall |id: ID| #[trigger] post.disk.requests.contains_key(id)
-        && post.disk.requests[id] is WriteReq
-        && post.disk.requests[id]->to != spec_superblock_addr()
-        implies post.program.state.journal_metadata_loaded()
-    by {
-        assert(pre.disk.requests.contains_key(id));
-        assert(pre.disk.requests[id] == post.disk.requests[id]);
-        assert(pre.program.state.journal_metadata_loaded());
-    }
-    assert forall |addr: Address| #[trigger] filled_cache_status(post.program.state.cache).contains_key(addr)
-        && filled_cache_status(post.program.state.cache)[addr] == CachingDiskPageStatus::Dirty
-        implies post.program.state.journal_metadata_loaded()
-    by {
-        assert(filled_cache_status(pre.program.state.cache).contains_key(addr));
-        assert(filled_cache_status(pre.program.state.cache)[addr] == CachingDiskPageStatus::Dirty);
-        assert(pre.program.state.journal_metadata_loaded());
-    }
     assert forall |addr: Address| #[trigger] filled_cache_status(post.program.state.cache).contains_key(addr)
         implies {
             &&& journal_image_dirty_cache_disjoint_at(post, atomic_persistent_superblock_image_i(post), addr)
-            &&& another_atomic_superblock_write_pending(post) ==>
+            &&& post.program.state.in_flight is Some ==>
                 journal_image_dirty_cache_disjoint_at(
                     post,
                     post.program.state.atomic_inflight_superblock_i(),
@@ -2830,9 +3648,8 @@ pub proof fn journal_image_writeback_disjoint_preserved_by_unchanged_cache_disk_
             assert(journal_image_dirty_cache_disjoint_at(pre, persistent_image, addr));
             assert(!journal_image_static_domain_i(pre, persistent_image).contains(addr));
             assert(!journal_image_static_domain_i(post, persistent_image).contains(addr));
-            if another_atomic_superblock_write_pending(post) {
+            if post.program.state.in_flight is Some {
                 assert(pre.program.state.in_flight is Some);
-                assert(another_atomic_superblock_write_pending(pre));
                 let frozen_image = pre.program.state.atomic_inflight_superblock_i();
                 assert(post.program.state.atomic_inflight_superblock_i() == frozen_image);
                 assert(journal_image_dirty_cache_disjoint_at(pre, frozen_image, addr));
@@ -2844,7 +3661,7 @@ pub proof fn journal_image_writeback_disjoint_preserved_by_unchanged_cache_disk_
     assert forall |id: ID| #[trigger] post.disk.requests.contains_key(id)
         implies {
             &&& journal_image_request_writeback_disjoint_at(post, atomic_persistent_superblock_image_i(post), id)
-            &&& another_atomic_superblock_write_pending(post) ==>
+            &&& post.program.state.in_flight is Some ==>
                 journal_image_request_writeback_disjoint_at(
                     post,
                     post.program.state.atomic_inflight_superblock_i(),
@@ -2858,9 +3675,8 @@ pub proof fn journal_image_writeback_disjoint_preserved_by_unchanged_cache_disk_
             assert(journal_image_request_writeback_disjoint_at(pre, persistent_image, id));
             assert(!journal_image_static_domain_i(pre, persistent_image).contains(post.disk.requests[id]->to));
             assert(!journal_image_static_domain_i(post, persistent_image).contains(post.disk.requests[id]->to));
-            if another_atomic_superblock_write_pending(post) {
+            if post.program.state.in_flight is Some {
                 assert(pre.program.state.in_flight is Some);
-                assert(another_atomic_superblock_write_pending(pre));
                 let frozen_image = pre.program.state.atomic_inflight_superblock_i();
                 assert(post.program.state.atomic_inflight_superblock_i() == frozen_image);
                 assert(journal_image_request_writeback_disjoint_at(pre, frozen_image, id));
@@ -2912,11 +3728,14 @@ pub proof fn journal_image_writeback_disjoint_preserved_by_cache_access(
         post.program.state.recovery_state == pre.program.state.recovery_state,
         pre.program.state.journal_metadata_loaded(),
         post.program.state.journal_metadata_loaded(),
+        post.program.state.journal.journal.status.unwrap().lsn_au_index
+            == pre.program.state.journal.journal.status.unwrap().lsn_au_index,
         forall |addr: Address| #[trigger] post.program.state.journal.mini_allocator.can_allocate(addr)
             ==> pre.program.state.journal.mini_allocator.can_allocate(addr),
         post.program.state.in_flight == pre.program.state.in_flight,
         post.program.state.journal.in_flight == pre.program.state.journal.in_flight,
         post.program.state.branch.in_flight == pre.program.state.branch.in_flight,
+        post.program.state.persistent_image == pre.program.state.persistent_image,
         atomic_persistent_superblock_image_i(post) == atomic_persistent_superblock_image_i(pre),
         writes.dom().disjoint(journal_image_static_domain_i(
             pre,
@@ -2940,16 +3759,6 @@ pub proof fn journal_image_writeback_disjoint_preserved_by_cache_access(
         assert(post.program.state.in_flight is Some);
         assert(post.program.state.atomic_inflight_superblock_i() == frozen_image);
         journal_image_static_domain_unchanged_by_loaded_index_preservation(pre, post, frozen_image);
-    }
-
-    assert forall |id: ID| #[trigger] post.disk.requests.contains_key(id)
-        && post.disk.requests[id] is WriteReq
-        && post.disk.requests[id]->to != spec_superblock_addr()
-        implies journal_projection_uses_live(post)
-    by {
-        assert(pre.disk.requests.contains_key(id));
-        assert(pre.disk.requests[id] == post.disk.requests[id]);
-        assert(journal_projection_uses_live(pre));
     }
 
     assert forall |addr: Address| #[trigger] filled_cache_status(post.program.state.cache).contains_key(addr)
@@ -2977,6 +3786,7 @@ pub proof fn journal_image_writeback_disjoint_preserved_by_cache_access(
                     assert(!journal_image_static_domain_i(post, frozen_image).contains(addr));
                 }
             } else {
+                assert(cache_filled_addr(post.program.state.cache, addr));
                 Cache::State::access_unwritten_addr_unchanged(
                     pre.program.state.cache,
                     post.program.state.cache,
@@ -3075,15 +3885,17 @@ pub proof fn journal_image_writeback_disjoint_preserved_by_cache_io_begin(
         post.program.state.journal == pre.program.state.journal,
         post.program.state.branch == pre.program.state.branch,
         post.program.state.in_flight == pre.program.state.in_flight,
-        another_atomic_superblock_write_pending(post) ==>
-            another_atomic_superblock_write_pending(pre),
+        post.program.state.persistent_image == pre.program.state.persistent_image,
+        post.program.state.in_flight is Some ==> pre.program.state.in_flight is Some,
     ensures
         journal_image_writeback_disjoint(post),
 {
-    let durable_image = durable_superblock_image_i(pre);
-    assert(durable_superblock_image_i(post) == durable_image);
+    let durable_image = atomic_persistent_superblock_image_i(pre);
+    assert(atomic_persistent_superblock_image_i(post) == durable_image);
     assert(post.program.state.journal_metadata_loaded() == pre.program.state.journal_metadata_loaded());
     if pre.program.state.journal_metadata_loaded() {
+        assert(post.program.state.journal.journal.status.unwrap().lsn_au_index
+            == pre.program.state.journal.journal.status.unwrap().lsn_au_index);
         journal_image_static_domain_unchanged_by_loaded_index_preservation(pre, post, durable_image);
         if pre.program.state.in_flight is Some {
             let frozen_image = pre.program.state.atomic_inflight_superblock_i();
@@ -3111,7 +3923,7 @@ pub proof fn journal_image_writeback_disjoint_preserved_by_cache_io_begin(
     assert forall |addr: Address| #[trigger] filled_cache_status(post.program.state.cache).contains_key(addr)
         implies {
             &&& journal_image_dirty_cache_disjoint_at(post, durable_image, addr)
-            &&& another_atomic_superblock_write_pending(post) ==>
+            &&& post.program.state.in_flight is Some ==>
                 journal_image_dirty_cache_disjoint_at(
                     post,
                     post.program.state.atomic_inflight_superblock_i(),
@@ -3202,14 +4014,11 @@ pub proof fn journal_image_writeback_disjoint_preserved_by_cache_io_begin(
                     assert(false);
                 },
             }
-            assert(pre.program.state.journal_metadata_loaded());
-            assert(post.program.state.journal_metadata_loaded());
             assert(journal_image_dirty_cache_disjoint_at(pre, durable_image, addr));
             assert(!journal_image_static_domain_i(pre, durable_image).contains(addr));
             assert(!journal_image_static_domain_i(post, durable_image).contains(addr));
-            if another_atomic_superblock_write_pending(post) {
+            if post.program.state.in_flight is Some {
                 assert(pre.program.state.in_flight is Some);
-                assert(another_atomic_superblock_write_pending(pre));
                 let frozen_image = pre.program.state.atomic_inflight_superblock_i();
                 assert(post.program.state.atomic_inflight_superblock_i() == frozen_image);
                 assert(journal_image_dirty_cache_disjoint_at(pre, frozen_image, addr));
@@ -3219,149 +4028,10 @@ pub proof fn journal_image_writeback_disjoint_preserved_by_cache_io_begin(
         }
     }
 
-    assert forall |addr: Address| #[trigger] filled_cache_status(post.program.state.cache).contains_key(addr)
-        && filled_cache_status(post.program.state.cache)[addr] == CachingDiskPageStatus::Dirty
-        implies post.program.state.journal_metadata_loaded()
-    by {
-        match cache_step {
-            Cache::Step::load_initiate(new_slots_mapping) => {
-                assert(Cache::State::load_initiate(
-                    pre.program.state.cache,
-                    post.program.state.cache,
-                    cache_lbl,
-                    new_slots_mapping,
-                ));
-                let post_slot = post.program.state.cache.lookup_map[addr];
-                assert(cache_filled_addr(post.program.state.cache, addr));
-                assert(post.program.state.cache.entries[post_slot] is Filled);
-                let updated_entries = Map::new(
-                    |slot: Slot| new_slots_mapping.contains_key(slot),
-                    |slot: Slot| Entry::Loading{addr: new_slots_mapping[slot]},
-                );
-                assert(post.program.state.cache.entries
-                    == pre.program.state.cache.entries.union_prefer_right(updated_entries));
-                assert(!new_slots_mapping.contains_key(post_slot)) by {
-                    if new_slots_mapping.contains_key(post_slot) {
-                        assert(updated_entries.contains_key(post_slot));
-                        assert(post.program.state.cache.entries[post_slot]
-                            == updated_entries[post_slot]);
-                        assert(false);
-                    }
-                }
-                let new_addr_slots = new_slots_mapping.invert();
-                assert(post.program.state.cache.lookup_map
-                    == pre.program.state.cache.lookup_map.union_prefer_right(new_addr_slots));
-                assert(!new_addr_slots.contains_key(addr)) by {
-                    if new_addr_slots.contains_key(addr) {
-                        assert(post.program.state.cache.lookup_map[addr] == new_addr_slots[addr]);
-                        assert(post_slot == new_addr_slots[addr]);
-                        assert(new_slots_mapping.contains_value(addr));
-                        Cache::State::invert_contains_pair(new_slots_mapping, addr);
-                        assert(new_slots_mapping.contains_pair(new_addr_slots[addr], addr));
-                        assert(new_slots_mapping.contains_key(post_slot));
-                        assert(false);
-                    }
-                }
-                assert(pre.program.state.cache.lookup_map.contains_key(addr));
-                assert(filled_cache_status(pre.program.state.cache).contains_key(addr));
-                assert(filled_cache_status(pre.program.state.cache)[addr]
-                    == CachingDiskPageStatus::Dirty);
-                assert(pre.program.state.journal_metadata_loaded());
-            },
-            Cache::Step::writeback_initiate() => {
-                assert(Cache::State::writeback_initiate(
-                    pre.program.state.cache,
-                    post.program.state.cache,
-                    cache_lbl,
-                ));
-                let post_slot = post.program.state.cache.lookup_map[addr];
-                assert(post.program.state.cache.lookup_map == pre.program.state.cache.lookup_map);
-                let writeback_slots = Map::new(
-                    |req: DiskRequest| req_map.values().contains(req),
-                    |req: DiskRequest| pre.program.state.cache.lookup_map[req->to],
-                ).values();
-                assert(!writeback_slots.contains(post_slot)) by {
-                    if writeback_slots.contains(post_slot) {
-                        let updated_status_map = Map::new(
-                            |slot: Slot| writeback_slots.contains(slot),
-                            |slot: Slot| CacheStatus::Writeback{},
-                        );
-                        assert(post.program.state.cache.status_map
-                            == pre.program.state.cache.status_map.union_prefer_right(updated_status_map));
-                        assert(post.program.state.cache.status_map[post_slot] is Writeback);
-                        assert(false);
-                    }
-                }
-                assert(pre.program.state.cache.lookup_map.contains_key(addr));
-                assert(filled_cache_status(pre.program.state.cache).contains_key(addr));
-                assert(filled_cache_status(pre.program.state.cache)[addr]
-                    == CachingDiskPageStatus::Dirty);
-                assert(pre.program.state.journal_metadata_loaded());
-            },
-            _ => {
-                assert(false);
-            },
-        }
-    }
-
-    assert forall |id: ID| #[trigger] post.disk.requests.contains_key(id)
-        && post.disk.requests[id] is WriteReq
-        && post.disk.requests[id]->to != spec_superblock_addr()
-        implies post.program.state.journal_metadata_loaded()
-    by {
-        if req_map.contains_key(id) {
-            let req = req_map[id];
-            assert(post.disk.requests[id] == req);
-            match cache_step {
-                Cache::Step::writeback_initiate() => {
-                    assert(Cache::State::writeback_initiate(
-                        pre.program.state.cache,
-                        post.program.state.cache,
-                        cache_lbl,
-                    ));
-                    assert(pre.program.state.cache.valid_writeback_requests(req_map.values()));
-                    assert(req_map.values().contains(req));
-                    let slot = pre.program.state.cache.lookup_map[req->to];
-                    pre.program.state.cache.build_lookup_map_ensures();
-                    assert(pre.program.state.cache.build_lookup_map_props(pre.program.state.cache.lookup_map));
-                    assert(pre.program.state.cache.entries.contains_key(slot));
-                    assert(pre.program.state.cache.entries[slot]
-                        == Entry::Filled{addr: req->to, data: req->data});
-                    assert(pre.program.state.cache.status_map[slot] is Dirty);
-                    assert(cache_filled_addr(pre.program.state.cache, req->to));
-                    assert(pre.program.state.cache.status_map.contains_key(slot));
-                    assert(filled_cache_status(pre.program.state.cache).contains_key(req->to));
-                    assert(filled_cache_status(pre.program.state.cache)[req->to]
-                        == CachingDiskPageStatus::Dirty);
-                    assert(pre.program.state.journal_metadata_loaded());
-                },
-                Cache::Step::load_initiate(new_slots_mapping) => {
-                    assert(Cache::State::load_initiate(
-                        pre.program.state.cache,
-                        post.program.state.cache,
-                        cache_lbl,
-                        new_slots_mapping,
-                    ));
-                    assert(Cache::State::valid_load_requests(req_map.values(), new_slots_mapping));
-                    assert(req_map.values().contains(req));
-                    assert(req is ReadReq);
-                    assert(false);
-                },
-                _ => {
-                    assert(false);
-                },
-            }
-        } else {
-            assert(pre.disk.requests.contains_key(id));
-            assert(post.disk.requests[id] == pre.disk.requests[id]);
-            assert(pre.program.state.journal_metadata_loaded());
-        }
-    }
-
     assert forall |id: ID| #[trigger] post.disk.requests.contains_key(id)
         implies {
             &&& journal_image_request_writeback_disjoint_at(post, durable_image, id)
-            &&& another_atomic_superblock_write_pending(post) ==>
+            &&& post.program.state.in_flight is Some ==>
                 journal_image_request_writeback_disjoint_at(
                     post,
                     post.program.state.atomic_inflight_superblock_i(),
@@ -3396,8 +4066,6 @@ pub proof fn journal_image_writeback_disjoint_preserved_by_cache_io_begin(
                         assert(filled_cache_status(pre.program.state.cache).contains_key(req->to));
                         assert(filled_cache_status(pre.program.state.cache)[req->to]
                             == CachingDiskPageStatus::Dirty);
-                        assert(pre.program.state.journal_metadata_loaded());
-                        assert(post.program.state.journal_metadata_loaded());
                     },
                     Cache::Step::load_initiate(new_slots_mapping) => {
                         assert(Cache::State::load_initiate(
@@ -3415,13 +4083,11 @@ pub proof fn journal_image_writeback_disjoint_preserved_by_cache_io_begin(
                         assert(false);
                     },
                 }
-                assert(post.program.state.journal_metadata_loaded());
                 assert(journal_image_dirty_cache_disjoint_at(pre, durable_image, req->to));
                 assert(!journal_image_static_domain_i(pre, durable_image).contains(req->to));
                 assert(!journal_image_static_domain_i(post, durable_image).contains(req->to));
-                if another_atomic_superblock_write_pending(post) {
+                if post.program.state.in_flight is Some {
                     assert(pre.program.state.in_flight is Some);
-                    assert(another_atomic_superblock_write_pending(pre));
                     let frozen_image = pre.program.state.atomic_inflight_superblock_i();
                     assert(post.program.state.atomic_inflight_superblock_i() == frozen_image);
                     assert(journal_image_dirty_cache_disjoint_at(pre, frozen_image, req->to));
@@ -3431,14 +4097,11 @@ pub proof fn journal_image_writeback_disjoint_preserved_by_cache_io_begin(
             } else {
                 assert(pre.disk.requests.contains_key(id));
                 assert(post.disk.requests[id] == pre.disk.requests[id]);
-                assert(pre.program.state.journal_metadata_loaded());
-                assert(post.program.state.journal_metadata_loaded());
                 assert(journal_image_request_writeback_disjoint_at(pre, durable_image, id));
                 assert(!journal_image_static_domain_i(pre, durable_image).contains(post.disk.requests[id]->to));
                 assert(!journal_image_static_domain_i(post, durable_image).contains(post.disk.requests[id]->to));
-                if another_atomic_superblock_write_pending(post) {
+                if post.program.state.in_flight is Some {
                     assert(pre.program.state.in_flight is Some);
-                    assert(another_atomic_superblock_write_pending(pre));
                     let frozen_image = pre.program.state.atomic_inflight_superblock_i();
                     assert(post.program.state.atomic_inflight_superblock_i() == frozen_image);
                     assert(journal_image_request_writeback_disjoint_at(pre, frozen_image, id));
@@ -3488,6 +4151,7 @@ pub proof fn journal_image_writeback_disjoint_preserved_by_read_only_cache_acces
         post.disk == pre.disk,
         post.program.state.journal == pre.program.state.journal,
         post.program.state.in_flight == pre.program.state.in_flight,
+        post.program.state.persistent_image == pre.program.state.persistent_image,
         post.program.state.journal.in_flight == pre.program.state.journal.in_flight,
         post.program.state.branch.in_flight == pre.program.state.branch.in_flight,
     ensures
@@ -3512,32 +4176,26 @@ pub proof fn journal_image_writeback_disjoint_preserved_by_read_only_cache_acces
             addr => { }
         );
     }
-    assert(durable_superblock_image_i(post) == durable_superblock_image_i(pre));
+    let persistent_image = atomic_persistent_superblock_image_i(pre);
+    assert(atomic_persistent_superblock_image_i(post) == persistent_image);
+    journal_image_static_domain_unchanged_by_disk_content(
+        pre,
+        post,
+        persistent_image,
+    );
     if pre.program.state.in_flight is Some {
         assert(post.program.state.atomic_inflight_superblock_i()
             == pre.program.state.atomic_inflight_superblock_i());
-    }
-    assert forall |id: ID| #[trigger] post.disk.requests.contains_key(id)
-        && post.disk.requests[id] is WriteReq
-        && post.disk.requests[id]->to != spec_superblock_addr()
-        implies post.program.state.journal_metadata_loaded()
-    by {
-        assert(pre.disk.requests.contains_key(id));
-        assert(post.disk.requests[id] == pre.disk.requests[id]);
-        assert(pre.program.state.journal_metadata_loaded());
-    }
-    assert forall |addr: Address| #[trigger] filled_cache_status(post.program.state.cache).contains_key(addr)
-        && filled_cache_status(post.program.state.cache)[addr] == CachingDiskPageStatus::Dirty
-        implies post.program.state.journal_metadata_loaded()
-    by {
-        assert(filled_cache_status(pre.program.state.cache).contains_key(addr));
-        assert(filled_cache_status(pre.program.state.cache)[addr] == CachingDiskPageStatus::Dirty);
-        assert(pre.program.state.journal_metadata_loaded());
+        journal_image_static_domain_unchanged_by_disk_content(
+            pre,
+            post,
+            pre.program.state.atomic_inflight_superblock_i(),
+        );
     }
     assert forall |addr: Address| #[trigger] filled_cache_status(post.program.state.cache).contains_key(addr)
         implies {
-            &&& journal_image_dirty_cache_disjoint_at(post, durable_superblock_image_i(post), addr)
-            &&& another_atomic_superblock_write_pending(post) ==>
+            &&& journal_image_dirty_cache_disjoint_at(post, persistent_image, addr)
+            &&& post.program.state.in_flight is Some ==>
                 journal_image_dirty_cache_disjoint_at(
                     post,
                     post.program.state.atomic_inflight_superblock_i(),
@@ -3548,19 +4206,18 @@ pub proof fn journal_image_writeback_disjoint_preserved_by_read_only_cache_acces
         assert(filled_cache_status(pre.program.state.cache).contains_key(addr));
         assert(filled_cache_status(post.program.state.cache)[addr]
             == filled_cache_status(pre.program.state.cache)[addr]);
-        assert(journal_image_static_domain_i(post, durable_superblock_image_i(post))
-            =~= journal_image_static_domain_i(pre, durable_superblock_image_i(pre)));
-        if another_atomic_superblock_write_pending(post) {
+        assert(journal_image_static_domain_i(post, persistent_image)
+            =~= journal_image_static_domain_i(pre, persistent_image));
+        if post.program.state.in_flight is Some {
             assert(pre.program.state.in_flight is Some);
-            assert(another_atomic_superblock_write_pending(pre));
             assert(journal_image_static_domain_i(post, post.program.state.atomic_inflight_superblock_i())
                 =~= journal_image_static_domain_i(pre, pre.program.state.atomic_inflight_superblock_i()));
         }
     }
     assert forall |id: ID| #[trigger] post.disk.requests.contains_key(id)
         implies {
-            &&& journal_image_request_writeback_disjoint_at(post, durable_superblock_image_i(post), id)
-            &&& another_atomic_superblock_write_pending(post) ==>
+            &&& journal_image_request_writeback_disjoint_at(post, persistent_image, id)
+            &&& post.program.state.in_flight is Some ==>
                 journal_image_request_writeback_disjoint_at(
                     post,
                     post.program.state.atomic_inflight_superblock_i(),
@@ -3571,10 +4228,9 @@ pub proof fn journal_image_writeback_disjoint_preserved_by_read_only_cache_acces
         assert(pre.disk.requests.contains_key(id));
         assert(post.disk.requests[id] == pre.disk.requests[id]);
         if post.disk.requests[id] is WriteReq && post.disk.requests[id]->to != spec_superblock_addr() {
-            assert(journal_image_request_writeback_disjoint_at(pre, durable_superblock_image_i(pre), id));
-            if another_atomic_superblock_write_pending(post) {
+            assert(journal_image_request_writeback_disjoint_at(pre, persistent_image, id));
+            if post.program.state.in_flight is Some {
                 assert(pre.program.state.in_flight is Some);
-                assert(another_atomic_superblock_write_pending(pre));
                 assert(journal_image_request_writeback_disjoint_at(
                     pre,
                     pre.program.state.atomic_inflight_superblock_i(),
@@ -3586,7 +4242,7 @@ pub proof fn journal_image_writeback_disjoint_preserved_by_read_only_cache_acces
     assert(journal_allocable_addrs_image_disjoint(post)) by {
         assert forall |addr: Address| #[trigger] post.program.state.journal.mini_allocator.can_allocate(addr)
             implies {
-                &&& !journal_image_static_domain_i(post, durable_superblock_image_i(post)).contains(addr)
+                &&& !journal_image_static_domain_i(post, persistent_image).contains(addr)
                 &&& post.program.state.in_flight is Some ==>
                     !journal_image_static_domain_i(
                         post,
@@ -3595,8 +4251,8 @@ pub proof fn journal_image_writeback_disjoint_preserved_by_read_only_cache_acces
             } by {
             assert(pre.program.state.journal.mini_allocator.can_allocate(addr));
             assert(journal_allocable_addrs_image_disjoint(pre));
-            assert(!journal_image_static_domain_i(pre, durable_superblock_image_i(pre)).contains(addr));
-            assert(!journal_image_static_domain_i(post, durable_superblock_image_i(post)).contains(addr));
+            assert(!journal_image_static_domain_i(pre, persistent_image).contains(addr));
+            assert(!journal_image_static_domain_i(post, persistent_image).contains(addr));
             if post.program.state.in_flight is Some {
                 assert(pre.program.state.in_flight is Some);
                 assert(!journal_image_static_domain_i(
@@ -3955,6 +4611,7 @@ pub proof fn program_internal_cache_internal_preserves_bookkeeping(
         }
         assert forall |addr: Address| #[trigger] filled_cache_status(post.program.state.cache).contains_key(addr)
             && filled_cache_status(post.program.state.cache)[addr] == CachingDiskPageStatus::Clean
+            && addr != spec_superblock_addr()
             implies {
                 &&& post.disk.content.contains_key(addr)
                 &&& post.disk.content[addr] == cache_filled_page(post.program.state.cache, addr)
@@ -4089,148 +4746,6 @@ pub proof fn program_internal_cache_internal_preserves_bookkeeping(
             assert(pre.disk.content[addr] == cache_filled_page(pre.program.state.cache, addr));
         }
     }
-    assert(pre.disk.content.union_prefer_right(filled_cache_pages(pre.program.state.cache))
-        =~= post.disk.content.union_prefer_right(filled_cache_pages(post.program.state.cache))) by {
-        assert_maps_equal!(
-            pre.disk.content.union_prefer_right(filled_cache_pages(pre.program.state.cache)),
-            post.disk.content.union_prefer_right(filled_cache_pages(post.program.state.cache)),
-            addr => {
-                assert(post.disk == pre.disk);
-                match cache_step {
-                    Cache::Step::reserve(new_slots_mapping) => {
-                        assert(Cache::State::reserve(
-                            pre.program.state.cache,
-                            post.program.state.cache,
-                            Cache::Label::Internal{},
-                            new_slots_mapping,
-                        ));
-                        let updated_entries = Map::new(
-                            |slot| new_slots_mapping.contains_key(slot),
-                            |slot| Entry::Reserved{addr: new_slots_mapping[slot]},
-                        );
-                        assert(post.program.state.cache.entries
-                            == pre.program.state.cache.entries.union_prefer_right(updated_entries));
-                        assert(post.program.state.cache.status_map == pre.program.state.cache.status_map);
-                        if filled_cache_pages(post.program.state.cache).contains_key(addr) {
-                            assert(cache_filled_addr(post.program.state.cache, addr));
-                            let slot = post.program.state.cache.lookup_map[addr];
-                            assert(!updated_entries.contains_key(slot)) by {
-                                if updated_entries.contains_key(slot) {
-                                    assert(post.program.state.cache.entries[slot]
-                                        == Entry::Reserved{addr: new_slots_mapping[slot]});
-                                    assert(post.program.state.cache.entries[slot] is Filled);
-                                    assert(false);
-                                }
-                            }
-                            assert(pre.program.state.cache.entries[slot]
-                                == post.program.state.cache.entries[slot]);
-                            post.program.state.cache.build_lookup_map_ensures();
-                            pre.program.state.cache.build_lookup_map_ensures();
-                            assert(post.program.state.cache.entries[slot].get_addr() == addr);
-                            assert(pre.program.state.cache.entries[slot].get_addr() == addr);
-                            assert(pre.program.state.cache.lookup_map.contains_key(addr));
-                            assert(cache_filled_addr(pre.program.state.cache, addr));
-                        }
-                        if filled_cache_pages(pre.program.state.cache).contains_key(addr) {
-                            assert(cache_filled_addr(pre.program.state.cache, addr));
-                            let slot = pre.program.state.cache.lookup_map[addr];
-                            assert(!new_slots_mapping.contains_key(slot)) by {
-                                if new_slots_mapping.contains_key(slot) {
-                                    assert(pre.program.state.cache.valid_new_slots_mapping(new_slots_mapping));
-                                    assert(pre.program.state.cache.entries[slot] is Empty);
-                                    assert(false);
-                                }
-                            }
-                            assert(!updated_entries.contains_key(slot));
-                            assert(post.program.state.cache.entries[slot]
-                                == pre.program.state.cache.entries[slot]);
-                            post.program.state.cache.build_lookup_map_ensures();
-                            pre.program.state.cache.build_lookup_map_ensures();
-                            assert(pre.program.state.cache.entries[slot].get_addr() == addr);
-                            assert(post.program.state.cache.entries[slot].get_addr() == addr);
-                            assert(post.program.state.cache.lookup_map.contains_key(addr));
-                            assert(cache_filled_addr(post.program.state.cache, addr));
-                        }
-                    },
-                    Cache::Step::evict(evicted_slots) => {
-                        assert(Cache::State::evict(
-                            pre.program.state.cache,
-                            post.program.state.cache,
-                            Cache::Label::Internal{},
-                            evicted_slots,
-                        ));
-                        let evicted_addrs = Map::new(
-                            |slot: Slot| evicted_slots.contains(slot),
-                            |slot: Slot| pre.program.state.cache.entries[slot].get_addr(),
-                        ).values();
-                        assert(post.program.state.cache.lookup_map
-                            == pre.program.state.cache.lookup_map.remove_keys(evicted_addrs));
-                        if filled_cache_pages(post.program.state.cache).contains_key(addr) {
-                            assert(!evicted_addrs.contains(addr)) by {
-                                if evicted_addrs.contains(addr) {
-                                    assert(!post.program.state.cache.lookup_map.contains_key(addr));
-                                    assert(cache_filled_addr(post.program.state.cache, addr));
-                                    assert(false);
-                                }
-                            }
-                            assert(cache_filled_addr(post.program.state.cache, addr));
-                            let slot = post.program.state.cache.lookup_map[addr];
-                            post.program.state.cache.build_lookup_map_ensures();
-                            pre.program.state.cache.build_lookup_map_ensures();
-                            assert(pre.program.state.cache.lookup_map.contains_key(addr));
-                            assert(pre.program.state.cache.lookup_map[addr] == slot);
-                            assert(cache_filled_addr(pre.program.state.cache, addr));
-                        }
-                        if filled_cache_pages(pre.program.state.cache).contains_key(addr) {
-                            if evicted_addrs.contains(addr) {
-                                cache_evicted_addr_lookup_slot(
-                                    pre.program.state.cache,
-                                    evicted_slots,
-                                    addr,
-                                );
-                                let evicted_slot = pre.program.state.cache.lookup_map[addr];
-                                assert(evicted_slots.contains(evicted_slot));
-                                assert(pre.program.state.cache.status_map[evicted_slot] is Clean);
-                                pre.program.state.cache.build_lookup_map_ensures();
-                                assert(pre.program.state.cache.build_lookup_map_props(
-                                    pre.program.state.cache.lookup_map,
-                                ));
-                                assert(pre.program.state.cache.entries[evicted_slot].get_addr() == addr);
-                                assert(pre.program.state.cache.lookup_map.contains_key(addr));
-                                assert(pre.program.state.cache.lookup_map[addr] == evicted_slot);
-                                assert(filled_cache_status(pre.program.state.cache).contains_key(addr));
-                                assert(filled_cache_status(pre.program.state.cache)[addr]
-                                    == CachingDiskPageStatus::Clean);
-                                assert(pre.disk.content.contains_key(addr));
-                                assert(pre.disk.content[addr]
-                                    == cache_filled_page(pre.program.state.cache, addr));
-                            } else {
-                                assert(cache_filled_addr(pre.program.state.cache, addr));
-                                let slot = pre.program.state.cache.lookup_map[addr];
-                                post.program.state.cache.build_lookup_map_ensures();
-                                pre.program.state.cache.build_lookup_map_ensures();
-                                assert(post.program.state.cache.lookup_map.contains_key(addr));
-                                assert(post.program.state.cache.lookup_map[addr] == slot);
-                                assert(cache_filled_addr(post.program.state.cache, addr));
-                            }
-                        }
-                    },
-                    Cache::Step::noop() => {
-                        assert(Cache::State::noop(
-                            pre.program.state.cache,
-                            post.program.state.cache,
-                            Cache::Label::Internal{},
-                        ));
-                        assert(post.program.state.cache == pre.program.state.cache);
-                    },
-                    _ => {
-                        assert(false);
-                    },
-                }
-            }
-        );
-    }
-
     assert(post.program.state.journal == pre.program.state.journal);
     assert(post.program.state.branch == pre.program.state.branch);
     assert(post.program.state.recovery_state == pre.program.state.recovery_state);
@@ -4248,6 +4763,7 @@ pub proof fn program_internal_cache_internal_preserves_bookkeeping(
     assert(post.program.state.wf());
 
     assert(another_atomic_persistent_image_wf(post.program.state));
+    assert(another_atomic_persistent_branch_image_agrees(post.program.state));
     assert(another_atomic_in_flight_wf(post.program.state));
     assert(another_atomic_branch_summary_wf(post.program.state));
     assert(another_atomic_persisted_branch_prefix_metadata_wf(post.program.state));
@@ -4291,306 +4807,135 @@ pub proof fn program_internal_cache_internal_preserves_bookkeeping(
         }
     }
 
-    assert(branch_component_refinement_inv(post)) by {
-        assert(post.program.state.wf());
-        assert(post.disk.inv());
-        assert(async_disk_superblock_page_wf(post.disk.content));
-        if crash_aware_caching_disk_branch_i(pre).ephemeral is Unknown {
-            assert(crash_aware_caching_disk_branch_i(post) == crash_aware_caching_disk_branch_i(pre));
-        } else {
-            assert(branch_projection_addrs(post) =~= branch_projection_addrs(pre)) by {
-                assert(branch_interpreted_summary_i(post) == branch_interpreted_summary_i(pre)) by {
-                    assert(branch_raw_visible_i(post) =~= branch_raw_visible_i(pre));
-                    assert(crate::implementation::CachingDiskBranch_v::to_branch_nodes(
-                        branch_raw_visible_i(post),
-                    ) == crate::implementation::CachingDiskBranch_v::to_branch_nodes(
-                        branch_raw_visible_i(pre),
-                    ));
-                }
-            }
-            assert(branch_persistent_projection_addrs(post) =~= branch_persistent_projection_addrs(pre)) by {
-                assert(branch_projection_addrs(post) =~= branch_projection_addrs(pre));
-            }
-            cache_internal_refines_caching_disk_internal_by_domains(
+    caching_disk_i_by_domains_inv_from_clean_cache_coupling(
+        pre.program.state.cache,
+        pre.disk,
+        journal_projection_addrs(pre),
+        journal_persistent_projection_addrs(pre),
+    );
+    assert(journal_caching_disk_i(pre).inv());
+    caching_disk_i_by_domains_inv_from_clean_cache_coupling(
+        pre.program.state.cache,
+        pre.disk,
+        branch_raw_projection_addrs(),
+        branch_raw_projection_addrs(),
+    );
+    branch_caching_disk_i_inv_from_cache_disk_coupling(pre);
+
+    assert(branch_cache_internal_component_env(pre, post));
+    branch_cache_internal_refines_component_internal(pre, post);
+    assert(branch_component_refinement_inv(post));
+    assert(branch_projected_aus_are_owned_data(post));
+
+    assert(journal_cache_internal_component_env(pre, post));
+    journal_cache_internal_refines_component_internal(pre, post);
+    assert(journal_component_refinement_inv(post));
+    assert(journal_projected_aus_are_component_data(post));
+    assert(projected_component_disjoint(post)) by {
+        assert(projected_component_disjoint(pre));
+        assert(journal_projection_aus(post) == journal_projection_aus(pre));
+        assert(branch_projection_aus(post) =~= branch_projection_aus(pre));
+    }
+    assert(projected_component_owned_aus(post) =~= projected_component_owned_aus(pre)) by {
+        assert(journal_projection_aus(post) == journal_projection_aus(pre));
+        assert(branch_projection_aus(post) =~= branch_projection_aus(pre));
+    }
+    assert(projected_allocation_wf(post)) by {
+        assert(projected_allocation_wf(pre));
+        assert(post.program.state.free_aus == pre.program.state.free_aus);
+    }
+
+    assert(journal_dirty_writeback_pages_tracked(post)) by {
+        assert forall |addr: Address| #[trigger] filled_cache_status(post.program.state.cache).contains_key(addr)
+            && (filled_cache_status(post.program.state.cache)[addr] == CachingDiskPageStatus::Dirty
+                || filled_cache_status(post.program.state.cache)[addr] == CachingDiskPageStatus::Writeback)
+            && post.program.state.journal_owned_aus().contains(addr.au)
+            implies mini_allocator_allocated_addrs(post.program.state.journal.mini_allocator).contains(addr)
+        by {
+            cache_internal_dirty_or_writeback_in_post_was_same_in_pre(
                 pre.program.state.cache,
                 post.program.state.cache,
-                pre.disk,
-                branch_projection_addrs(pre),
-                branch_persistent_projection_addrs(pre),
+                addr,
             );
-            assert(branch_projection_aus(post) =~= branch_projection_aus(pre)) by {
-                assert(branch_interpreted_summary_i(post) == branch_interpreted_summary_i(pre));
-            }
-            let src = crash_aware_caching_disk_branch_i(pre);
-            let dst = crash_aware_caching_disk_branch_i(post);
-            assert(src.ephemeral is Known);
-            assert(dst.ephemeral is Known);
-            assert(src.ephemeral->v.disk == branch_caching_disk_i(pre));
-            assert(dst.ephemeral->v.disk == branch_caching_disk_i(post));
-            assert(crate::implementation::CachingDiskBranch_v::CachingDiskBranch::State::disk_internal(
-                src.ephemeral->v,
-                dst.ephemeral->v,
-                crate::implementation::CachingDiskBranch_v::CachingDiskBranch::Label::Internal,
-                dst.ephemeral->v.disk,
-            )) by {
-                reveal(crate::implementation::CachingDiskBranch_v::CachingDiskBranch::State::disk_internal);
-            }
-            assert(crate::implementation::CachingDiskBranch_v::CachingDiskBranch::State::next_by(
-                src.ephemeral->v,
-                dst.ephemeral->v,
-                crate::implementation::CachingDiskBranch_v::CachingDiskBranch::Label::Internal,
-                crate::implementation::CachingDiskBranch_v::CachingDiskBranch::Step::disk_internal(
-                    dst.ephemeral->v.disk,
-                ),
-            )) by {
-                reveal(crate::implementation::CachingDiskBranch_v::CachingDiskBranch::State::next_by);
-            }
-            reveal(crate::implementation::CachingDiskBranch_v::CachingDiskBranch::State::next);
-            assert(CrashAwareCachingDiskBranch::State::next_by(
-                src,
-                dst,
-                CrashAwareCachingDiskBranch::Label::Internal,
-                CrashAwareCachingDiskBranch::Step::internal(dst.ephemeral->v),
-            )) by {
-                reveal(CrashAwareCachingDiskBranch::State::next_by);
-            }
-            reveal(CrashAwareCachingDiskBranch::State::next);
-            CrashAwareCachingDiskBranch::State::inv_next(
-                src,
-                dst,
-                CrashAwareCachingDiskBranch::Label::Internal,
-            );
-            assert(branch_caching_disk_state_i(post) == dst.ephemeral->v);
-            assert(dst.ephemeral->v.active_branch_i().inv());
-        }
-        if crash_aware_caching_disk_branch_i(post).ephemeral is Known {
-            assert(branch_caching_disk_state_i(post).active_branch_i().inv());
+            assert(post.program.state.journal == pre.program.state.journal);
+            assert(post.program.state.journal_owned_aus()
+                == pre.program.state.journal_owned_aus());
+            assert(journal_dirty_writeback_pages_tracked(pre));
         }
     }
 
-    assert(journal_component_refinement_inv(post)) by {
-        assert(post.program.state.wf());
-        assert(post.disk.inv());
-        assert(async_disk_superblock_page_wf(post.disk.content));
-        pre.program.state.cache.build_lookup_map_ensures();
-        post.program.state.cache.build_lookup_map_ensures();
-        assert(post.program.state.journal == pre.program.state.journal);
-        assert(post.program.state.recovery_state == pre.program.state.recovery_state);
-        assert(post.program.state.in_flight == pre.program.state.in_flight);
-        assert(post.program.state.journal.in_flight == pre.program.state.journal.in_flight);
-        assert(post.program.state.branch.in_flight == pre.program.state.branch.in_flight);
-        assert(journal_projection_uses_live(post) == journal_projection_uses_live(pre));
-        assert(journal_projection_addrs(post) =~= journal_projection_addrs(pre));
-        if crash_aware_caching_disk_journal_i(pre).ephemeral is Unknown {
-            assert(crash_aware_caching_disk_journal_i(post) == crash_aware_caching_disk_journal_i(pre));
-        } else {
-            assert(journal_persistent_projection_addrs(post) =~= journal_persistent_projection_addrs(pre)) by {
-                assert forall |addr: Address| #[trigger] journal_persistent_projection_addrs(post).contains(addr)
-                    <==> journal_persistent_projection_addrs(pre).contains(addr) by {
-                    assert(journal_projection_addrs(post).contains(addr)
-                        <==> journal_projection_addrs(pre).contains(addr));
-                    let cache_step = choose |step: Cache::Step| Cache::State::next_by(
-                        pre.program.state.cache,
-                        post.program.state.cache,
-                        Cache::Label::Internal{},
-                        step,
-                    );
-                    match cache_step {
-                        Cache::Step::reserve(new_slots_mapping) => {
-                            assert(Cache::State::reserve(
-                                pre.program.state.cache,
-                                post.program.state.cache,
-                                Cache::Label::Internal{},
-                                new_slots_mapping,
-                            ));
-                            let updated_entries = Map::new(
-                                |slot: Slot| new_slots_mapping.contains_key(slot),
-                                |slot: Slot| Entry::Reserved{addr: new_slots_mapping[slot]},
-                            );
-                            assert(post.program.state.cache.entries
-                                == pre.program.state.cache.entries.union_prefer_right(updated_entries));
-                            assert(post.program.state.cache.status_map
-                                == pre.program.state.cache.status_map);
-                            if filled_cache_pages(post.program.state.cache).contains_key(addr) {
-                                assert(cache_filled_addr(post.program.state.cache, addr));
-                                let slot = post.program.state.cache.lookup_map[addr];
-                                assert(post.program.state.cache.entries[slot] is Filled);
-                                assert(!updated_entries.contains_key(slot)) by {
-                                    if updated_entries.contains_key(slot) {
-                                        assert(post.program.state.cache.entries[slot]
-                                            == Entry::Reserved{addr: new_slots_mapping[slot]});
-                                        assert(false);
-                                    }
-                                }
-                                assert(post.program.state.cache.entries[slot]
-                                    == pre.program.state.cache.entries[slot]);
-                                assert(pre.program.state.cache.entries[slot] is Filled);
-                                assert(pre.program.state.cache.lookup_map.contains_key(addr));
-                                assert(pre.program.state.cache.lookup_map[addr] == slot) by {
-                                    assert(pre.program.state.cache.build_lookup_map_props(
-                                        pre.program.state.cache.lookup_map,
-                                    ));
-                                }
-                                assert(cache_filled_addr(pre.program.state.cache, addr));
-                            }
-                            if filled_cache_pages(pre.program.state.cache).contains_key(addr) {
-                                assert(cache_filled_addr(pre.program.state.cache, addr));
-                                let slot = pre.program.state.cache.lookup_map[addr];
-                                assert(pre.program.state.cache.entries[slot] is Filled);
-                                assert(!new_slots_mapping.contains_key(slot)) by {
-                                    if new_slots_mapping.contains_key(slot) {
-                                        assert(pre.program.state.cache.valid_new_slots_mapping(
-                                            new_slots_mapping,
-                                        ));
-                                        assert(pre.program.state.cache.entries[slot] is Empty);
-                                        assert(false);
-                                    }
-                                }
-                                assert(!updated_entries.contains_key(slot));
-                                assert(post.program.state.cache.entries[slot]
-                                    == pre.program.state.cache.entries[slot]);
-                                assert(post.program.state.cache.lookup_map.contains_key(addr));
-                                assert(post.program.state.cache.lookup_map[addr] == slot) by {
-                                    assert(post.program.state.cache.build_lookup_map_props(
-                                        post.program.state.cache.lookup_map,
-                                    ));
-                                }
-                                assert(cache_filled_addr(post.program.state.cache, addr));
-                            }
-                            assert(filled_cache_pages(post.program.state.cache).contains_key(addr)
-                                <==> filled_cache_pages(pre.program.state.cache).contains_key(addr));
-                            if filled_cache_status(post.program.state.cache).contains_key(addr) {
-                                assert(cache_filled_addr(post.program.state.cache, addr));
-                                assert(cache_filled_addr(pre.program.state.cache, addr));
-                                let slot = post.program.state.cache.lookup_map[addr];
-                                assert(pre.program.state.cache.lookup_map[addr] == slot);
-                                assert(post.program.state.cache.status_map[slot]
-                                    == pre.program.state.cache.status_map[slot]);
-                            }
-                            if filled_cache_status(pre.program.state.cache).contains_key(addr) {
-                                assert(cache_filled_addr(pre.program.state.cache, addr));
-                                assert(cache_filled_addr(post.program.state.cache, addr));
-                                let slot = pre.program.state.cache.lookup_map[addr];
-                                assert(post.program.state.cache.lookup_map[addr] == slot);
-                                assert(post.program.state.cache.status_map[slot]
-                                    == pre.program.state.cache.status_map[slot]);
-                            }
-                            assert(filled_cache_status(post.program.state.cache).contains_key(addr)
-                                <==> filled_cache_status(pre.program.state.cache).contains_key(addr));
-                        },
-                        Cache::Step::evict(evicted_slots) => {
-                            assert(Cache::State::evict(
-                                pre.program.state.cache,
-                                post.program.state.cache,
-                                Cache::Label::Internal{},
-                                evicted_slots,
-                            ));
-                            let evicted_map = Map::new(
-                                |slot: Slot| evicted_slots.contains(slot),
-                                |slot: Slot| pre.program.state.cache.entries[slot].get_addr(),
-                            );
-                            let evicted_addrs = evicted_map.values();
-                            assert(post.program.state.cache.lookup_map
-                                == pre.program.state.cache.lookup_map.remove_keys(evicted_addrs));
-                            if filled_cache_status(pre.program.state.cache).contains_key(addr)
-                                && !filled_cache_status(post.program.state.cache).contains_key(addr) {
-                                assert(cache_filled_addr(pre.program.state.cache, addr));
-                                assert(!post.program.state.cache.lookup_map.contains_key(addr)) by {
-                                    if post.program.state.cache.lookup_map.contains_key(addr) {
-                                        assert(cache_filled_addr(post.program.state.cache, addr));
-                                        assert(filled_cache_status(post.program.state.cache).contains_key(addr));
-                                        assert(false);
-                                    }
-                                }
-                                assert(evicted_addrs.contains(addr)) by {
-                                    if !evicted_addrs.contains(addr) {
-                                        assert(pre.program.state.cache.lookup_map.contains_key(addr));
-                                        assert(post.program.state.cache.lookup_map.contains_key(addr));
-                                        assert(false);
-                                    }
-                                }
-                                cache_evicted_addr_lookup_slot(
-                                    pre.program.state.cache,
-                                    evicted_slots,
-                                    addr,
-                                );
-                                let slot = pre.program.state.cache.lookup_map[addr];
-                                assert(evicted_slots.contains(slot));
-                                assert(pre.program.state.cache.entries[slot] is Filled);
-                                assert(pre.program.state.cache.status_map[slot] is Clean);
-                                assert(pre.program.state.cache.lookup_map.contains_key(addr));
-                                assert(pre.program.state.cache.lookup_map[addr] == slot) by {
-                                    assert(pre.program.state.cache.build_lookup_map_props(
-                                        pre.program.state.cache.lookup_map,
-                                    ));
-                                }
-                                assert(cache_filled_addr(pre.program.state.cache, addr));
-                                assert(filled_cache_status(pre.program.state.cache)[addr]
-                                    == CachingDiskPageStatus::Clean);
-                                assert(another_atomic_cache_disk_coupling(pre.program.state, pre.disk));
-                                assert(pre.disk.content.contains_key(addr));
-                                assert(pre.disk.content[addr]
-                                    == cache_filled_page(pre.program.state.cache, addr));
-                            }
-                        },
-                        Cache::Step::noop() => {
-                            assert(Cache::State::noop(
-                                pre.program.state.cache,
-                                post.program.state.cache,
-                                Cache::Label::Internal{},
-                            ));
-                            assert(post.program.state.cache == pre.program.state.cache);
-                        },
-                        _ => {
-                            assert(false);
-                        },
+    assert(branch_caching_disk_i(post).visible() == branch_caching_disk_i(pre).visible());
+    assert(branch_image_writeback_disjoint(post)) by {
+        assert(branch_image_writeback_disjoint(pre));
+        assert forall |req_id: ID| #[trigger] post.disk.requests.contains_key(req_id)
+            implies {
+                &&& branch_image_request_writeback_disjoint_at(
+                    post,
+                    atomic_persistent_superblock_image_i(post),
+                    req_id,
+                )
+                &&& post.program.state.in_flight is Some ==>
+                    branch_image_request_writeback_disjoint_at(
+                        post,
+                        post.program.state.atomic_inflight_superblock_i(),
+                        req_id,
+                    )
+            } by {
+            assert(pre.disk.requests.contains_key(req_id));
+            assert(post.disk.requests[req_id] == pre.disk.requests[req_id]);
+            assert(atomic_persistent_superblock_image_i(post)
+                == atomic_persistent_superblock_image_i(pre));
+            let persistent_image = atomic_persistent_superblock_image_i(pre);
+            assert(branch_image_static_domain_i(post, persistent_image)
+                == branch_image_static_domain_i(pre, persistent_image)) by {
+                if pre.program.state.superblock_metadata_known()
+                    && atomic_branch_metadata_loaded_flag(pre.program.state.branch)
+                {
+                    let frozen = CachingDiskBranchModule::CachingDiskBranchFrozenImage{
+                        sealed_roots: persistent_image.branch_roots,
+                        seq_end: persistent_image.branch_seq_end,
+                    };
+                    assert(branch_caching_disk_state_i(post).visible_image_for_metadata(frozen)
+                        == branch_caching_disk_state_i(pre).visible_image_for_metadata(frozen)) by {
+                        assert(branch_caching_disk_i(post).visible()
+                            == branch_caching_disk_i(pre).visible());
+                        assert(post.program.state.branch == pre.program.state.branch);
                     }
                 }
             }
-            cache_internal_refines_caching_disk_internal_by_domains(
-                pre.program.state.cache,
-                post.program.state.cache,
-                pre.disk,
-                journal_projection_addrs(pre),
-                journal_persistent_projection_addrs(pre),
-            );
-            let src = crash_aware_caching_disk_journal_i(pre);
-            let dst = crash_aware_caching_disk_journal_i(post);
-            assert(src.ephemeral is Known);
-            assert(dst.ephemeral is Known);
-            assert(src.ephemeral->v.disk == journal_caching_disk_i(pre));
-            assert(dst.ephemeral->v.disk == journal_caching_disk_i(post));
-            assert(CachingDiskJournal::State::caching_disk_internal(
-                src.ephemeral->v,
-                dst.ephemeral->v,
-                CachingDiskJournal::Label::Internal,
-                dst.ephemeral->v.disk,
-            )) by {
-                reveal(CachingDiskJournal::State::caching_disk_internal);
+            assert(branch_image_request_writeback_disjoint_at(
+                pre,
+                persistent_image,
+                req_id,
+            ));
+            if post.program.state.in_flight is Some {
+                assert(pre.program.state.in_flight is Some);
+                assert(post.program.state.atomic_inflight_superblock_i()
+                    == pre.program.state.atomic_inflight_superblock_i());
+                let inflight_image = pre.program.state.atomic_inflight_superblock_i();
+                assert(branch_image_static_domain_i(post, inflight_image)
+                    == branch_image_static_domain_i(pre, inflight_image)) by {
+                    if pre.program.state.superblock_metadata_known()
+                        && atomic_branch_metadata_loaded_flag(pre.program.state.branch)
+                    {
+                        let frozen = CachingDiskBranchModule::CachingDiskBranchFrozenImage{
+                            sealed_roots: inflight_image.branch_roots,
+                            seq_end: inflight_image.branch_seq_end,
+                        };
+                        assert(branch_caching_disk_state_i(post).visible_image_for_metadata(frozen)
+                            == branch_caching_disk_state_i(pre).visible_image_for_metadata(frozen)) by {
+                            assert(branch_caching_disk_i(post).visible()
+                                == branch_caching_disk_i(pre).visible());
+                            assert(post.program.state.branch == pre.program.state.branch);
+                        }
+                    }
+                }
+                assert(branch_image_request_writeback_disjoint_at(
+                    pre,
+                    inflight_image,
+                    req_id,
+                ));
             }
-            assert(CachingDiskJournal::State::next_by(
-                src.ephemeral->v,
-                dst.ephemeral->v,
-                CachingDiskJournal::Label::Internal,
-                CachingDiskJournal::Step::caching_disk_internal(dst.ephemeral->v.disk),
-            )) by {
-                reveal(CachingDiskJournal::State::next_by);
-            }
-            reveal(CachingDiskJournal::State::next);
-            assert(CrashAwareCachingDiskJournal::State::next_by(
-                src,
-                dst,
-                CrashAwareCachingDiskJournal::Label::Internal,
-                CrashAwareCachingDiskJournal::Step::internal(dst.ephemeral->v),
-            )) by {
-                reveal(CrashAwareCachingDiskJournal::State::next_by);
-            }
-            reveal(CrashAwareCachingDiskJournal::State::next);
-            CrashAwareCachingDiskJournal::State::inv_next(
-                src,
-                dst,
-                CrashAwareCachingDiskJournal::Label::Internal,
-            );
         }
     }
 
@@ -4908,11 +5253,40 @@ pub proof fn metadata_load_complete_preserves_refinement_invariants(
         pre.program.state,
         post.program.state,
     );
-    cache_disk_request_wf_preserved_by_unchanged(
-        pre.program.state,
-        post.program.state,
-        post.disk,
-    );
+    assert(another_atomic_cache_disk_request_wf(post.program.state, post.disk)) by {
+        assert forall |id: ID| #[trigger] post.disk.requests.contains_key(id)
+            && post.disk.requests[id].addr() != spec_superblock_addr()
+            implies {
+                let req = post.disk.requests[id];
+                let addr = req.addr();
+                &&& post.program.state.outstanding_cache_reqs.contains_key(id)
+                &&& post.program.state.outstanding_cache_reqs[id] == addr
+                &&& req is WriteReq ==> {
+                    &&& post.program.state.journal_metadata_loaded()
+                    &&& (post.program.state.recovery_state is MetadataLoadComplete
+                        || post.program.state.recovery_state is RecoveryComplete)
+                    &&& cache_filled_addr(post.program.state.cache, req->to)
+                    &&& cache_filled_page(post.program.state.cache, req->to) == req->data
+                    &&& filled_cache_status(post.program.state.cache).contains_key(req->to)
+                    &&& filled_cache_status(post.program.state.cache)[req->to]
+                        == CachingDiskPageStatus::Writeback
+                }
+            }
+        by {
+            assert(post.disk == pre.disk);
+            assert(post.program.state.outstanding_cache_reqs
+                == pre.program.state.outstanding_cache_reqs);
+            assert(post.program.state.cache == pre.program.state.cache);
+            assert(pre.program.state.recovery_state is SuperblockAvailable);
+            let req = post.disk.requests[id];
+            if req is WriteReq {
+                assert(another_atomic_cache_disk_request_wf(pre.program.state, pre.disk));
+                assert(pre.program.state.recovery_state is MetadataLoadComplete
+                    || pre.program.state.recovery_state is RecoveryComplete);
+                assert(false);
+            }
+        }
+    }
     assert(post.program.state.journal_metadata_loaded()
         == pre.program.state.journal_metadata_loaded());
     assert(post.program.state.in_flight == pre.program.state.in_flight);
@@ -5102,7 +5476,19 @@ pub proof fn branch_split_write_projection_facts(
         ),
     ensures
         to_aus(writes.dom()) <= pre.program.state.branch_owned_aus(),
+        writes.dom() <= branch_backing_projection_addrs(pre),
         writes.dom() <= addresses_in_aus(branch_projection_aus(pre)),
+        post.program.state.branch == branch,
+        post.program.state.journal == pre.program.state.journal,
+        post.program.state.in_flight == pre.program.state.in_flight,
+        post.program.state.journal.in_flight == pre.program.state.journal.in_flight,
+        post.program.state.branch.in_flight == pre.program.state.branch.in_flight,
+        post.program.state.branch.persisted_root_count
+            == pre.program.state.branch.persisted_root_count,
+        post.program.state.branch.wf(),
+        post.program.state.branch_owned_aus() <= pre.program.state.branch_owned_aus(),
+        post.program.state.branch_metadata_loaded(),
+        post.program.state.recovery_metadata_wf(),
 {
     let read_nodes = crate::implementation::AnotherAtomicState_v::to_branch_nodes(reads);
     let write_nodes = crate::implementation::AnotherAtomicState_v::to_branch_nodes(writes);
@@ -5176,6 +5562,11 @@ pub proof fn branch_split_write_projection_facts(
                 },
             }
             assert(new_active_branch == pre.program.state.branch.active_branch);
+            AtomicBranchState::State::wf_next(
+                pre.program.state.branch,
+                branch,
+                branch_lbl,
+            );
         },
         _ => {
             assert(false);
@@ -5341,6 +5732,40 @@ pub proof fn branch_split_write_projection_facts(
             assert(branch_projection_aus(pre).contains(addr.au));
         }
     }
+    assert(writes.dom() <= branch_backing_projection_addrs(pre)) by {
+        assert forall |addr: Address| #[trigger] writes.dom().contains(addr)
+            implies branch_backing_projection_addrs(pre).contains(addr) by {
+            assert(addresses_in_aus(branch_projection_aus(pre)).contains(addr));
+            if addr == parent_addr {
+                assert(active_i.addrs_closed_under_mini_allocator());
+                assert(active_i.mini_allocator.page_is_reserved(parent_addr));
+                assert(parent_addr.wf());
+            } else if addr == child_addr {
+                assert(active_i.addrs_closed_under_mini_allocator());
+                assert(active_i.mini_allocator.page_is_reserved(child_addr));
+                assert(child_addr.wf());
+            } else {
+                assert(addr == new_child_addr);
+                assert(pre.program.state.branch.mini_allocator.can_allocate(new_child_addr));
+                assert(new_child_addr.wf());
+            }
+        }
+    }
+    assert(post.program.state.branch == branch);
+    assert(post.program.state.journal == pre.program.state.journal);
+    assert(post.program.state.in_flight == pre.program.state.in_flight);
+    assert(post.program.state.journal.in_flight == pre.program.state.journal.in_flight);
+    assert(post.program.state.branch.in_flight == pre.program.state.branch.in_flight);
+    assert(post.program.state.branch.persisted_root_count
+        == pre.program.state.branch.persisted_root_count);
+    AtomicBranchState::State::split_preserves_backing_aus(
+        pre.program.state.branch,
+        branch,
+        branch_lbl,
+    );
+    assert(post.program.state.branch_owned_aus() <= pre.program.state.branch_owned_aus());
+    assert(post.program.state.branch_metadata_loaded());
+    assert(post.program.state.recovery_metadata_wf());
 }
 
 pub proof fn branch_grow_write_projection_facts(
@@ -5363,6 +5788,7 @@ pub proof fn branch_grow_write_projection_facts(
         ),
     ensures
         to_aus(writes.dom()) <= pre.program.state.branch_owned_aus(),
+        writes.dom() <= branch_backing_projection_addrs(pre),
         post.program.state.branch == branch,
         post.program.state.journal == pre.program.state.journal,
         post.program.state.in_flight == pre.program.state.in_flight,
@@ -5438,6 +5864,24 @@ pub proof fn branch_grow_write_projection_facts(
     }
     assert(writes.dom() =~= write_nodes.dom());
     assert(to_aus(writes.dom()) <= pre.program.state.branch_owned_aus());
+    client_ready_implies_atomic_branch_metadata_loaded_flag(pre.program.state);
+    assert(branch_projection_aus(pre) == pre.program.state.branch_owned_aus());
+    assert(writes.dom() <= branch_backing_projection_addrs(pre)) by {
+        assert forall |addr: Address| #[trigger] writes.dom().contains(addr)
+            implies branch_backing_projection_addrs(pre).contains(addr) by {
+            assert(writes.dom() =~= write_nodes.dom());
+            assert(write_nodes == loaded_grow_write_nodes(
+                pre.program.state.branch.active_branch.root.unwrap(),
+                new_root_addr,
+            ));
+            assert(addr == new_root_addr);
+            assert(pre.program.state.branch.mini_allocator.can_allocate(new_root_addr));
+            assert(new_root_addr.wf());
+            assert(pre.program.state.branch.mini_allocator.all_aus().contains(new_root_addr.au));
+            assert(branch_projection_aus(pre).contains(addr.au));
+            assert(addresses_in_aus(branch_projection_aus(pre)).contains(addr));
+        }
+    }
 }
 
 pub proof fn branch_seal_write_projection_facts(
@@ -5668,6 +6112,9 @@ pub proof fn branch_read_node_matches_visible_after_read_only_access(
     addr: Address,
 )
     requires
+        pre.program.state.cache.inv(),
+        addr.wf(),
+        !AnotherAtomicState::reserved_aus().contains(addr.au),
         Cache::State::next(
             pre.program.state.cache,
             post.program.state.cache,
@@ -5695,9 +6142,17 @@ pub proof fn branch_read_node_matches_visible_after_read_only_access(
     )) by {
         reveal(Cache::State::access);
     }
+    Cache::State::access_read_valid(
+        pre.program.state.cache,
+        post.program.state.cache,
+        reads,
+        Map::empty(),
+        addr,
+    );
     assert(pre.program.state.cache.valid_read(addr, reads[addr]));
     assert(cache_filled_addr(pre.program.state.cache, addr)) by {
         assert(pre.program.state.cache.lookup_map.contains_key(addr));
+        pre.program.state.cache.build_lookup_map_ensures();
         assert(pre.program.state.cache.entries[
             pre.program.state.cache.lookup_map[addr]
         ] is Filled);
@@ -6009,7 +6464,9 @@ pub proof fn branch_load_metadata_preserves_allocation_projection_wf(
                 assert(pre.program.state.superblock_metadata_known());
                 assert(crash_aware_caching_disk_branch_i(pre).ephemeral is Known);
                 assert(branch_caching_disk_state_i(pre).inv());
-                assert(branch_caching_disk_state_i(pre).sealed_stack_i().wf());
+                assert(branch_caching_disk_state_i(pre).sealed_stack_i().wf(
+                    branch_caching_disk_state_i(pre).interpreted_branch_summary(),
+                ));
             }
             assert(post.program.state.branch.branch_summary.dom()
                 <= CachingDiskBranchModule::root_aus_up_to(
@@ -6123,7 +6580,9 @@ pub proof fn branch_load_metadata_preserves_allocation_projection_wf(
             assert(pre.program.state.superblock_metadata_known());
             assert(crash_aware_caching_disk_branch_i(pre).ephemeral is Known);
             assert(branch_caching_disk_state_i(pre).inv());
-            assert(branch_caching_disk_state_i(pre).sealed_stack_i().wf());
+            assert(branch_caching_disk_state_i(pre).sealed_stack_i().wf(
+                branch_caching_disk_state_i(pre).interpreted_branch_summary(),
+            ));
         }
         branch_read_node_matches_visible_after_read_only_access(pre, post, reads, root);
         assert(read_nodes[root] == branch_visible_nodes_i(post)[root]);
@@ -6215,7 +6674,9 @@ pub proof fn branch_load_metadata_preserves_allocation_projection_wf(
             assert(pre.program.state.superblock_metadata_known());
             assert(crash_aware_caching_disk_branch_i(pre).ephemeral is Known);
             assert(branch_caching_disk_state_i(pre).inv());
-            assert(branch_caching_disk_state_i(pre).sealed_stack_i().wf());
+            assert(branch_caching_disk_state_i(pre).sealed_stack_i().wf(
+                branch_caching_disk_state_i(pre).interpreted_branch_summary(),
+            ));
         }
         assert(set_addrs_disjoint_aus(
             post.program.state.branch.image.sealed_roots.to_set(),
@@ -6331,7 +6792,6 @@ pub proof fn disk_internal_preserves_refinement_invariants(
             assert(frozen_journal_image_i(post) == frozen_journal_image_i(pre));
             assert(journal_projection_tight(post));
             assert(journal_projection_uses_shared_async_disk(post));
-            assert(persistent_journal_image_i(post).wf());
         },
         AsyncDisk::Step::process_write(id) => {
             assert(AsyncDisk::State::next_by(
@@ -6378,10 +6838,23 @@ pub proof fn disk_internal_preserves_refinement_invariants(
                         assert(AnotherAtomicState::reserved_aus().contains(spec_superblock_addr().au));
                         assert(false);
                     }
-                }
-                journal_image_persistent_preserved_by_disjoint_write(
-                    pre,
-                    post,
+	                }
+	                assert(pre.program.state.journal_metadata_loaded());
+	                assert(post.program.state.journal_metadata_loaded());
+	                journal_image_projection_aus_loaded_index_unchanged(pre, post, persistent_image);
+	                assert(journal_image_projection_domain_i(post, persistent_image)
+	                    =~= journal_image_projection_domain_i(pre, persistent_image)) by {
+	                    assert forall |addr: Address|
+	                        journal_image_projection_domain_i(post, persistent_image).contains(addr)
+	                            <==> journal_image_projection_domain_i(pre, persistent_image).contains(addr)
+	                    by {
+	                        assert(journal_image_projection_aus_i(post, persistent_image).contains(addr.au)
+	                            <==> journal_image_projection_aus_i(pre, persistent_image).contains(addr.au));
+	                    }
+	                }
+	                journal_image_persistent_preserved_by_disjoint_write(
+	                    pre,
+	                    post,
                     persistent_image,
                     spec_superblock_addr(),
                     req->data,
@@ -6403,11 +6876,24 @@ pub proof fn disk_internal_preserves_refinement_invariants(
                         assert(journal_projected_aus_are_component_data(pre));
                         assert(AnotherAtomicState::reserved_aus().contains(spec_superblock_addr().au));
                         assert(false);
-                    }
-                }
-                journal_image_persistent_preserved_by_disjoint_write(
-                    pre,
-                    post,
+	                    }
+	                }
+	                assert(pre.program.state.journal_metadata_loaded());
+	                assert(post.program.state.journal_metadata_loaded());
+	                journal_image_projection_aus_loaded_index_unchanged(pre, post, frozen_image);
+	                assert(journal_image_projection_domain_i(post, frozen_image)
+	                    =~= journal_image_projection_domain_i(pre, frozen_image)) by {
+	                    assert forall |addr: Address|
+	                        journal_image_projection_domain_i(post, frozen_image).contains(addr)
+	                            <==> journal_image_projection_domain_i(pre, frozen_image).contains(addr)
+	                    by {
+	                        assert(journal_image_projection_aus_i(post, frozen_image).contains(addr.au)
+	                            <==> journal_image_projection_aus_i(pre, frozen_image).contains(addr.au));
+	                    }
+	                }
+	                journal_image_persistent_preserved_by_disjoint_write(
+	                    pre,
+	                    post,
                     frozen_image,
                     spec_superblock_addr(),
                     req->data,
@@ -6546,6 +7032,199 @@ pub proof fn disk_internal_preserves_refinement_invariants(
                 }
                 assert(branch_caching_disk_i(post) == branch_caching_disk_i(pre));
                 assert(branch_caching_disk_state_i(post) == branch_caching_disk_state_i(pre));
+                assert(!branch_image_static_domain_i(pre, persistent_image).contains(
+                    spec_superblock_addr(),
+                )) by {
+                    assert(pre.program.state.branch.wf());
+                    assert(another_atomic_persistent_branch_image_agrees(pre.program.state));
+                    assert(pre.program.state.branch.persistent_image.sealed_roots
+                        == persistent_image.branch_roots);
+                    assert(pre.program.state.branch.persistent_image.seq_end
+                        == persistent_image.branch_seq_end);
+                    assert(persistent_image.branch_roots.len()
+                        <= pre.program.state.branch.persisted_root_count);
+                    seq_take_prefix_implies_subrange_prefix(
+                        pre.program.state.branch.image.sealed_roots,
+                        persistent_image.branch_roots,
+                    );
+                    branch_image_static_domain_subset_branch_projection(
+                        pre,
+                        persistent_image,
+                    );
+                    if branch_image_static_domain_i(pre, persistent_image).contains(
+                        spec_superblock_addr(),
+                    ) {
+                        assert(addresses_in_aus(branch_projection_aus(pre)).contains(
+                            spec_superblock_addr(),
+                        ));
+                        assert(branch_projected_aus_are_owned_data(pre));
+                        assert(AnotherAtomicState::reserved_aus().contains(spec_superblock_addr().au));
+                        assert(false);
+                    }
+                }
+                let persistent_branch_frozen = CachingDiskBranchModule::CachingDiskBranchFrozenImage{
+                    sealed_roots: persistent_image.branch_roots,
+                    seq_end: persistent_image.branch_seq_end,
+                };
+                assert(branch_caching_disk_state_i(post).visible_image_for_metadata(persistent_branch_frozen)
+                    == branch_caching_disk_state_i(pre).visible_image_for_metadata(persistent_branch_frozen)) by {
+                    assert(branch_caching_disk_i(post).visible() == branch_caching_disk_i(pre).visible());
+                    assert(post.program.state == pre.program.state);
+                }
+                branch_image_static_domain_preserved_by_write_outside(
+                    pre,
+                    post,
+                    persistent_image,
+                    spec_superblock_addr(),
+                    req->data,
+                );
+                assert(branch_image_static_domain_i(post, persistent_image)
+                    == branch_image_static_domain_i(pre, persistent_image));
+                if pre.program.state.in_flight is Some {
+                    let inflight_image = pre.program.state.atomic_inflight_superblock_i();
+                    assert(!branch_image_static_domain_i(pre, inflight_image).contains(
+                        spec_superblock_addr(),
+                    )) by {
+                        assert(pre.program.state.branch.wf());
+                        assert(another_atomic_in_flight_wf(pre.program.state));
+                        assert(another_atomic_superblock_write_request_wf(pre.program.state, pre.disk));
+                        assert(atomic_superblock_prepared_i(pre));
+                        assert(crash_aware_caching_disk_branch_i(pre).inv());
+                        assert(crash_aware_caching_disk_branch_i(pre).prepared);
+                        assert(crash_aware_caching_disk_branch_i(pre).frozen is Some);
+                        assert(pre.program.state.branch.in_flight is Some);
+                        assert(inflight_image.branch_roots
+                            == pre.program.state.branch.in_flight.unwrap().sealed_roots);
+                        assert(crash_aware_caching_disk_branch_i(pre).frozen.unwrap().sealed_roots
+                            == inflight_image.branch_roots);
+                        assert(crash_aware_caching_disk_branch_i(pre).ephemeral is Known);
+                        assert(crash_aware_caching_disk_branch_i(pre).ephemeral->v.persisted_root_count
+                            == pre.program.state.branch.persisted_root_count);
+                        assert(inflight_image.branch_roots.len()
+                            <= pre.program.state.branch.persisted_root_count);
+                        assert(inflight_image.branch_roots.len()
+                            <= pre.program.state.branch.image.sealed_roots.len());
+                        seq_take_prefix_implies_subrange_prefix(
+                            pre.program.state.branch.image.sealed_roots,
+                            inflight_image.branch_roots,
+                        );
+                        branch_image_static_domain_subset_branch_projection(
+                            pre,
+                            inflight_image,
+                        );
+                        if branch_image_static_domain_i(pre, inflight_image).contains(
+                            spec_superblock_addr(),
+                        ) {
+                            assert(addresses_in_aus(branch_projection_aus(pre)).contains(
+                                spec_superblock_addr(),
+                            ));
+                            assert(branch_projected_aus_are_owned_data(pre));
+                            assert(AnotherAtomicState::reserved_aus().contains(spec_superblock_addr().au));
+                            assert(false);
+                        }
+                    }
+                    let inflight_branch_frozen = CachingDiskBranchModule::CachingDiskBranchFrozenImage{
+                        sealed_roots: inflight_image.branch_roots,
+                        seq_end: inflight_image.branch_seq_end,
+                    };
+                    assert(branch_caching_disk_state_i(post).visible_image_for_metadata(inflight_branch_frozen)
+                        == branch_caching_disk_state_i(pre).visible_image_for_metadata(inflight_branch_frozen)) by {
+                        assert(branch_caching_disk_i(post).visible() == branch_caching_disk_i(pre).visible());
+                        assert(post.program.state == pre.program.state);
+                    }
+                    branch_image_static_domain_preserved_by_write_outside(
+                        pre,
+                        post,
+                        inflight_image,
+                        spec_superblock_addr(),
+                        req->data,
+                    );
+                    assert(branch_image_static_domain_i(post, inflight_image)
+                        == branch_image_static_domain_i(pre, inflight_image));
+                }
+                assert(persistent_branch_image_i(post) == persistent_branch_image_i(pre)) by {
+                    assert_maps_equal!(
+                        persistent_branch_image_i(post).persistent,
+                        persistent_branch_image_i(pre).persistent,
+                        addr => {
+                            assert(branch_image_projection_addrs_i(
+                                post.disk.content,
+                                persistent_image.branch_roots,
+                            ).contains(addr)
+                                <==> branch_image_projection_addrs_i(
+                                    pre.disk.content,
+                                    persistent_image.branch_roots,
+                                ).contains(addr));
+                            if branch_image_projection_addrs_i(
+                                pre.disk.content,
+                                persistent_image.branch_roots,
+                            ).contains(addr) {
+                                assert(addr != spec_superblock_addr());
+                                assert(post.disk.content[addr] == pre.disk.content[addr]);
+                            }
+                        }
+                    );
+                }
+                assert(branch_image_writeback_disjoint(post)) by {
+                    assert forall |req_id: ID| #[trigger] post.disk.requests.contains_key(req_id)
+                        implies {
+                            &&& branch_image_request_writeback_disjoint_at(
+                                post,
+                                atomic_persistent_superblock_image_i(post),
+                                req_id,
+                            )
+                            &&& post.program.state.in_flight is Some ==>
+                                branch_image_request_writeback_disjoint_at(
+                                    post,
+                                    post.program.state.atomic_inflight_superblock_i(),
+                                    req_id,
+                                )
+                        } by {
+                        assert(pre.disk.requests.contains_key(req_id));
+                        assert(post.disk.requests[req_id] == pre.disk.requests[req_id]);
+                        if post.disk.requests[req_id] is WriteReq
+                            && post.disk.requests[req_id]->to != spec_superblock_addr() {
+                            assert(branch_image_writeback_disjoint(pre));
+                            assert(branch_image_request_writeback_disjoint_at(
+                                pre,
+                                persistent_image,
+                                req_id,
+                            ));
+                            assert(!branch_image_static_domain_i(pre, persistent_image).contains(
+                                post.disk.requests[req_id]->to,
+                            ));
+                            assert(!branch_image_static_domain_i(post, persistent_image).contains(
+                                post.disk.requests[req_id]->to,
+                            ));
+                            if post.program.state.in_flight is Some {
+                                assert(pre.program.state.in_flight is Some);
+                                let inflight_image = pre.program.state.atomic_inflight_superblock_i();
+                                assert(post.program.state.atomic_inflight_superblock_i() == inflight_image);
+                                assert(branch_image_request_writeback_disjoint_at(
+                                    pre,
+                                    inflight_image,
+                                    req_id,
+                                ));
+                                assert(!branch_image_static_domain_i(pre, inflight_image).contains(
+                                    post.disk.requests[req_id]->to,
+                                ));
+                                assert(!branch_image_static_domain_i(post, inflight_image).contains(
+                                    post.disk.requests[req_id]->to,
+                                ));
+                            }
+                        }
+                    }
+                }
+                assert(persistent_branch_image_i(post).wf()) by {
+                    assert(persistent_branch_image_i(post) == persistent_branch_image_i(pre));
+                    assert(branch_component_refinement_inv(pre));
+                }
+                assert(branch_component_refinement_inv(post)) by {
+                    assert(persistent_branch_image_i(post).wf());
+                    assert(crash_aware_caching_disk_branch_i(post)
+                        == crash_aware_caching_disk_branch_i(pre));
+                    assert(branch_component_refinement_inv(pre));
+                }
             } else {
                 disk_internal_process_data_write_preserves_refinement_invariants(
                     pre,
@@ -6559,7 +7238,6 @@ pub proof fn disk_internal_preserves_refinement_invariants(
             assert(false);
         },
     }
-    assert(persistent_journal_image_i(post).wf());
     assert(journal_projection_tight(post));
     assert(journal_projection_uses_shared_async_disk(post));
     if post.program.state.client_ready() {
@@ -6646,10 +7324,14 @@ pub proof fn disk_internal_process_read_preserves_refinement_invariants(
     assert(branch_caching_disk_i(post) == branch_caching_disk_i(pre));
     assert(branch_caching_disk_state_i(post) == branch_caching_disk_state_i(pre));
     assert(crash_aware_caching_disk_branch_i(post) == crash_aware_caching_disk_branch_i(pre));
+    assert(persistent_branch_image_i(post) == persistent_branch_image_i(pre)) by {
+        assert(atomic_persistent_superblock_image_i(post)
+            == atomic_persistent_superblock_image_i(pre));
+        assert(post.disk.content == pre.disk.content);
+    }
     assert(branch_component_refinement_inv(post));
     assert(journal_projection_tight(post));
     assert(journal_projection_uses_shared_async_disk(post));
-    assert(persistent_journal_image_i(post).wf());
     assert(journal_component_refinement_inv(post));
     assert(journal_projected_aus_are_component_data(post));
     assert(branch_projected_aus_are_owned_data(post));
@@ -6667,9 +7349,10 @@ pub proof fn disk_internal_process_read_preserves_refinement_invariants(
     assert(another_atomic_recovery_image_matches_disk(post));
     assert(journal_image_writeback_disjoint(post)) by {
         assert(journal_image_writeback_disjoint(pre));
-        assert(durable_superblock_image_i(post) == durable_superblock_image_i(pre));
-        let durable_image = durable_superblock_image_i(pre);
-        journal_image_static_domain_unchanged_by_disk_content(pre, post, durable_image);
+        assert(atomic_persistent_superblock_image_i(post)
+            == atomic_persistent_superblock_image_i(pre));
+        let persistent_image = atomic_persistent_superblock_image_i(pre);
+        journal_image_static_domain_unchanged_by_disk_content(pre, post, persistent_image);
         if pre.program.state.in_flight is Some {
             journal_image_static_domain_unchanged_by_disk_content(
                 pre,
@@ -6686,34 +7369,9 @@ pub proof fn disk_internal_process_read_preserves_refinement_invariants(
                 addr => { }
             );
         }
-        assert forall |req_id: ID| #[trigger] post.disk.requests.contains_key(req_id)
-            && post.disk.requests[req_id] is WriteReq
-            && post.disk.requests[req_id]->to != spec_superblock_addr()
-            implies post.program.state.journal_metadata_loaded()
-        by {
-            assert(pre.disk.requests.contains_key(req_id));
-            assert(post.disk.requests[req_id] == pre.disk.requests[req_id]);
-            assert(pre.program.state.journal_metadata_loaded());
-        }
-        assert forall |addr: Address| #[trigger] filled_cache_status(post.program.state.cache).contains_key(addr)
-            && filled_cache_status(post.program.state.cache)[addr] == CachingDiskPageStatus::Dirty
-            implies post.program.state.journal_metadata_loaded()
-        by {
-            assert(filled_cache_status(pre.program.state.cache).contains_key(addr));
-            assert(filled_cache_status(pre.program.state.cache)[addr] == CachingDiskPageStatus::Dirty);
-            assert(pre.program.state.journal_metadata_loaded());
-        }
-        assert forall |addr: Address| #[trigger] filled_cache_status(post.program.state.cache).contains_key(addr)
-            && filled_cache_status(post.program.state.cache)[addr] == CachingDiskPageStatus::Writeback
-            implies post.program.state.journal_metadata_loaded()
-        by {
-            assert(filled_cache_status(pre.program.state.cache).contains_key(addr));
-            assert(filled_cache_status(pre.program.state.cache)[addr] == CachingDiskPageStatus::Writeback);
-            assert(pre.program.state.journal_metadata_loaded());
-        }
         assert forall |addr: Address| #[trigger] filled_cache_status(post.program.state.cache).contains_key(addr)
             implies {
-                &&& journal_image_dirty_cache_disjoint_at(post, durable_superblock_image_i(post), addr)
+                &&& journal_image_dirty_cache_disjoint_at(post, atomic_persistent_superblock_image_i(post), addr)
                 &&& another_atomic_superblock_write_pending(post) ==>
                     journal_image_dirty_cache_disjoint_at(
                         post,
@@ -6726,9 +7384,12 @@ pub proof fn disk_internal_process_read_preserves_refinement_invariants(
             assert(filled_cache_status(post.program.state.cache)[addr]
                 == filled_cache_status(pre.program.state.cache)[addr]);
             if filled_cache_status(post.program.state.cache)[addr] == CachingDiskPageStatus::Dirty {
-                assert(journal_image_dirty_cache_disjoint_at(pre, durable_image, addr));
-                assert(!journal_image_static_domain_i(pre, durable_image).contains(addr));
-                assert(!journal_image_static_domain_i(post, durable_image).contains(addr));
+                assert(filled_cache_status(pre.program.state.cache)[addr]
+                    == CachingDiskPageStatus::Dirty);
+                assert(journal_image_writeback_disjoint(pre));
+                assert(journal_image_dirty_cache_disjoint_at(pre, persistent_image, addr));
+                assert(!journal_image_static_domain_i(pre, persistent_image).contains(addr));
+                assert(!journal_image_static_domain_i(post, persistent_image).contains(addr));
                 if another_atomic_superblock_write_pending(post) {
                     assert(pre.program.state.in_flight is Some);
                     assert(another_atomic_superblock_write_pending(pre));
@@ -6742,7 +7403,7 @@ pub proof fn disk_internal_process_read_preserves_refinement_invariants(
         }
         assert forall |req_id: ID| #[trigger] post.disk.requests.contains_key(req_id)
             implies {
-                &&& journal_image_request_writeback_disjoint_at(post, durable_superblock_image_i(post), req_id)
+                &&& journal_image_request_writeback_disjoint_at(post, atomic_persistent_superblock_image_i(post), req_id)
                 &&& another_atomic_superblock_write_pending(post) ==>
                     journal_image_request_writeback_disjoint_at(
                         post,
@@ -6755,11 +7416,14 @@ pub proof fn disk_internal_process_read_preserves_refinement_invariants(
             assert(post.disk.requests[req_id] == pre.disk.requests[req_id]);
             if post.disk.requests[req_id] is WriteReq
                 && post.disk.requests[req_id]->to != spec_superblock_addr() {
-                assert(journal_image_request_writeback_disjoint_at(pre, durable_image, req_id));
-                assert(!journal_image_static_domain_i(pre, durable_image).contains(
+                assert(pre.disk.requests[req_id] is WriteReq);
+                assert(pre.disk.requests[req_id]->to != spec_superblock_addr());
+                assert(journal_image_writeback_disjoint(pre));
+                assert(journal_image_request_writeback_disjoint_at(pre, persistent_image, req_id));
+                assert(!journal_image_static_domain_i(pre, persistent_image).contains(
                     post.disk.requests[req_id]->to,
                 ));
-                assert(!journal_image_static_domain_i(post, durable_image).contains(
+                assert(!journal_image_static_domain_i(post, persistent_image).contains(
                     post.disk.requests[req_id]->to,
                 ));
                 if another_atomic_superblock_write_pending(post) {
@@ -6780,7 +7444,7 @@ pub proof fn disk_internal_process_read_preserves_refinement_invariants(
         assert(journal_allocable_addrs_image_disjoint(post)) by {
             assert forall |addr: Address| #[trigger] post.program.state.journal.mini_allocator.can_allocate(addr)
                 implies {
-                    &&& !journal_image_static_domain_i(post, durable_superblock_image_i(post)).contains(addr)
+                    &&& !journal_image_static_domain_i(post, atomic_persistent_superblock_image_i(post)).contains(addr)
                     &&& post.program.state.in_flight is Some ==>
                         !journal_image_static_domain_i(
                             post,
@@ -6789,8 +7453,8 @@ pub proof fn disk_internal_process_read_preserves_refinement_invariants(
                 } by {
                 assert(pre.program.state.journal.mini_allocator.can_allocate(addr));
                 assert(journal_allocable_addrs_image_disjoint(pre));
-                assert(!journal_image_static_domain_i(pre, durable_image).contains(addr));
-                assert(!journal_image_static_domain_i(post, durable_image).contains(addr));
+                assert(!journal_image_static_domain_i(pre, persistent_image).contains(addr));
+                assert(!journal_image_static_domain_i(post, persistent_image).contains(addr));
                 if post.program.state.in_flight is Some {
                     assert(pre.program.state.in_flight is Some);
                     let frozen_image = pre.program.state.atomic_inflight_superblock_i();
@@ -6801,9 +7465,81 @@ pub proof fn disk_internal_process_read_preserves_refinement_invariants(
             }
         }
     }
+    assert(branch_image_writeback_disjoint(post)) by {
+        assert(branch_image_writeback_disjoint(pre));
+        assert(atomic_persistent_superblock_image_i(post)
+            == atomic_persistent_superblock_image_i(pre));
+        let persistent_image = atomic_persistent_superblock_image_i(pre);
+        assert(branch_image_static_domain_i(post, persistent_image)
+            == branch_image_static_domain_i(pre, persistent_image)) by {
+            assert(post.program.state == pre.program.state);
+            assert(post.disk.content == pre.disk.content);
+            assert(branch_caching_disk_state_i(post) == branch_caching_disk_state_i(pre));
+        }
+        if pre.program.state.in_flight is Some {
+            let inflight_image = pre.program.state.atomic_inflight_superblock_i();
+            assert(post.program.state.atomic_inflight_superblock_i() == inflight_image);
+            assert(branch_image_static_domain_i(post, inflight_image)
+                == branch_image_static_domain_i(pre, inflight_image)) by {
+                assert(post.program.state == pre.program.state);
+                assert(post.disk.content == pre.disk.content);
+                assert(branch_caching_disk_state_i(post) == branch_caching_disk_state_i(pre));
+            }
+        }
+        assert(post.disk.requests == pre.disk.requests.remove(id));
+        assert forall |req_id: ID| #[trigger] post.disk.requests.contains_key(req_id)
+            implies {
+                &&& branch_image_request_writeback_disjoint_at(
+                    post,
+                    atomic_persistent_superblock_image_i(post),
+                    req_id,
+                )
+                &&& post.program.state.in_flight is Some ==>
+                    branch_image_request_writeback_disjoint_at(
+                        post,
+                        post.program.state.atomic_inflight_superblock_i(),
+                        req_id,
+                    )
+            } by {
+            assert(pre.disk.requests.contains_key(req_id));
+            assert(post.disk.requests[req_id] == pre.disk.requests[req_id]);
+            if post.disk.requests[req_id] is WriteReq
+                && post.disk.requests[req_id]->to != spec_superblock_addr() {
+                assert(branch_image_request_writeback_disjoint_at(
+                    pre,
+                    persistent_image,
+                    req_id,
+                ));
+                assert(!branch_image_static_domain_i(pre, persistent_image).contains(
+                    post.disk.requests[req_id]->to,
+                ));
+                assert(!branch_image_static_domain_i(post, persistent_image).contains(
+                    post.disk.requests[req_id]->to,
+                ));
+                if post.program.state.in_flight is Some {
+                    assert(pre.program.state.in_flight is Some);
+                    let inflight_image = pre.program.state.atomic_inflight_superblock_i();
+                    assert(post.program.state.atomic_inflight_superblock_i() == inflight_image);
+                    assert(branch_image_request_writeback_disjoint_at(
+                        pre,
+                        inflight_image,
+                        req_id,
+                    ));
+                    assert(!branch_image_static_domain_i(pre, inflight_image).contains(
+                        post.disk.requests[req_id]->to,
+                    ));
+                    assert(!branch_image_static_domain_i(post, inflight_image).contains(
+                        post.disk.requests[req_id]->to,
+                    ));
+                }
+            }
+        }
+    }
     assert(another_atomic_disk_refinement_invariants(post));
 }
 
+#[verifier::spinoff_prover]
+#[verifier::rlimit(600)]
 pub proof fn disk_internal_process_data_write_preserves_refinement_invariants(
     pre: SystemModel::State<AnotherProgramModel>,
     post: SystemModel::State<AnotherProgramModel>,
@@ -6892,9 +7628,6 @@ pub proof fn disk_internal_process_data_write_preserves_refinement_invariants(
     assert(another_atomic_cache_disk_request_wf(post.program.state, post.disk));
     assert(journal_image_writeback_disjoint(pre));
     assert(journal_dirty_writeback_pages_tracked(pre));
-    assert(journal_projection_uses_live(pre));
-    assert(journal_projection_uses_live(post));
-    assert(pre.program.state.journal_metadata_loaded());
     assert(pre.program.state.outstanding_cache_reqs.contains_key(id));
     assert(pre.program.state.outstanding_cache_reqs[id] == req->to);
     assert(cache_filled_addr(pre.program.state.cache, req->to));
@@ -6904,6 +7637,25 @@ pub proof fn disk_internal_process_data_write_preserves_refinement_invariants(
         == CachingDiskPageStatus::Writeback);
     let image = atomic_persistent_superblock_image_i(pre);
     assert(journal_image_request_writeback_disjoint_at(pre, image, id));
+    assert(pre.program.state.journal_metadata_loaded());
+    assert(post.program.state.journal_metadata_loaded());
+    assert(pre.program.state.recovery_state is MetadataLoadComplete
+        || pre.program.state.recovery_state is RecoveryComplete);
+    assert(post.program.state.recovery_state is MetadataLoadComplete
+        || post.program.state.recovery_state is RecoveryComplete);
+    assert(journal_projection_uses_live(pre));
+    assert(journal_projection_uses_live(post));
+    journal_image_projection_aus_loaded_index_unchanged(pre, post, image);
+    assert(journal_image_projection_domain_i(post, image)
+        =~= journal_image_projection_domain_i(pre, image)) by {
+        assert forall |addr: Address|
+            journal_image_projection_domain_i(post, image).contains(addr)
+                <==> journal_image_projection_domain_i(pre, image).contains(addr)
+        by {
+            assert(journal_image_projection_aus_i(post, image).contains(addr.au)
+                <==> journal_image_projection_aus_i(pre, image).contains(addr.au));
+        }
+    }
     journal_image_persistent_preserved_by_disjoint_write(
         pre,
         post,
@@ -6915,6 +7667,17 @@ pub proof fn disk_internal_process_data_write_preserves_refinement_invariants(
     if pre.program.state.in_flight is Some {
         let frozen_image = pre.program.state.atomic_inflight_superblock_i();
         assert(journal_image_request_writeback_disjoint_at(pre, frozen_image, id));
+        journal_image_projection_aus_loaded_index_unchanged(pre, post, frozen_image);
+        assert(journal_image_projection_domain_i(post, frozen_image)
+            =~= journal_image_projection_domain_i(pre, frozen_image)) by {
+            assert forall |addr: Address|
+                journal_image_projection_domain_i(post, frozen_image).contains(addr)
+                    <==> journal_image_projection_domain_i(pre, frozen_image).contains(addr)
+            by {
+                assert(journal_image_projection_aus_i(post, frozen_image).contains(addr.au)
+                    <==> journal_image_projection_aus_i(pre, frozen_image).contains(addr.au));
+            }
+        }
         journal_image_persistent_preserved_by_disjoint_write(
             pre,
             post,
@@ -6924,7 +7687,6 @@ pub proof fn disk_internal_process_data_write_preserves_refinement_invariants(
         );
         assert(frozen_journal_image_i(post) == frozen_journal_image_i(pre));
     }
-    assert(persistent_journal_image_i(post).wf());
     assert(to_aus(journal_projection_addrs(post)) <= journal_projection_aus(post)) by {
         assert forall |au: AU| #[trigger] to_aus(journal_projection_addrs(post)).contains(au)
             implies journal_projection_aus(post).contains(au) by {
@@ -7241,28 +8003,57 @@ pub proof fn disk_internal_process_data_write_preserves_refinement_invariants(
         assert(atomic_persistent_superblock_image_i(post)
             == atomic_persistent_superblock_image_i(pre));
         assert(atomic_branch_metadata_loaded_flag(post.program.state.branch));
-        assert(persistent_branch_image_i(post) == persistent_branch_image_i(pre)) by {
-            let frozen = CachingDiskBranchModule::CachingDiskBranchFrozenImage{
-                sealed_roots: durable_branch_image.branch_roots,
-                seq_end: durable_branch_image.branch_seq_end,
-            };
-            assert(branch_caching_disk_state_i(post).visible_image_for_metadata(frozen)
-                == branch_caching_disk_state_i(pre).visible_image_for_metadata(frozen)) by {
-                assert(branch_caching_disk_i(post).visible() == branch_caching_disk_i(pre).visible());
-                assert(post.program.state == pre.program.state);
-            }
+        let pre_p = persistent_branch_image_i(pre);
+        let post_p = persistent_branch_image_i(post);
+        let durable_frozen = CachingDiskBranchModule::CachingDiskBranchFrozenImage{
+            sealed_roots: durable_branch_image.branch_roots,
+            seq_end: durable_branch_image.branch_seq_end,
+        };
+        assert(branch_caching_disk_state_i(post).visible_image_for_metadata(durable_frozen)
+            == branch_caching_disk_state_i(pre).visible_image_for_metadata(durable_frozen)) by {
+            assert(branch_caching_disk_i(post).visible() == branch_caching_disk_i(pre).visible());
+            assert(post.program.state == pre.program.state);
         }
+        assert(!branch_image_static_domain_i(pre, durable_branch_image).contains(req->to)) by {
+            assert(branch_image_request_writeback_disjoint_at(pre, durable_branch_image, id));
+        }
+        branch_image_static_domain_preserved_by_write_outside(
+            pre,
+            post,
+            durable_branch_image,
+            req->to,
+            req->data,
+        );
         assert(branch_image_static_domain_i(post, durable_branch_image)
-            == branch_image_static_domain_i(pre, durable_branch_image)) by {
-            let frozen = CachingDiskBranchModule::CachingDiskBranchFrozenImage{
-                sealed_roots: durable_branch_image.branch_roots,
-                seq_end: durable_branch_image.branch_seq_end,
-            };
-            assert(branch_caching_disk_state_i(post).visible_image_for_metadata(frozen)
-                == branch_caching_disk_state_i(pre).visible_image_for_metadata(frozen)) by {
-                assert(branch_caching_disk_i(post).visible() == branch_caching_disk_i(pre).visible());
-                assert(post.program.state == pre.program.state);
-            }
+            == branch_image_static_domain_i(pre, durable_branch_image));
+        assert(branch_image_projection_addrs_i(post.disk.content, durable_branch_image.branch_roots)
+            == branch_image_projection_addrs_i(pre.disk.content, durable_branch_image.branch_roots));
+        assert(persistent_branch_image_i(post) == persistent_branch_image_i(pre)) by {
+            assert_maps_equal!(
+                post_p.persistent,
+                pre_p.persistent,
+                addr => {
+                    assert(branch_image_projection_addrs_i(
+                        post.disk.content,
+                        durable_branch_image.branch_roots,
+                    ).contains(addr)
+                        <==> branch_image_projection_addrs_i(
+                            pre.disk.content,
+                            durable_branch_image.branch_roots,
+                        ).contains(addr));
+                    if branch_image_projection_addrs_i(
+                        pre.disk.content,
+                        durable_branch_image.branch_roots,
+                    ).contains(addr) {
+                        assert(addr != req->to);
+                        assert(post.disk.content[addr] == pre.disk.content[addr]);
+                    }
+                }
+            );
+        }
+        assert(post_p.wf()) by {
+            assert(persistent_branch_image_i(post) == persistent_branch_image_i(pre));
+            assert(pre_p.wf());
         }
     }
     if pre.program.state.in_flight is Some {
@@ -7271,18 +8062,27 @@ pub proof fn disk_internal_process_data_write_preserves_refinement_invariants(
         if pre.program.state.superblock_metadata_known()
             && atomic_branch_metadata_loaded_flag(pre.program.state.branch)
         {
-            assert(branch_image_static_domain_i(post, inflight_branch_image)
-                == branch_image_static_domain_i(pre, inflight_branch_image)) by {
-                let frozen = CachingDiskBranchModule::CachingDiskBranchFrozenImage{
-                    sealed_roots: inflight_branch_image.branch_roots,
-                    seq_end: inflight_branch_image.branch_seq_end,
-                };
-                assert(branch_caching_disk_state_i(post).visible_image_for_metadata(frozen)
-                    == branch_caching_disk_state_i(pre).visible_image_for_metadata(frozen)) by {
-                    assert(branch_caching_disk_i(post).visible() == branch_caching_disk_i(pre).visible());
-                    assert(post.program.state == pre.program.state);
-                }
+            let inflight_frozen = CachingDiskBranchModule::CachingDiskBranchFrozenImage{
+                sealed_roots: inflight_branch_image.branch_roots,
+                seq_end: inflight_branch_image.branch_seq_end,
+            };
+            assert(branch_caching_disk_state_i(post).visible_image_for_metadata(inflight_frozen)
+                == branch_caching_disk_state_i(pre).visible_image_for_metadata(inflight_frozen)) by {
+                assert(branch_caching_disk_i(post).visible() == branch_caching_disk_i(pre).visible());
+                assert(post.program.state == pre.program.state);
             }
+            assert(!branch_image_static_domain_i(pre, inflight_branch_image).contains(req->to)) by {
+                assert(branch_image_request_writeback_disjoint_at(pre, inflight_branch_image, id));
+            }
+            branch_image_static_domain_preserved_by_write_outside(
+                pre,
+                post,
+                inflight_branch_image,
+                req->to,
+                req->data,
+            );
+            assert(branch_image_static_domain_i(post, inflight_branch_image)
+                == branch_image_static_domain_i(pre, inflight_branch_image));
         }
     }
     if pre.program.state.superblock_metadata_known()
@@ -7314,6 +8114,23 @@ pub proof fn disk_internal_process_data_write_preserves_refinement_invariants(
                     ));
                     assert(atomic_persistent_superblock_image_i(post)
                         == atomic_persistent_superblock_image_i(pre));
+                    let persistent_image = atomic_persistent_superblock_image_i(pre);
+                    let persistent_frozen = CachingDiskBranchModule::CachingDiskBranchFrozenImage{
+                        sealed_roots: persistent_image.branch_roots,
+                        seq_end: persistent_image.branch_seq_end,
+                    };
+                    assert(branch_caching_disk_state_i(post).visible_image_for_metadata(persistent_frozen)
+                        == branch_caching_disk_state_i(pre).visible_image_for_metadata(persistent_frozen)) by {
+                        assert(branch_caching_disk_i(post).visible() == branch_caching_disk_i(pre).visible());
+                        assert(post.program.state == pre.program.state);
+                    }
+                    branch_image_static_domain_preserved_by_write_outside(
+                        pre,
+                        post,
+                        persistent_image,
+                        req->to,
+                        req->data,
+                    );
                     assert(branch_image_static_domain_i(
                         post,
                         atomic_persistent_superblock_image_i(post),
@@ -7330,6 +8147,23 @@ pub proof fn disk_internal_process_data_write_preserves_refinement_invariants(
                             pre.program.state.atomic_inflight_superblock_i(),
                             req_id,
                         ));
+                        let inflight_image = pre.program.state.atomic_inflight_superblock_i();
+                        let inflight_frozen = CachingDiskBranchModule::CachingDiskBranchFrozenImage{
+                            sealed_roots: inflight_image.branch_roots,
+                            seq_end: inflight_image.branch_seq_end,
+                        };
+                        assert(branch_caching_disk_state_i(post).visible_image_for_metadata(inflight_frozen)
+                            == branch_caching_disk_state_i(pre).visible_image_for_metadata(inflight_frozen)) by {
+                            assert(branch_caching_disk_i(post).visible() == branch_caching_disk_i(pre).visible());
+                            assert(post.program.state == pre.program.state);
+                        }
+                        branch_image_static_domain_preserved_by_write_outside(
+                            pre,
+                            post,
+                            inflight_image,
+                            req->to,
+                            req->data,
+                        );
                         assert(branch_image_static_domain_i(
                             post,
                             post.program.state.atomic_inflight_superblock_i(),
@@ -7423,21 +8257,29 @@ pub proof fn disk_internal_process_data_write_preserves_refinement_invariants(
             let post_p = crash_aware_caching_disk_branch_i(post).persistent;
             let image = atomic_persistent_superblock_image_i(pre);
             assert(atomic_persistent_superblock_image_i(post) == image);
-            assert(pre_p == branch_image_i(pre, image));
-            assert(post_p == branch_image_i(post, image));
-            assert(!branch_image_projection_addrs_i(pre.disk.content, image.branch_roots).contains(req->to)) by {
-                assert(branch_image_request_writeback_disjoint_at(pre, image, id));
-                assert(branch_image_static_domain_i(pre, image)
-                    == branch_image_projection_addrs_i(pre.disk.content, image.branch_roots));
-            }
-            sealed_roots_pointer_domain_preserved_by_write_outside(
-                pre.disk.content,
-                image.branch_roots,
-                req->to,
-                req->data,
-            );
-            assert(branch_image_projection_addrs_i(post.disk.content, image.branch_roots)
-                == branch_image_projection_addrs_i(pre.disk.content, image.branch_roots));
+	            assert(pre_p == branch_image_i(pre, image));
+	            assert(post_p == branch_image_i(post, image));
+	            let persistent_frozen = CachingDiskBranchModule::CachingDiskBranchFrozenImage{
+	                sealed_roots: image.branch_roots,
+	                seq_end: image.branch_seq_end,
+	            };
+	            assert(branch_caching_disk_state_i(post).visible_image_for_metadata(persistent_frozen)
+	                == branch_caching_disk_state_i(pre).visible_image_for_metadata(persistent_frozen)) by {
+	                assert(branch_caching_disk_i(post).visible() == branch_caching_disk_i(pre).visible());
+	                assert(post.program.state == pre.program.state);
+	            }
+	            assert(!branch_image_static_domain_i(pre, image).contains(req->to)) by {
+	                assert(branch_image_request_writeback_disjoint_at(pre, image, id));
+	            }
+	            branch_image_static_domain_preserved_by_write_outside(
+	                pre,
+	                post,
+	                image,
+	                req->to,
+	                req->data,
+	            );
+	            assert(branch_image_projection_addrs_i(post.disk.content, image.branch_roots)
+	                == branch_image_projection_addrs_i(pre.disk.content, image.branch_roots));
             assert(post_p.persistent == pre_p.persistent) by {
                 assert_maps_equal!(
                     post_p.persistent,
@@ -7546,6 +8388,72 @@ pub proof fn program_internal_read_for_recovery_preserves_refinement(
         reads,
         writes,
     );
+    assert(pre.program.state.journal_metadata_loaded());
+    assert(post.program.state.journal_metadata_loaded()) by {
+        let journal_records = to_journal_records(journal_reads)[addr].message_seq.maybe_discard_old(
+            pre.program.state.journal.journal.snapshot.boundary_lsn,
+        );
+        let journal_lbl = AtomicJournalState::Label::ReadForRecovery{
+            messages: journal_records,
+            reads: to_journal_records(journal_reads),
+        };
+        reveal(AtomicJournalState::State::next);
+        reveal(AtomicJournalState::State::next_by);
+        let journal_step = choose |step: AtomicJournalState::Step|
+            AtomicJournalState::State::next_by(
+                pre.program.state.journal,
+                post.program.state.journal,
+                journal_lbl,
+                step,
+            );
+        match journal_step {
+            AtomicJournalState::Step::read_for_recovery(new_journal) => {
+                assert(AtomicJournalState::State::read_for_recovery(
+                    pre.program.state.journal,
+                    post.program.state.journal,
+                    journal_lbl,
+                    new_journal,
+                )) by {
+                    reveal(AtomicJournalState::State::read_for_recovery);
+                }
+                reveal(CachedJournal::State::next);
+                reveal(CachedJournal::State::next_by);
+                let cached_lbl = CachedJournal::Label::ReadForRecovery{
+                    messages: journal_records,
+                    reads: to_journal_records(journal_reads),
+                };
+                let cached_step = choose |step: CachedJournal::Step|
+                    CachedJournal::State::next_by(
+                        pre.program.state.journal.journal,
+                        new_journal,
+                        cached_lbl,
+                        step,
+                    );
+                match cached_step {
+                    CachedJournal::Step::read_for_recovery(start_lsn, read_addr) => {
+                        assert(CachedJournal::State::read_for_recovery(
+                            pre.program.state.journal.journal,
+                            new_journal,
+                            cached_lbl,
+                            start_lsn,
+                            read_addr,
+                        )) by {
+                            reveal(CachedJournal::State::read_for_recovery);
+                        }
+                        assert(new_journal.status == pre.program.state.journal.journal.status);
+                    },
+                    _ => {
+                        assert(false);
+                    },
+                }
+                assert(post.program.state.journal.journal.status
+                    == pre.program.state.journal.journal.status);
+            },
+            _ => {
+                assert(false);
+            },
+        }
+    }
     cache_disk_request_wf_preserved_by_cache_access(
         pre.program.state,
         post.program.state,
@@ -7643,6 +8551,13 @@ pub proof fn program_internal_read_for_recovery_preserves_refinement(
     assert(writes.dom() <= branch_projection_addrs(post)) by {
         assert(crate::implementation::AnotherAtomicState_v::to_branch_nodes(writes).dom()
             <= atomic_branch_support_addrs(branch));
+        assert(writes.dom() <= Set::new(|addr: Address| addr.wf()));
+        assert forall |addr: Address| #[trigger] writes.dom().contains(addr)
+            implies branch_projection_addrs(post).contains(addr) by {
+            assert(atomic_branch_support_addrs(branch).contains(addr));
+            assert(addr.wf());
+            atomic_branch_support_addrs_subset_branch_projection(post);
+        }
     }
     assert(branch_projection_addrs(post) <= branch_projection_addrs(pre) + writes.dom()) by {
         assert(atomic_branch_support_addrs(branch)
@@ -7713,7 +8628,9 @@ pub proof fn program_internal_read_for_recovery_preserves_refinement(
     );
     assert(journal_component_refinement_inv(post));
     assert(another_atomic_superblock_disk_coupling(post.program.state, post.disk));
-    superblock_write_request_wf_preserved_by_unchanged_commit_components(
+    assert(pre.program.state.in_flight is None);
+    assert(post.program.state.in_flight is None);
+    superblock_write_request_wf_preserved_by_no_inflight(
         pre.program.state,
         post.program.state,
         post.disk,
@@ -7721,13 +8638,106 @@ pub proof fn program_internal_read_for_recovery_preserves_refinement(
     assert(another_atomic_superblock_write_request_wf(post.program.state, post.disk));
     assert(post.disk.inv());
     assert(async_disk_superblock_page_wf(post.disk.content));
-    assert(another_atomic_model_refinement_invariants(post.program.state));
+    assert(another_atomic_model_refinement_invariants(post.program.state)) by {
+        assert(post.program.state.cache_request_wf());
+        assert(post.program.state.allocation_wf());
+        assert(post.program.state.recovery_metadata_wf());
+        assert(another_atomic_persistent_image_wf(post.program.state));
+        assert(another_atomic_in_flight_wf(post.program.state));
+        assert(another_atomic_branch_summary_wf(post.program.state));
+        assert(another_atomic_persisted_branch_prefix_metadata_wf(post.program.state));
+        assert(post.program.state.branch.seq_end()
+            == pre.program.state.branch.seq_end() + keys.len());
+        assert(post.program.state.journal.journal.seq_end()
+            == pre.program.state.journal.journal.seq_end());
+        assert(pre.program.state.branch.seq_end() + keys.len()
+            <= pre.program.state.journal.journal.seq_end());
+        assert(another_atomic_replay_progress_wf(post.program.state));
+        assert(another_atomic_recovery_image_seq_wf(post.program.state));
+        assert(another_atomic_journal_mini_allocator_stage_wf(post.program.state));
+        assert(another_atomic_sync_request_wf(post.program.state));
+    }
     assert(another_atomic_cache_disk_coupling(post.program.state, post.disk));
     assert(another_atomic_cache_disk_request_wf(post.program.state, post.disk));
     assert(journal_image_writeback_disjoint(post));
-    assert(another_atomic_disk_refinement_invariants(post));
+    assert(journal_dirty_writeback_pages_tracked(post)) by {
+        assert forall |addr: Address| #[trigger] filled_cache_status(post.program.state.cache).contains_key(addr)
+            && (filled_cache_status(post.program.state.cache)[addr] == CachingDiskPageStatus::Dirty
+                || filled_cache_status(post.program.state.cache)[addr] == CachingDiskPageStatus::Writeback)
+            && post.program.state.journal_owned_aus().contains(addr.au)
+            implies mini_allocator_allocated_addrs(post.program.state.journal.mini_allocator).contains(addr)
+        by {
+            if writes.contains_key(addr) {
+                assert(writes.dom().contains(addr));
+                assert(to_aus(writes.dom()).contains(addr.au));
+                assert(pre.program.state.branch_owned_aus().contains(addr.au));
+                assert(post.program.state.journal_owned_aus()
+                    == pre.program.state.journal_owned_aus());
+                assert(pre.program.state.component_disjoint());
+                assert(pre.program.state.journal_owned_aus().disjoint(
+                    pre.program.state.branch_owned_aus(),
+                ));
+                assert(false);
+            } else {
+                assert(cache_filled_addr(post.program.state.cache, addr));
+                Cache::State::access_unwritten_addr_unchanged(
+                    pre.program.state.cache,
+                    post.program.state.cache,
+                    reads,
+                    writes,
+                    addr,
+                );
+                assert(pre.program.state.cache.lookup_map.contains_key(addr));
+                pre.program.state.cache.build_lookup_map_ensures();
+                assert(pre.program.state.cache.build_lookup_map_props(
+                    pre.program.state.cache.lookup_map,
+                ));
+                assert(pre.program.state.cache.entries.contains_key(
+                    pre.program.state.cache.lookup_map[addr],
+                ));
+                assert(pre.program.state.cache.entries[
+                    pre.program.state.cache.lookup_map[addr]
+                ] == post.program.state.cache.entries[
+                    post.program.state.cache.lookup_map[addr]
+                ]);
+                assert(pre.program.state.cache.entries[
+                    pre.program.state.cache.lookup_map[addr]
+                ] is Filled);
+                assert(cache_filled_addr(pre.program.state.cache, addr));
+                assert(filled_cache_status(pre.program.state.cache).contains_key(addr));
+                assert(filled_cache_status(pre.program.state.cache)[addr]
+                    == filled_cache_status(post.program.state.cache)[addr]);
+                assert(post.program.state.journal == pre.program.state.journal);
+                assert(post.program.state.journal_owned_aus()
+                    == pre.program.state.journal_owned_aus());
+                assert(journal_dirty_writeback_pages_tracked(pre));
+            }
+        }
+    }
+    assert(another_atomic_disk_refinement_invariants(post)) by {
+        assert(post.program.state.wf());
+        assert(post.disk.inv());
+        assert(async_disk_superblock_page_wf(post.disk.content));
+        assert(another_atomic_model_refinement_invariants(post.program.state));
+        assert(another_atomic_cache_disk_coupling(post.program.state, post.disk));
+        assert(another_atomic_superblock_disk_coupling(post.program.state, post.disk));
+        assert(another_atomic_superblock_write_request_wf(post.program.state, post.disk));
+        assert(another_atomic_cache_disk_request_wf(post.program.state, post.disk));
+        assert(another_atomic_inflight_cache_id_disjoint(post.program.state));
+        assert(journal_image_writeback_disjoint(post));
+        assert(journal_dirty_writeback_pages_tracked(post));
+        assert(branch_image_writeback_disjoint(post));
+        assert(journal_component_refinement_inv(post));
+        assert(branch_component_refinement_inv(post));
+        assert(journal_projected_aus_are_component_data(post));
+        assert(branch_projected_aus_are_owned_data(post));
+        assert(branch_loaded_metadata_agrees_with_visible(post));
+        assert(journal_inflight_projection_wf(post));
+        assert(another_atomic_recovery_image_matches_disk(post));
+    }
 }
 
+#[verifier::rlimit(200)]
 pub proof fn another_atomic_disk_refinement_invariants_next(
     pre: SystemModel::State<AnotherProgramModel>,
     post: SystemModel::State<AnotherProgramModel>,
@@ -8278,10 +9288,11 @@ pub proof fn another_atomic_disk_refinement_invariants_next(
                         pre.program.state,
                         post.program.state,
                         req,
+                        post.program.state.journal,
+                        post.program.state.branch,
                         lbl->info.reqs,
                         lbl->info.resps,
                     ));
-                    assert(post.program.state == pre.program.state);
                     assert(post.program.state.wf());
                 },
                 DiskEvent::ExecuteSyncEnd{journal_discarded_aus} => {
@@ -8615,13 +9626,6 @@ pub proof fn another_atomic_disk_refinement_invariants_next(
                         cache_reads,
                         Map::empty(),
                     );
-                    cache_disk_request_wf_preserved_by_cache_access(
-                        pre.program.state,
-                        post.program.state,
-                        post.disk,
-                        cache_reads,
-                        Map::empty(),
-                    );
                     AnotherAtomicState::journal_load_index_effect(
                         pre.program.state,
                         post.program.state,
@@ -8629,6 +9633,41 @@ pub proof fn another_atomic_disk_refinement_invariants_next(
                         journal_reads,
                         discovered_aus,
                     );
+                    assert(another_atomic_cache_disk_request_wf(post.program.state, post.disk)) by {
+                        assert forall |id: ID| #[trigger] post.disk.requests.contains_key(id)
+                            && post.disk.requests[id].addr() != spec_superblock_addr()
+                            implies {
+                                let disk_req = post.disk.requests[id];
+                                let addr = disk_req.addr();
+                                &&& post.program.state.outstanding_cache_reqs.contains_key(id)
+                                &&& post.program.state.outstanding_cache_reqs[id] == addr
+                                &&& disk_req is WriteReq ==> {
+                                    &&& post.program.state.journal_metadata_loaded()
+                                    &&& (post.program.state.recovery_state is MetadataLoadComplete
+                                        || post.program.state.recovery_state is RecoveryComplete)
+                                    &&& cache_filled_addr(post.program.state.cache, disk_req->to)
+                                    &&& cache_filled_page(post.program.state.cache, disk_req->to) == disk_req->data
+                                    &&& filled_cache_status(post.program.state.cache).contains_key(disk_req->to)
+                                    &&& filled_cache_status(post.program.state.cache)[disk_req->to]
+                                        == CachingDiskPageStatus::Writeback
+                                }
+                            } by {
+                            assert(pre.disk.requests.contains_key(id));
+                            assert(post.disk.requests[id] == pre.disk.requests[id]);
+                            assert(post.program.state.outstanding_cache_reqs
+                                == pre.program.state.outstanding_cache_reqs);
+                            let disk_req = post.disk.requests[id];
+                            let addr = disk_req.addr();
+                            assert(pre.program.state.outstanding_cache_reqs.contains_key(id));
+                            assert(pre.program.state.outstanding_cache_reqs[id] == addr);
+                            if disk_req is WriteReq {
+                                assert(another_atomic_cache_disk_request_wf(pre.program.state, pre.disk));
+                                assert(pre.program.state.journal_metadata_loaded());
+                                assert(pre.program.state.journal.journal.status is None);
+                                assert(false);
+                            }
+                        }
+                    }
                     assert(post.program.state.branch == pre.program.state.branch);
                     assert(post.program.state.in_flight == pre.program.state.in_flight);
                     assert(post.program.state.persistent_image == pre.program.state.persistent_image);
@@ -9316,7 +10355,17 @@ pub proof fn another_atomic_disk_refinement_invariants_next(
                         pre.program.state,
                         post.program.state,
                     );
-                    cache_disk_request_wf_preserved_by_unchanged(
+                    assert forall |id: ID| #[trigger] post.disk.requests.contains_key(id)
+                        && post.disk.requests[id].addr() != spec_superblock_addr()
+                        && post.disk.requests[id] is WriteReq
+                        implies {
+                            &&& post.program.state.journal_metadata_loaded()
+                            &&& (post.program.state.recovery_state is MetadataLoadComplete
+                                || post.program.state.recovery_state is RecoveryComplete)
+                        } by {
+                        assert(post.program.state.recovery_state is MetadataLoadComplete);
+                    }
+                    cache_disk_request_wf_preserved_by_unchanged_with_post_write_ready(
                         pre.program.state,
                         post.program.state,
                         post.disk,
@@ -9525,13 +10574,7 @@ pub proof fn another_atomic_disk_refinement_invariants_next(
                     assert(journal_component_refinement_inv(post));
                     client_ready_implies_atomic_branch_metadata_loaded_flag(pre.program.state);
                     assert(atomic_branch_metadata_loaded_flag(pre.program.state.branch));
-                    assert(reads <= branch_disk_cache_i(pre));
                     branch_grow_refines(pre, post, new_root_addr, reads, writes, branch);
-                    CrashAwareCachingDiskBranch::State::inv_next(
-                        crash_aware_caching_disk_branch_i(pre),
-                        crash_aware_caching_disk_branch_i(post),
-                        CrashAwareCachingDiskBranch::Label::Internal,
-                    );
                     assert(branch_component_refinement_inv(post));
                     atomic_inflight_superblock_unchanged(pre.program.state, post.program.state);
                     if post.program.state.in_flight is Some
@@ -9895,7 +10938,6 @@ pub proof fn another_atomic_disk_refinement_invariants_next(
                     assert(journal_component_refinement_inv(post));
                     client_ready_implies_atomic_branch_metadata_loaded_flag(pre.program.state);
                     assert(atomic_branch_metadata_loaded_flag(pre.program.state.branch));
-                    assert(reads <= branch_disk_cache_i(pre));
                     branch_split_refines(
                         pre,
                         post,
@@ -9905,11 +10947,6 @@ pub proof fn another_atomic_disk_refinement_invariants_next(
                         reads,
                         writes,
                         branch,
-                    );
-                    CrashAwareCachingDiskBranch::State::inv_next(
-                        crash_aware_caching_disk_branch_i(pre),
-                        crash_aware_caching_disk_branch_i(post),
-                        CrashAwareCachingDiskBranch::Label::Internal,
                     );
                     assert(branch_component_refinement_inv(post));
                     atomic_inflight_superblock_unchanged(pre.program.state, post.program.state);
@@ -10284,7 +11321,25 @@ pub proof fn another_atomic_disk_refinement_invariants_next(
                     assert(post.program.state.branch.active_branch
                         == pre.program.state.branch.active_branch);
                     assert(post.program.state.branch.seq_end == pre.program.state.branch.seq_end);
-                    assert(branch_caching_disk_i(post) == branch_caching_disk_i(pre));
+                    assert(branch_projected_aus_are_owned_data(post)) by {
+                        assert(post.program.state.client_ready());
+                        assert(post.program.state.recovery_state is RecoveryComplete);
+                        assert(post.program.state.branch.metadata_loaded());
+                        atomic_branch_metadata_loaded_flag_from_metadata_loaded(
+                            post.program.state.branch,
+                        );
+                        assert(atomic_branch_metadata_loaded_flag(post.program.state.branch));
+                        assert(branch_projection_summary_i(post)
+                            == post.program.state.branch.branch_summary);
+                        assert(branch_projection_aus(post)
+                            == post.program.state.branch_owned_aus());
+                        assert(journal_projection_uses_live(post));
+                        assert(journal_projection_aus(post)
+                            == post.program.state.journal_owned_aus());
+                        assert(post.program.state.allocation_wf());
+                        assert(post.program.state.component_disjoint());
+                    }
+                    branch_caching_disk_i_inv_from_cache_disk_coupling(post);
                     branch_fill_aus_refines(pre, post, aus);
                     CrashAwareCachingDiskBranch::State::inv_next(
                         crash_aware_caching_disk_branch_i(pre),
@@ -10482,7 +11537,17 @@ pub proof fn another_atomic_disk_refinement_invariants_next(
                         pre.program.state,
                         post.program.state,
                     );
-                    cache_disk_request_wf_preserved_by_unchanged(
+                    assert forall |id: ID| #[trigger] post.disk.requests.contains_key(id)
+                        && post.disk.requests[id].addr() != spec_superblock_addr()
+                        && post.disk.requests[id] is WriteReq
+                        implies {
+                            &&& post.program.state.journal_metadata_loaded()
+                            &&& (post.program.state.recovery_state is MetadataLoadComplete
+                                || post.program.state.recovery_state is RecoveryComplete)
+                        } by {
+                        assert(post.program.state.recovery_state is RecoveryComplete);
+                    }
+                    cache_disk_request_wf_preserved_by_unchanged_with_post_write_ready(
                         pre.program.state,
                         post.program.state,
                         post.disk,

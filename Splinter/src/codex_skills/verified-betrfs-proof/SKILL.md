@@ -30,6 +30,7 @@ Do not assume the module list is fully enabled. Inspect `implementation/mod.rs` 
 - Prefer proving facts at the layer that owns them. For example, AU-page-bound facts about `AllocationJournal::State` belong in `AllocationJournal_v.rs`, not in caching-disk journal refinement.
 - Do not add `assume(` or `admit(`.
 - Do not change transition definitions unless the user explicitly approves it or asks for that design change.
+- Do not add or strengthen transition preconditions without explicit user permission. If a proof needs an extra fact, prove it from invariants/component lemmas or stop and ask.
 - If the user asks to focus one layer, comment out or ignore downstream modules rather than spending cycles repairing proofs against a moving contract.
 - Keep local/native invariants to facts introduced by the current layer. Put inherited structural facts in refinement/semantic predicates and prove them through refinement when possible.
 - Use `apply_patch` for manual edits.

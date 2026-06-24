@@ -1,0 +1,91 @@
+// Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
+// SPDX-License-Identifier: BSD-2-Clause
+//
+// ProgramModelTrait wrapper for UnifiedCacheSystem.
+
+#![allow(unused_imports)]
+
+use vstd::prelude::*;
+
+use crate::implementation::AbstractSuperblock_v::{
+    abstract_superblock_raw_wf, empty_abstract_superblock_image, parse_abstract_superblock,
+};
+use crate::implementation::DiskLayout_v::DiskLayout;
+use crate::implementation::DiskLayout_v::spec_superblock_addr;
+use crate::implementation::UnifiedCacheSystem_v::UnifiedCacheSystem;
+use crate::spec::AsyncDisk_t::{DiskRequest, DiskResponse};
+use crate::spec::MapSpec_t::ID;
+use crate::trusted::ProgramModelTrait_t::{
+    DiskModel, ProgramLabel, ProgramModelTrait, ProgramUserOp,
+};
+
+verus! {
+
+#[verifier::ext_equal]
+pub struct UnifiedCacheProgramModel {
+    pub state: UnifiedCacheSystem::State,
+}
+
+impl ProgramModelTrait for UnifiedCacheProgramModel {
+    open spec fn is_mkfs(disk: DiskModel) -> bool
+    {
+        &&& DiskLayout::spec_new().mkfs(disk.content)
+        &&& abstract_superblock_raw_wf(disk.content[spec_superblock_addr()])
+        &&& parse_abstract_superblock(disk.content[spec_superblock_addr()])
+            == empty_abstract_superblock_image()
+        &&& disk.requests == Map::<ID, DiskRequest>::empty()
+        &&& disk.responses == Map::<ID, DiskResponse>::empty()
+    }
+
+    open spec fn init(pre: Self) -> bool
+    {
+        UnifiedCacheSystem::State::init(pre.state)
+    }
+
+    open spec fn next(pre: Self, post: Self, lbl: ProgramLabel) -> bool
+    {
+        match lbl {
+            ProgramLabel::UserIO{op} => {
+                match op {
+                    ProgramUserOp::Execute{req, reply} => {
+                        UnifiedCacheSystem::State::next(
+                            pre.state,
+                            post.state,
+                            UnifiedCacheSystem::Label::Execute{req, reply},
+                        )
+                    },
+                    ProgramUserOp::AcceptSyncRequest{sync_req_id} => {
+                        UnifiedCacheSystem::State::next(
+                            pre.state,
+                            post.state,
+                            UnifiedCacheSystem::Label::AcceptSyncRequest{sync_req_id},
+                        )
+                    },
+                    ProgramUserOp::DeliverSyncReply{sync_req_id} => {
+                        UnifiedCacheSystem::State::next(
+                            pre.state,
+                            post.state,
+                            UnifiedCacheSystem::Label::DeliverSyncReply{sync_req_id},
+                        )
+                    },
+                }
+            },
+            ProgramLabel::DiskIO{..} => {
+                UnifiedCacheSystem::State::next(
+                    pre.state,
+                    post.state,
+                    UnifiedCacheSystem::Label::Disk,
+                )
+            },
+            ProgramLabel::Internal{} => {
+                UnifiedCacheSystem::State::next(
+                    pre.state,
+                    post.state,
+                    UnifiedCacheSystem::Label::Internal,
+                )
+            },
+        }
+    }
+}
+
+} // verus!

@@ -1509,6 +1509,40 @@ pub proof fn cache_internal_refines_caching_disk_internal_by_domains(
     }
 }
 
+pub open spec fn projected_cache_internal_env(
+    pre_cache: Cache::State,
+    post_cache: Cache::State,
+) -> bool
+{
+    &&& pre_cache.inv()
+    &&& Cache::State::next(pre_cache, post_cache, Cache::Label::Internal{})
+}
+
+pub proof fn projected_cache_internal_refines_caching_disk_internal(
+    pre_cache: Cache::State,
+    post_cache: Cache::State,
+    disk: AsyncDisk::State,
+    cache_addrs: Set<Address>,
+    persistent_addrs: Set<Address>,
+)
+    requires
+        projected_cache_internal_env(pre_cache, post_cache),
+    ensures
+        CachingDisk::State::next(
+            caching_disk_i_by_domains(pre_cache, disk, cache_addrs, persistent_addrs),
+            caching_disk_i_by_domains(post_cache, disk, cache_addrs, persistent_addrs),
+            CachingDisk::Label::Internal{},
+        ),
+{
+    cache_internal_refines_caching_disk_internal_by_domains(
+        pre_cache,
+        post_cache,
+        disk,
+        cache_addrs,
+        persistent_addrs,
+    );
+}
+
 pub proof fn cache_internal_refines_caching_disk_internal(
     pre_cache: Cache::State,
     post_cache: Cache::State,
