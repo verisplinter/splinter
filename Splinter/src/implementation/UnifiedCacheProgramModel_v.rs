@@ -7,16 +7,20 @@
 
 use vstd::prelude::*;
 
+use crate::disk::GenericDisk_v::{Address, AU};
 use crate::implementation::AbstractSuperblock_v::{
-    abstract_superblock_raw_wf, empty_abstract_superblock_image, parse_abstract_superblock,
+    AbstractSuperblockImage, abstract_superblock_raw_wf, empty_abstract_superblock_image,
+    parse_abstract_superblock,
 };
+use crate::implementation::AnotherAtomicState_v::{AtomicBranchState, AtomicJournalState};
+use crate::implementation::Cache_v::Cache;
 use crate::implementation::DiskLayout_v::DiskLayout;
 use crate::implementation::DiskLayout_v::spec_superblock_addr;
 use crate::implementation::UnifiedCacheSystem_v::UnifiedCacheSystem;
-use crate::spec::AsyncDisk_t::{DiskRequest, DiskResponse};
+use crate::spec::AsyncDisk_t::{DiskRequest, DiskResponse, RawPage};
 use crate::spec::MapSpec_t::ID;
 use crate::trusted::ProgramModelTrait_t::{
-    DiskModel, ProgramLabel, ProgramModelTrait, ProgramUserOp,
+    DiskModel, ProgramDiskInfo, ProgramLabel, ProgramModelTrait, ProgramUserOp,
 };
 
 verus! {
@@ -24,6 +28,78 @@ verus! {
 #[verifier::ext_equal]
 pub struct UnifiedCacheProgramModel {
     pub state: UnifiedCacheSystem::State,
+}
+
+impl UnifiedCacheProgramModel {
+    pub open spec fn disk_step_matches_info(
+        pre: UnifiedCacheSystem::State,
+        step: UnifiedCacheSystem::Step,
+        info: ProgramDiskInfo,
+    ) -> bool
+    {
+        match step {
+            UnifiedCacheSystem::Step::initiate_recovery(_, reqs, resps) => {
+                &&& reqs == info.reqs
+                &&& resps == info.resps
+            },
+            UnifiedCacheSystem::Step::superblock_recovery(
+                _,
+                _,
+                _,
+                _,
+                _,
+                reqs,
+                resps,
+            ) => {
+                &&& reqs == info.reqs
+                &&& resps == info.resps
+            },
+            UnifiedCacheSystem::Step::execute_sync_begin(
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                reqs,
+                resps,
+            ) => {
+                &&& reqs == info.reqs
+                &&& resps == info.resps
+            },
+            UnifiedCacheSystem::Step::execute_sync_prepared(_, _, _, reqs, resps) => {
+                &&& reqs == info.reqs
+                &&& resps == info.resps
+            },
+            UnifiedCacheSystem::Step::execute_sync_end(_, _, _, reqs, resps) => {
+                &&& reqs == info.reqs
+                &&& resps == info.resps
+            },
+            UnifiedCacheSystem::Step::cache_io_begin(_, _, reqs, resps) => {
+                &&& reqs == info.reqs
+                &&& resps == info.resps
+            },
+            UnifiedCacheSystem::Step::cache_io_end(resp_map, _, reqs, resps) => {
+                &&& reqs == info.reqs
+                &&& resps == info.resps
+                &&& resp_map.dom() <= pre.outstanding_cache_reqs.dom()
+            },
+            _ => false,
+        }
+    }
+
+    pub open spec fn valid_disk_transition(pre: Self, post: Self, info: ProgramDiskInfo) -> bool
+    {
+        exists |step: UnifiedCacheSystem::Step| {
+            &&& UnifiedCacheSystem::State::next_by(
+                pre.state,
+                post.state,
+                UnifiedCacheSystem::Label::Disk,
+                step,
+            )
+            &&& Self::disk_step_matches_info(pre.state, step, info)
+        }
+    }
 }
 
 impl ProgramModelTrait for UnifiedCacheProgramModel {
@@ -70,12 +146,8 @@ impl ProgramModelTrait for UnifiedCacheProgramModel {
                     },
                 }
             },
-            ProgramLabel::DiskIO{..} => {
-                UnifiedCacheSystem::State::next(
-                    pre.state,
-                    post.state,
-                    UnifiedCacheSystem::Label::Disk,
-                )
+            ProgramLabel::DiskIO{info} => {
+                Self::valid_disk_transition(pre, post, info)
             },
             ProgramLabel::Internal{} => {
                 UnifiedCacheSystem::State::next(

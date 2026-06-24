@@ -84,10 +84,15 @@ pub open spec(checked) fn to_aus(addrs: Set<Address>) -> Set<AU>
     Map::new(|addr| addrs.contains(addr), |addr: Address| addr.au).values()
 }
 
+pub open spec fn addrs_with_different_au(a: Address, b: Address) -> bool
+{
+    a.au != b.au
+}
+
 pub open spec fn set_addrs_disjoint_aus(addrs: Set<Address>) -> bool
 {
     forall |a,b| addrs.contains(a) && addrs.contains(b) && a != b
-    ==> #[trigger] a.au != #[trigger] b.au
+    ==> #[trigger] addrs_with_different_au(a, b)
 }
 
 pub open spec fn seq_addrs_disjoint_aus(addrs: Seq<Address>) -> bool
@@ -182,6 +187,21 @@ pub proof fn to_aus_subtract(addrs: Set<Address>, other_addrs: Set<Address>)
         if sub.contains_value(au) {
             let addr = choose |addr| #[trigger] sub.contains_key(addr) && addr.au == au;
             assert(m.contains_key(addr)); // trigger
+            assert(!m_other.values().contains(au)) by {
+                if m_other.values().contains(au) {
+                    let other_addr = choose |other_addr| #[trigger] m_other.contains_key(other_addr)
+                        && other_addr.au == au;
+                    if addr == other_addr {
+                        assert(!other_addrs.contains(addr));
+                    } else {
+                        assert((addrs + other_addrs).contains(addr));
+                        assert((addrs + other_addrs).contains(other_addr));
+                        assert(addrs_with_different_au(addr, other_addr));
+                        assert(addr.au != other_addr.au);
+                    }
+                    assert(false);
+                }
+            }
         }
         if (m.values() - m_other.values()).contains(au) {
 

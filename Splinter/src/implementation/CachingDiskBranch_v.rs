@@ -25,7 +25,8 @@ use crate::betree::LinkedBranch_v::{
     DiskView, LinkedBranch, Path, Refinement_v as LinkedBranchRefinement, SplitArg,
 };
 use crate::disk::GenericDisk_v::{
-    addrs_closed, AU, Address, Pointer, Ranking, to_aus, to_aus_finite,
+    addrs_closed, addrs_with_different_au, AU, Address, Pointer, Ranking, to_aus,
+    to_aus_finite,
 };
 use crate::marshalling::IBranchNodeFormat_v::raw_page_to_branch_node;
 use crate::spec::AsyncDisk_t::RawPage;
@@ -1784,6 +1785,8 @@ pub proof fn branch_summary_from_reads_up_to_ensures(
                     assert(sealed_roots.to_set().contains(sealed_roots[i]));
                     assert(sealed_roots.to_set().contains(root));
                     if sealed_roots[i] != root {
+                        assert(addrs_with_different_au(sealed_roots[i], root));
+                        assert(sealed_roots[i].au != root.au);
                         assert(false);
                     }
                     assert(root_summary_from_read(sealed_roots[i], read_nodes)
@@ -1860,6 +1863,8 @@ pub proof fn branch_summary_from_reads_up_to_self_ensures(
                     assert(sealed_roots.to_set().contains(sealed_roots[i]));
                     assert(sealed_roots.to_set().contains(root));
                     if sealed_roots[i] != root {
+                        assert(addrs_with_different_au(sealed_roots[i], root));
+                        assert(sealed_roots[i].au != root.au);
                         assert(false);
                     }
                 } else {
@@ -1872,7 +1877,7 @@ pub proof fn branch_summary_from_reads_up_to_self_ensures(
 }
 
 #[verifier::ext_equal]
-pub struct CachingDiskBranchFrozenImage {
+pub struct CachingDiskBranchMetadata {
     pub sealed_roots: Seq<Address>,
     pub seq_end: nat,
 }
@@ -2488,8 +2493,8 @@ state_machine!{ CachingDiskBranch {
     pub enum Label {
         QueryLabel{ key: Key, msg: Message },
         AppendLabel{ keys: Seq<Key>, msgs: Seq<Message> },
-        FreezeAsLabel{ image: CachingDiskBranchFrozenImage },
-        FreezePrepared{ image: CachingDiskBranchFrozenImage },
+        FreezeAsLabel{ image: CachingDiskBranchMetadata },
+        FreezePrepared{ image: CachingDiskBranchMetadata },
         LoadMetadata{ root: Address, discovered_aus: Set<AU> },
         Internal,
         InternalAlloc{ allocs: Set<AU>, deallocs: Set<AU> },
@@ -3104,6 +3109,8 @@ state_machine!{ CachingDiskBranch {
                             assert(post.sealed_roots.to_set().contains(post.sealed_roots[i]));
                             assert(pre.sealed_roots.to_set().contains(root));
                             if post.sealed_roots[i] != root {
+                                assert(addrs_with_different_au(post.sealed_roots[i], root));
+                                assert(post.sealed_roots[i].au != root.au);
                                 assert(false);
                             }
                             assert(read_nodes[root] == post.visible_branch_nodes()[root]) by {
@@ -4237,6 +4244,9 @@ state_machine!{ CachingDiskBranch {
                 );
                 assert(loose_active_summary.dom().finite());
                 lemma_values_finite(loose_active_summary);
+                assert(loose_active_summary.contains_key(sealed_branch.root.au));
+                assert(loose_active_summary[sealed_branch.root.au] == new_summary);
+                assert(loose_active_summary.contains_value(new_summary));
                 assert(loose_active_summary.values().contains(new_summary));
                 assert forall |au: AU| #[trigger] summary_aus(loose_active_summary).contains(au)
                     <==> new_summary.contains(au)
@@ -5652,8 +5662,8 @@ impl CachingDiskBranch::State {
         }
     }
 
-    pub open spec fn freeze_metadata(self) -> CachingDiskBranchFrozenImage {
-        CachingDiskBranchFrozenImage{
+    pub open spec fn freeze_metadata(self) -> CachingDiskBranchMetadata {
+        CachingDiskBranchMetadata{
             sealed_roots: self.sealed_roots,
             seq_end: self.seq_end,
         }
@@ -5661,7 +5671,7 @@ impl CachingDiskBranch::State {
 
     pub open spec fn visible_image_for_metadata(
         self,
-        frozen: CachingDiskBranchFrozenImage,
+        frozen: CachingDiskBranchMetadata,
     ) -> CachingDiskBranchImage {
         CachingDiskBranchImage{
             persistent: self.disk.visible(),
@@ -5672,7 +5682,7 @@ impl CachingDiskBranch::State {
 
     pub proof fn visible_prefix_image_matches_stack(
         self,
-        frozen: CachingDiskBranchFrozenImage,
+        frozen: CachingDiskBranchMetadata,
     )
         requires
             self.inv(),
@@ -5780,7 +5790,25 @@ impl CachingDiskBranch::State {
                     assert(full_roots.contains(root));
                     assert(!(full_roots - frozen_roots).contains(root));
                     crate::disk::GenericDisk_v::to_aus_domain(full_roots - frozen_roots);
-                    assert(!to_aus(full_roots - frozen_roots).contains(au));
+                    assert(!to_aus(full_roots - frozen_roots).contains(au)) by {
+                        if to_aus(full_roots - frozen_roots).contains(au) {
+                            let removed_to_au = Map::new(
+                                |addr| (full_roots - frozen_roots).contains(addr),
+                                |addr: Address| addr.au,
+                            );
+                            let removed_root = choose |removed_root| #[trigger] removed_to_au.contains_key(removed_root)
+                                && removed_to_au[removed_root] == au;
+                            assert((full_roots - frozen_roots).contains(removed_root));
+                            assert(full_roots.contains(removed_root));
+                            if removed_root != root {
+                                assert(addrs_with_different_au(removed_root, root));
+                                assert(removed_root.au != root.au);
+                            }
+                            assert(removed_root == root);
+                            assert(!frozen_roots.contains(root));
+                            assert(false);
+                        }
+                    }
                     assert(prefix_summary.contains_key(au));
                 }
                 if prefix_summary.contains_key(au) {
@@ -6023,7 +6051,7 @@ impl CachingDiskBranch::State {
                 self,
                 self,
                 CachingDiskBranch::Label::FreezePrepared{
-                    image: CachingDiskBranchFrozenImage{
+                    image: CachingDiskBranchMetadata{
                         sealed_roots: image.sealed_roots,
                         seq_end: image.seq_end,
                     },
@@ -6035,20 +6063,20 @@ impl CachingDiskBranch::State {
             image.sealed_stack_i().wf(image.branch_summary()),
             image.branch_summary() == image.branch_summary(),
             image.branch_summary()
-                == self.visible_image_for_metadata(CachingDiskBranchFrozenImage{
+                == self.visible_image_for_metadata(CachingDiskBranchMetadata{
                     sealed_roots: image.sealed_roots,
                     seq_end: image.seq_end,
                 }).branch_summary(),
             summary_aus(image.branch_summary()) <= summary_aus(self.interpreted_branch_summary()),
             image.sealed_stack_i()
-                == self.visible_image_for_metadata(CachingDiskBranchFrozenImage{
+                == self.visible_image_for_metadata(CachingDiskBranchMetadata{
                     sealed_roots: image.sealed_roots,
                     seq_end: image.seq_end,
                 }).sealed_stack_i(),
     {
         reveal(CachingDiskBranch::State::next);
         reveal(CachingDiskBranch::State::next_by);
-        let frozen = CachingDiskBranchFrozenImage{
+        let frozen = CachingDiskBranchMetadata{
             sealed_roots: image.sealed_roots,
             seq_end: image.seq_end,
         };

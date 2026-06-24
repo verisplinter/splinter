@@ -1126,7 +1126,7 @@ impl CachingDiskBranch::State {
         self,
         post: Self,
         lbl: CachingDiskBranch::Label,
-        frozen: CachingDiskBranchFrozenImage,
+        frozen: CachingDiskBranchMetadata,
     )
         requires
             self.inv(),

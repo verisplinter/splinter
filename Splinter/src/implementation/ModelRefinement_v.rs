@@ -744,7 +744,7 @@ pub open spec fn branch_image_static_domain_i(
         && atomic_branch_metadata_loaded_flag(model.program.state.branch)
     {
         let branch_image = branch_caching_disk_state_i(model).visible_image_for_metadata(
-            CachingDiskBranchModule::CachingDiskBranchFrozenImage{
+            CachingDiskBranchModule::CachingDiskBranchMetadata{
                 sealed_roots: image.branch_roots,
                 seq_end: image.branch_seq_end,
             },
@@ -788,7 +788,7 @@ pub proof fn branch_prepared_prefix_image_summary_subset_projection(
         },
 {
     let cdb = branch_caching_disk_state_i(model);
-    let frozen = CachingDiskBranchModule::CachingDiskBranchFrozenImage{
+    let frozen = CachingDiskBranchModule::CachingDiskBranchMetadata{
         sealed_roots: image.branch_roots,
         seq_end: image.branch_seq_end,
     };
@@ -992,7 +992,7 @@ pub proof fn branch_image_static_domain_subset_branch_projection(
             <= addresses_in_aus(branch_projection_aus(model)),
 {
     let cdb = branch_caching_disk_state_i(model);
-    let frozen = CachingDiskBranchModule::CachingDiskBranchFrozenImage{
+    let frozen = CachingDiskBranchModule::CachingDiskBranchMetadata{
         sealed_roots: image.branch_roots,
         seq_end: image.branch_seq_end,
     };
@@ -1049,12 +1049,12 @@ pub proof fn branch_image_static_domain_preserved_by_write_outside(
         post.disk.content == pre.disk.content.insert(write_addr, data),
         !branch_image_static_domain_i(pre, image).contains(write_addr),
         branch_caching_disk_state_i(post).visible_image_for_metadata(
-            CachingDiskBranchModule::CachingDiskBranchFrozenImage{
+            CachingDiskBranchModule::CachingDiskBranchMetadata{
                 sealed_roots: image.branch_roots,
                 seq_end: image.branch_seq_end,
             },
         ) == branch_caching_disk_state_i(pre).visible_image_for_metadata(
-            CachingDiskBranchModule::CachingDiskBranchFrozenImage{
+            CachingDiskBranchModule::CachingDiskBranchMetadata{
                 sealed_roots: image.branch_roots,
                 seq_end: image.branch_seq_end,
             },
@@ -4891,7 +4891,7 @@ pub proof fn program_internal_cache_internal_preserves_bookkeeping(
                 if pre.program.state.superblock_metadata_known()
                     && atomic_branch_metadata_loaded_flag(pre.program.state.branch)
                 {
-                    let frozen = CachingDiskBranchModule::CachingDiskBranchFrozenImage{
+                    let frozen = CachingDiskBranchModule::CachingDiskBranchMetadata{
                         sealed_roots: persistent_image.branch_roots,
                         seq_end: persistent_image.branch_seq_end,
                     };
@@ -4918,7 +4918,7 @@ pub proof fn program_internal_cache_internal_preserves_bookkeeping(
                     if pre.program.state.superblock_metadata_known()
                         && atomic_branch_metadata_loaded_flag(pre.program.state.branch)
                     {
-                        let frozen = CachingDiskBranchModule::CachingDiskBranchFrozenImage{
+                        let frozen = CachingDiskBranchModule::CachingDiskBranchMetadata{
                             sealed_roots: inflight_image.branch_roots,
                             seq_end: inflight_image.branch_seq_end,
                         };
@@ -7062,7 +7062,7 @@ pub proof fn disk_internal_preserves_refinement_invariants(
                         assert(false);
                     }
                 }
-                let persistent_branch_frozen = CachingDiskBranchModule::CachingDiskBranchFrozenImage{
+                let persistent_branch_frozen = CachingDiskBranchModule::CachingDiskBranchMetadata{
                     sealed_roots: persistent_image.branch_roots,
                     seq_end: persistent_image.branch_seq_end,
                 };
@@ -7123,7 +7123,7 @@ pub proof fn disk_internal_preserves_refinement_invariants(
                             assert(false);
                         }
                     }
-                    let inflight_branch_frozen = CachingDiskBranchModule::CachingDiskBranchFrozenImage{
+                    let inflight_branch_frozen = CachingDiskBranchModule::CachingDiskBranchMetadata{
                         sealed_roots: inflight_image.branch_roots,
                         seq_end: inflight_image.branch_seq_end,
                     };
@@ -8005,7 +8005,7 @@ pub proof fn disk_internal_process_data_write_preserves_refinement_invariants(
         assert(atomic_branch_metadata_loaded_flag(post.program.state.branch));
         let pre_p = persistent_branch_image_i(pre);
         let post_p = persistent_branch_image_i(post);
-        let durable_frozen = CachingDiskBranchModule::CachingDiskBranchFrozenImage{
+        let durable_frozen = CachingDiskBranchModule::CachingDiskBranchMetadata{
             sealed_roots: durable_branch_image.branch_roots,
             seq_end: durable_branch_image.branch_seq_end,
         };
@@ -8062,7 +8062,7 @@ pub proof fn disk_internal_process_data_write_preserves_refinement_invariants(
         if pre.program.state.superblock_metadata_known()
             && atomic_branch_metadata_loaded_flag(pre.program.state.branch)
         {
-            let inflight_frozen = CachingDiskBranchModule::CachingDiskBranchFrozenImage{
+            let inflight_frozen = CachingDiskBranchModule::CachingDiskBranchMetadata{
                 sealed_roots: inflight_branch_image.branch_roots,
                 seq_end: inflight_branch_image.branch_seq_end,
             };
@@ -8115,7 +8115,7 @@ pub proof fn disk_internal_process_data_write_preserves_refinement_invariants(
                     assert(atomic_persistent_superblock_image_i(post)
                         == atomic_persistent_superblock_image_i(pre));
                     let persistent_image = atomic_persistent_superblock_image_i(pre);
-                    let persistent_frozen = CachingDiskBranchModule::CachingDiskBranchFrozenImage{
+                    let persistent_frozen = CachingDiskBranchModule::CachingDiskBranchMetadata{
                         sealed_roots: persistent_image.branch_roots,
                         seq_end: persistent_image.branch_seq_end,
                     };
@@ -8148,7 +8148,7 @@ pub proof fn disk_internal_process_data_write_preserves_refinement_invariants(
                             req_id,
                         ));
                         let inflight_image = pre.program.state.atomic_inflight_superblock_i();
-                        let inflight_frozen = CachingDiskBranchModule::CachingDiskBranchFrozenImage{
+                        let inflight_frozen = CachingDiskBranchModule::CachingDiskBranchMetadata{
                             sealed_roots: inflight_image.branch_roots,
                             seq_end: inflight_image.branch_seq_end,
                         };
@@ -8259,7 +8259,7 @@ pub proof fn disk_internal_process_data_write_preserves_refinement_invariants(
             assert(atomic_persistent_superblock_image_i(post) == image);
 	            assert(pre_p == branch_image_i(pre, image));
 	            assert(post_p == branch_image_i(post, image));
-	            let persistent_frozen = CachingDiskBranchModule::CachingDiskBranchFrozenImage{
+	            let persistent_frozen = CachingDiskBranchModule::CachingDiskBranchMetadata{
 	                sealed_roots: image.branch_roots,
 	                seq_end: image.branch_seq_end,
 	            };
@@ -8301,11 +8301,11 @@ pub proof fn disk_internal_process_data_write_preserves_refinement_invariants(
         if crash_aware_caching_disk_branch_i(post).ephemeral is Known {
             assert(crash_aware_caching_disk_branch_i(pre).ephemeral is Known);
             assert(branch_caching_disk_i(post).visible() == branch_caching_disk_i(pre).visible());
-            let persistent_frozen = CachingDiskBranchModule::CachingDiskBranchFrozenImage{
+            let persistent_frozen = CachingDiskBranchModule::CachingDiskBranchMetadata{
                 sealed_roots: crash_aware_caching_disk_branch_i(post).persistent.sealed_roots,
                 seq_end: crash_aware_caching_disk_branch_i(post).persistent.seq_end,
             };
-            assert(persistent_frozen == CachingDiskBranchModule::CachingDiskBranchFrozenImage{
+            assert(persistent_frozen == CachingDiskBranchModule::CachingDiskBranchMetadata{
                 sealed_roots: crash_aware_caching_disk_branch_i(pre).persistent.sealed_roots,
                 seq_end: crash_aware_caching_disk_branch_i(pre).persistent.seq_end,
             });

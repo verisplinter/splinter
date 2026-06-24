@@ -11,7 +11,7 @@ use vstd::assert_maps_equal;
 use crate::implementation::CachingDiskBranchRefinement_v::*;
 use crate::implementation::AllocationBranchStack_v::{AllocationBranchStack, normalize_value};
 use crate::implementation::CachingDiskBranch_v::{
-    CachingDiskBranch, CachingDiskBranchFrozenImage, CachingDiskBranchImage,
+    CachingDiskBranch, CachingDiskBranchMetadata, CachingDiskBranchImage,
     empty_caching_disk_branch_image, empty_caching_disk_branch_image_wf,
 };
 use crate::implementation::CrashAwareAllocationBranchStackRefinement_v::*;
@@ -42,7 +42,7 @@ impl EphemeralCachingDiskBranch {
 }
 
 pub open spec fn frozen_image_i(
-    frozen: Option<CachingDiskBranchFrozenImage>,
+    frozen: Option<CachingDiskBranchMetadata>,
     persistent: PersistentCachingDiskBranch,
     ephemeral: EphemeralCachingDiskBranch,
 ) -> Option<FrozenAllocationBranchStack> {
@@ -767,7 +767,7 @@ impl CrashAwareCachingDiskBranch::State {
                 }
                 match lbl {
                     CrashAwareCachingDiskBranch::Label::CommitStart{new_boundary_lsn, sealed_roots} => {
-                        assert(post.frozen == Option::Some(CachingDiskBranchFrozenImage{
+                        assert(post.frozen == Option::Some(CachingDiskBranchMetadata{
                             sealed_roots,
                             seq_end: new_boundary_lsn,
                         }));
@@ -791,7 +791,7 @@ impl CrashAwareCachingDiskBranch::State {
                                 CrashAwareAllocationBranchStack::Step::commit_start_persistent(),
                             ));
                         } else {
-                            let frozen = CachingDiskBranchFrozenImage{
+                            let frozen = CachingDiskBranchMetadata{
                                 sealed_roots,
                                 seq_end: new_boundary_lsn,
                             };
@@ -921,7 +921,7 @@ impl CrashAwareCachingDiskBranch::State {
                             self.prepared_materialized_image_matches_visible_prefix();
                             assert(prepared_image == self.prepared_materialized_image());
                             let frozen = self.frozen.unwrap();
-                            let image_frozen = CachingDiskBranchFrozenImage{
+                            let image_frozen = CachingDiskBranchMetadata{
                                 sealed_roots: prepared_image.sealed_roots,
                                 seq_end: prepared_image.seq_end,
                             };

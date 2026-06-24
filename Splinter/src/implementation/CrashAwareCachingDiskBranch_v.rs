@@ -30,13 +30,13 @@ pub enum EphemeralCachingDiskBranch {
 }
 
 pub enum PersistentCachingDiskBranch {
-    Metadata{ meta: CachingDiskBranchFrozenImage },
+    Metadata{ meta: CachingDiskBranchMetadata },
     Image{ image: CachingDiskBranchImage },
 }
 
 impl CachingDiskBranchImage {
-    pub open spec fn metadata(self) -> CachingDiskBranchFrozenImage {
-        CachingDiskBranchFrozenImage{
+    pub open spec fn metadata(self) -> CachingDiskBranchMetadata {
+        CachingDiskBranchMetadata{
             sealed_roots: self.sealed_roots,
             seq_end: self.seq_end,
         }
@@ -44,7 +44,7 @@ impl CachingDiskBranchImage {
 
     pub open spec fn materialized_from_persistent(
         state: CachingDiskBranch::State,
-        frozen: CachingDiskBranchFrozenImage,
+        frozen: CachingDiskBranchMetadata,
     ) -> Self {
         CachingDiskBranchImage{
             persistent: state.disk.persistent,
@@ -55,7 +55,7 @@ impl CachingDiskBranchImage {
 }
 
 impl PersistentCachingDiskBranch {
-    pub open spec fn metadata(self) -> CachingDiskBranchFrozenImage {
+    pub open spec fn metadata(self) -> CachingDiskBranchMetadata {
         match self {
             PersistentCachingDiskBranch::Metadata{meta} => meta,
             PersistentCachingDiskBranch::Image{image} => image.metadata(),
@@ -93,11 +93,11 @@ pub proof fn cdb_step_preserves_image_match(
         pre.inv(),
         image.sealed_roots.len() <= pre.sealed_roots.len(),
         pre.sealed_roots.subrange(0, image.sealed_roots.len() as int) == image.sealed_roots,
-        pre.visible_image_for_metadata(CachingDiskBranchFrozenImage{
+        pre.visible_image_for_metadata(CachingDiskBranchMetadata{
             sealed_roots: image.sealed_roots,
             seq_end: image.seq_end,
         }).sealed_stack_i() == image.sealed_stack_i(),
-        pre.visible_image_for_metadata(CachingDiskBranchFrozenImage{
+        pre.visible_image_for_metadata(CachingDiskBranchMetadata{
             sealed_roots: image.sealed_roots,
             seq_end: image.seq_end,
         }).branch_summary() == image.branch_summary(),
@@ -105,16 +105,16 @@ pub proof fn cdb_step_preserves_image_match(
     ensures
         image.sealed_roots.len() <= post.sealed_roots.len(),
         post.sealed_roots.subrange(0, image.sealed_roots.len() as int) == image.sealed_roots,
-        post.visible_image_for_metadata(CachingDiskBranchFrozenImage{
+        post.visible_image_for_metadata(CachingDiskBranchMetadata{
             sealed_roots: image.sealed_roots,
             seq_end: image.seq_end,
         }).sealed_stack_i() == image.sealed_stack_i(),
-        post.visible_image_for_metadata(CachingDiskBranchFrozenImage{
+        post.visible_image_for_metadata(CachingDiskBranchMetadata{
             sealed_roots: image.sealed_roots,
             seq_end: image.seq_end,
         }).branch_summary() == image.branch_summary(),
 {
-    let frozen = CachingDiskBranchFrozenImage{
+    let frozen = CachingDiskBranchMetadata{
         sealed_roots: image.sealed_roots,
         seq_end: image.seq_end,
     };
@@ -258,7 +258,7 @@ state_machine!{ CrashAwareCachingDiskBranch {
     fields {
         pub persistent: PersistentCachingDiskBranch,
         pub ephemeral: EphemeralCachingDiskBranch,
-        pub frozen: Option<CachingDiskBranchFrozenImage>,
+        pub frozen: Option<CachingDiskBranchMetadata>,
         pub prepared: bool,
     }
 
@@ -346,7 +346,7 @@ state_machine!{ CrashAwareCachingDiskBranch {
         require let Label::CommitStart{new_boundary_lsn, sealed_roots} = lbl;
         require pre.ephemeral is Known;
         require pre.frozen is None;
-        let frozen = CachingDiskBranchFrozenImage{
+        let frozen = CachingDiskBranchMetadata{
             sealed_roots,
             seq_end: new_boundary_lsn,
         };
@@ -546,7 +546,7 @@ state_machine!{ CrashAwareCachingDiskBranch {
             frozen,
         ));
         assert(image.persistent == self.ephemeral->v.disk.persistent);
-        assert(CachingDiskBranchFrozenImage{
+        assert(CachingDiskBranchMetadata{
             sealed_roots: image.sealed_roots,
             seq_end: image.seq_end,
         } == frozen);
@@ -590,7 +590,7 @@ state_machine!{ CrashAwareCachingDiskBranch {
                     post.persistent.metadata().sealed_roots
                 );
                 let branch_lbl = CachingDiskBranch::Label::FreezePrepared{
-                    image: CachingDiskBranchFrozenImage{
+                    image: CachingDiskBranchMetadata{
                         sealed_roots: image.sealed_roots,
                         seq_end: image.seq_end,
                     },
@@ -872,7 +872,7 @@ state_machine!{ CrashAwareCachingDiskBranch {
         reveal(CrashAwareCachingDiskBranch::State::commit_start);
         match lbl {
             Label::CommitStart{new_boundary_lsn, sealed_roots} => {
-                let frozen = CachingDiskBranchFrozenImage{
+                let frozen = CachingDiskBranchMetadata{
                     sealed_roots,
                     seq_end: new_boundary_lsn,
                 };

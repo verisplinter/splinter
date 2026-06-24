@@ -24,7 +24,7 @@ use crate::implementation::AllocationBranchStack_v::normalize_value;
 use crate::implementation::AllocationBranchStackRefinement_v::append_puts;
 use crate::implementation::AnotherAtomicState_v::{
     AtomicBranchImage, AtomicBranchState, AtomicInflightInfo, AtomicJournalState,
-    to_branch_nodes, valid_request_reply_pair,
+    query_receipts_read_addrs, to_branch_nodes, valid_request_reply_pair,
 };
 use crate::implementation::Cache_v::Cache;
 use crate::implementation::CachedBranch_v::LoadedPathReceipt;
@@ -127,6 +127,11 @@ state_machine!{ UnifiedCacheSystem {
             write_nodes,
         };
 
+        require if pre.branch.active_branch.root is Some {
+            reads.dom() == receipt.needed_addrs()
+        } else {
+            reads.dom() == Set::<Address>::empty()
+        };
         require AtomicJournalState::State::next(
             pre.journal,
             new_journal,
@@ -158,6 +163,7 @@ state_machine!{ UnifiedCacheSystem {
         let read_nodes = to_branch_nodes(reads);
         let branch_lbl = AtomicBranchState::Label::Query{key, msg, receipts, read_nodes};
 
+        require reads.dom() == query_receipts_read_addrs(receipts, receipts.len() as nat);
         require Cache::State::next(pre.cache, new_cache, cache_lbl);
         require AtomicBranchState::State::next(pre.branch, pre.branch, branch_lbl);
         require normalize_value(msg) == value;

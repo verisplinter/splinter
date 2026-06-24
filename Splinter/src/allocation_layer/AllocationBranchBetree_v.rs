@@ -1167,6 +1167,13 @@ impl BufferDisk<BranchNode> {
     {
         let root_to_au = Map::new(|addr| branch_roots.contains(addr), |addr: Address| addr.au);
         assert(root_to_au.contains_pair(root, root.au)); // witness
+        assert forall |addr: Address| #[trigger] branch_roots.contains(addr) && addr.au == root.au
+            implies addr == root by {
+            if addr != root {
+                assert(addrs_with_different_au(addr, root));
+                assert(addr.au != root.au);
+            }
+        }
     }
 
     pub proof fn build_branch_summary_get_addr(self, branch_roots: Set<Address>, au: AU) -> (addr: Address)
@@ -1181,6 +1188,13 @@ impl BufferDisk<BranchNode> {
         let addr = choose |addr| #[trigger] branch_roots.contains(addr) && addr.au == au;
         let root_to_au = Map::new(|addr| branch_roots.contains(addr), |addr: Address| addr.au);
         assert(root_to_au.contains_pair(addr, addr.au)); // witness
+        assert forall |other: Address| #[trigger] branch_roots.contains(other) && other.au == au
+            implies other == addr by {
+            if other != addr {
+                assert(addrs_with_different_au(other, addr));
+                assert(other.au != addr.au);
+            }
+        }
         addr
     }
 
@@ -1377,12 +1391,41 @@ impl BufferDisk<BranchNode> {
 
             assert(addrs_closed(branch.full_repr(), branch.get_summary()));
             self.build_branch_summary_contains(branch_roots, root);
+            assert(!to_aus(branch_roots - post_branch_roots).contains(root.au)) by {
+                if to_aus(branch_roots - post_branch_roots).contains(root.au) {
+                    let removed_to_au = Map::new(
+                        |addr| (branch_roots - post_branch_roots).contains(addr),
+                        |addr: Address| addr.au,
+                    );
+                    let removed_root = choose |addr| #[trigger] removed_to_au.contains_key(addr)
+                        && removed_to_au[addr] == root.au;
+                    assert((branch_roots - post_branch_roots).contains(removed_root));
+                    assert(branch_roots.contains(removed_root));
+                    if removed_root != root {
+                        assert(addrs_with_different_au(removed_root, root));
+                        assert(removed_root.au != root.au);
+                    }
+                    assert(removed_root == root);
+                    assert(!post_branch_roots.contains(root));
+                    assert(false);
+                }
+            }
             assert(post_branch_summary.contains_key(root.au)); // trigger
             assert(post_branch_summary.contains_value(post_branch_summary[root.au])); // trigger
             lemma_union_set_of_sets_subset(post_branch_summary.values(), branch.get_summary());
             branch.valid_subdisk_preserves_valid_sealed_branch(post_branch, summary_aus(branch_summary));
         }
         assert(post_dv.sealed_branch_roots(post_branch_roots));
+        assert(set_addrs_disjoint_aus(post_branch_roots)) by {
+            assert forall |a: Address, b: Address|
+                post_branch_roots.contains(a) && post_branch_roots.contains(b) && a != b
+                implies #[trigger] addrs_with_different_au(a, b)
+            by {
+                assert(branch_roots.contains(a));
+                assert(branch_roots.contains(b));
+                assert(addrs_with_different_au(a, b));
+            }
+        }
 
         assert forall |au| summary_aus(post_branch_summary).contains(au)
         implies summary_aus(branch_summary).contains(au) 
@@ -1412,10 +1455,47 @@ impl BufferDisk<BranchNode> {
                     let addr = self.build_branch_summary_get_addr(branch_roots, au);
                     if (!post_branch_roots.contains(addr)) {
                         assert((branch_roots-post_branch_roots).contains(addr));
+                        assert(to_aus(branch_roots - post_branch_roots).contains(au)) by {
+                            let removed_to_au = Map::new(
+                                |addr| (branch_roots - post_branch_roots).contains(addr),
+                                |addr: Address| addr.au,
+                            );
+                            assert(removed_to_au.contains_key(addr));
+                            assert(removed_to_au[addr] == au);
+                            assert(removed_to_au.values().contains(au));
+                        }
+                        assert(!post_branch_summary.contains_key(au));
                         assert(false);
                     }
                     assert(post_branch_roots.contains(addr));
                     post_dv.build_branch_summary_contains(post_branch_roots, addr);
+                }
+                if post_build.contains_key(au) {
+                    let addr = post_dv.build_branch_summary_get_addr(post_branch_roots, au);
+                    assert(post_branch_roots.contains(addr));
+                    assert(branch_roots.contains(addr));
+                    self.build_branch_summary_contains(branch_roots, addr);
+                    assert(branch_summary.contains_key(au));
+                    assert(!to_aus(branch_roots - post_branch_roots).contains(au)) by {
+                        if to_aus(branch_roots - post_branch_roots).contains(au) {
+                            let removed_to_au = Map::new(
+                                |addr| (branch_roots - post_branch_roots).contains(addr),
+                                |addr: Address| addr.au,
+                            );
+                            let removed_root = choose |removed_root| #[trigger] removed_to_au.contains_key(removed_root)
+                                && removed_to_au[removed_root] == au;
+                            assert((branch_roots - post_branch_roots).contains(removed_root));
+                            assert(branch_roots.contains(removed_root));
+                            if removed_root != addr {
+                                assert(addrs_with_different_au(removed_root, addr));
+                                assert(removed_root.au != addr.au);
+                            }
+                            assert(removed_root == addr);
+                            assert(!post_branch_roots.contains(addr));
+                            assert(false);
+                        }
+                    }
+                    assert(post_branch_summary.contains_key(au));
                 }
             }
             assert(post_branch_summary.dom() =~= post_build.dom());

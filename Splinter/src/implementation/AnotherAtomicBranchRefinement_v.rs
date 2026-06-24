@@ -53,7 +53,7 @@ use crate::implementation::CachingDisk_v::{
     addresses_in_aus, CachingDisk, PageStatus as CachingDiskPageStatus,
 };
 use crate::implementation::CachingDiskBranch_v::{
-    self as CachingDiskBranchModule, CachingDiskBranch, CachingDiskBranchFrozenImage,
+    self as CachingDiskBranchModule, CachingDiskBranch, CachingDiskBranchMetadata,
     CachingDiskBranchImage,
     root_aus_up_to, root_aus_up_to_contains, root_aus_up_to_full,
     root_aus_up_to_member_has_index, sealed_summary_aus_between,
@@ -682,11 +682,11 @@ pub open spec fn persistent_branch_image_i(
 
 pub open spec fn frozen_branch_image_i(
     model: SystemModel::State<AnotherProgramModel>,
-) -> Option<CachingDiskBranchFrozenImage>
+) -> Option<CachingDiskBranchMetadata>
 {
     if model.program.state.in_flight is Some {
         let image = model.program.state.atomic_inflight_superblock_i();
-        Option::Some(CachingDiskBranchFrozenImage{
+        Option::Some(CachingDiskBranchMetadata{
             sealed_roots: image.branch_roots,
             seq_end: image.branch_seq_end,
         })

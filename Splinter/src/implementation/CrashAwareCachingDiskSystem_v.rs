@@ -25,7 +25,7 @@ use crate::implementation::CrashAwareCachingDiskBranch_v::{
     EphemeralCachingDiskBranch, PersistentCachingDiskBranch, CrashAwareCachingDiskBranch,
 };
 use crate::implementation::CachingDiskBranch_v::{
-    CachingDiskBranch, CachingDiskBranchFrozenImage, CachingDiskBranchImage,
+    CachingDiskBranch, CachingDiskBranchMetadata, CachingDiskBranchImage,
     empty_caching_disk_branch_image, empty_caching_disk_branch_image_wf,
 };
 use crate::implementation::CrashAwareCachingDiskBranchRefinement_v::*;
@@ -2224,6 +2224,224 @@ state_machine!{ CrashAwareCachingDiskSystem {
 
     #[inductive(noop)]
     fn noop_inductive(pre: Self, post: Self, lbl: Label) {}
+
+    pub proof fn inv_next(pre: Self, post: Self, lbl: Label)
+        requires
+            pre.inv(),
+            Self::next(pre, post, lbl),
+        ensures
+            post.inv(),
+    {
+        reveal(CrashAwareCachingDiskSystem::State::next);
+        reveal(CrashAwareCachingDiskSystem::State::next_by);
+        let step = choose |step: CrashAwareCachingDiskSystem::Step|
+            Self::next_by(pre, post, lbl, step);
+        match step {
+            CrashAwareCachingDiskSystem::Step::accept_request() => {
+                Self::accept_request_inductive(pre, post, lbl);
+            },
+            CrashAwareCachingDiskSystem::Step::deliver_reply() => {
+                Self::deliver_reply_inductive(pre, post, lbl);
+            },
+            CrashAwareCachingDiskSystem::Step::query(new_branch) => {
+                Self::query_inductive(pre, post, lbl, new_branch);
+            },
+            CrashAwareCachingDiskSystem::Step::put(new_journal, new_branch) => {
+                Self::put_inductive(pre, post, lbl, new_journal, new_branch);
+            },
+            CrashAwareCachingDiskSystem::Step::execute_noop() => {
+                Self::execute_noop_inductive(pre, post, lbl);
+            },
+            CrashAwareCachingDiskSystem::Step::req_sync() => {
+                Self::req_sync_inductive(pre, post, lbl);
+            },
+            CrashAwareCachingDiskSystem::Step::reply_sync() => {
+                Self::reply_sync_inductive(pre, post, lbl);
+            },
+            CrashAwareCachingDiskSystem::Step::journal_internal(new_journal) => {
+                Self::journal_internal_inductive(pre, post, lbl, new_journal);
+            },
+            CrashAwareCachingDiskSystem::Step::journal_load_index(
+                new_journal,
+                discovered_aus,
+            ) => {
+                Self::journal_load_index_inductive(
+                    pre,
+                    post,
+                    lbl,
+                    new_journal,
+                    discovered_aus,
+                );
+            },
+            CrashAwareCachingDiskSystem::Step::journal_internal_alloc(
+                new_journal,
+                allocs,
+                deallocs,
+                prune_aus,
+            ) => {
+                Self::journal_internal_alloc_inductive(
+                    pre,
+                    post,
+                    lbl,
+                    new_journal,
+                    allocs,
+                    deallocs,
+                    prune_aus,
+                );
+            },
+            CrashAwareCachingDiskSystem::Step::map_internal(new_branch) => {
+                Self::map_internal_inductive(pre, post, lbl, new_branch);
+            },
+            CrashAwareCachingDiskSystem::Step::component_internals(
+                new_journal,
+                new_branch,
+            ) => {
+                Self::component_internals_inductive(
+                    pre,
+                    post,
+                    lbl,
+                    new_journal,
+                    new_branch,
+                );
+            },
+            CrashAwareCachingDiskSystem::Step::map_load_metadata(
+                new_branch,
+                root,
+                discovered_aus,
+            ) => {
+                Self::map_load_metadata_inductive(
+                    pre,
+                    post,
+                    lbl,
+                    new_branch,
+                    root,
+                    discovered_aus,
+                );
+            },
+            CrashAwareCachingDiskSystem::Step::map_internal_alloc(
+                new_branch,
+                allocs,
+                deallocs,
+            ) => {
+                Self::map_internal_alloc_inductive(
+                    pre,
+                    post,
+                    lbl,
+                    new_branch,
+                    allocs,
+                    deallocs,
+                );
+            },
+            CrashAwareCachingDiskSystem::Step::load_ephemeral_from_persistent(
+                new_journal,
+                new_branch,
+            ) => {
+                Self::load_ephemeral_from_persistent_inductive(
+                    pre,
+                    post,
+                    lbl,
+                    new_journal,
+                    new_branch,
+                );
+            },
+            CrashAwareCachingDiskSystem::Step::recover(
+                new_journal,
+                new_branch,
+                records,
+                keys,
+                msgs,
+            ) => {
+                Self::recover_inductive(
+                    pre,
+                    post,
+                    lbl,
+                    new_journal,
+                    new_branch,
+                    records,
+                    keys,
+                    msgs,
+                );
+            },
+            CrashAwareCachingDiskSystem::Step::commit_start(
+                new_journal,
+                new_branch,
+                superblock_image,
+            ) => {
+                Self::commit_start_inductive(
+                    pre,
+                    post,
+                    lbl,
+                    new_journal,
+                    new_branch,
+                    superblock_image,
+                );
+            },
+            CrashAwareCachingDiskSystem::Step::commit_prepared(
+                new_journal,
+                new_branch,
+                new_superblock,
+                raw_page,
+            ) => {
+                Self::commit_prepared_inductive(
+                    pre,
+                    post,
+                    lbl,
+                    new_journal,
+                    new_branch,
+                    new_superblock,
+                    raw_page,
+                );
+            },
+            CrashAwareCachingDiskSystem::Step::superblock_write_lands(
+                new_superblock,
+            ) => {
+                Self::superblock_write_lands_inductive(
+                    pre,
+                    post,
+                    lbl,
+                    new_superblock,
+                );
+            },
+            CrashAwareCachingDiskSystem::Step::commit_complete(
+                new_journal,
+                new_branch,
+                new_superblock,
+                discarded,
+            ) => {
+                Self::commit_complete_inductive(
+                    pre,
+                    post,
+                    lbl,
+                    new_journal,
+                    new_branch,
+                    new_superblock,
+                    discarded,
+                );
+            },
+            CrashAwareCachingDiskSystem::Step::crash(
+                new_journal,
+                new_branch,
+                new_superblock,
+                keep_in_flight,
+            ) => {
+                Self::crash_inductive(
+                    pre,
+                    post,
+                    lbl,
+                    new_journal,
+                    new_branch,
+                    new_superblock,
+                    keep_in_flight,
+                );
+            },
+            CrashAwareCachingDiskSystem::Step::noop() => {
+                Self::noop_inductive(pre, post, lbl);
+            },
+            CrashAwareCachingDiskSystem::Step::dummy_to_use_type_params(_) => {
+                assert(false);
+            },
+        }
+    }
 }}
 
 impl CrashAwareCachingDiskSystem::State {

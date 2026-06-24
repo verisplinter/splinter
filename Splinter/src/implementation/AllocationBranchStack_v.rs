@@ -17,8 +17,9 @@ use crate::betree::Utils_v::{
     lemma_union_set_of_sets_contains, lemma_union_set_of_sets_subset,
 };
 use crate::disk::GenericDisk_v::{
-    addrs_closed, set_addrs_disjoint_aus, to_aus, to_aus_additive, to_aus_domain,
-    to_aus_finite, to_aus_singleton, AU, Address, Pointer,
+    addrs_closed, addrs_with_different_au, set_addrs_disjoint_aus, to_aus,
+    to_aus_additive, to_aus_domain, to_aus_finite, to_aus_singleton, AU, Address,
+    Pointer,
 };
 use crate::spec::KeyType_t::Key;
 use crate::spec::Messages_t::{default_value, nop_delta, Message, Value};
@@ -273,7 +274,7 @@ impl SealedAllocationBranchStack {
         assert(set_addrs_disjoint_aus(post_roots)) by {
             assert forall |a: Address, b: Address|
                 post_roots.contains(a) && post_roots.contains(b) && a != b
-                implies #[trigger] a.au != #[trigger] b.au
+                implies #[trigger] addrs_with_different_au(a, b)
             by {
                 if a != sealed_branch.root && b != sealed_branch.root {
                     assert(roots.contains(a) && roots.contains(b));
