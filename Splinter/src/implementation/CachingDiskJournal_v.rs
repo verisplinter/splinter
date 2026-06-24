@@ -899,9 +899,6 @@ impl CachingDiskJournal::State {
         snapshot: JournalSnapshot,
         persistent: Map<Address, RawPage>,
     )
-        requires
-            Self::load_from_persistent(snapshot, persistent).inv(),
-            Self::load_from_persistent(snapshot, persistent).backing_journal_image().valid_image(),
         ensures
             Self::load_from_persistent(snapshot, persistent).accessible_aus()
                 <= to_aus(persistent.dom()),

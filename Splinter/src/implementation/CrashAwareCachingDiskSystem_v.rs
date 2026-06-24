@@ -1520,9 +1520,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
             journal_image.snapshot,
             journal_image.persistent,
         );
-        assert(journal_image.wf());
-        assert(loaded_journal.backing_journal_image() == journal_image.i());
-        assert(loaded_journal.backing_journal_image().valid_image());
         CachingDiskJournal::State::load_from_persistent_accessible_aus(
             journal_image.snapshot,
             journal_image.persistent,
@@ -1532,7 +1529,9 @@ state_machine!{ CrashAwareCachingDiskSystem {
         );
         reveal(CrashAwareCachingDiskJournal::State::load_ephemeral);
         reveal(CrashAwareCachingDiskBranch::State::load_ephemeral);
-        assert(new_journal.persistent == pre.journal.persistent);
+        assert(new_journal.persistent == PersistentCachingDiskJournal::Metadata{
+            meta: journal_image.metadata(),
+        });
         assert(new_journal.frozen == pre.journal.frozen);
         assert(new_journal.prepared == pre.journal.prepared);
         assert(new_journal.ephemeral is Known);
