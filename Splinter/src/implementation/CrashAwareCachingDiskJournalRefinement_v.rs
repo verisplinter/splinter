@@ -65,8 +65,7 @@ pub open spec fn materialization_certificate(
     frozen: CachingDiskJournalFrozenMetadata,
 ) -> bool
 {
-    &&& state.frozen_snapshot_valid(frozen.snapshot, frozen.seq_end)
-    &&& state.persistent_visible_agree_on(state.frozen_prefix_domain(frozen.snapshot))
+    state.frozen_materialization_certificate(frozen.snapshot, frozen.seq_end)
 }
 
 impl CrashAwareCachingDiskJournal::State {
@@ -978,29 +977,19 @@ impl CrashAwareCachingDiskJournal::State {
         let cj_lbl = CachingDiskJournal::Label::Put{messages: records};
         self.ephemeral->v.next_refines(new_ephemeral, cj_lbl);
         self.ephemeral->v.put_requires_loaded(new_ephemeral, records);
-        self.ephemeral->v.put_preserves_frozen_snapshot_and_prefix(
+        self.ephemeral->v.put_preserves_frozen_materialization_certificate(
             new_ephemeral,
             records,
             self.persistent.metadata().snapshot,
             self.persistent.metadata().seq_end,
         );
-        new_ephemeral.frozen_snapshot_valid_implies_i_metadata_valid(
-            self.persistent.metadata().snapshot,
-            self.persistent.metadata().seq_end,
-        );
-        assert(materialization_certificate(new_ephemeral, self.persistent.metadata()));
         if self.prepared && self.frozen is Some {
-            self.ephemeral->v.put_preserves_frozen_snapshot_and_prefix(
+            self.ephemeral->v.put_preserves_frozen_materialization_certificate(
                 new_ephemeral,
                 records,
                 self.frozen.unwrap().snapshot,
                 self.frozen.unwrap().seq_end,
             );
-            new_ephemeral.frozen_snapshot_valid_implies_i_metadata_valid(
-                self.frozen.unwrap().snapshot,
-                self.frozen.unwrap().seq_end,
-            );
-            assert(materialization_certificate(new_ephemeral, self.frozen.unwrap()));
         }
         assert(AllocationCrashAwareJournal::State::next_by(
             self.i(),
@@ -1148,7 +1137,7 @@ impl CrashAwareCachingDiskJournal::State {
             require_end: lbl.arrow_CommitComplete_require_end(),
             deallocs: lbl.arrow_CommitComplete_discarded(),
         };
-        self.ephemeral->v.discard_old_preserves_frozen_snapshot_and_prefix_at_boundary(
+        self.ephemeral->v.discard_old_preserves_frozen_materialization_certificate_at_boundary(
             new_ephemeral,
             cj_lbl,
             frozen.snapshot,
@@ -1156,10 +1145,8 @@ impl CrashAwareCachingDiskJournal::State {
         );
         assert(cj_lbl.i(self.ephemeral->v).arrow_DiscardOld_deallocs()
             == lbl.arrow_CommitComplete_discarded());
-        assert(new_ephemeral.i().frozen_metadata_valid(meta));
         assert(new_ephemeral.i().frozen_image(meta)
             == self.ephemeral->v.i().frozen_image(meta));
-        assert(materialization_certificate(new_ephemeral, frozen));
         assert(AllocationCrashAwareJournal::State::next_by(
             self.i(),
             post.i(),
@@ -1282,25 +1269,17 @@ impl CrashAwareCachingDiskJournal::State {
             discovered_aus,
         );
         assert(self.ephemeral->v.journal.status is None);
-        assert(self.ephemeral->v.persistent_visible_agree_on(
-            self.ephemeral->v.frozen_loose_domain(self.persistent.metadata().snapshot),
+        assert(self.ephemeral->v.frozen_loose_persistence_certificate(
+            self.persistent.metadata().snapshot,
         ));
-        self.ephemeral->v.load_index_preserves_frozen_snapshot_and_prefix(
+        self.ephemeral->v.load_index_promotes_frozen_loose_to_materialization_certificate(
             new_ephemeral,
             discovered_aus,
             self.persistent.metadata().snapshot,
             self.persistent.metadata().seq_end,
         );
-        assert(materialization_certificate(new_ephemeral, self.persistent.metadata()));
         assert(self.frozen is None);
         let aj_lbl = cj_lbl.i(self.ephemeral->v);
-        let persistent_meta = frozen_image_metadata_i(self.persistent.metadata());
-        AllocationJournal::State::internal_allocations_preserves_frozen_metadata_tight(
-            self.ephemeral->v.i(),
-            new_ephemeral.i(),
-            aj_lbl,
-            persistent_meta,
-        );
         assert(self.label_i(post, lbl) is Internal);
         assert(self.label_i(post, lbl).arrow_Internal_allocs()
             .disjoint(caching_disk_journal_accessible_aus(self.ephemeral->v))) by {
@@ -1351,40 +1330,32 @@ impl CrashAwareCachingDiskJournal::State {
         let cj_lbl = CachingDiskJournal::Label::ObserveCleanAUs{aus};
         self.ephemeral->v.next_refines(new_ephemeral, cj_lbl);
         self.ephemeral->v.observe_clean_aus_requires_loaded(new_ephemeral, aus);
-        self.ephemeral->v.observe_clean_aus_preserves_frozen_snapshot_and_prefix(
+        self.ephemeral->v.observe_clean_aus_preserves_frozen_materialization_certificate(
             new_ephemeral,
             aus,
             self.persistent.metadata().snapshot,
             self.persistent.metadata().seq_end,
         );
-        assert(materialization_certificate(new_ephemeral, self.persistent.metadata()));
         let aj_lbl = cj_lbl.i(self.ephemeral->v);
-        let persistent_meta = frozen_image_metadata_i(self.persistent.metadata());
-        AllocationJournal::State::internal_allocations_preserves_frozen_metadata_tight(
-            self.ephemeral->v.i(),
-            new_ephemeral.i(),
-            aj_lbl,
-            persistent_meta,
-        );
         if self.frozen is Some {
-            AllocationJournal::State::internal_allocations_preserves_frozen_metadata_tight(
-                self.ephemeral->v.i(),
-                new_ephemeral.i(),
-                aj_lbl,
-                frozen_image_metadata_i(self.frozen.unwrap()),
-            );
-            self.ephemeral->v.observe_clean_aus_preserves_frozen_snapshot_and_prefix(
-                new_ephemeral,
-                aus,
-                self.frozen.unwrap().snapshot,
-                self.frozen.unwrap().seq_end,
-            );
-            new_ephemeral.frozen_snapshot_valid_implies_i_metadata_valid(
-                self.frozen.unwrap().snapshot,
-                self.frozen.unwrap().seq_end,
-            );
             if self.prepared {
-                assert(materialization_certificate(new_ephemeral, self.frozen.unwrap()));
+                self.ephemeral->v.observe_clean_aus_preserves_frozen_materialization_certificate(
+                    new_ephemeral,
+                    aus,
+                    self.frozen.unwrap().snapshot,
+                    self.frozen.unwrap().seq_end,
+                );
+            } else {
+                self.ephemeral->v.observe_clean_aus_preserves_frozen_snapshot_and_prefix(
+                    new_ephemeral,
+                    aus,
+                    self.frozen.unwrap().snapshot,
+                    self.frozen.unwrap().seq_end,
+                );
+                new_ephemeral.frozen_snapshot_valid_implies_i_metadata_valid(
+                    self.frozen.unwrap().snapshot,
+                    self.frozen.unwrap().seq_end,
+                );
             }
         }
         assert(self.label_i(post, lbl) is Internal);
@@ -1422,30 +1393,26 @@ impl CrashAwareCachingDiskJournal::State {
         let cj_lbl = CachingDiskJournal::Label::Internal;
         self.ephemeral->v.next_refines(new_ephemeral, cj_lbl);
         if self.ephemeral->v.journal.status is Some {
-            self.ephemeral->v.internal_preserves_frozen_snapshot_and_prefix(
+            self.ephemeral->v.internal_preserves_frozen_materialization_certificate(
                 new_ephemeral,
                 self.persistent.metadata().snapshot,
                 self.persistent.metadata().seq_end,
             );
-            assert(materialization_certificate(new_ephemeral, self.persistent.metadata()));
         } else {
-            self.ephemeral->v.internal_unloaded_preserves_frozen_loose_agreement(
+            self.ephemeral->v.internal_unloaded_preserves_frozen_loose_persistence_certificate(
                 new_ephemeral,
                 self.persistent.metadata().snapshot,
+                self.persistent.metadata().seq_end,
             );
             assert(new_ephemeral.journal.status is None);
-            assert(new_ephemeral.persistent_visible_agree_on(
-                new_ephemeral.frozen_loose_domain(self.persistent.metadata().snapshot),
-            ));
         }
         if self.frozen is Some {
             if self.prepared {
-                self.ephemeral->v.internal_preserves_frozen_snapshot_and_prefix(
+                self.ephemeral->v.internal_preserves_frozen_materialization_certificate(
                     new_ephemeral,
                     self.frozen.unwrap().snapshot,
                     self.frozen.unwrap().seq_end,
                 );
-                assert(materialization_certificate(new_ephemeral, self.frozen.unwrap()));
             } else {
                 self.ephemeral->v.internal_preserves_frozen_snapshot(
                     new_ephemeral,
@@ -1459,21 +1426,6 @@ impl CrashAwareCachingDiskJournal::State {
             );
         }
         let aj_lbl = cj_lbl.i(self.ephemeral->v);
-        let persistent_meta = frozen_image_metadata_i(self.persistent.metadata());
-        AllocationJournal::State::internal_allocations_preserves_frozen_metadata_tight(
-            self.ephemeral->v.i(),
-            new_ephemeral.i(),
-            aj_lbl,
-            persistent_meta,
-        );
-        if self.frozen is Some {
-            AllocationJournal::State::internal_allocations_preserves_frozen_metadata_tight(
-                self.ephemeral->v.i(),
-                new_ephemeral.i(),
-                aj_lbl,
-                frozen_image_metadata_i(self.frozen.unwrap()),
-            );
-        }
         assert(self.label_i(post, lbl) is Internal);
         assert(self.label_i(post, lbl).arrow_Internal_allocs()
             .disjoint(caching_disk_journal_accessible_aus(self.ephemeral->v)));
@@ -1523,7 +1475,7 @@ impl CrashAwareCachingDiskJournal::State {
             deallocs,
             prune_aus,
         );
-        self.ephemeral->v.internal_alloc_preserves_frozen_snapshot_and_prefix(
+        self.ephemeral->v.internal_alloc_preserves_frozen_materialization_certificate(
             new_ephemeral,
             allocs,
             deallocs,
@@ -1531,10 +1483,9 @@ impl CrashAwareCachingDiskJournal::State {
             self.persistent.metadata().snapshot,
             self.persistent.metadata().seq_end,
         );
-        assert(materialization_certificate(new_ephemeral, self.persistent.metadata()));
         if self.frozen is Some {
             if self.prepared {
-                self.ephemeral->v.internal_alloc_preserves_frozen_snapshot_and_prefix(
+                self.ephemeral->v.internal_alloc_preserves_frozen_materialization_certificate(
                     new_ephemeral,
                     allocs,
                     deallocs,
@@ -1542,7 +1493,6 @@ impl CrashAwareCachingDiskJournal::State {
                     self.frozen.unwrap().snapshot,
                     self.frozen.unwrap().seq_end,
                 );
-                assert(materialization_certificate(new_ephemeral, self.frozen.unwrap()));
             } else {
                 self.ephemeral->v.internal_alloc_preserves_frozen_snapshot(
                     new_ephemeral,
@@ -1559,21 +1509,6 @@ impl CrashAwareCachingDiskJournal::State {
             );
         }
         let aj_lbl = cj_lbl.i(self.ephemeral->v);
-        let persistent_meta = frozen_image_metadata_i(self.persistent.metadata());
-        AllocationJournal::State::internal_allocations_preserves_frozen_metadata_tight(
-            self.ephemeral->v.i(),
-            new_ephemeral.i(),
-            aj_lbl,
-            persistent_meta,
-        );
-        if self.frozen is Some {
-            AllocationJournal::State::internal_allocations_preserves_frozen_metadata_tight(
-                self.ephemeral->v.i(),
-                new_ephemeral.i(),
-                aj_lbl,
-                frozen_image_metadata_i(self.frozen.unwrap()),
-            );
-        }
         assert(self.label_i(post, lbl) is Internal);
         assert(self.label_i(post, lbl).arrow_Internal_allocs()
             .disjoint(caching_disk_journal_accessible_aus(self.ephemeral->v))) by {

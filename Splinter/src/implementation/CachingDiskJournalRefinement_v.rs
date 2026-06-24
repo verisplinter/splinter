@@ -26,6 +26,32 @@ use crate::journal::LinkedJournal_v::*;
 verus!{
 
 impl CachingDiskJournal::State {
+    pub open spec fn frozen_persistence_certificate(
+        self,
+        frozen: JournalSnapshot,
+    ) -> bool
+    {
+        self.persistent_visible_agree_on(self.frozen_prefix_domain(frozen))
+    }
+
+    pub open spec fn frozen_loose_persistence_certificate(
+        self,
+        frozen: JournalSnapshot,
+    ) -> bool
+    {
+        self.persistent_visible_agree_on(self.frozen_loose_domain(frozen))
+    }
+
+    pub open spec fn frozen_materialization_certificate(
+        self,
+        frozen: JournalSnapshot,
+        seq_end: LSN,
+    ) -> bool
+    {
+        &&& self.frozen_snapshot_valid(frozen, seq_end)
+        &&& self.frozen_persistence_certificate(frozen)
+    }
+
     pub open spec fn allocation_unmarshalled_tail(self) -> MsgHistory {
         if self.journal.status is Some {
             cj_unmarshalled_tail(self.journal)
@@ -1768,6 +1794,17 @@ impl CachingDiskJournal::State {
                 seq_end,
                 freshest_rec: frozen.freshest_rec(),
                 first: frozen.first(),
+            }).tight_tj() == self.i().frozen_image(JournalMetadata{
+                boundary_lsn: frozen.boundary_lsn,
+                seq_end,
+                freshest_rec: frozen.freshest_rec(),
+                first: frozen.first(),
+            }).tight_tj(),
+            post.i().frozen_image(JournalMetadata{
+                boundary_lsn: frozen.boundary_lsn,
+                seq_end,
+                freshest_rec: frozen.freshest_rec(),
+                first: frozen.first(),
             }) == self.i().frozen_image(JournalMetadata{
                 boundary_lsn: frozen.boundary_lsn,
                 seq_end,
@@ -1841,6 +1878,52 @@ impl CachingDiskJournal::State {
             post.frozen_prefix_domain(frozen),
         );
         assert(post.persistent_visible_agree_on(post.frozen_prefix_domain(frozen)));
+    }
+
+    pub proof fn discard_old_preserves_frozen_materialization_certificate_at_boundary(
+        self,
+        post: Self,
+        lbl: CachingDiskJournal::Label,
+        frozen: JournalSnapshot,
+        seq_end: LSN,
+    )
+        requires
+            self.refinement_inv(),
+            post.inv(),
+            lbl is DiscardOld,
+            CachingDiskJournal::State::next(self, post, lbl),
+            self.frozen_materialization_certificate(frozen, seq_end),
+            lbl.arrow_DiscardOld_start_lsn() == frozen.boundary_lsn,
+        ensures
+            post.refinement_inv(),
+            AllocationJournal::State::next(self.i(), post.i(), lbl.i(self)),
+            post.frozen_materialization_certificate(frozen, seq_end),
+            post.i().frozen_metadata_valid(JournalMetadata{
+                boundary_lsn: frozen.boundary_lsn,
+                seq_end,
+                freshest_rec: frozen.freshest_rec(),
+                first: frozen.first(),
+            }),
+            post.i().frozen_image(JournalMetadata{
+                boundary_lsn: frozen.boundary_lsn,
+                seq_end,
+                freshest_rec: frozen.freshest_rec(),
+                first: frozen.first(),
+            }) == self.i().frozen_image(JournalMetadata{
+                boundary_lsn: frozen.boundary_lsn,
+                seq_end,
+                freshest_rec: frozen.freshest_rec(),
+                first: frozen.first(),
+            }),
+    {
+        self.discard_old_preserves_frozen_snapshot_and_prefix_at_boundary(
+            post,
+            lbl,
+            frozen,
+            seq_end,
+        );
+        post.frozen_snapshot_valid_implies_i_metadata_valid(frozen, seq_end);
+        assert(post.frozen_persistence_certificate(frozen));
     }
 
     pub proof fn put_requires_loaded(
@@ -2311,6 +2394,23 @@ impl CachingDiskJournal::State {
             post.refinement_inv(),
             post.frozen_snapshot_valid(frozen, seq_end),
             post.frozen_prefix_domain(frozen) =~= self.frozen_prefix_domain(frozen),
+            post.i().frozen_metadata_valid(JournalMetadata{
+                boundary_lsn: frozen.boundary_lsn,
+                seq_end,
+                freshest_rec: frozen.freshest_rec(),
+                first: frozen.first(),
+            }),
+            post.i().frozen_image(JournalMetadata{
+                boundary_lsn: frozen.boundary_lsn,
+                seq_end,
+                freshest_rec: frozen.freshest_rec(),
+                first: frozen.first(),
+            }).tight_tj() == self.i().frozen_image(JournalMetadata{
+                boundary_lsn: frozen.boundary_lsn,
+                seq_end,
+                freshest_rec: frozen.freshest_rec(),
+                first: frozen.first(),
+            }).tight_tj(),
     {
         let lbl = CachingDiskJournal::Label::Internal;
         let meta = JournalMetadata{
@@ -2620,6 +2720,23 @@ impl CachingDiskJournal::State {
             post.refinement_inv(),
             post.frozen_snapshot_valid(frozen, seq_end),
             post.frozen_prefix_domain(frozen) =~= self.frozen_prefix_domain(frozen),
+            post.i().frozen_metadata_valid(JournalMetadata{
+                boundary_lsn: frozen.boundary_lsn,
+                seq_end,
+                freshest_rec: frozen.freshest_rec(),
+                first: frozen.first(),
+            }),
+            post.i().frozen_image(JournalMetadata{
+                boundary_lsn: frozen.boundary_lsn,
+                seq_end,
+                freshest_rec: frozen.freshest_rec(),
+                first: frozen.first(),
+            }).tight_tj() == self.i().frozen_image(JournalMetadata{
+                boundary_lsn: frozen.boundary_lsn,
+                seq_end,
+                freshest_rec: frozen.freshest_rec(),
+                first: frozen.first(),
+            }).tight_tj(),
     {
         let lbl = CachingDiskJournal::Label::InternalAlloc{allocs, deallocs, prune_aus};
         let meta = JournalMetadata{
@@ -2765,6 +2882,345 @@ impl CachingDiskJournal::State {
                 <==> self.frozen_prefix_domain(frozen).contains(addr) by {}
         }
         assert(self.frozen_snapshot_preserved_by(post, frozen, seq_end));
+    }
+
+    pub proof fn put_preserves_frozen_materialization_certificate(
+        self,
+        post: Self,
+        records: MsgHistory,
+        frozen: JournalSnapshot,
+        seq_end: LSN,
+    )
+        requires
+            self.refinement_inv(),
+            post.refinement_inv(),
+            self.frozen_materialization_certificate(frozen, seq_end),
+            CachingDiskJournal::State::next(
+                self,
+                post,
+                CachingDiskJournal::Label::Put{messages: records},
+            ),
+        ensures
+            post.frozen_materialization_certificate(frozen, seq_end),
+            post.i().frozen_metadata_valid(JournalMetadata{
+                boundary_lsn: frozen.boundary_lsn,
+                seq_end,
+                freshest_rec: frozen.freshest_rec(),
+                first: frozen.first(),
+            }),
+    {
+        self.put_preserves_frozen_snapshot_and_prefix(post, records, frozen, seq_end);
+        post.frozen_snapshot_valid_implies_i_metadata_valid(frozen, seq_end);
+        assert(post.frozen_persistence_certificate(frozen));
+    }
+
+    pub proof fn observe_clean_aus_preserves_frozen_materialization_certificate(
+        self,
+        post: Self,
+        aus: Set<AU>,
+        frozen: JournalSnapshot,
+        seq_end: LSN,
+    )
+        requires
+            self.refinement_inv(),
+            post.refinement_inv(),
+            self.frozen_materialization_certificate(frozen, seq_end),
+            CachingDiskJournal::State::next(
+                self,
+                post,
+                CachingDiskJournal::Label::ObserveCleanAUs{aus},
+            ),
+        ensures
+            post.frozen_materialization_certificate(frozen, seq_end),
+            post.i().frozen_metadata_valid(JournalMetadata{
+                boundary_lsn: frozen.boundary_lsn,
+                seq_end,
+                freshest_rec: frozen.freshest_rec(),
+                first: frozen.first(),
+            }),
+            post.i().frozen_image(JournalMetadata{
+                boundary_lsn: frozen.boundary_lsn,
+                seq_end,
+                freshest_rec: frozen.freshest_rec(),
+                first: frozen.first(),
+            }).tight_tj() == self.i().frozen_image(JournalMetadata{
+                boundary_lsn: frozen.boundary_lsn,
+                seq_end,
+                freshest_rec: frozen.freshest_rec(),
+                first: frozen.first(),
+            }).tight_tj(),
+    {
+        let lbl = CachingDiskJournal::Label::ObserveCleanAUs{aus};
+        let meta = JournalMetadata{
+            boundary_lsn: frozen.boundary_lsn,
+            seq_end,
+            freshest_rec: frozen.freshest_rec(),
+            first: frozen.first(),
+        };
+        self.observe_clean_aus_preserves_frozen_snapshot_and_prefix(
+            post,
+            aus,
+            frozen,
+            seq_end,
+        );
+        self.next_refines(post, lbl);
+        self.frozen_snapshot_valid_implies_i_metadata_valid(frozen, seq_end);
+        AllocationJournal::State::internal_allocations_preserves_frozen_metadata_tight(
+            self.i(),
+            post.i(),
+            lbl.i(self),
+            meta,
+        );
+        post.frozen_snapshot_valid_implies_i_metadata_valid(frozen, seq_end);
+        assert(post.frozen_persistence_certificate(frozen));
+    }
+
+    pub proof fn load_index_promotes_frozen_loose_to_materialization_certificate(
+        self,
+        post: Self,
+        discovered_aus: Set<AU>,
+        frozen: JournalSnapshot,
+        seq_end: LSN,
+    )
+        requires
+            self.refinement_inv(),
+            self.i().frozen_metadata_valid(JournalMetadata{
+                boundary_lsn: frozen.boundary_lsn,
+                seq_end,
+                freshest_rec: frozen.freshest_rec(),
+                first: frozen.first(),
+            }),
+            self.frozen_loose_persistence_certificate(frozen),
+            CachingDiskJournal::State::next(
+                self,
+                post,
+                CachingDiskJournal::Label::LoadIndex{discovered_aus},
+            ),
+        ensures
+            post.refinement_inv(),
+            post.frozen_materialization_certificate(frozen, seq_end),
+            post.i().frozen_metadata_valid(JournalMetadata{
+                boundary_lsn: frozen.boundary_lsn,
+                seq_end,
+                freshest_rec: frozen.freshest_rec(),
+                first: frozen.first(),
+            }),
+            post.i().frozen_image(JournalMetadata{
+                boundary_lsn: frozen.boundary_lsn,
+                seq_end,
+                freshest_rec: frozen.freshest_rec(),
+                first: frozen.first(),
+            }).tight_tj() == self.i().frozen_image(JournalMetadata{
+                boundary_lsn: frozen.boundary_lsn,
+                seq_end,
+                freshest_rec: frozen.freshest_rec(),
+                first: frozen.first(),
+            }).tight_tj(),
+    {
+        let lbl = CachingDiskJournal::Label::LoadIndex{discovered_aus};
+        let meta = JournalMetadata{
+            boundary_lsn: frozen.boundary_lsn,
+            seq_end,
+            freshest_rec: frozen.freshest_rec(),
+            first: frozen.first(),
+        };
+        self.load_index_preserves_frozen_snapshot_and_prefix(
+            post,
+            discovered_aus,
+            frozen,
+            seq_end,
+        );
+        self.next_refines(post, lbl);
+        AllocationJournal::State::internal_allocations_preserves_frozen_metadata_tight(
+            self.i(),
+            post.i(),
+            lbl.i(self),
+            meta,
+        );
+        post.frozen_snapshot_valid_implies_i_metadata_valid(frozen, seq_end);
+        assert(post.frozen_persistence_certificate(frozen));
+    }
+
+    pub proof fn internal_preserves_frozen_materialization_certificate(
+        self,
+        post: Self,
+        frozen: JournalSnapshot,
+        seq_end: LSN,
+    )
+        requires
+            self.refinement_inv(),
+            self.frozen_materialization_certificate(frozen, seq_end),
+            CachingDiskJournal::State::next(
+                self,
+                post,
+                CachingDiskJournal::Label::Internal,
+            ),
+        ensures
+            post.refinement_inv(),
+            post.frozen_materialization_certificate(frozen, seq_end),
+            post.i().frozen_metadata_valid(JournalMetadata{
+                boundary_lsn: frozen.boundary_lsn,
+                seq_end,
+                freshest_rec: frozen.freshest_rec(),
+                first: frozen.first(),
+            }),
+            post.i().frozen_image(JournalMetadata{
+                boundary_lsn: frozen.boundary_lsn,
+                seq_end,
+                freshest_rec: frozen.freshest_rec(),
+                first: frozen.first(),
+            }).tight_tj() == self.i().frozen_image(JournalMetadata{
+                boundary_lsn: frozen.boundary_lsn,
+                seq_end,
+                freshest_rec: frozen.freshest_rec(),
+                first: frozen.first(),
+            }).tight_tj(),
+    {
+        let lbl = CachingDiskJournal::Label::Internal;
+        let meta = JournalMetadata{
+            boundary_lsn: frozen.boundary_lsn,
+            seq_end,
+            freshest_rec: frozen.freshest_rec(),
+            first: frozen.first(),
+        };
+        self.internal_preserves_frozen_snapshot_and_prefix(post, frozen, seq_end);
+        self.next_refines(post, lbl);
+        self.frozen_snapshot_valid_implies_i_metadata_valid(frozen, seq_end);
+        AllocationJournal::State::internal_allocations_preserves_frozen_metadata_tight(
+            self.i(),
+            post.i(),
+            lbl.i(self),
+            meta,
+        );
+        post.frozen_snapshot_valid_implies_i_metadata_valid(frozen, seq_end);
+        assert(post.frozen_persistence_certificate(frozen));
+    }
+
+    pub proof fn internal_unloaded_preserves_frozen_loose_persistence_certificate(
+        self,
+        post: Self,
+        frozen: JournalSnapshot,
+        seq_end: LSN,
+    )
+        requires
+            self.refinement_inv(),
+            self.journal.status is None,
+            self.i().frozen_metadata_valid(JournalMetadata{
+                boundary_lsn: frozen.boundary_lsn,
+                seq_end,
+                freshest_rec: frozen.freshest_rec(),
+                first: frozen.first(),
+            }),
+            self.frozen_loose_persistence_certificate(frozen),
+            CachingDiskJournal::State::next(
+                self,
+                post,
+                CachingDiskJournal::Label::Internal,
+            ),
+        ensures
+            post.refinement_inv(),
+            post.journal.status is None,
+            post.frozen_loose_domain(frozen) =~= self.frozen_loose_domain(frozen),
+            post.frozen_loose_persistence_certificate(frozen),
+            post.i().frozen_metadata_valid(JournalMetadata{
+                boundary_lsn: frozen.boundary_lsn,
+                seq_end,
+                freshest_rec: frozen.freshest_rec(),
+                first: frozen.first(),
+            }),
+            post.i().frozen_image(JournalMetadata{
+                boundary_lsn: frozen.boundary_lsn,
+                seq_end,
+                freshest_rec: frozen.freshest_rec(),
+                first: frozen.first(),
+            }).tight_tj() == self.i().frozen_image(JournalMetadata{
+                boundary_lsn: frozen.boundary_lsn,
+                seq_end,
+                freshest_rec: frozen.freshest_rec(),
+                first: frozen.first(),
+            }).tight_tj(),
+    {
+        let lbl = CachingDiskJournal::Label::Internal;
+        let meta = JournalMetadata{
+            boundary_lsn: frozen.boundary_lsn,
+            seq_end,
+            freshest_rec: frozen.freshest_rec(),
+            first: frozen.first(),
+        };
+        self.internal_unloaded_preserves_frozen_loose_agreement(post, frozen);
+        self.next_refines(post, lbl);
+        AllocationJournal::State::internal_allocations_preserves_frozen_metadata_tight(
+            self.i(),
+            post.i(),
+            lbl.i(self),
+            meta,
+        );
+        assert(post.frozen_loose_persistence_certificate(frozen));
+    }
+
+    pub proof fn internal_alloc_preserves_frozen_materialization_certificate(
+        self,
+        post: Self,
+        allocs: Set<AU>,
+        deallocs: Set<AU>,
+        prune_aus: Set<AU>,
+        frozen: JournalSnapshot,
+        seq_end: LSN,
+    )
+        requires
+            self.refinement_inv(),
+            self.frozen_materialization_certificate(frozen, seq_end),
+            CachingDiskJournal::State::next(
+                self,
+                post,
+                CachingDiskJournal::Label::InternalAlloc{allocs, deallocs, prune_aus},
+            ),
+        ensures
+            post.refinement_inv(),
+            post.frozen_materialization_certificate(frozen, seq_end),
+            post.i().frozen_metadata_valid(JournalMetadata{
+                boundary_lsn: frozen.boundary_lsn,
+                seq_end,
+                freshest_rec: frozen.freshest_rec(),
+                first: frozen.first(),
+            }),
+            post.i().frozen_image(JournalMetadata{
+                boundary_lsn: frozen.boundary_lsn,
+                seq_end,
+                freshest_rec: frozen.freshest_rec(),
+                first: frozen.first(),
+            }).tight_tj() == self.i().frozen_image(JournalMetadata{
+                boundary_lsn: frozen.boundary_lsn,
+                seq_end,
+                freshest_rec: frozen.freshest_rec(),
+                first: frozen.first(),
+            }).tight_tj(),
+    {
+        let lbl = CachingDiskJournal::Label::InternalAlloc{allocs, deallocs, prune_aus};
+        let meta = JournalMetadata{
+            boundary_lsn: frozen.boundary_lsn,
+            seq_end,
+            freshest_rec: frozen.freshest_rec(),
+            first: frozen.first(),
+        };
+        self.internal_alloc_preserves_frozen_snapshot_and_prefix(
+            post,
+            allocs,
+            deallocs,
+            prune_aus,
+            frozen,
+            seq_end,
+        );
+        self.next_refines(post, lbl);
+        self.frozen_snapshot_valid_implies_i_metadata_valid(frozen, seq_end);
+        AllocationJournal::State::internal_allocations_preserves_frozen_metadata_tight(
+            self.i(),
+            post.i(),
+            lbl.i(self),
+            meta,
+        );
+        post.frozen_snapshot_valid_implies_i_metadata_valid(frozen, seq_end);
+        assert(post.frozen_persistence_certificate(frozen));
     }
 
     pub proof fn mini_allocator_fill_refines(
