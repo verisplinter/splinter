@@ -27,69 +27,6 @@ use crate::journal::LinkedJournal_v::*;
 
 verus!{
 
-pub open spec fn build_au_page_bounds_from_reads_page_walk_depth(
-    reads: Map<Address, JournalRecord>,
-    boundary_lsn: LSN,
-    root: Pointer,
-    depth: nat,
-) -> AUPageBounds
-    decreases depth
-{
-    if root is None || depth == 0 {
-        Map::empty()
-    } else {
-        let addr = root.unwrap();
-        let prior = build_au_page_bounds_from_reads_page_walk_depth(
-            reads,
-            boundary_lsn,
-            reads[addr].cropped_prior(boundary_lsn),
-            (depth - 1) as nat,
-        );
-        let page = if prior.contains_key(addr.au) && addr.page <= prior[addr.au] {
-            prior[addr.au]
-        } else {
-            addr.page
-        };
-        prior.insert(addr.au, page)
-    }
-}
-
-pub open spec fn build_au_page_bounds_from_reads_au_walk_depth(
-    reads: Map<Address, JournalRecord>,
-    boundary_lsn: LSN,
-    root: Pointer,
-    first: AU,
-    au_depth: nat,
-    page_depth: nat,
-) -> AUPageBounds
-    decreases au_depth
-{
-    if root is None || au_depth == 0 {
-        Map::empty()
-    } else {
-        let addr = root.unwrap();
-        if addr.au == first {
-            build_au_page_bounds_from_reads_page_walk_depth(
-                reads,
-                boundary_lsn,
-                root,
-                page_depth,
-            )
-        } else {
-            let bottom = addr.first_page();
-            let prior = build_au_page_bounds_from_reads_au_walk_depth(
-                reads,
-                boundary_lsn,
-                reads[bottom].cropped_prior(boundary_lsn),
-                first,
-                (au_depth - 1) as nat,
-                page_depth,
-            );
-            prior.insert(addr.au, addr.page)
-        }
-    }
-}
-
 pub open spec fn load_index_au_page_bounds(
     pre_journal: CachedJournal::State,
     new_journal: CachedJournal::State,
@@ -343,6 +280,14 @@ pub proof fn load_index_au_page_bounds_matches_loose_full(
                 pre_journal.snapshot.freshest_rec(),
                 pre_journal.snapshot.first(),
             ),
+        new_journal.status.unwrap().au_page_bounds
+            =~= (DiskView{
+                boundary_lsn: pre_journal.snapshot.boundary_lsn,
+                entries,
+            }).loose_build_au_page_bounds_au_walk(
+                pre_journal.snapshot.freshest_rec(),
+                pre_journal.snapshot.first(),
+            ),
 {
     let loose_dv = DiskView{boundary_lsn: pre_journal.snapshot.boundary_lsn, entries};
     let tight_dv = loose_dv.path_build_tight(pre_journal.snapshot.freshest_rec());
@@ -353,6 +298,13 @@ pub proof fn load_index_au_page_bounds_matches_loose_full(
     match step {
         CachedJournal::Step::load_index(au_depth, page_depth) => {
             reveal(CachedJournal::State::load_index);
+            assert(CachedJournal::State::load_index(
+                pre_journal,
+                new_journal,
+                lbl,
+                au_depth,
+                page_depth,
+            ));
             assert(au_walk_reads_cover(
                 reads,
                 pre_journal.snapshot.boundary_lsn,
@@ -361,6 +313,15 @@ pub proof fn load_index_au_page_bounds_matches_loose_full(
                 au_depth,
                 page_depth,
             ));
+            let status_bounds = new_journal.status.unwrap().au_page_bounds;
+            let actual_bounds = build_au_page_bounds_from_reads_au_walk_depth(
+                reads,
+                pre_journal.snapshot.boundary_lsn,
+                pre_journal.snapshot.freshest_rec(),
+                pre_journal.snapshot.first(),
+                au_depth,
+                page_depth,
+            );
             assert(exists |au_depth: nat, page_depth: nat| #[trigger] CachedJournal::State::load_index(
                 pre_journal,
                 new_journal,
@@ -416,6 +377,34 @@ pub proof fn load_index_au_page_bounds_matches_loose_full(
                 boundary_lsn: pre_journal.snapshot.boundary_lsn,
                 entries: tight_dv.entries,
             } == tight_dv);
+            au_walk_reads_cover_build_bounds_matches_full_by_value(
+                reads,
+                tight_dv.entries,
+                pre_journal.snapshot.boundary_lsn,
+                pre_journal.snapshot.freshest_rec(),
+                pre_journal.snapshot.first(),
+                au_depth,
+                page_depth,
+            );
+            assert_maps_equal!(status_bounds, actual_bounds);
+            assert(actual_bounds =~= tight_dv.build_au_page_bounds_au_walk(
+                pre_journal.snapshot.freshest_rec(),
+                pre_journal.snapshot.first(),
+            ));
+            assert(tight_dv.build_au_page_bounds_au_walk(
+                pre_journal.snapshot.freshest_rec(),
+                pre_journal.snapshot.first(),
+            ) == loose_dv.loose_build_au_page_bounds_au_walk(
+                pre_journal.snapshot.freshest_rec(),
+                pre_journal.snapshot.first(),
+            ));
+            assert_maps_equal!(
+                status_bounds,
+                loose_dv.loose_build_au_page_bounds_au_walk(
+                    pre_journal.snapshot.freshest_rec(),
+                    pre_journal.snapshot.first(),
+                )
+            );
             assert_maps_equal!(
                 load_index_au_page_bounds(pre_journal, new_journal, reads, discovered_aus),
                 loose_dv.loose_build_au_page_bounds_au_walk(
@@ -527,7 +516,6 @@ state_machine!{ CachingDiskJournal {
         pub journal: CachedJournal::State,
         pub disk: CachingDisk::State,
         pub mini_allocator: MiniAllocator,
-        pub au_page_bounds: AUPageBounds,
     }
 
     pub enum Label {
@@ -554,22 +542,12 @@ state_machine!{ CachingDiskJournal {
             journal: init_journal,
             disk,
             mini_allocator: init_mini_allocator,
-            au_page_bounds: Map::empty(),
         };
         let init_image = init_base.backing_journal_image();
         require init_image.valid_image();
-        let init_bounds = init_image.tj.disk_view.loose_build_au_page_bounds_au_walk(
-            init_image.tj.freshest_rec,
-            init_image.first,
-        );
-        let init_state = CachingDiskJournal::State{
-            au_page_bounds: init_bounds,
-            ..init_base
-        };
         init journal = init_journal;
         init disk = disk;
         init mini_allocator = init_mini_allocator;
-        init au_page_bounds = init_bounds;
     }}
 
     transition!{ caching_disk_internal(lbl: Label, new_disk: CachingDisk::State) {
@@ -599,14 +577,7 @@ state_machine!{ CachingDiskJournal {
             new_journal,
             journal_lbl,
         );
-        let new_au_page_bounds = load_index_au_page_bounds(
-            pre.journal,
-            new_journal,
-            to_journal_records(reads),
-            discovered_aus,
-        );
         update journal = new_journal;
-        update au_page_bounds = new_au_page_bounds;
     }}
 
     transition!{ read_for_recovery(lbl: Label, reads: Map<Address, RawPage>) {
@@ -618,8 +589,9 @@ state_machine!{ CachingDiskJournal {
         );
         require to_journal_records(reads) <= pre.journal_disk_view().entries;
         require forall |addr: Address| #[trigger] reads.contains_key(addr) ==> {
-            &&& pre.au_page_bounds.contains_key(addr.au)
-            &&& addr.page <= pre.au_page_bounds[addr.au]
+            let bounds = pre.journal.status.unwrap().au_page_bounds;
+            &&& bounds.contains_key(addr.au)
+            &&& addr.page <= bounds[addr.au]
         };
         require CachedJournal::State::next(
             pre.journal,
@@ -644,8 +616,8 @@ state_machine!{ CachingDiskJournal {
             &&& to_journal_records(reads).contains_key(root)
             &&& pre.journal_disk_view().entries.contains_key(root)
             &&& to_journal_records(reads)[root] == pre.journal_disk_view().entries[root]
-            &&& pre.au_page_bounds.contains_key(root.au)
-            &&& root.page <= pre.au_page_bounds[root.au]
+            &&& pre.journal.status.unwrap().au_page_bounds.contains_key(root.au)
+            &&& root.page <= pre.journal.status.unwrap().au_page_bounds[root.au]
         };
         require CachedJournal::State::next(
             pre.journal,
@@ -703,7 +675,6 @@ state_machine!{ CachingDiskJournal {
         update journal = new_journal;
         update disk = new_disk;
         update mini_allocator = pre.mini_allocator.allocate(addr).observe(addr);
-        update au_page_bounds = pre.au_page_bounds.insert(addr.au, addr.page);
     }}
 
     transition!{ observe_clean_aus(
@@ -730,7 +701,6 @@ state_machine!{ CachingDiskJournal {
         require let Label::CommitPrepared{frozen, seq_end} = lbl;
         require pre.journal.status is Some;
         require frozen.freshest_rec() is Some ==> seq_end <= pre.journal.clean_watermark();
-        require pre.disk.addrs_clean_or_evictable(pre.frozen_prefix_domain(frozen));
     }}
 
     transition!{ discard_old(
@@ -739,8 +709,6 @@ state_machine!{ CachingDiskJournal {
         new_disk: CachingDisk::State,
     ) {
         require let Label::DiscardOld{start_lsn, require_end, deallocs} = lbl;
-        let old_au_index = cj_lsn_au_index(pre.journal);
-        let new_au_index = lsn_au_index_discard_up_to(old_au_index, start_lsn);
         let journal_lbl = CachedJournal::Label::DiscardOld{
             start_lsn,
             require_end,
@@ -760,10 +728,6 @@ state_machine!{ CachingDiskJournal {
         update journal = new_journal;
         update disk = new_disk;
         update mini_allocator = pre.mini_allocator.prune(deallocs);
-        update au_page_bounds = AllocationJournal::State::au_page_bounds_restrict(
-            pre.au_page_bounds,
-            new_au_index.values(),
-        );
     }}
 
     transition!{ mini_allocator_fill(lbl: Label, new_disk: CachingDisk::State) {
@@ -835,6 +799,7 @@ state_machine!{ CachingDiskJournal {
             self.journal_tj().freshest_rec,
             self.journal.snapshot.first(),
         );
+        let bounds = self.au_page_bounds_i();
         &&& self.journal_tj().decodable()
         &&& self.journal_disk_view().wf_addrs()
         &&& self.journal_tj().disk_view.wf_addrs()
@@ -850,20 +815,20 @@ state_machine!{ CachingDiskJournal {
             self.journal_tj().freshest_rec,
         )
         &&& self.visible_lsn_au_index() == index
-        &&& self.au_page_bounds.dom() =~= index.values()
+        &&& bounds.dom() =~= index.values()
         &&& self.journal_tj().freshest_rec is Some ==> {
             let root = self.journal_tj().freshest_rec.unwrap();
-            &&& self.au_page_bounds.contains_key(root.au)
-            &&& self.au_page_bounds[root.au] == root.page
+            &&& bounds.contains_key(root.au)
+            &&& bounds[root.au] == root.page
         }
         &&& forall |addr: Address| #[trigger] self.journal_tj().disk_view.entries.contains_key(addr) ==> {
-            &&& self.au_page_bounds.contains_key(addr.au)
-            &&& addr.page <= self.au_page_bounds[addr.au]
+            &&& bounds.contains_key(addr.au)
+            &&& addr.page <= bounds[addr.au]
         }
         &&& forall |addr: Address| {
             &&& #[trigger] self.journal_disk_view().entries.contains_key(addr)
-            &&& self.au_page_bounds.contains_key(addr.au)
-            &&& addr.page <= self.au_page_bounds[addr.au]
+            &&& bounds.contains_key(addr.au)
+            &&& addr.page <= bounds[addr.au]
             &&& self.journal_disk_view().boundary_lsn
                 < self.journal_disk_view().entries[addr].message_seq.seq_end
         } ==> self.journal_tj().disk_view.entries.contains_key(addr)
@@ -1295,7 +1260,6 @@ impl CachingDiskJournal::State {
             },
             disk: Self::disk_from_persistent(persistent),
             mini_allocator: MiniAllocator::empty(),
-            au_page_bounds: Map::empty(),
         }
     }
 
@@ -1363,6 +1327,43 @@ impl CachingDiskJournal::State {
             })
         } else {
             self.journal_tj().disk_view.entries.dom()
+        }
+    }
+
+    pub open spec fn clean_watermark_au_page_bounds_domain(self) -> Set<Address> {
+        if self.journal.status is Some {
+            Set::new(|addr: Address| {
+                exists |lsn: LSN| {
+                    &&& #[trigger] self.lsn_au_index_or_empty().contains_key(lsn)
+                    &&& self.journal.seq_start() <= lsn
+                    &&& lsn < self.journal.clean_watermark()
+                    &&& self.lsn_au_index_or_empty()[lsn] == addr.au
+                    &&& self.clean_watermark_au_page_bounds_i().contains_key(addr.au)
+                    &&& addr.page <= self.clean_watermark_au_page_bounds_i()[addr.au]
+                }
+            })
+        } else {
+            Set::empty()
+        }
+    }
+
+    pub open spec fn clean_watermark_au_page_bounds_clean_or_evictable(self) -> bool {
+        self.disk.addrs_clean_or_evictable(self.clean_watermark_au_page_bounds_domain())
+    }
+
+    pub open spec fn clean_watermark_records_bounded_by_clean_au_page_bounds(self) -> bool {
+        if self.journal.status is Some {
+            forall |addr: Address| {
+                let record = self.journal_tj().disk_view.entries[addr];
+                &&& #[trigger] self.journal_tj().disk_view.entries.contains_key(addr)
+                &&& self.journal_tj().disk_view.boundary_lsn < record.message_seq.seq_end
+                &&& record.message_seq.seq_end <= self.journal.clean_watermark()
+            } ==> {
+                &&& self.clean_watermark_au_page_bounds_i().contains_key(addr.au)
+                &&& addr.page <= self.clean_watermark_au_page_bounds_i()[addr.au]
+            }
+        } else {
+            true
         }
     }
 
@@ -1962,12 +1963,20 @@ impl CachingDiskJournal::State {
 
     pub open spec fn au_page_bounds_i(self) -> AUPageBounds {
         if self.journal.status is Some {
-            self.au_page_bounds
+            self.journal.status.unwrap().au_page_bounds
         } else {
             self.journal_disk_view().loose_build_au_page_bounds_au_walk(
                 self.journal.snapshot.freshest_rec(),
                 self.journal.snapshot.first(),
             )
+        }
+    }
+
+    pub open spec fn clean_watermark_au_page_bounds_i(self) -> AUPageBounds {
+        if self.journal.status is Some {
+            self.journal.status.unwrap().clean_watermark_au_page_bounds
+        } else {
+            Map::empty()
         }
     }
 
@@ -2031,8 +2040,8 @@ impl CachingDiskJournal::State {
             &&& self.lsn_au_index_or_empty()[snapshot.boundary_lsn] == snapshot.first()
             &&& self.journal_disk_view().entries.contains_key(root)
             &&& self.journal_disk_view().entries[root].message_seq.seq_end == seq_end
-            &&& self.au_page_bounds.contains_key(root.au)
-            &&& root.page <= self.au_page_bounds[root.au]
+            &&& self.au_page_bounds_i().contains_key(root.au)
+            &&& root.page <= self.au_page_bounds_i()[root.au]
         }
     }
 
@@ -2230,6 +2239,7 @@ impl CachingDiskJournal::State {
         ensures
             post.journal.status is Some,
             post.journal.clean_watermark() == pre.journal.clean_watermark(),
+            post.au_page_bounds_i() == pre.au_page_bounds_i(),
             post.disk == pre.disk,
             post.mini_allocator == pre.mini_allocator,
             post.journal.snapshot == pre.journal.snapshot,
@@ -2311,6 +2321,7 @@ impl CachingDiskJournal::State {
         ensures
             post.journal.status is Some,
             pre.journal.clean_watermark() <= post.journal.clean_watermark(),
+            post.au_page_bounds_i() == pre.au_page_bounds_i(),
             post.disk == pre.disk,
             post.mini_allocator == pre.mini_allocator,
             post.journal.snapshot == pre.journal.snapshot,
@@ -2346,7 +2357,6 @@ impl CachingDiskJournal::State {
         ensures
             state.journal.status is Some,
             frozen.freshest_rec() is Some ==> seq_end <= state.journal.clean_watermark(),
-            state.disk.addrs_clean_or_evictable(state.frozen_prefix_domain(frozen)),
     {
         let lbl = CachingDiskJournal::Label::CommitPrepared{frozen, seq_end};
         reveal(CachingDiskJournal::State::next);
@@ -2361,6 +2371,333 @@ impl CachingDiskJournal::State {
                 assert(false);
             },
         }
+    }
+
+    pub proof fn load_index_recovery_clean_cache_implies_clean_watermark_au_page_bounds_clean(
+        pre: Self,
+        post: Self,
+        discovered_aus: Set<AU>,
+    )
+        requires
+            pre.inv(),
+            post.inv(),
+            pre.journal.status is None,
+            pre.disk.addrs_clean_or_evictable(pre.disk.cache.dom()),
+            CachingDiskJournal::State::next(
+                pre,
+                post,
+                CachingDiskJournal::Label::LoadIndex{discovered_aus},
+            ),
+        ensures
+            post.clean_watermark_au_page_bounds_clean_or_evictable(),
+    {
+        let lbl = CachingDiskJournal::Label::LoadIndex{discovered_aus};
+        reveal(CachingDiskJournal::State::next);
+        reveal(CachingDiskJournal::State::next_by);
+        let step = choose |step: CachingDiskJournal::Step|
+            CachingDiskJournal::State::next_by(pre, post, lbl, step);
+        match step {
+            CachingDiskJournal::Step::load_index(new_journal, reads) => {
+                reveal(CachingDiskJournal::State::load_index);
+                assert(post.disk == pre.disk);
+            },
+            _ => {
+                assert(false);
+            },
+        }
+        assert forall |addr: Address| {
+            &&& #[trigger] post.disk.cache.contains_key(addr)
+            &&& post.clean_watermark_au_page_bounds_domain().contains(addr)
+        } implies {
+            &&& post.disk.status.contains_key(addr)
+            &&& post.disk.status[addr] == PageStatus::Clean
+        } by {
+            assert(pre.disk.cache.dom().contains(addr));
+            assert(pre.disk.addrs_clean_or_evictable(pre.disk.cache.dom()));
+        }
+    }
+
+    pub proof fn observe_clean_aus_preserves_clean_watermark_au_page_bounds_clean(
+        pre: Self,
+        post: Self,
+        aus: Set<AU>,
+    )
+        requires
+            pre.inv(),
+            post.inv(),
+            pre.clean_watermark_au_page_bounds_clean_or_evictable(),
+            CachingDiskJournal::State::next(
+                pre,
+                post,
+                CachingDiskJournal::Label::ObserveCleanAUs{aus},
+            ),
+        ensures
+            post.clean_watermark_au_page_bounds_clean_or_evictable(),
+    {
+        let lbl = CachingDiskJournal::Label::ObserveCleanAUs{aus};
+        reveal(CachingDiskJournal::State::next);
+        reveal(CachingDiskJournal::State::next_by);
+        let step = choose |step: CachingDiskJournal::Step|
+            CachingDiskJournal::State::next_by(pre, post, lbl, step);
+        match step {
+            CachingDiskJournal::Step::observe_clean_aus(new_journal) => {
+                reveal(CachingDiskJournal::State::observe_clean_aus);
+            },
+            _ => {
+                assert(false);
+            },
+        }
+        CachingDiskJournal::State::observe_clean_aus_visible_unchanged(pre, post, aus);
+        match step {
+            CachingDiskJournal::Step::observe_clean_aus(new_journal) => {
+                reveal(CachedJournal::State::next);
+                reveal(CachedJournal::State::next_by);
+                let journal_lbl = CachedJournal::Label::ObserveCleanAUs{aus};
+                let journal_step = choose |step: CachedJournal::Step|
+                    CachedJournal::State::next_by(pre.journal, post.journal, journal_lbl, step);
+                match journal_step {
+                    CachedJournal::Step::advance_watermark(target_lsn) => {
+                        reveal(CachedJournal::State::advance_watermark);
+                        let flushed_lsns = Set::new(
+                            |lsn: LSN| pre.journal.clean_watermark() <= lsn < target_lsn,
+                        );
+                        assert(post.journal.clean_watermark() == target_lsn);
+                        assert(aus == pre.journal.status.unwrap().lsn_au_index
+                            .restrict(flushed_lsns).values());
+                        assert forall |lsn: LSN| {
+                            &&& #[trigger] pre.lsn_au_index_or_empty().contains_key(lsn)
+                            &&& pre.journal.clean_watermark() <= lsn
+                            &&& lsn < post.journal.clean_watermark()
+                        } implies aus.contains(pre.lsn_au_index_or_empty()[lsn]) by {
+                            assert(flushed_lsns.contains(lsn));
+                            assert(pre.journal.status.unwrap().lsn_au_index
+                                .restrict(flushed_lsns).contains_key(lsn));
+                            assert(pre.journal.status.unwrap().lsn_au_index
+                                .restrict(flushed_lsns)[lsn]
+                                == pre.lsn_au_index_or_empty()[lsn]);
+                            assert(pre.journal.status.unwrap().lsn_au_index
+                                .restrict(flushed_lsns).values()
+                                .contains(pre.lsn_au_index_or_empty()[lsn]));
+                        }
+                    },
+                    _ => {
+                        assert(false);
+                    },
+                }
+                reveal(CachingDisk::State::next);
+                reveal(CachingDisk::State::next_by);
+                let disk_lbl = CachingDisk::Label::ObserveCleanAUs{aus};
+                let disk_step = choose |step: CachingDisk::Step|
+                    CachingDisk::State::next_by(pre.disk, pre.disk, disk_lbl, step);
+                match disk_step {
+                    CachingDisk::Step::observe_clean_aus() => {
+                        reveal(CachingDisk::State::observe_clean_aus);
+                    },
+                    _ => {
+                        assert(false);
+                    },
+                }
+            },
+            _ => {
+                assert(false);
+            },
+        }
+        assert(pre.journal.status is Some);
+        assert(pre.disk.aus_clean_or_evictable(aus));
+        CachingDiskJournal::State::observe_clean_aus_loaded_status_and_clean_watermark_monotonic(
+            pre,
+            post,
+            aus,
+        );
+        assert(post.disk == pre.disk);
+        assert(post.lsn_au_index_or_empty() == pre.lsn_au_index_or_empty());
+        assert(post.au_page_bounds_i() == pre.au_page_bounds_i());
+
+        assert forall |addr: Address| {
+            &&& #[trigger] post.disk.cache.contains_key(addr)
+            &&& post.clean_watermark_au_page_bounds_domain().contains(addr)
+        } implies {
+            &&& post.disk.status.contains_key(addr)
+            &&& post.disk.status[addr] == PageStatus::Clean
+        } by {
+            let lsn = choose |lsn: LSN| {
+                &&& #[trigger] post.lsn_au_index_or_empty().contains_key(lsn)
+                &&& post.journal.seq_start() <= lsn
+                &&& lsn < post.journal.clean_watermark()
+                &&& post.lsn_au_index_or_empty()[lsn] == addr.au
+                &&& post.clean_watermark_au_page_bounds_i().contains_key(addr.au)
+                &&& addr.page <= post.clean_watermark_au_page_bounds_i()[addr.au]
+            };
+            assert(pre.journal.seq_start() == post.journal.seq_start());
+            assert(pre.lsn_au_index_or_empty().contains_key(lsn));
+            assert(pre.lsn_au_index_or_empty()[lsn] == addr.au);
+            if aus.contains(addr.au) {
+                assert(pre.disk.aus_clean_or_evictable(aus));
+            } else if lsn < pre.journal.clean_watermark() {
+                assert(pre.clean_watermark_au_page_bounds_i().contains_key(addr.au));
+                assert(addr.page <= pre.clean_watermark_au_page_bounds_i()[addr.au]);
+                assert(pre.clean_watermark_au_page_bounds_domain().contains(addr));
+                assert(pre.clean_watermark_au_page_bounds_clean_or_evictable());
+            } else {
+                assert(aus.contains(addr.au));
+                assert(pre.disk.aus_clean_or_evictable(aus));
+            }
+        }
+    }
+
+    pub proof fn put_preserves_clean_watermark_au_page_bounds_clean(
+        pre: Self,
+        post: Self,
+        records: MsgHistory,
+    )
+        requires
+            pre.inv(),
+            post.inv(),
+            pre.clean_watermark_au_page_bounds_clean_or_evictable(),
+            CachingDiskJournal::State::next(
+                pre,
+                post,
+                CachingDiskJournal::Label::Put{messages: records},
+            ),
+        ensures
+            post.clean_watermark_au_page_bounds_clean_or_evictable(),
+    {
+        let lbl = CachingDiskJournal::Label::Put{messages: records};
+        reveal(CachingDiskJournal::State::next);
+        reveal(CachingDiskJournal::State::next_by);
+        let step = choose |step: CachingDiskJournal::Step|
+            CachingDiskJournal::State::next_by(pre, post, lbl, step);
+        match step {
+            CachingDiskJournal::Step::put(new_journal) => {
+                reveal(CachingDiskJournal::State::put);
+                reveal(CachedJournal::State::next);
+                reveal(CachedJournal::State::next_by);
+                let journal_lbl = CachedJournal::Label::Put{messages: records};
+                let journal_step = choose |step: CachedJournal::Step|
+                    CachedJournal::State::next_by(pre.journal, post.journal, journal_lbl, step);
+                match journal_step {
+                    CachedJournal::Step::put() => {
+                        reveal(CachedJournal::State::put);
+                    },
+                    _ => {
+                        assert(false);
+                    },
+                }
+            },
+            _ => {
+                assert(false);
+            },
+        }
+        assert(pre.journal.status is Some);
+        CachingDiskJournal::State::put_loaded_status_and_clean_watermark_unchanged(
+            pre,
+            post,
+            records,
+        );
+        assert(post.disk == pre.disk);
+        assert(post.lsn_au_index_or_empty() == pre.lsn_au_index_or_empty());
+        assert(post.au_page_bounds_i() == pre.au_page_bounds_i());
+        assert(post.journal.clean_watermark() == pre.journal.clean_watermark());
+        assert forall |addr: Address| {
+            &&& #[trigger] post.disk.cache.contains_key(addr)
+            &&& post.clean_watermark_au_page_bounds_domain().contains(addr)
+        } implies {
+            &&& post.disk.status.contains_key(addr)
+            &&& post.disk.status[addr] == PageStatus::Clean
+        } by {
+            assert(pre.clean_watermark_au_page_bounds_domain().contains(addr));
+            assert(pre.clean_watermark_au_page_bounds_clean_or_evictable());
+        }
+    }
+
+    pub proof fn discard_old_preserves_clean_watermark_au_page_bounds_clean(
+        pre: Self,
+        post: Self,
+        start_lsn: LSN,
+        require_end: LSN,
+        deallocs: Set<AU>,
+    )
+        requires
+            pre.inv(),
+            post.inv(),
+            pre.clean_watermark_au_page_bounds_clean_or_evictable(),
+            CachingDiskJournal::State::next(
+                pre,
+                post,
+                CachingDiskJournal::Label::DiscardOld{start_lsn, require_end, deallocs},
+            ),
+        ensures
+            post.clean_watermark_au_page_bounds_clean_or_evictable(),
+    {
+        let lbl = CachingDiskJournal::Label::DiscardOld{start_lsn, require_end, deallocs};
+        reveal(CachingDiskJournal::State::next);
+        reveal(CachingDiskJournal::State::next_by);
+        let step = choose |step: CachingDiskJournal::Step|
+            CachingDiskJournal::State::next_by(pre, post, lbl, step);
+        match step {
+            CachingDiskJournal::Step::discard_old(new_journal, new_disk) => {
+                reveal(CachingDiskJournal::State::discard_old);
+                reveal(CachedJournal::State::next);
+                reveal(CachedJournal::State::next_by);
+                let journal_lbl = CachedJournal::Label::DiscardOld{
+                    start_lsn,
+                    require_end,
+                    deallocs,
+                };
+                let journal_step = choose |step: CachedJournal::Step|
+                    CachedJournal::State::next_by(pre.journal, post.journal, journal_lbl, step);
+                match journal_step {
+                    CachedJournal::Step::discard_old() => {
+                        reveal(CachedJournal::State::discard_old);
+                    },
+                    _ => {
+                        assert(false);
+                    },
+                }
+            },
+            _ => {
+                assert(false);
+            },
+        }
+        let old_au_index = pre.journal.status.unwrap().lsn_au_index;
+        let new_au_index = lsn_au_index_discard_up_to(old_au_index, start_lsn);
+        lsn_au_index_discard_up_to_ensures(old_au_index, start_lsn);
+        CachingDisk::State::forget_preserves_addrs_clean_or_evictable(
+            pre.disk,
+            post.disk,
+            deallocs,
+            pre.clean_watermark_au_page_bounds_domain(),
+        );
+        assert forall |addr: Address| #[trigger] post.clean_watermark_au_page_bounds_domain().contains(addr)
+            implies pre.clean_watermark_au_page_bounds_domain().contains(addr) by {
+            let lsn = choose |lsn: LSN| {
+                &&& #[trigger] post.lsn_au_index_or_empty().contains_key(lsn)
+                &&& post.journal.seq_start() <= lsn
+                &&& lsn < post.journal.clean_watermark()
+                &&& post.lsn_au_index_or_empty()[lsn] == addr.au
+                &&& post.clean_watermark_au_page_bounds_i().contains_key(addr.au)
+                &&& addr.page <= post.clean_watermark_au_page_bounds_i()[addr.au]
+            };
+            assert(post.journal.seq_start() == start_lsn);
+            if start_lsn > pre.journal.clean_watermark() {
+                assert(post.journal.clean_watermark() == start_lsn);
+                assert(false);
+            } else {
+                assert(post.journal.clean_watermark() == pre.journal.clean_watermark());
+                assert(new_au_index.contains_key(lsn));
+                assert(old_au_index.contains_key(lsn));
+                assert(old_au_index[lsn] == new_au_index[lsn]);
+                assert(pre.lsn_au_index_or_empty().contains_key(lsn));
+                assert(pre.lsn_au_index_or_empty()[lsn] == addr.au);
+                assert(pre.clean_watermark_au_page_bounds_i().contains_key(addr.au));
+                assert(addr.page <= pre.clean_watermark_au_page_bounds_i()[addr.au]);
+            }
+        };
+        CachingDisk::State::addrs_clean_or_evictable_subset(
+            post.disk,
+            pre.clean_watermark_au_page_bounds_domain(),
+            post.clean_watermark_au_page_bounds_domain(),
+        );
     }
 
     pub proof fn internal_loaded_status_and_clean_watermark_monotonic(
@@ -2402,6 +2739,44 @@ impl CachingDiskJournal::State {
                         assert(false);
                     },
                 }
+            },
+            CachingDiskJournal::Step::internal_noop() => {
+                reveal(CachingDiskJournal::State::internal_noop);
+                assert(post == pre);
+            },
+            _ => {
+                assert(false);
+            },
+        }
+    }
+
+    pub proof fn internal_unloaded_preserves_cache_clean_or_evictable(
+        pre: Self,
+        post: Self,
+    )
+        requires
+            pre.inv(),
+            post.inv(),
+            pre.journal.status is None,
+            pre.disk.addrs_clean_or_evictable(pre.disk.cache.dom()),
+            CachingDiskJournal::State::next(pre, post, CachingDiskJournal::Label::Internal),
+        ensures
+            post.journal.status is None,
+            post.disk.addrs_clean_or_evictable(post.disk.cache.dom()),
+    {
+        let lbl = CachingDiskJournal::Label::Internal;
+        reveal(CachingDiskJournal::State::next);
+        reveal(CachingDiskJournal::State::next_by);
+        let step = choose |step: CachingDiskJournal::Step|
+            CachingDiskJournal::State::next_by(pre, post, lbl, step);
+        match step {
+            CachingDiskJournal::Step::caching_disk_internal(new_disk) => {
+                reveal(CachingDiskJournal::State::caching_disk_internal);
+                CachingDisk::State::internal_preserves_cache_clean_or_evictable(
+                    pre.disk,
+                    post.disk,
+                );
+                assert(post.journal == pre.journal);
             },
             CachingDiskJournal::Step::internal_noop() => {
                 reveal(CachingDiskJournal::State::internal_noop);
@@ -2477,6 +2852,93 @@ impl CachingDiskJournal::State {
             CachingDiskJournal::Step::mini_allocator_prune(new_disk) => {
                 reveal(CachingDiskJournal::State::mini_allocator_prune);
                 assert(post.journal == pre.journal);
+            },
+            _ => {
+                assert(false);
+            },
+        }
+    }
+
+    pub proof fn internal_alloc_preserves_clean_watermark_au_page_bounds_clean(
+        pre: Self,
+        post: Self,
+        allocs: Set<AU>,
+        deallocs: Set<AU>,
+        prune_aus: Set<AU>,
+    )
+        requires
+            pre.inv(),
+            post.inv(),
+            pre.clean_watermark_au_page_bounds_clean_or_evictable(),
+            CachingDiskJournal::State::next(
+                pre,
+                post,
+                CachingDiskJournal::Label::InternalAlloc{allocs, deallocs, prune_aus},
+            ),
+        ensures
+            post.clean_watermark_au_page_bounds_clean_or_evictable(),
+    {
+        let lbl = CachingDiskJournal::Label::InternalAlloc{allocs, deallocs, prune_aus};
+        reveal(CachingDiskJournal::State::next);
+        reveal(CachingDiskJournal::State::next_by);
+        let step = choose |step: CachingDiskJournal::Step|
+            CachingDiskJournal::State::next_by(pre, post, lbl, step);
+        match step {
+            CachingDiskJournal::Step::mini_allocator_fill(new_disk) => {
+                reveal(CachingDiskJournal::State::mini_allocator_fill);
+                assert(post.journal == pre.journal);
+                assert(post.clean_watermark_au_page_bounds_i()
+                    == pre.clean_watermark_au_page_bounds_i());
+                assert(post.journal.clean_watermark() == pre.journal.clean_watermark());
+                assert(post.lsn_au_index_or_empty() == pre.lsn_au_index_or_empty());
+                assert forall |addr: Address| {
+                    &&& #[trigger] post.disk.cache.contains_key(addr)
+                    &&& post.clean_watermark_au_page_bounds_domain().contains(addr)
+                } implies {
+                    &&& post.disk.status.contains_key(addr)
+                    &&& post.disk.status[addr] == PageStatus::Clean
+                } by {
+                    if pre.disk.cache.contains_key(addr) {
+                        assert(pre.clean_watermark_au_page_bounds_domain().contains(addr));
+                        assert(pre.clean_watermark_au_page_bounds_clean_or_evictable());
+                        assert(pre.disk.status.contains_key(addr));
+                        assert(pre.disk.status[addr] == PageStatus::Clean);
+                    } else {
+                        assert((post.disk.cache.dom() - pre.disk.cache.dom()).contains(addr));
+                        assert(addresses_in_aus(allocs).contains(addr));
+                        assert(allocs.contains(addr.au));
+                        let lsn = choose |lsn: LSN| {
+                            &&& #[trigger] post.lsn_au_index_or_empty().contains_key(lsn)
+                            &&& post.journal.seq_start() <= lsn
+                            &&& lsn < post.journal.clean_watermark()
+                            &&& post.lsn_au_index_or_empty()[lsn] == addr.au
+                            &&& post.clean_watermark_au_page_bounds_i().contains_key(addr.au)
+                            &&& addr.page <= post.clean_watermark_au_page_bounds_i()[addr.au]
+                        };
+                        assert(pre.lsn_au_index_or_empty().contains_key(lsn));
+                        assert(pre.lsn_au_index_or_empty()[lsn] == addr.au);
+                        assert(cj_lsn_au_index(pre.journal).values().contains(addr.au));
+                        assert(allocs.disjoint(cj_lsn_au_index(pre.journal).values()));
+                        assert(false);
+                    }
+                };
+            },
+            CachingDiskJournal::Step::mini_allocator_prune(new_disk) => {
+                reveal(CachingDiskJournal::State::mini_allocator_prune);
+                CachingDisk::State::forget_preserves_addrs_clean_or_evictable(
+                    pre.disk,
+                    post.disk,
+                    deallocs,
+                    pre.clean_watermark_au_page_bounds_domain(),
+                );
+                assert(post.journal == pre.journal);
+                assert(post.clean_watermark_au_page_bounds_domain()
+                    =~= pre.clean_watermark_au_page_bounds_domain());
+                CachingDisk::State::addrs_clean_or_evictable_subset(
+                    post.disk,
+                    pre.clean_watermark_au_page_bounds_domain(),
+                    post.clean_watermark_au_page_bounds_domain(),
+                );
             },
             _ => {
                 assert(false);

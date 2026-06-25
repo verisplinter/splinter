@@ -85,6 +85,14 @@ impl CrashAwareCachingDiskJournal::State {
     pub open spec fn semantic_inv(self) -> bool {
         &&& self.persistent is Image ==> self.persistent->image.wf()
         &&& self.ephemeral is Known ==> self.ephemeral->v.refinement_inv()
+        &&& self.ephemeral is Known && self.ephemeral->v.journal.status is None ==>
+            self.ephemeral->v.disk.addrs_clean_or_evictable(
+                self.ephemeral->v.disk.cache.dom(),
+            )
+        &&& self.ephemeral is Known && self.ephemeral->v.journal.status is Some ==>
+            self.ephemeral->v.clean_watermark_au_page_bounds_clean_or_evictable()
+        &&& self.ephemeral is Known && self.ephemeral->v.journal.status is Some ==>
+            self.ephemeral->v.clean_watermark_records_bounded_by_clean_au_page_bounds()
         &&& self.ephemeral is Known ==>
             self.ephemeral->v.i().frozen_metadata_valid(
                 frozen_image_metadata_i(self.persistent.metadata()),
@@ -435,6 +443,8 @@ impl CrashAwareCachingDiskJournal::State {
         requires
             self.refinement_inv(),
             self.ephemeral is Known,
+            self.frozen is Some,
+            self.frozen.unwrap() == frozen,
             self.ephemeral->v.frozen_snapshot_valid(frozen.snapshot, frozen.seq_end),
             CachingDiskJournal::State::next(
                 self.ephemeral->v,
@@ -465,7 +475,18 @@ impl CrashAwareCachingDiskJournal::State {
             frozen.seq_end,
         );
         state.frozen_snapshot_valid_implies_i_metadata_valid(frozen.snapshot, frozen.seq_end);
-        state.persistent_visible_eq_on_clean_or_evictable(state.frozen_prefix_domain(frozen.snapshot));
+        if frozen.snapshot.freshest_rec() is Some {
+            assert(state.clean_watermark_au_page_bounds_clean_or_evictable());
+            state.clean_watermark_au_page_bounds_clean_implies_frozen_materialization_certificate(
+                frozen.snapshot,
+                frozen.seq_end,
+            );
+        } else {
+            state.rootless_frozen_snapshot_materialization_certificate(
+                frozen.snapshot,
+                frozen.seq_end,
+            );
+        }
         assert(materialization_certificate(state, frozen));
         Self::materialization_certificate_implies_materialized_image_refines(state, frozen);
     }
@@ -977,6 +998,15 @@ impl CrashAwareCachingDiskJournal::State {
         let cj_lbl = CachingDiskJournal::Label::Put{messages: records};
         self.ephemeral->v.next_refines(new_ephemeral, cj_lbl);
         self.ephemeral->v.put_requires_loaded(new_ephemeral, records);
+        CachingDiskJournal::State::put_preserves_clean_watermark_au_page_bounds_clean(
+            self.ephemeral->v,
+            new_ephemeral,
+            records,
+        );
+        self.ephemeral->v.put_preserves_clean_watermark_records_bounded(
+            new_ephemeral,
+            records,
+        );
         self.ephemeral->v.put_preserves_frozen_materialization_certificate(
             new_ephemeral,
             records,
@@ -1137,11 +1167,24 @@ impl CrashAwareCachingDiskJournal::State {
             require_end: lbl.arrow_CommitComplete_require_end(),
             deallocs: lbl.arrow_CommitComplete_discarded(),
         };
+        CachingDiskJournal::State::discard_old_preserves_clean_watermark_au_page_bounds_clean(
+            self.ephemeral->v,
+            new_ephemeral,
+            frozen.snapshot.boundary_lsn,
+            lbl.arrow_CommitComplete_require_end(),
+            lbl.arrow_CommitComplete_discarded(),
+        );
         self.ephemeral->v.discard_old_preserves_frozen_materialization_certificate_at_boundary(
             new_ephemeral,
             cj_lbl,
             frozen.snapshot,
             frozen.seq_end,
+        );
+        self.ephemeral->v.discard_old_preserves_clean_watermark_records_bounded(
+            new_ephemeral,
+            frozen.snapshot.boundary_lsn,
+            lbl.arrow_CommitComplete_require_end(),
+            lbl.arrow_CommitComplete_discarded(),
         );
         assert(cj_lbl.i(self.ephemeral->v).arrow_DiscardOld_deallocs()
             == lbl.arrow_CommitComplete_discarded());
@@ -1269,6 +1312,18 @@ impl CrashAwareCachingDiskJournal::State {
             discovered_aus,
         );
         assert(self.ephemeral->v.journal.status is None);
+        assert(self.ephemeral->v.disk.addrs_clean_or_evictable(
+            self.ephemeral->v.disk.cache.dom(),
+        ));
+        CachingDiskJournal::State::load_index_recovery_clean_cache_implies_clean_watermark_au_page_bounds_clean(
+            self.ephemeral->v,
+            new_ephemeral,
+            discovered_aus,
+        );
+        self.ephemeral->v.load_index_establishes_clean_watermark_records_bounded(
+            new_ephemeral,
+            discovered_aus,
+        );
         assert(self.ephemeral->v.frozen_loose_persistence_certificate(
             self.persistent.metadata().snapshot,
         ));
@@ -1330,6 +1385,15 @@ impl CrashAwareCachingDiskJournal::State {
         let cj_lbl = CachingDiskJournal::Label::ObserveCleanAUs{aus};
         self.ephemeral->v.next_refines(new_ephemeral, cj_lbl);
         self.ephemeral->v.observe_clean_aus_requires_loaded(new_ephemeral, aus);
+        CachingDiskJournal::State::observe_clean_aus_preserves_clean_watermark_au_page_bounds_clean(
+            self.ephemeral->v,
+            new_ephemeral,
+            aus,
+        );
+        self.ephemeral->v.observe_clean_aus_preserves_clean_watermark_records_bounded(
+            new_ephemeral,
+            aus,
+        );
         self.ephemeral->v.observe_clean_aus_preserves_frozen_materialization_certificate(
             new_ephemeral,
             aus,
@@ -1393,12 +1457,22 @@ impl CrashAwareCachingDiskJournal::State {
         let cj_lbl = CachingDiskJournal::Label::Internal;
         self.ephemeral->v.next_refines(new_ephemeral, cj_lbl);
         if self.ephemeral->v.journal.status is Some {
+            self.ephemeral->v.internal_preserves_clean_watermark_au_page_bounds_clean(
+                new_ephemeral,
+            );
+            self.ephemeral->v.internal_preserves_clean_watermark_records_bounded(
+                new_ephemeral,
+            );
             self.ephemeral->v.internal_preserves_frozen_materialization_certificate(
                 new_ephemeral,
                 self.persistent.metadata().snapshot,
                 self.persistent.metadata().seq_end,
             );
         } else {
+            CachingDiskJournal::State::internal_unloaded_preserves_cache_clean_or_evictable(
+                self.ephemeral->v,
+                new_ephemeral,
+            );
             self.ephemeral->v.internal_unloaded_preserves_frozen_loose_persistence_certificate(
                 new_ephemeral,
                 self.persistent.metadata().snapshot,
@@ -1470,6 +1544,19 @@ impl CrashAwareCachingDiskJournal::State {
         self.ephemeral->v.next_refines(new_ephemeral, cj_lbl);
         CachingDiskJournal::State::internal_alloc_requires_loaded(
             self.ephemeral->v,
+            new_ephemeral,
+            allocs,
+            deallocs,
+            prune_aus,
+        );
+        CachingDiskJournal::State::internal_alloc_preserves_clean_watermark_au_page_bounds_clean(
+            self.ephemeral->v,
+            new_ephemeral,
+            allocs,
+            deallocs,
+            prune_aus,
+        );
+        self.ephemeral->v.internal_alloc_preserves_clean_watermark_records_bounded(
             new_ephemeral,
             allocs,
             deallocs,

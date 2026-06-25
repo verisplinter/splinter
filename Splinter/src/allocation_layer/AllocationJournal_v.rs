@@ -7201,6 +7201,84 @@ state_machine!{ AllocationJournal {
         assert(base.i() == base_tight.i().i());
     }
 
+    pub proof fn frozen_prefix_domain_bounded_by_au_page_bounds(
+        pre: Self,
+        frozen: JournalMetadata,
+        addr: Address,
+    )
+        requires
+            pre.inv(),
+            pre.semantic_inv(),
+            pre.frozen_metadata_valid(frozen),
+            pre.frozen_prefix_domain(frozen).contains(addr),
+        ensures
+            pre.au_page_bounds.contains_key(addr.au),
+            addr.page <= pre.au_page_bounds[addr.au],
+            ({
+                let image = pre.frozen_image(frozen);
+                let tight = image.tight_tj();
+                let tight_bounds = tight.disk_view.build_au_page_bounds_au_walk(
+                    tight.freshest_rec,
+                    frozen.first,
+                );
+                let bound_addr = Address{au: addr.au, page: tight_bounds[addr.au]};
+                &&& addr.page <= bound_addr.page
+                &&& tight.disk_view.entries.contains_key(bound_addr)
+                &&& tight.disk_view.boundary_lsn
+                    < tight.disk_view.entries[bound_addr].message_seq.seq_end
+                &&& tight.disk_view.entries[bound_addr].message_seq.seq_end <= frozen.seq_end
+                &&& pre.tj().disk_view.entries.contains_key(bound_addr)
+                &&& pre.tj().disk_view.entries[bound_addr]
+                    == tight.disk_view.entries[bound_addr]
+            }),
+    {
+        let freeze_lbl = AllocationJournal::Label::FreezeForCommit{frozen_journal: frozen};
+        assert(AllocationJournal::State::next_by(
+            pre,
+            pre,
+            freeze_lbl,
+            AllocationJournal::Step::freeze_for_commit(),
+        )) by {
+            reveal(AllocationJournal::State::next_by);
+        }
+        assert(AllocationJournal::State::next(pre, pre, freeze_lbl)) by {
+            reveal(AllocationJournal::State::next);
+        }
+        AllocationJournal::State::frozen_journal_is_valid_image(pre, pre, freeze_lbl);
+
+        let image = pre.frozen_image(frozen);
+        let tight = image.tight_tj();
+        let tight_dv = tight.disk_view;
+        let tight_bounds = tight_dv.build_au_page_bounds_au_walk(
+            tight.freshest_rec,
+            frozen.first,
+        );
+        assert(tight_bounds.contains_key(addr.au));
+        assert(addr.page <= tight_bounds[addr.au]);
+        tight_dv.build_au_page_bounds_au_walk_bound_has_entry(
+            tight.freshest_rec,
+            frozen.first,
+            addr.au,
+        );
+        let bound_addr = Address{au: addr.au, page: tight_bounds[addr.au]};
+        assert(tight_dv.entries.contains_key(bound_addr));
+        image.valid_image_implies_tight_seq_bounds();
+        image.tj.disk_view.build_tight_entry_lsn_bounded(
+            image.tj.freshest_rec,
+            bound_addr,
+        );
+        assert(tight_dv.boundary_lsn < tight_dv.entries[bound_addr].message_seq.seq_end);
+        assert(tight_dv.entries[bound_addr].message_seq.seq_end <= image.tj.seq_end());
+        assert(image.tj.seq_end() == frozen.seq_end);
+        assert(tight_dv.is_sub_disk_with_newer_lsn(pre.tj().disk_view));
+        assert(pre.tj().disk_view.entries.contains_key(bound_addr));
+        assert(pre.tj().disk_view.entries[bound_addr] == tight_dv.entries[bound_addr]);
+        assert(pre.semantic_entries_bounded_by_au_page_bounds());
+        assert(pre.au_page_bounds.contains_key(addr.au));
+        assert(tight_bounds[addr.au] <= pre.au_page_bounds[addr.au]);
+        assert(addr.page <= pre.au_page_bounds[addr.au]);
+    }
+
     pub proof fn initialize_tj_matches(post: Self, image: JournalImage)
     requires
         Self::initialize(post, image),
