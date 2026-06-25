@@ -16,19 +16,17 @@ use crate::implementation::AbstractSuperblock_v::{
     AbstractSuperblockImage, abstract_superblock_raw_wf, empty_abstract_superblock_image,
     parse_abstract_superblock,
 };
-use crate::implementation::AnotherAtomicState_v::{
-    AtomicInflightInfo, AtomicJournalState,
-};
+use crate::implementation::AnotherAtomicState_v::AtomicJournalState;
 use crate::implementation::Cache_v::Cache;
-use crate::implementation::CachedJournal_v::CachedJournal;
+use crate::implementation::CachedJournal_v::{CachedJournal, JournalSnapshot};
 use crate::implementation::CachingDiskAdapterRefinement_v::{
     cache_filled_addr, cache_filled_page,
     caching_disk_i as adapter_caching_disk_i, project_cache_pages, project_cache_status,
     cache_disk_ops_begin_refines_caching_disk_internal,
     cache_disk_ops_end_refines_caching_disk_internal,
-    projected_cache_access_outside_aus_unchanged,
+    projected_cache_access_outside_aus_unchanged, projected_cache_read_only_access_unchanged,
 };
-use crate::implementation::CachingDisk_v::{addresses_in_aus, CachingDisk, PageStatus};
+use crate::implementation::CachingDisk_v::{addresses_in_aus, status_map, CachingDisk, PageStatus};
 use crate::implementation::CachingDiskJournal_v::CachingDiskJournal;
 use crate::implementation::CrashAwareCachingDiskJournal_v::{
     CachingDiskJournalFrozenMetadata, CachingDiskJournalImage, CrashAwareCachingDiskJournal,
@@ -36,7 +34,7 @@ use crate::implementation::CrashAwareCachingDiskJournal_v::{
 };
 use crate::implementation::CrashAwareCachingDiskJournalRefinement_v::*;
 use crate::implementation::DiskLayout_v::spec_superblock_addr;
-use crate::implementation::JournalTypes_v::to_journal_records;
+use crate::implementation::JournalTypes_v::{to_journal_records, to_journal_records_restrict};
 use crate::implementation::UnifiedCacheProgramModel_v::UnifiedCacheProgramModel;
 use crate::implementation::UnifiedCacheSystem_v::UnifiedCacheSystem;
 use crate::journal::LinkedJournal_v::{DiskView, TruncatedJournal};
@@ -85,7 +83,7 @@ pub struct UnifiedCacheJournalSource {
     pub persistent_image: Option<AbstractSuperblockImage>,
     // In-flight state is the candidate image the caller may select on crash via
     // keep_in_flight. This shard should not independently decide durability.
-    pub in_flight: Option<AtomicInflightInfo>,
+    pub in_flight: Option<AbstractSuperblockImage>,
     pub in_flight_image: Option<AbstractSuperblockImage>,
 }
 
@@ -99,12 +97,8 @@ pub open spec fn unified_cache_journal_source(
             cache: state.cache,
             disk: model.disk,
             persistent_image: state.persistent_image,
-            in_flight: state.in_flight,
-            in_flight_image: if state.in_flight is Some {
-                Option::Some(state.atomic_inflight_superblock_i())
-            } else {
-                Option::None
-            },
+            in_flight: state.sync_image(),
+            in_flight_image: state.sync_image(),
         }
 }
 
@@ -192,7 +186,6 @@ impl UnifiedCacheJournalSource {
             journal: self.journal.journal,
             disk: self.journal_caching_disk_i(),
             mini_allocator: self.journal.mini_allocator,
-            au_page_bounds: self.journal.au_page_bounds,
         }
     }
 
@@ -246,6 +239,10 @@ impl UnifiedCacheJournalSource {
         &&& self.cache.inv()
         &&& self.disk.inv()
         &&& self.journal_caching_disk_i().inv()
+        &&& self.superblock_loaded() ==> {
+            &&& self.journal.persistent_seq_end
+                == self.persistent_superblock_image_i().journal_seq_end
+        }
         &&& !self.superblock_loaded() ==> {
             &&& self.journal == AtomicJournalState::State::empty()
             &&& self.in_flight is None
@@ -652,8 +649,6 @@ impl UnifiedCacheJournalSource {
             == post.journal_caching_disk_state_i().journal);
         assert(self.journal_caching_disk_state_i().mini_allocator
             == post.journal_caching_disk_state_i().mini_allocator);
-        assert(self.journal_caching_disk_state_i().au_page_bounds
-            == post.journal_caching_disk_state_i().au_page_bounds);
 
         assert(CachingDiskJournal::State::caching_disk_internal(
             self.journal_caching_disk_state_i(),
@@ -1500,10 +1495,6 @@ pub proof fn put_preserves_projection_aus(
             }
             assert(post.journal.journal == new_journal);
             assert(post.journal.mini_allocator == pre.journal.mini_allocator);
-            assert(post.journal.au_page_bounds == pre.journal.au_page_bounds);
-            assert(post.journal.persistent_seq_end == pre.journal.persistent_seq_end);
-            assert(post.journal.in_flight == pre.journal.in_flight);
-            assert(post.journal.prepared == pre.journal.prepared);
             assert(CachedJournal::State::next(
                 pre.journal.journal,
                 post.journal.journal,
@@ -1514,6 +1505,11 @@ pub proof fn put_preserves_projection_aus(
                 post.journal.journal,
                 records,
             );
+            assert(post.journal.journal.status.unwrap().au_page_bounds
+                == pre.journal.journal.status.unwrap().au_page_bounds);
+            assert(post.journal.persistent_seq_end == pre.journal.persistent_seq_end);
+            assert(post.journal.in_flight == pre.journal.in_flight);
+            assert(post.journal.prepared == pre.journal.prepared);
             assert(post.journal.ready());
             assert(post.journal.journal.seq_end() == records.seq_end);
             assert(post.journal_projection_aus() =~= pre.journal_projection_aus());
@@ -1568,7 +1564,18 @@ pub proof fn put_refines(
             }
             assert(post.journal.journal == new_journal);
             assert(post.journal.mini_allocator == pre.journal.mini_allocator);
-            assert(post.journal.au_page_bounds == pre.journal.au_page_bounds);
+            assert(CachedJournal::State::next(
+                pre.journal.journal,
+                post.journal.journal,
+                CachedJournal::Label::Put{messages: records},
+            ));
+            CachedJournal::State::put_effect(
+                pre.journal.journal,
+                post.journal.journal,
+                records,
+            );
+            assert(post.journal.journal.status.unwrap().au_page_bounds
+                == pre.journal.journal.status.unwrap().au_page_bounds);
             assert(post.journal.persistent_seq_end == pre.journal.persistent_seq_end);
             assert(post.journal.in_flight == pre.journal.in_flight);
             assert(post.journal.prepared == pre.journal.prepared);
@@ -1584,8 +1591,8 @@ pub proof fn put_refines(
     assert(post.journal_caching_disk_state_i().disk == pre.journal_caching_disk_state_i().disk);
     assert(post.journal_caching_disk_state_i().mini_allocator
         == pre.journal_caching_disk_state_i().mini_allocator);
-    assert(post.journal_caching_disk_state_i().au_page_bounds
-        == pre.journal_caching_disk_state_i().au_page_bounds);
+    assert(post.journal_caching_disk_state_i().au_page_bounds_i()
+        == pre.journal_caching_disk_state_i().au_page_bounds_i());
 
     let cj_lbl = CachingDiskJournal::Label::Put{messages: records};
     assert(CachingDiskJournal::State::put(
@@ -1637,6 +1644,388 @@ pub proof fn put_refines(
         assert(post.cache.inv());
         assert(post.disk.inv());
         assert(post.journal_caching_disk_i().inv());
+        assert(post.in_flight is Some <==> post.journal.in_flight is Some);
+        assert(post.in_flight is Some <==> post.in_flight_image is Some);
+    }
+    assert(post.semantic_inv());
+    assert(inv(post));
+}
+
+pub proof fn commit_start_refines(
+    pre: UnifiedCacheJournalSource,
+    post: UnifiedCacheJournalSource,
+    snapshot: JournalSnapshot,
+    seq_end: nat,
+    reads: Map<Address, RawPage>,
+)
+    requires
+        inv(pre),
+        pre.superblock_loaded(),
+        pre.journal.ready(),
+        post.disk == pre.disk,
+        post.persistent_image == pre.persistent_image,
+        post.in_flight is Some,
+        post.in_flight_image is Some,
+        post.in_flight_image.unwrap().wf(),
+        post.in_flight_image.unwrap().journal_snapshot == snapshot,
+        post.in_flight_image.unwrap().journal_seq_end == seq_end,
+        Cache::State::next(
+            pre.cache,
+            post.cache,
+            Cache::Label::Access{reads, writes: Map::empty()},
+        ),
+        AtomicJournalState::State::next(
+            pre.journal,
+            post.journal,
+            AtomicJournalState::Label::CommitStart{
+                snapshot,
+                seq_end,
+                reads: to_journal_records(reads),
+            },
+        ),
+    ensures
+        CrashAwareCachingDiskJournal::State::next(
+            unified_cache_journal_i(pre),
+            unified_cache_journal_i(post),
+            CrashAwareCachingDiskJournal::Label::CommitStart{
+                new_boundary_lsn: snapshot.boundary_lsn,
+                snapshot,
+                seq_end,
+            },
+        ),
+        inv(post),
+{
+    let empty_writes = Map::<Address, RawPage>::empty();
+    let cache_lbl = Cache::Label::Access{reads, writes: empty_writes};
+    let atomic_lbl = AtomicJournalState::Label::CommitStart{
+        snapshot,
+        seq_end,
+        reads: to_journal_records(reads),
+    };
+    let aus = pre.journal_projection_aus();
+    let component_addrs = addresses_in_aus(aus);
+    let component_reads = reads.restrict(component_addrs);
+
+    AtomicJournalState::State::wf_next(pre.journal, post.journal, atomic_lbl);
+    AtomicJournalState::State::commit_start_effect(pre.journal, post.journal, atomic_lbl);
+    Cache::State::inv_next(pre.cache, post.cache, cache_lbl);
+
+    assert(pre.journal.in_flight is None) by {
+        reveal(AtomicJournalState::State::next);
+        reveal(AtomicJournalState::State::next_by);
+        assert(AtomicJournalState::State::next_by(
+            pre.journal,
+            post.journal,
+            atomic_lbl,
+            AtomicJournalState::Step::commit_start(),
+        ));
+        reveal(AtomicJournalState::State::commit_start);
+    }
+    assert(post.superblock_loaded());
+    assert(post.journal.ready()) by {
+        assert(post.journal.journal == pre.journal.journal);
+    }
+    assert(post.journal.journal.status.unwrap().au_page_bounds
+        == pre.journal.journal.status.unwrap().au_page_bounds) by {
+        reveal(AtomicJournalState::State::next);
+        reveal(AtomicJournalState::State::next_by);
+        assert(AtomicJournalState::State::next_by(
+            pre.journal,
+            post.journal,
+            atomic_lbl,
+            AtomicJournalState::Step::commit_start(),
+        ));
+        reveal(AtomicJournalState::State::commit_start);
+    }
+    assert(post.journal_projection_aus() =~= aus) by {
+        assert(post.journal.journal == pre.journal.journal);
+        assert(post.journal.mini_allocator == pre.journal.mini_allocator);
+    }
+    projected_cache_read_only_access_unchanged(pre.cache, post.cache, aus, reads);
+    assert(post.journal_caching_disk_i() == pre.journal_caching_disk_i()) by {
+        assert_maps_equal!(
+            post.journal_caching_disk_i().cache,
+            pre.journal_caching_disk_i().cache,
+            addr => {
+                assert(addresses_in_aus(post.journal_projection_aus()).contains(addr)
+                    <==> component_addrs.contains(addr));
+            }
+        );
+        assert_maps_equal!(
+            post.journal_caching_disk_i().status,
+            pre.journal_caching_disk_i().status,
+            addr => {
+                assert(addresses_in_aus(post.journal_projection_aus()).contains(addr)
+                    <==> component_addrs.contains(addr));
+            }
+        );
+        assert_maps_equal!(
+            post.journal_caching_disk_i().persistent,
+            pre.journal_caching_disk_i().persistent,
+            addr => {
+                assert(addresses_in_aus(post.journal_projection_aus()).contains(addr)
+                    <==> component_addrs.contains(addr));
+            }
+        );
+    }
+    assert(post.journal_caching_disk_state_i() == pre.journal_caching_disk_state_i()) by {
+        assert(post.journal.journal == pre.journal.journal);
+        assert(post.journal.mini_allocator == pre.journal.mini_allocator);
+        assert(post.journal.journal.status.unwrap().au_page_bounds
+            == pre.journal.journal.status.unwrap().au_page_bounds);
+    }
+
+    assert(component_reads <= pre.journal_caching_disk_i().cache) by {
+        assert forall |addr: Address| #[trigger] component_reads.contains_key(addr)
+            implies {
+                &&& pre.journal_caching_disk_i().cache.contains_key(addr)
+                &&& component_reads[addr] == pre.journal_caching_disk_i().cache[addr]
+            } by {
+            assert(reads.contains_key(addr));
+            assert(component_addrs.contains(addr));
+            Cache::State::access_read_valid(pre.cache, post.cache, reads, empty_writes, addr);
+            assert(pre.cache.valid_read(addr, reads[addr]));
+            pre.cache.build_lookup_map_ensures();
+            assert(pre.cache.build_lookup_map_props(pre.cache.lookup_map));
+            assert(pre.cache.entries.contains_key(pre.cache.lookup_map[addr]));
+            assert(cache_filled_addr(pre.cache, addr));
+            assert(cache_filled_page(pre.cache, addr) == reads[addr]);
+            assert(component_reads[addr] == reads[addr]);
+            assert(project_cache_pages(pre.cache, aus).contains_key(addr));
+            assert(pre.journal_caching_disk_i().cache.contains_key(addr));
+            assert(pre.journal_caching_disk_i().cache[addr] == reads[addr]);
+        }
+    }
+
+    let inner = pre.journal_caching_disk_state_i();
+    let cj_lbl = CachingDiskJournal::Label::FreezeForCommit{frozen: snapshot, seq_end};
+    to_journal_records_restrict(reads, component_addrs);
+
+    assert(CachingDisk::State::access(
+        inner.disk,
+        inner.disk,
+        CachingDisk::Label::Access{reads: component_reads, writes: empty_writes},
+    )) by {
+        reveal(CachingDisk::State::access);
+        assert(inner.disk == pre.journal_caching_disk_i());
+        assert(component_reads <= inner.disk.cache);
+        assert_maps_equal!(
+            inner.disk.cache.union_prefer_right(empty_writes),
+            inner.disk.cache,
+            addr => {}
+        );
+        assert_maps_equal!(
+            status_map(empty_writes.dom(), PageStatus::Dirty),
+            Map::<Address, PageStatus>::empty(),
+            addr => {}
+        );
+        assert_maps_equal!(
+            inner.disk.status.union_prefer_right(
+                status_map(empty_writes.dom(), PageStatus::Dirty),
+            ),
+            inner.disk.status,
+            addr => {}
+        );
+    }
+    assert(CachingDisk::State::next_by(
+        inner.disk,
+        inner.disk,
+        CachingDisk::Label::Access{reads: component_reads, writes: empty_writes},
+        CachingDisk::Step::access(),
+    )) by {
+        reveal(CachingDisk::State::next_by);
+    }
+    reveal(CachingDisk::State::next);
+    inner.disk_reads_ensures(component_reads);
+
+    assert(CachedJournal::State::next(
+        inner.journal,
+        inner.journal,
+        CachedJournal::Label::FreezeForCommit{
+            frozen: snapshot,
+            reads: to_journal_records(component_reads),
+        },
+    )) by {
+        reveal(AtomicJournalState::State::next);
+        reveal(AtomicJournalState::State::next_by);
+        assert(AtomicJournalState::State::next_by(
+            pre.journal,
+            post.journal,
+            atomic_lbl,
+            AtomicJournalState::Step::commit_start(),
+        ));
+        reveal(AtomicJournalState::State::commit_start);
+        assert(AtomicJournalState::State::commit_start(pre.journal, post.journal, atomic_lbl));
+        let full_lbl = CachedJournal::Label::FreezeForCommit{
+            frozen: snapshot,
+            reads: to_journal_records(reads),
+        };
+        assert(CachedJournal::State::next(pre.journal.journal, pre.journal.journal, full_lbl));
+        reveal(CachedJournal::State::next);
+        reveal(CachedJournal::State::next_by);
+        assert(CachedJournal::State::next_by(
+            pre.journal.journal,
+            pre.journal.journal,
+            full_lbl,
+            CachedJournal::Step::freeze_for_commit(),
+        ));
+        reveal(CachedJournal::State::freeze_for_commit);
+        assert(inner.journal == pre.journal.journal);
+        if snapshot.freshest_rec() is Some {
+            let root = snapshot.freshest_rec().unwrap();
+            let index = pre.journal.journal.status.unwrap().lsn_au_index;
+            assert(reads.contains_key(root));
+            assert(index.contains_value(root.au));
+            assert(pre.journal.loaded_index_aus().contains(root.au));
+            assert(aus.contains(root.au));
+            assert(component_addrs.contains(root));
+            assert(component_reads.contains_key(root));
+            assert(to_journal_records(component_reads)[root]
+                == to_journal_records(reads)[root]);
+        }
+        assert(CachedJournal::State::freeze_for_commit(
+            inner.journal,
+            inner.journal,
+            CachedJournal::Label::FreezeForCommit{
+                frozen: snapshot,
+                reads: to_journal_records(component_reads),
+            },
+        ));
+        assert(CachedJournal::State::next_by(
+            inner.journal,
+            inner.journal,
+            CachedJournal::Label::FreezeForCommit{
+                frozen: snapshot,
+                reads: to_journal_records(component_reads),
+            },
+            CachedJournal::Step::freeze_for_commit(),
+        )) by {
+            reveal(CachedJournal::State::next_by);
+        }
+    }
+
+    if snapshot.freshest_rec() is Some {
+        let root = snapshot.freshest_rec().unwrap();
+        reveal(AtomicJournalState::State::next);
+        reveal(AtomicJournalState::State::next_by);
+        assert(AtomicJournalState::State::next_by(
+            pre.journal,
+            post.journal,
+            atomic_lbl,
+            AtomicJournalState::Step::commit_start(),
+        ));
+        reveal(AtomicJournalState::State::commit_start);
+        assert(AtomicJournalState::State::commit_start(pre.journal, post.journal, atomic_lbl));
+        let full_lbl = CachedJournal::Label::FreezeForCommit{
+            frozen: snapshot,
+            reads: to_journal_records(reads),
+        };
+        assert(CachedJournal::State::next(pre.journal.journal, pre.journal.journal, full_lbl));
+        reveal(CachedJournal::State::next);
+        reveal(CachedJournal::State::next_by);
+        assert(CachedJournal::State::next_by(
+            pre.journal.journal,
+            pre.journal.journal,
+            full_lbl,
+            CachedJournal::Step::freeze_for_commit(),
+        ));
+        reveal(CachedJournal::State::freeze_for_commit);
+        let index = pre.journal.journal.status.unwrap().lsn_au_index;
+        assert(reads.contains_key(root));
+        assert(index.contains_value(root.au));
+        assert(pre.journal.loaded_index_aus().contains(root.au));
+        assert(aus.contains(root.au));
+        assert(component_addrs.contains(root));
+        assert(pre.journal.journal.status.unwrap().au_page_bounds.contains_key(root.au));
+        assert(root.page <= pre.journal.journal.status.unwrap().au_page_bounds[root.au]);
+        assert(inner.au_page_bounds_i().contains_key(root.au));
+        assert(root.page <= inner.au_page_bounds_i()[root.au]);
+        assert(component_reads.contains_key(root));
+        assert(to_journal_records(component_reads).contains_key(root));
+        assert(to_journal_records(component_reads)[root] == to_journal_records(reads)[root]);
+        assert(inner.journal_disk_view().entries.contains_key(root));
+        assert(to_journal_records(component_reads)[root] == inner.journal_disk_view().entries[root]);
+        assert(seq_end == inner.frozen_seq_end(snapshot));
+    } else {
+        assert(seq_end == snapshot.boundary_lsn) by {
+            reveal(AtomicJournalState::State::next);
+            reveal(AtomicJournalState::State::next_by);
+            assert(AtomicJournalState::State::next_by(
+                pre.journal,
+                post.journal,
+                atomic_lbl,
+                AtomicJournalState::Step::commit_start(),
+            ));
+            reveal(AtomicJournalState::State::commit_start);
+        }
+        assert(seq_end == inner.frozen_seq_end(snapshot));
+    }
+
+    assert(CachingDiskJournal::State::freeze_for_commit(
+        inner,
+        inner,
+        cj_lbl,
+        component_reads,
+    )) by {
+        reveal(CachingDiskJournal::State::freeze_for_commit);
+    }
+    assert(CachingDiskJournal::State::next_by(
+        inner,
+        inner,
+        cj_lbl,
+        CachingDiskJournal::Step::freeze_for_commit(component_reads),
+    )) by {
+        reveal(CachingDiskJournal::State::next_by);
+    }
+    reveal(CachingDiskJournal::State::next);
+
+    let src = unified_cache_journal_i(pre);
+    let dst = unified_cache_journal_i(post);
+    let target_lbl = CrashAwareCachingDiskJournal::Label::CommitStart{
+        new_boundary_lsn: snapshot.boundary_lsn,
+        snapshot,
+        seq_end,
+    };
+    assert(src.ephemeral is Known);
+    assert(dst.ephemeral is Known);
+    assert(src.frozen is None);
+    assert(dst.frozen == Option::Some(CachingDiskJournalFrozenMetadata{snapshot, seq_end}));
+    assert(!dst.prepared);
+    assert(src.persistent.metadata().seq_end <= snapshot.boundary_lsn) by {
+        assert(src.persistent.metadata().seq_end == pre.journal.persistent_seq_end);
+        reveal(AtomicJournalState::State::next);
+        reveal(AtomicJournalState::State::next_by);
+        assert(AtomicJournalState::State::next_by(
+            pre.journal,
+            post.journal,
+            atomic_lbl,
+            AtomicJournalState::Step::commit_start(),
+        ));
+        reveal(AtomicJournalState::State::commit_start);
+    }
+    assert(CrashAwareCachingDiskJournal::State::commit_start(src, dst, target_lbl)) by {
+        reveal(CrashAwareCachingDiskJournal::State::commit_start);
+    }
+    assert(CrashAwareCachingDiskJournal::State::next_by(
+        src,
+        dst,
+        target_lbl,
+        CrashAwareCachingDiskJournal::Step::commit_start(),
+    )) by {
+        reveal(CrashAwareCachingDiskJournal::State::next_by);
+    }
+    reveal(CrashAwareCachingDiskJournal::State::next);
+    src.next_refines(dst, target_lbl);
+
+    assert(post.inv()) by {
+        assert(post.journal.wf());
+        assert(async_disk_superblock_page_wf(post.disk.content));
+        assert(post.persistent_superblock_image_i() == pre.persistent_superblock_image_i());
+        assert(post.persistent_superblock_image_i().wf());
+        assert(post.cache.inv());
+        assert(post.disk.inv());
+        assert(post.journal_caching_disk_i().inv());
+        assert(post.journal.persistent_seq_end == pre.journal.persistent_seq_end);
         assert(post.in_flight is Some <==> post.journal.in_flight is Some);
         assert(post.in_flight is Some <==> post.in_flight_image is Some);
     }

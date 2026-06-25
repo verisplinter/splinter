@@ -60,14 +60,13 @@ impl UnifiedCacheProgramModel {
                 _,
                 _,
                 _,
-                _,
                 reqs,
                 resps,
             ) => {
                 &&& reqs == info.reqs
                 &&& resps == info.resps
             },
-            UnifiedCacheSystem::Step::execute_sync_prepared(_, _, _, reqs, resps) => {
+            UnifiedCacheSystem::Step::execute_sync_prepared(_, _, _, _, reqs, resps) => {
                 &&& reqs == info.reqs
                 &&& resps == info.resps
             },

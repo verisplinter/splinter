@@ -43,7 +43,7 @@ use crate::implementation::CachingDisk_v::{CachingDisk, PageStatus, addresses_in
 use crate::implementation::UnifiedCacheBranchRefinement_v as UnifiedCacheBranchRefinement;
 use crate::implementation::UnifiedCacheJournalRefinement_v as UnifiedCacheJournalRefinement;
 use crate::implementation::UnifiedCacheProgramModel_v::UnifiedCacheProgramModel;
-use crate::implementation::UnifiedCacheSystem_v::UnifiedCacheSystem;
+use crate::implementation::UnifiedCacheSystem_v::{AtomicSyncPhase, UnifiedCacheSystem};
 use crate::implementation::RecoveryState_v::RecoveryState;
 use crate::spec::AsyncDisk_t::{AsyncDisk, DiskRequest, DiskResponse, RawPage};
 use crate::spec::MapSpec_t::{EphemeralState, ID, Input, Reply, Request};
@@ -114,11 +114,11 @@ pub open spec fn unified_cache_superblock_write_pending(
     model: SystemModel::State<UnifiedCacheProgramModel>,
 ) -> bool
 {
-    &&& model.program.state.in_flight is Some
-    &&& model.disk.requests.contains_key(model.program.state.in_flight.unwrap().req_id)
-    &&& model.disk.requests[model.program.state.in_flight.unwrap().req_id] is WriteReq
-    &&& model.disk.requests[model.program.state.in_flight.unwrap().req_id]->to
-        == spec_superblock_addr()
+    let phase = model.program.state.sync_phase;
+    &&& phase is SuperblockWriteIssued
+    &&& model.disk.requests.contains_key(phase->req_id)
+    &&& model.disk.requests[phase->req_id] is WriteReq
+    &&& model.disk.requests[phase->req_id]->to == spec_superblock_addr()
 }
 
 pub open spec fn unified_cache_cache_disk_response_inv(
@@ -172,7 +172,7 @@ pub open spec fn unified_cache_recovery_superblock_io_inv(
     let branch_src = UnifiedCacheBranchRefinement::unified_cache_branch_source(model);
     (state.recovery_state is Begin || state.recovery_state is AwaitingSuperblock) ==> {
         &&& state.persistent_image is None
-        &&& state.in_flight is None
+        &&& state.sync_phase is None
         &&& state.sync_req_map == Map::<crate::spec::MapSpec_t::SyncReqId, nat>::empty()
         &&& state.outstanding_cache_reqs.dom().disjoint(model.disk.responses.dom())
         &&& journal_src.journal_caching_disk_i().cache == Map::<Address, RawPage>::empty()
@@ -218,10 +218,11 @@ pub open spec fn unified_cache_in_flight_superblock_landed(
     disk: crate::trusted::ProgramModelTrait_t::DiskModel,
 ) -> bool
 {
-    &&& state.in_flight is Some
-    &&& disk.content.contains_key(spec_superblock_addr())
-    &&& disk.content[spec_superblock_addr()]
-        == marshal_abstract_superblock(state.atomic_inflight_superblock_i())
+    let phase = state.sync_phase;
+    &&& phase is SuperblockWriteIssued
+    &&& !state.outstanding_cache_reqs.contains_key(phase->req_id)
+    &&& disk.responses.contains_key(phase->req_id)
+    &&& disk.responses[phase->req_id] is WriteResp
 }
 
 pub open spec fn unified_cache_superblockstore_i(
@@ -234,7 +235,7 @@ pub open spec fn unified_cache_superblockstore_i(
         arbitrary()
     };
     let landed = unified_cache_in_flight_superblock_landed(model.program.state, model.disk);
-    let pending_raw = if model.program.state.in_flight is Some {
+    let pending_raw = if model.program.state.sync_phase is SuperblockWriteIssued {
         marshal_abstract_superblock(model.program.state.atomic_inflight_superblock_i())
     } else {
         arbitrary()
@@ -1725,7 +1726,7 @@ pub proof fn init_refines(pre: SystemModel::State<UnifiedCacheProgramModel>)
                 in_flight: Option::None,
                 landed: false,
             }) by {
-                assert(pre.program.state.in_flight is None);
+                assert(pre.program.state.sync_phase is None);
                 assert(!unified_cache_in_flight_superblock_landed(
                     pre.program.state,
                     pre.disk,
@@ -1772,7 +1773,7 @@ pub proof fn init_refines(pre: SystemModel::State<UnifiedCacheProgramModel>)
             assert(unified_cache_recovery_superblock_io_inv(pre)) by {
                 assert(pre.program.state.recovery_state is Begin);
                 assert(pre.program.state.persistent_image is None);
-                assert(pre.program.state.in_flight is None);
+                assert(pre.program.state.sync_phase is None);
                 assert(pre.program.state.sync_req_map
                     == Map::<crate::spec::MapSpec_t::SyncReqId, nat>::empty());
                 assert(journal_src.journal_projection_aus() =~= Set::<AU>::empty()) by {
@@ -2251,17 +2252,17 @@ pub proof fn program_execute_put_refines(
         records,
     );
     AtomicBranchState::State::append_effect(pre_state.branch, post_state.branch, branch_atomic_lbl);
-    assert(post_state.in_flight == pre_state.in_flight);
+    assert(post_state.sync_phase == pre_state.sync_phase);
     assert(post_state.journal.in_flight == pre_state.journal.in_flight);
     assert(post_state.branch.in_flight == pre_state.branch.in_flight);
     assert(journal_post.in_flight_image == journal_pre.in_flight_image) by {
-        if pre_state.in_flight is Some {
+        if pre_state.sync_image() is Some {
             assert(post_state.atomic_inflight_superblock_i()
                 == pre_state.atomic_inflight_superblock_i());
         }
     }
     assert(branch_post.in_flight_image == branch_pre.in_flight_image) by {
-        if pre_state.in_flight is Some {
+        if pre_state.sync_image() is Some {
             assert(post_state.atomic_inflight_superblock_i()
                 == pre_state.atomic_inflight_superblock_i());
         }
@@ -3218,7 +3219,7 @@ pub proof fn program_disk_initiate_recovery_refines(
     assert(post_state.journal == pre_state.journal);
     assert(post_state.branch == pre_state.branch);
     assert(post_state.persistent_image == pre_state.persistent_image);
-    assert(post_state.in_flight == pre_state.in_flight);
+    assert(post_state.sync_phase == pre_state.sync_phase);
     assert(post_state.free_aus == pre_state.free_aus);
     assert(post_state.sync_req_map == pre_state.sync_req_map);
     assert(!post_state.client_ready());
@@ -3251,11 +3252,11 @@ pub proof fn program_disk_initiate_recovery_refines(
         assert(dst.sync_reqs == src.sync_reqs);
         assert(dst.free_aus == src.free_aus);
         assert(dst.superblockstore == src.superblockstore) by {
-            assert(post_state.in_flight == pre_state.in_flight);
+            assert(post_state.sync_phase == pre_state.sync_phase);
             assert(unified_cache_in_flight_superblock_landed(post_state, post.disk)
                 == unified_cache_in_flight_superblock_landed(pre_state, pre.disk));
-            if pre_state.in_flight is Some {
-                let in_flight_req_id = pre_state.in_flight.unwrap().req_id;
+            if pre_state.sync_phase is SuperblockWriteIssued {
+                let in_flight_req_id = pre_state.sync_phase->req_id;
                 if pre.disk.requests.contains_key(in_flight_req_id) {
                     assert(!req_map.contains_key(in_flight_req_id)) by {
                         reveal(AsyncDisk::State::disk_ops);
@@ -3308,7 +3309,7 @@ pub proof fn program_disk_initiate_recovery_refines(
         assert(pre_state.recovery_state is Begin);
         assert(post_state.recovery_state is AwaitingSuperblock);
         assert(post_state.persistent_image is None);
-        assert(post_state.in_flight is None);
+        assert(post_state.sync_phase is None);
         assert(post_state.sync_req_map
             == Map::<crate::spec::MapSpec_t::SyncReqId, nat>::empty());
         assert(post_state.outstanding_cache_reqs == pre_state.outstanding_cache_reqs);
@@ -3507,14 +3508,14 @@ pub proof fn program_disk_superblock_recovery_refines(
     assert(UnifiedCacheJournalRefinement::async_disk_superblock_page_wf(pre.disk.content));
     assert(image.wf());
     assert(pre_state.persistent_image is None);
-    assert(pre_state.in_flight is None);
+    assert(pre_state.sync_phase is None);
 
     assert(post_state == UnifiedCacheSystem::State{
         recovery_state: RecoveryState::SuperblockAvailable,
         journal: new_journal,
         branch: new_branch,
         persistent_image: Option::Some(image),
-        in_flight: Option::None,
+        sync_phase: AtomicSyncPhase::None,
         sync_req_map: Map::empty(),
         ..pre_state
     });
@@ -3629,8 +3630,8 @@ pub proof fn program_disk_superblock_recovery_refines(
     assert(src.sync_reqs == Map::<crate::spec::MapSpec_t::SyncReqId, nat>::empty());
     assert(dst.free_aus == src.free_aus);
     assert(dst.superblockstore == src.superblockstore) by {
-        assert(post_state.in_flight is None);
-        assert(pre_state.in_flight is None);
+        assert(post_state.sync_phase is None);
+        assert(pre_state.sync_phase is None);
         assert(!unified_cache_superblock_write_pending(pre));
         assert(!unified_cache_superblock_write_pending(post));
         assert(!unified_cache_in_flight_superblock_landed(pre_state, pre.disk));
@@ -3704,7 +3705,6 @@ pub proof fn program_disk_execute_sync_begin_refines(
     lbl: SystemModel::Label,
     new_program: UnifiedCacheProgramModel,
     new_disk: crate::trusted::ProgramModelTrait_t::DiskModel,
-    req_id: ID,
     image: AbstractSuperblockImage,
     journal_reads: Map<Address, RawPage>,
     new_cache: Cache::State,
@@ -3716,11 +3716,23 @@ pub proof fn program_disk_execute_sync_begin_refines(
     requires
         SystemModel::State::program_disk(pre, post, lbl, new_program, new_disk),
         inv(pre),
+        UnifiedCacheProgramModel::disk_step_matches_info(
+            pre.program.state,
+            UnifiedCacheSystem::Step::execute_sync_begin(
+                image,
+                journal_reads,
+                new_cache,
+                new_journal,
+                new_branch,
+                reqs,
+                resps,
+            ),
+            lbl->info,
+        ),
         UnifiedCacheSystem::State::execute_sync_begin(
             pre.program.state,
             post.program.state,
             UnifiedCacheSystem::Label::Disk,
-            req_id,
             image,
             journal_reads,
             new_cache,
@@ -3737,7 +3749,246 @@ pub proof fn program_disk_execute_sync_begin_refines(
         ),
         inv(post),
 {
-    assume(false);
+    let pre_state = pre.program.state;
+    let post_state = post.program.state;
+    let target_lbl = unified_cache_system_i_lbl(pre, post, lbl);
+    let disk_lbl = DiskLabel::DiskOps{
+        requests: multiset_to_map(lbl->info.reqs),
+        responses: multiset_to_map(lbl->info.resps),
+    };
+    let cache_lbl = Cache::Label::Access{reads: journal_reads, writes: Map::empty()};
+    let journal_lbl = AtomicJournalState::Label::CommitStart{
+        snapshot: image.journal_snapshot,
+        seq_end: image.journal_seq_end,
+        reads: crate::implementation::JournalTypes_v::to_journal_records(journal_reads),
+    };
+    let branch_image = crate::implementation::AnotherAtomicState_v::AtomicBranchImage{
+        sealed_roots: image.branch_roots,
+        seq_end: image.branch_seq_end,
+    };
+    let branch_lbl = AtomicBranchState::Label::CommitStart{branch_image};
+
+    reveal(SystemModel::State::program_disk);
+    reveal(UnifiedCacheSystem::State::execute_sync_begin);
+
+    assert(lbl is ProgramDiskOp);
+    assert(target_lbl == CrashAwareCachingDiskSystem::Label::Noop);
+    assert(post.program == new_program);
+    assert(post.disk == new_disk);
+    assert(reqs == lbl->info.reqs);
+    assert(resps == lbl->info.resps);
+    assert(reqs.is_empty());
+    assert(resps.is_empty());
+    assert(multiset_to_map(reqs) == Map::<ID, DiskRequest>::empty()) by {
+        assert_maps_equal!(
+            multiset_to_map(reqs),
+            Map::<ID, DiskRequest>::empty(),
+            id => {
+                if multiset_to_map(reqs).contains_key(id) {
+                    let pr = choose |pr| #[trigger] reqs.contains(pr) && pr.0 == id;
+                    assert(reqs.contains(pr));
+                    assert(false);
+                }
+            }
+        );
+    }
+    assert(multiset_to_map(resps) == Map::<ID, DiskResponse>::empty()) by {
+        assert_maps_equal!(
+            multiset_to_map(resps),
+            Map::<ID, DiskResponse>::empty(),
+            id => {
+                if multiset_to_map(resps).contains_key(id) {
+                    let pr = choose |pr| #[trigger] resps.contains(pr) && pr.0 == id;
+                    assert(resps.contains(pr));
+                    assert(false);
+                }
+            }
+        );
+    }
+    assert(disk_lbl->requests == Map::<ID, DiskRequest>::empty());
+    assert(disk_lbl->responses == Map::<ID, DiskResponse>::empty());
+    assert(DiskModel::next(pre.disk, post.disk, disk_lbl));
+    assert(AsyncDisk::State::disk_ops(pre.disk, post.disk, disk_lbl)) by {
+        reveal(AsyncDisk::State::next);
+        reveal(AsyncDisk::State::next_by);
+        let disk_step = choose |step: AsyncDisk::Step|
+            AsyncDisk::State::next_by(pre.disk, post.disk, disk_lbl, step);
+        match disk_step {
+            AsyncDisk::Step::disk_ops() => {},
+            _ => { assert(false); },
+        }
+    }
+    assert(post.disk.content == pre.disk.content) by {
+        reveal(AsyncDisk::State::disk_ops);
+    }
+    assert(post.disk.requests == pre.disk.requests) by {
+        reveal(AsyncDisk::State::disk_ops);
+        assert_maps_equal!(
+            pre.disk.requests.union_prefer_right(Map::<ID, DiskRequest>::empty()),
+            pre.disk.requests,
+            id => {}
+        );
+    }
+    assert(post.disk.responses == pre.disk.responses) by {
+        reveal(AsyncDisk::State::disk_ops);
+        assert_maps_equal!(
+            pre.disk.responses.remove_keys(Map::<ID, DiskResponse>::empty().dom()),
+            pre.disk.responses,
+            id => {}
+        );
+    }
+    crate::spec::AsyncDisk_t::inv_next(pre.disk, post.disk, disk_lbl);
+    assert(post.disk.inv());
+
+    assert(pre_state.client_ready());
+    assert(pre_state.sync_phase is None);
+    assert(pre_state.sync_image_metadata_valid(image));
+    assert(Cache::State::next(pre_state.cache, post_state.cache, cache_lbl));
+    assert(AtomicJournalState::State::next(pre_state.journal, post_state.journal, journal_lbl));
+    assert(AtomicBranchState::State::next(pre_state.branch, post_state.branch, branch_lbl));
+    assert(post_state == UnifiedCacheSystem::State{
+        cache: new_cache,
+        journal: new_journal,
+        branch: new_branch,
+        sync_phase: AtomicSyncPhase::Started{image},
+        ..pre_state
+    });
+    assert(post_state.persistent_image == pre_state.persistent_image);
+    assert(post_state.outstanding_cache_reqs == pre_state.outstanding_cache_reqs);
+    assert(post_state.free_aus == pre_state.free_aus);
+    assert(post_state.sync_req_map == pre_state.sync_req_map);
+    assert(post_state.recovery_state == pre_state.recovery_state);
+
+    AtomicJournalState::State::commit_start_effect(pre_state.journal, post_state.journal, journal_lbl);
+    AtomicBranchState::State::commit_start_effect(pre_state.branch, post_state.branch, branch_lbl);
+    assert(post_state.journal.prepared == false);
+    assert(post_state.branch.prepared == false);
+    assert(post_state.atomic_inflight_superblock_i() == image) by {
+        assert(post_state.journal.in_flight.unwrap().snapshot == image.journal_snapshot);
+        assert(post_state.journal.in_flight.unwrap().seq_end == image.journal_seq_end);
+        assert(post_state.branch.in_flight.unwrap().sealed_roots == image.branch_roots);
+        assert(post_state.branch.in_flight.unwrap().seq_end == image.branch_seq_end);
+    }
+
+    let journal_pre = UnifiedCacheJournalRefinement::unified_cache_journal_source(pre);
+    let journal_post = UnifiedCacheJournalRefinement::unified_cache_journal_source(post);
+    let branch_pre = UnifiedCacheBranchRefinement::unified_cache_branch_source(pre);
+    let branch_post = UnifiedCacheBranchRefinement::unified_cache_branch_source(post);
+
+    assert(journal_post.in_flight_image == Option::Some(image));
+    assert(branch_post.in_flight_image == Option::Some(image));
+    UnifiedCacheJournalRefinement::commit_start_refines(
+        journal_pre,
+        journal_post,
+        image.journal_snapshot,
+        image.journal_seq_end,
+        journal_reads,
+    );
+    UnifiedCacheBranchRefinement::commit_start_refines(
+        branch_pre,
+        branch_post,
+        branch_image,
+        journal_reads,
+    );
+
+    let src = unified_cache_system_i(pre);
+    let dst = unified_cache_system_i(post);
+    assert(dst.journal == UnifiedCacheJournalRefinement::unified_cache_journal_i(journal_post));
+    assert(src.journal == UnifiedCacheJournalRefinement::unified_cache_journal_i(journal_pre));
+    assert(dst.branch == UnifiedCacheBranchRefinement::unified_cache_branch_i(branch_post));
+    assert(src.branch == UnifiedCacheBranchRefinement::unified_cache_branch_i(branch_pre));
+    assert(CrashAwareCachingDiskJournal::State::next(
+        src.journal,
+        dst.journal,
+        CrashAwareCachingDiskJournal::Label::CommitStart{
+            new_boundary_lsn: image.journal_snapshot.boundary_lsn,
+            snapshot: image.journal_snapshot,
+            seq_end: image.journal_seq_end,
+        },
+    ));
+    assert(CrashAwareCachingDiskBranch::State::next(
+        src.branch,
+        dst.branch,
+        CrashAwareCachingDiskBranch::Label::CommitStart{
+            new_boundary_lsn: image.branch_seq_end,
+            sealed_roots: image.branch_roots,
+        },
+    ));
+    assert(dst.progress == src.progress);
+    assert(dst.sync_reqs == src.sync_reqs);
+    assert(dst.free_aus == src.free_aus);
+    assert(dst.superblockstore == src.superblockstore) by {
+        assert(post.disk.content == pre.disk.content);
+        assert(!unified_cache_superblock_write_pending(pre)) by {
+            assert(pre_state.sync_phase is None);
+        }
+        assert(!unified_cache_superblock_write_pending(post)) by {
+            assert(post_state.sync_phase is Started);
+        }
+        assert(!unified_cache_in_flight_superblock_landed(pre_state, pre.disk)) by {
+            assert(pre_state.sync_phase is None);
+        }
+        assert(!unified_cache_in_flight_superblock_landed(post_state, post.disk)) by {
+            assert(post_state.sync_phase is Started);
+        }
+    }
+    assert(CrashAwareCachingDiskSystem::State::commit_start(
+        src,
+        dst,
+        target_lbl,
+        dst.journal,
+        dst.branch,
+        image,
+    )) by {
+        reveal(CrashAwareCachingDiskSystem::State::commit_start);
+        assert(image.branch_seq_end == image.journal_snapshot.boundary_lsn);
+    }
+    assert(CrashAwareCachingDiskSystem::State::next_by(
+        src,
+        dst,
+        target_lbl,
+        CrashAwareCachingDiskSystem::Step::commit_start(
+            dst.journal,
+            dst.branch,
+            image,
+        ),
+    )) by {
+        reveal(CrashAwareCachingDiskSystem::State::next_by);
+    }
+    reveal(CrashAwareCachingDiskSystem::State::next);
+    system_i_inv_next(pre, post, target_lbl);
+
+    assert(unified_cache_component_refinement_inv(post));
+    assert(unified_cache_superblockstore_refinement_inv(post));
+    assert(unified_cache_ready_inv(post)) by {
+        assert(post_state.recovery_state == pre_state.recovery_state);
+        assert(post_state.persistent_image == pre_state.persistent_image);
+        assert(post_state.journal.journal == pre_state.journal.journal);
+        assert(post_state.branch.seq_end == pre_state.branch.seq_end);
+    }
+    assert(unified_cache_durable_image_inv(post)) by {
+        assert(post_state.persistent_image == pre_state.persistent_image);
+        assert(post_state.journal.persistent_seq_end == pre_state.journal.persistent_seq_end);
+    }
+    cache_access_preserves_cache_request_wf(pre, post, journal_reads, Map::empty());
+    assert(unified_cache_cache_request_wf(post));
+    cache_access_preserves_cache_disk_response_inv(pre, post, journal_reads, Map::empty());
+    assert(unified_cache_cache_disk_response_inv(post));
+    assert(unified_cache_recovery_superblock_io_inv(post)) by {
+        assert(post_state.recovery_state == pre_state.recovery_state);
+        assert(pre_state.client_ready());
+        assert(!(post_state.recovery_state is Begin));
+        assert(!(post_state.recovery_state is AwaitingSuperblock));
+    }
+    assert(system_model_progress_history_inv(post)) by {
+        assert(post.requests == pre.requests);
+        assert(post.replies == pre.replies);
+        assert(post.id_history == pre.id_history);
+    }
+    assert(system_model_progress_unique_inv(post));
+    assert(system_model_request_id_unique_inv(post));
+    assert(system_model_request_reply_disjoint_inv(post));
+    assert(inv(post));
 }
 
 pub proof fn program_disk_execute_sync_prepared_refines(
@@ -3746,6 +3997,7 @@ pub proof fn program_disk_execute_sync_prepared_refines(
     lbl: SystemModel::Label,
     new_program: UnifiedCacheProgramModel,
     new_disk: crate::trusted::ProgramModelTrait_t::DiskModel,
+    req_id: ID,
     req: DiskRequest,
     new_journal: AtomicJournalState::State,
     new_branch: AtomicBranchState::State,
@@ -3759,6 +4011,7 @@ pub proof fn program_disk_execute_sync_prepared_refines(
             pre.program.state,
             post.program.state,
             UnifiedCacheSystem::Label::Disk,
+            req_id,
             req,
             new_journal,
             new_branch,
@@ -3905,7 +4158,7 @@ pub proof fn program_disk_cache_io_begin_refines(
     assert(post_state.journal == pre_state.journal);
     assert(post_state.branch == pre_state.branch);
     assert(post_state.persistent_image == pre_state.persistent_image);
-    assert(post_state.in_flight == pre_state.in_flight);
+    assert(post_state.sync_phase == pre_state.sync_phase);
     assert(post_state.free_aus == pre_state.free_aus);
     assert(post_state.sync_req_map == pre_state.sync_req_map);
 
@@ -3961,11 +4214,11 @@ pub proof fn program_disk_cache_io_begin_refines(
         assert(dst.sync_reqs == src.sync_reqs);
         assert(dst.free_aus == src.free_aus);
         assert(dst.superblockstore == src.superblockstore) by {
-            assert(post_state.in_flight == pre_state.in_flight);
+            assert(post_state.sync_phase == pre_state.sync_phase);
             assert(unified_cache_in_flight_superblock_landed(post_state, post.disk)
                 == unified_cache_in_flight_superblock_landed(pre_state, pre.disk));
-            if pre_state.in_flight is Some {
-                let req_id = pre_state.in_flight.unwrap().req_id;
+            if pre_state.sync_phase is SuperblockWriteIssued {
+                let req_id = pre_state.sync_phase->req_id;
                 if pre.disk.requests.contains_key(req_id) {
                     assert(!req_map.contains_key(req_id)) by {
                         reveal(AsyncDisk::State::disk_ops);
@@ -4116,8 +4369,8 @@ pub proof fn program_disk_cache_io_begin_refines(
             assert(dst.sync_reqs == src.sync_reqs);
             assert(dst.free_aus == src.free_aus);
             assert(dst.superblockstore == src.superblockstore) by {
-                assert(post_state.in_flight == pre_state.in_flight);
-                assert(pre_state.in_flight is None);
+                assert(post_state.sync_phase == pre_state.sync_phase);
+                assert(pre_state.sync_phase is None);
                 assert(!unified_cache_in_flight_superblock_landed(pre_state, pre.disk));
                 assert(!unified_cache_in_flight_superblock_landed(post_state, post.disk));
                 assert(!unified_cache_superblock_write_pending(pre));
@@ -4273,7 +4526,7 @@ pub proof fn program_disk_cache_io_end_refines(
     assert(post_state.journal == pre_state.journal);
     assert(post_state.branch == pre_state.branch);
     assert(post_state.persistent_image == pre_state.persistent_image);
-    assert(post_state.in_flight == pre_state.in_flight);
+    assert(post_state.sync_phase == pre_state.sync_phase);
     assert(post_state.free_aus == pre_state.free_aus);
     assert(post_state.sync_req_map == pre_state.sync_req_map);
 
@@ -4314,7 +4567,7 @@ pub proof fn program_disk_cache_io_end_refines(
         assert(dst.sync_reqs == src.sync_reqs);
         assert(dst.free_aus == src.free_aus);
         assert(dst.superblockstore == src.superblockstore) by {
-            assert(post_state.in_flight == pre_state.in_flight);
+            assert(post_state.sync_phase == pre_state.sync_phase);
             assert(unified_cache_in_flight_superblock_landed(post_state, post.disk)
                 == unified_cache_in_flight_superblock_landed(pre_state, pre.disk));
             assert(post.disk.requests == pre.disk.requests);
@@ -4438,8 +4691,8 @@ pub proof fn program_disk_cache_io_end_refines(
             assert(dst.sync_reqs == src.sync_reqs);
             assert(dst.free_aus == src.free_aus);
             assert(dst.superblockstore == src.superblockstore) by {
-                assert(post_state.in_flight == pre_state.in_flight);
-                assert(pre_state.in_flight is None);
+                assert(post_state.sync_phase == pre_state.sync_phase);
+                assert(pre_state.sync_phase is None);
                 assert(!unified_cache_in_flight_superblock_landed(pre_state, pre.disk));
                 assert(!unified_cache_in_flight_superblock_landed(post_state, post.disk));
                 assert(!unified_cache_superblock_write_pending(pre));
@@ -4605,7 +4858,6 @@ pub proof fn program_disk_refines(
             );
         },
         UnifiedCacheSystem::Step::execute_sync_begin(
-            req_id,
             image,
             journal_reads,
             new_cache,
@@ -4618,7 +4870,6 @@ pub proof fn program_disk_refines(
                 pre.program.state,
                 post.program.state,
                 UnifiedCacheSystem::Label::Disk,
-                req_id,
                 image,
                 journal_reads,
                 new_cache,
@@ -4633,7 +4884,6 @@ pub proof fn program_disk_refines(
                 lbl,
                 new_program,
                 new_disk,
-                req_id,
                 image,
                 journal_reads,
                 new_cache,
@@ -4644,6 +4894,7 @@ pub proof fn program_disk_refines(
             );
         },
         UnifiedCacheSystem::Step::execute_sync_prepared(
+            req_id,
             req,
             new_journal,
             new_branch,
@@ -4654,6 +4905,7 @@ pub proof fn program_disk_refines(
                 pre.program.state,
                 post.program.state,
                 UnifiedCacheSystem::Label::Disk,
+                req_id,
                 req,
                 new_journal,
                 new_branch,
@@ -4666,6 +4918,7 @@ pub proof fn program_disk_refines(
                 lbl,
                 new_program,
                 new_disk,
+                req_id,
                 req,
                 new_journal,
                 new_branch,

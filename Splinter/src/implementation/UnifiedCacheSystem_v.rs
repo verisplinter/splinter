@@ -23,7 +23,7 @@ use crate::implementation::AbstractSuperblock_v::{
 use crate::implementation::AllocationBranchStack_v::normalize_value;
 use crate::implementation::AllocationBranchStackRefinement_v::append_puts;
 use crate::implementation::AnotherAtomicState_v::{
-    AtomicBranchImage, AtomicBranchState, AtomicInflightInfo, AtomicJournalState,
+    AtomicBranchImage, AtomicBranchState, AtomicJournalState,
     query_receipts_read_addrs, to_branch_nodes, valid_request_reply_pair,
 };
 use crate::implementation::Cache_v::Cache;
@@ -50,6 +50,31 @@ pub open spec fn singleton_message_seq(msg: Message) -> Seq<Message>
     seq![msg]
 }
 
+pub enum AtomicSyncPhase {
+    None,
+    Started{ image: AbstractSuperblockImage },
+    SuperblockWriteIssued{ req_id: ID, image: AbstractSuperblockImage },
+}
+
+impl AtomicSyncPhase {
+    pub open spec fn image(self) -> Option<AbstractSuperblockImage>
+    {
+        match self {
+            AtomicSyncPhase::None => None,
+            AtomicSyncPhase::Started{image} => Some(image),
+            AtomicSyncPhase::SuperblockWriteIssued{req_id, image} => Some(image),
+        }
+    }
+
+    pub open spec fn req_id(self) -> Option<ID>
+    {
+        match self {
+            AtomicSyncPhase::SuperblockWriteIssued{req_id, image} => Some(req_id),
+            _ => None,
+        }
+    }
+}
+
 
 state_machine!{ UnifiedCacheSystem {
     fields {
@@ -60,7 +85,7 @@ state_machine!{ UnifiedCacheSystem {
         pub journal: AtomicJournalState::State,
         pub branch: AtomicBranchState::State,
         pub persistent_image: Option<AbstractSuperblockImage>,
-        pub in_flight: Option<AtomicInflightInfo>,
+        pub sync_phase: AtomicSyncPhase,
         pub sync_req_map: Map<SyncReqId, LSN>,
     }
 
@@ -82,7 +107,7 @@ state_machine!{ UnifiedCacheSystem {
         init journal = AtomicJournalState::State::empty();
         init branch = AtomicBranchState::State::empty();
         init persistent_image = None;
-        init in_flight = None;
+        init sync_phase = AtomicSyncPhase::None;
         init sync_req_map = Map::empty();
     }}
 
@@ -242,13 +267,12 @@ state_machine!{ UnifiedCacheSystem {
         update journal = new_journal;
         update branch = new_branch;
         update persistent_image = Some(image);
-        update in_flight = None;
+        update sync_phase = AtomicSyncPhase::None;
         update sync_req_map = Map::empty();
     }}
 
     transition!{ execute_sync_begin(
         lbl: Label,
-        req_id: ID,
         image: AbstractSuperblockImage,
         journal_reads: Map<Address, RawPage>,
         new_cache: Cache::State,
@@ -258,10 +282,6 @@ state_machine!{ UnifiedCacheSystem {
         resps: Multiset<(ID, DiskResponse)>,
     ) {
         require lbl is Disk;
-        let inflight = AtomicInflightInfo{
-            req_id,
-            boundary_lsn: image.branch_seq_end,
-        };
         let cache_lbl = Cache::Label::Access{reads: journal_reads, writes: Map::empty()};
         let journal_lbl = AtomicJournalState::Label::CommitStart{
             snapshot: image.journal_snapshot,
@@ -276,7 +296,7 @@ state_machine!{ UnifiedCacheSystem {
         };
 
         require pre.client_ready();
-        require pre.in_flight is None;
+        require pre.sync_phase is None;
         require pre.sync_image_metadata_valid(image);
         require Cache::State::next(pre.cache, new_cache, cache_lbl);
         require AtomicJournalState::State::next(pre.journal, new_journal, journal_lbl);
@@ -287,11 +307,12 @@ state_machine!{ UnifiedCacheSystem {
         update cache = new_cache;
         update journal = new_journal;
         update branch = new_branch;
-        update in_flight = Some(inflight);
+        update sync_phase = AtomicSyncPhase::Started{image};
     }}
 
     transition!{ execute_sync_prepared(
         lbl: Label,
+        req_id: ID,
         req: DiskRequest,
         new_journal: AtomicJournalState::State,
         new_branch: AtomicBranchState::State,
@@ -299,9 +320,8 @@ state_machine!{ UnifiedCacheSystem {
         resps: Multiset<(ID, DiskResponse)>,
     ) {
         require lbl is Disk;
-        let image = pre.atomic_inflight_superblock_i();
+        require let AtomicSyncPhase::Started{image} = pre.sync_phase;
         require pre.client_ready();
-        require pre.in_flight is Some;
         require AtomicJournalState::State::next(
             pre.journal,
             new_journal,
@@ -316,11 +336,12 @@ state_machine!{ UnifiedCacheSystem {
         require req->to == spec_superblock_addr();
         require req->data == marshal_abstract_superblock(image);
         require superblock_matches(req->data, image);
-        require reqs == Multiset::singleton((pre.in_flight.unwrap().req_id, req));
+        require reqs == Multiset::singleton((req_id, req));
         require resps.is_empty();
 
         update journal = new_journal;
         update branch = new_branch;
+        update sync_phase = AtomicSyncPhase::SuperblockWriteIssued{req_id, image};
     }}
 
     transition!{ execute_sync_end(
@@ -332,7 +353,7 @@ state_machine!{ UnifiedCacheSystem {
         resps: Multiset<(ID, DiskResponse)>,
     ) {
         require lbl is Disk;
-        let image = pre.atomic_inflight_superblock_i();
+        require let AtomicSyncPhase::SuperblockWriteIssued{req_id, image} = pre.sync_phase;
         let branch_lbl = AtomicBranchState::Label::CommitComplete;
         let journal_lbl = AtomicJournalState::Label::CommitComplete{
             require_end: pre.journal.journal.seq_end(),
@@ -340,12 +361,11 @@ state_machine!{ UnifiedCacheSystem {
         };
 
         require pre.client_ready();
-        require pre.in_flight is Some;
         require AtomicBranchState::State::next(pre.branch, new_branch, branch_lbl);
         require AtomicJournalState::State::next(pre.journal, new_journal, journal_lbl);
         require reqs.is_empty();
         require resps == Multiset::singleton((
-            pre.in_flight.unwrap().req_id,
+            req_id,
             DiskResponse::WriteResp{},
         ));
 
@@ -353,7 +373,7 @@ state_machine!{ UnifiedCacheSystem {
         update journal = new_journal;
         update branch = new_branch;
         update persistent_image = Some(image);
-        update in_flight = None;
+        update sync_phase = AtomicSyncPhase::None;
     }}
 
     transition!{ cache_io_begin(
@@ -750,14 +770,21 @@ state_machine!{ UnifiedCacheSystem {
 
     pub open spec fn atomic_inflight_superblock_i(self) -> AbstractSuperblockImage
     {
-        let journal_image = self.journal.in_flight.unwrap();
-        let branch_image = self.branch.in_flight.unwrap();
-        AbstractSuperblockImage{
-            journal_snapshot: journal_image.snapshot,
-            journal_seq_end: journal_image.seq_end,
-            branch_roots: branch_image.sealed_roots,
-            branch_seq_end: self.in_flight.unwrap().boundary_lsn,
+        match self.sync_phase {
+            AtomicSyncPhase::Started{image} => image,
+            AtomicSyncPhase::SuperblockWriteIssued{req_id, image} => image,
+            AtomicSyncPhase::None => arbitrary(),
         }
+    }
+
+    pub open spec fn sync_image(self) -> Option<AbstractSuperblockImage>
+    {
+        self.sync_phase.image()
+    }
+
+    pub open spec fn superblock_write_req_id(self) -> Option<ID>
+    {
+        self.sync_phase.req_id()
     }
 
     pub open spec fn sync_image_metadata_valid(self, image: AbstractSuperblockImage) -> bool

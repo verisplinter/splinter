@@ -29,7 +29,7 @@ use crate::implementation::AbstractSuperblock_v::{
 };
 use crate::implementation::AllocationBranchStack_v::normalize_value;
 use crate::implementation::AnotherAtomicState_v::{
-    AtomicBranchImage, AtomicBranchState, AtomicInflightInfo, query_receipts_read_addrs,
+    AtomicBranchImage, AtomicBranchState, query_receipts_read_addrs,
 };
 use crate::implementation::Cache_v::Cache;
 use crate::implementation::CachedBranch_v::{
@@ -81,7 +81,7 @@ pub struct UnifiedCacheBranchSource {
     pub cache: Cache::State,
     pub disk: DiskModel,
     pub persistent_image: Option<AbstractSuperblockImage>,
-    pub in_flight: Option<AtomicInflightInfo>,
+    pub in_flight: Option<AbstractSuperblockImage>,
     pub in_flight_image: Option<AbstractSuperblockImage>,
 }
 
@@ -95,12 +95,8 @@ pub open spec fn unified_cache_branch_source(
         cache: state.cache,
         disk: model.disk,
         persistent_image: state.persistent_image,
-        in_flight: state.in_flight,
-        in_flight_image: if state.in_flight is Some {
-            Option::Some(state.atomic_inflight_superblock_i())
-        } else {
-            Option::None
-        },
+        in_flight: state.sync_image(),
+        in_flight_image: state.sync_image(),
     }
 }
 
@@ -303,6 +299,12 @@ impl UnifiedCacheBranchSource {
         &&& self.cache.inv()
         &&& self.disk.inv()
         &&& self.branch_caching_disk_i().inv()
+        &&& self.superblock_loaded() ==> {
+            &&& self.branch.persistent_image.sealed_roots
+                == self.persistent_superblock_image_i().branch_roots
+            &&& self.branch.persistent_image.seq_end
+                == self.persistent_superblock_image_i().branch_seq_end
+        }
         &&& !self.superblock_loaded() ==> {
             &&& self.branch == AtomicBranchState::State::empty()
             &&& self.in_flight is None
@@ -2426,6 +2428,194 @@ pub proof fn append_refines(
         assert(post.cache.inv());
         assert(post.disk.inv());
         assert(post.branch_caching_disk_i().inv());
+        assert(post.in_flight is Some <==> post.branch.in_flight is Some);
+        assert(post.in_flight is Some <==> post.in_flight_image is Some);
+    }
+    assert(post.semantic_inv());
+    assert(inv(post));
+}
+
+pub proof fn commit_start_refines(
+    pre: UnifiedCacheBranchSource,
+    post: UnifiedCacheBranchSource,
+    branch_image: AtomicBranchImage,
+    reads: Map<Address, RawPage>,
+)
+    requires
+        inv(pre),
+        pre.superblock_loaded(),
+        pre.branch.metadata_loaded(),
+        post.disk == pre.disk,
+        post.persistent_image == pre.persistent_image,
+        post.in_flight is Some,
+        post.in_flight_image is Some,
+        post.in_flight_image.unwrap().wf(),
+        post.in_flight_image.unwrap().branch_roots == branch_image.sealed_roots,
+        post.in_flight_image.unwrap().branch_seq_end == branch_image.seq_end,
+        Cache::State::next(
+            pre.cache,
+            post.cache,
+            Cache::Label::Access{reads, writes: Map::empty()},
+        ),
+        AtomicBranchState::State::next(
+            pre.branch,
+            post.branch,
+            AtomicBranchState::Label::CommitStart{branch_image},
+        ),
+    ensures
+        CrashAwareCachingDiskBranch::State::next(
+            unified_cache_branch_i(pre),
+            unified_cache_branch_i(post),
+            CrashAwareCachingDiskBranch::Label::CommitStart{
+                new_boundary_lsn: branch_image.seq_end,
+                sealed_roots: branch_image.sealed_roots,
+            },
+        ),
+        inv(post),
+{
+    let empty_writes = Map::<Address, RawPage>::empty();
+    let cache_lbl = Cache::Label::Access{reads, writes: empty_writes};
+    let atomic_lbl = AtomicBranchState::Label::CommitStart{branch_image};
+
+    AtomicBranchState::State::wf_next(pre.branch, post.branch, atomic_lbl);
+    AtomicBranchState::State::commit_start_effect(pre.branch, post.branch, atomic_lbl);
+    Cache::State::inv_next(pre.cache, post.cache, cache_lbl);
+
+    let aus = pre.branch_projection_aus();
+    assert(post.superblock_loaded());
+    assert(post.branch.metadata_loaded()) by {
+        assert(post.branch.image == pre.branch.image);
+        assert(post.branch.branch_summary == pre.branch.branch_summary);
+    }
+    assert(post.branch_projection_aus() =~= aus) by {
+        assert(post.branch.branch_summary == pre.branch.branch_summary);
+        assert(post.branch.mini_allocator == pre.branch.mini_allocator);
+    }
+    projected_cache_read_only_access_unchanged(pre.cache, post.cache, aus, reads);
+    assert(post.branch_caching_disk_i() == pre.branch_caching_disk_i()) by {
+        assert_maps_equal!(
+            post.branch_caching_disk_i().cache,
+            pre.branch_caching_disk_i().cache,
+            addr => {
+                assert(addresses_in_aus(post.branch_projection_aus()).contains(addr)
+                    <==> addresses_in_aus(aus).contains(addr));
+            }
+        );
+        assert_maps_equal!(
+            post.branch_caching_disk_i().status,
+            pre.branch_caching_disk_i().status,
+            addr => {
+                assert(addresses_in_aus(post.branch_projection_aus()).contains(addr)
+                    <==> addresses_in_aus(aus).contains(addr));
+            }
+        );
+        assert_maps_equal!(
+            post.branch_caching_disk_i().persistent,
+            pre.branch_caching_disk_i().persistent,
+            addr => {
+                assert(addresses_in_aus(post.branch_projection_aus()).contains(addr)
+                    <==> addresses_in_aus(aus).contains(addr));
+            }
+        );
+    }
+    assert(post.branch_caching_disk_state_i() == pre.branch_caching_disk_state_i()) by {
+        assert(post.branch.image == pre.branch.image);
+        assert(post.branch.branch_summary == pre.branch.branch_summary);
+        assert(post.branch.persisted_root_count == pre.branch.persisted_root_count);
+        assert(post.branch.active_branch == pre.branch.active_branch);
+        assert(post.branch.mini_allocator == pre.branch.mini_allocator);
+        assert(post.branch.seq_end == pre.branch.seq_end);
+    }
+
+    let src = unified_cache_branch_i(pre);
+    let dst = unified_cache_branch_i(post);
+    let target_lbl = CrashAwareCachingDiskBranch::Label::CommitStart{
+        new_boundary_lsn: branch_image.seq_end,
+        sealed_roots: branch_image.sealed_roots,
+    };
+    let frozen = CachingDiskBranchMetadata{
+        sealed_roots: branch_image.sealed_roots,
+        seq_end: branch_image.seq_end,
+    };
+    assert(src.ephemeral is Known);
+    assert(dst.ephemeral is Known);
+    assert(pre.branch.in_flight is None) by {
+        reveal(AtomicBranchState::State::next);
+        reveal(AtomicBranchState::State::next_by);
+        assert(AtomicBranchState::State::next_by(
+            pre.branch,
+            post.branch,
+            atomic_lbl,
+            AtomicBranchState::Step::commit_start(),
+        ));
+        reveal(AtomicBranchState::State::commit_start);
+        assert(AtomicBranchState::State::commit_start(pre.branch, post.branch, atomic_lbl));
+    }
+    assert(src.frozen is None);
+    assert(dst.frozen == Option::Some(frozen));
+    assert(!dst.prepared);
+
+    assert(CrashAwareCachingDiskBranch::State::commit_start(src, dst, target_lbl)) by {
+        reveal(CrashAwareCachingDiskBranch::State::commit_start);
+        assert(src.ephemeral is Known);
+        assert(src.frozen is None);
+        reveal(AtomicBranchState::State::next);
+        reveal(AtomicBranchState::State::next_by);
+        assert(AtomicBranchState::State::next_by(
+            pre.branch,
+            post.branch,
+            atomic_lbl,
+            AtomicBranchState::Step::commit_start(),
+        ));
+        reveal(AtomicBranchState::State::commit_start);
+        assert(AtomicBranchState::State::commit_start(pre.branch, post.branch, atomic_lbl));
+        if branch_image == pre.branch.persistent_image {
+            let persistent = src.persistent.metadata();
+            assert(persistent.sealed_roots == branch_image.sealed_roots);
+            assert(persistent.seq_end == branch_image.seq_end);
+        } else {
+            assert(pre.branch.metadata_loaded());
+            assert(pre.branch.active_branch.root is None);
+            assert(branch_image == pre.branch.freeze_image());
+            assert(frozen == pre.branch_caching_disk_state_i().freeze_metadata());
+            assert(CachingDiskBranch::State::freeze_as(
+                pre.branch_caching_disk_state_i(),
+                pre.branch_caching_disk_state_i(),
+                CachingDiskBranch::Label::FreezeAsLabel{image: frozen},
+            )) by {
+                reveal(CachingDiskBranch::State::freeze_as);
+            }
+            assert(CachingDiskBranch::State::next_by(
+                pre.branch_caching_disk_state_i(),
+                pre.branch_caching_disk_state_i(),
+                CachingDiskBranch::Label::FreezeAsLabel{image: frozen},
+                CachingDiskBranch::Step::freeze_as(),
+            )) by {
+                reveal(CachingDiskBranch::State::next_by);
+            }
+            reveal(CachingDiskBranch::State::next);
+        }
+    }
+    assert(CrashAwareCachingDiskBranch::State::next_by(
+        src,
+        dst,
+        target_lbl,
+        CrashAwareCachingDiskBranch::Step::commit_start(),
+    )) by {
+        reveal(CrashAwareCachingDiskBranch::State::next_by);
+    }
+    reveal(CrashAwareCachingDiskBranch::State::next);
+    src.next_refines(dst, target_lbl);
+
+    assert(post.inv()) by {
+        assert(post.branch.wf());
+        assert(async_disk_superblock_page_wf(post.disk.content));
+        assert(post.persistent_superblock_image_i() == pre.persistent_superblock_image_i());
+        assert(post.persistent_superblock_image_i().wf());
+        assert(post.cache.inv());
+        assert(post.disk.inv());
+        assert(post.branch_caching_disk_i().inv());
+        assert(post.branch.persistent_image == pre.branch.persistent_image);
         assert(post.in_flight is Some <==> post.branch.in_flight is Some);
         assert(post.in_flight is Some <==> post.in_flight_image is Some);
     }
