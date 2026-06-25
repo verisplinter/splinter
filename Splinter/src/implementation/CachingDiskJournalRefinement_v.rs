@@ -90,6 +90,7 @@ impl CachingDiskJournal::State {
         let freshest_rec = cj_freshest_rec(self.journal);
         let unmarshalled_tail = self.allocation_unmarshalled_tail();
         let lsn_au_index = self.lsn_au_index_or_empty();
+        let au_page_bounds = self.au_page_bounds_i();
         let first = self.allocation_first();
         let computed_index = semantic_dv.build_lsn_au_index_au_walk(freshest_rec, first);
         &&& unmarshalled_tail.wf()
@@ -103,11 +104,11 @@ impl CachingDiskJournal::State {
         &&& semantic_dv.block_in_bounds(freshest_rec)
         &&& semantic_dv.seq_start() <= semantic_dv.seq_end(freshest_rec)
         &&& semantic_dv.seq_end(freshest_rec) == unmarshalled_tail.seq_start
-        &&& self.au_page_bounds.dom() =~= lsn_au_index.values()
+        &&& au_page_bounds.dom() =~= lsn_au_index.values()
         &&& freshest_rec is Some ==> {
             let root = freshest_rec.unwrap();
-            &&& self.au_page_bounds.contains_key(root.au)
-            &&& self.au_page_bounds[root.au] == root.page
+            &&& au_page_bounds.contains_key(root.au)
+            &&& au_page_bounds[root.au] == root.page
             &&& lsn_au_index.contains_key(disk_view.boundary_lsn)
         }
         &&& AllocationJournal::State::semantic_journal_structure(
@@ -131,13 +132,13 @@ impl CachingDiskJournal::State {
         &&& semantic_dv.domain_tight_wrt_index(lsn_au_index, freshest_rec)
         &&& forall |addr: Address| {
             &&& #[trigger] disk_view.entries.contains_key(addr)
-            &&& self.au_page_bounds.contains_key(addr.au)
-            &&& addr.page <= self.au_page_bounds[addr.au]
+            &&& au_page_bounds.contains_key(addr.au)
+            &&& addr.page <= au_page_bounds[addr.au]
             &&& disk_view.boundary_lsn < disk_view.entries[addr].message_seq.seq_end
         } ==> semantic_dv.entries.contains_key(addr)
         &&& forall |addr: Address| #[trigger] semantic_dv.entries.contains_key(addr) ==> {
-            &&& self.au_page_bounds.contains_key(addr.au)
-            &&& addr.page <= self.au_page_bounds[addr.au]
+            &&& au_page_bounds.contains_key(addr.au)
+            &&& addr.page <= au_page_bounds[addr.au]
         }
     }
 
@@ -882,26 +883,62 @@ impl CachingDiskJournal::State {
         assert(loaded.journal_disk_view() == image.tj.disk_view);
         assert(loaded.journal_backing_tj() == image.tj);
         assert(loaded.backing_journal_image() == image);
-        let init_base = CachingDiskJournal::State{
-            journal: CachedJournal::State{
-                snapshot,
-                status: Option::None,
-            },
-            disk,
-            mini_allocator: crate::allocation_layer::MiniAllocator_v::MiniAllocator::empty(),
-            au_page_bounds: Map::empty(),
-        };
         let init_bounds = image.tj.disk_view.loose_build_au_page_bounds_au_walk(
             image.tj.freshest_rec,
             image.first,
         );
-        assert(loaded.au_page_bounds == init_bounds);
-        assert(CachingDiskJournal::State::initialize(loaded, snapshot, disk)) by {
-            reveal(CachingDiskJournal::State::initialize);
-            assert(disk.inv());
-            assert(init_base.backing_journal_image() == image);
-        }
-        loaded.init_refines(snapshot, disk);
+        assert(loaded.au_page_bounds_i() == init_bounds);
+        image.valid_image_implies_tight_valid_image();
+        image.tj.disk_view.path_build_bookkeeping_matches_tight(
+            image.tj.freshest_rec,
+            snapshot.first(),
+        );
+        image.tj.disk_view.loose_build_lsn_au_index_au_walk_matches_tight(
+            image.tj.freshest_rec,
+            snapshot.first(),
+        );
+        image.tj.disk_view.loose_build_au_page_bounds_au_walk_matches_tight(
+            image.tj.freshest_rec,
+            snapshot.first(),
+        );
+        assert(loaded.inv());
+        assert(loaded.i().disk_view == loaded.journal_disk_view());
+        assert(loaded.i().freshest_rec == image.tj.freshest_rec);
+        assert(image.tj == loaded.journal_backing_tj());
+        assert(image.tight_tj() == loaded.journal_tj());
+        assert(loaded.journal_backing_tj().seq_end() == loaded.journal_tj().seq_end());
+        assert(loaded.lsn_au_index_or_empty()
+            == image.tj.disk_view.loose_build_lsn_au_index_au_walk(
+                image.tj.freshest_rec,
+                snapshot.first(),
+            ));
+        assert(loaded.i().au_page_bounds
+            == image.tj.disk_view.loose_build_au_page_bounds_au_walk(
+                image.tj.freshest_rec,
+                snapshot.first(),
+            ));
+        assert_maps_equal!(
+            loaded.lsn_au_index_or_empty(),
+            loaded.journal_tj().build_lsn_au_index_from_first(snapshot.first())
+        );
+        assert(loaded.i().lsn_au_index == loaded.lsn_au_index_or_empty());
+        assert(loaded.i().lsn_au_index
+            == image.tj.disk_view.path_build_lsn_au_index_au_walk(
+                image.tj.freshest_rec,
+                snapshot.first(),
+            ));
+        assert(loaded.i().au_page_bounds
+            == image.tj.disk_view.path_build_au_page_bounds_au_walk(
+                image.tj.freshest_rec,
+                snapshot.first(),
+            ));
+        assert(loaded.i().unmarshalled_tail
+            == MsgHistory::empty_history_at(loaded.journal_tj().seq_end()));
+        AllocationJournal::State::initialize_inductive(loaded.i(), image);
+        AllocationJournal::State::initialize_semantic_inv(loaded.i(), image);
+        assert(loaded.unloaded_backing_image_valid());
+        assert(loaded.semantic_inv());
+        assert(loaded.refinement_inv());
     }
 
     pub proof fn query_end_lsn_refines(
@@ -1244,6 +1281,10 @@ impl CachingDiskJournal::State {
             reads: to_journal_records(reads),
             discovered_aus,
         };
+        let entries = self.journal_disk_view().entries;
+        let loose_dv = self.journal_disk_view();
+        let snapshot = self.journal.snapshot;
+        let image = self.backing_journal_image();
         let cj_step = choose |step: CachedJournal::Step|
             CachedJournal::State::next_by(self.journal, new_journal, journal_lbl, step);
         match cj_step {
@@ -1258,17 +1299,10 @@ impl CachingDiskJournal::State {
         assert(post.journal == new_journal);
         assert(post.disk == self.disk);
         assert(post.mini_allocator == self.mini_allocator);
-        assert(post.au_page_bounds == self.au_page_bounds);
         assert(post.journal.status is Some);
         assert(post.journal.snapshot == self.journal.snapshot);
         assert(post.i().freshest_rec == self.i().freshest_rec);
         assert(post.i().disk_view == self.i().disk_view);
-        assert(post.i().au_page_bounds == self.i().au_page_bounds);
-        assert(post.journal_tj() == self.journal_tj());
-        let entries = self.journal_disk_view().entries;
-        let loose_dv = self.journal_disk_view();
-        let snapshot = self.journal.snapshot;
-        let image = self.backing_journal_image();
         assert(image.valid_image());
         image.valid_image_implies_tight_valid_image();
         assert(image.tj.disk_view == loose_dv);
@@ -1285,6 +1319,22 @@ impl CachingDiskJournal::State {
             assert(entries == self.journal_disk_view().entries);
             assert(to_journal_records(reads)[addr] == self.journal_disk_view().entries[addr]);
         };
+        load_index_au_page_bounds_matches_loose_full(
+            self.journal,
+            post.journal,
+            to_journal_records(reads),
+            discovered_aus,
+            entries,
+        );
+        assert_maps_equal!(
+            post.au_page_bounds,
+            loose_dv.loose_build_au_page_bounds_au_walk(
+                snapshot.freshest_rec(),
+                snapshot.first(),
+            )
+        );
+        assert(post.i().au_page_bounds == self.i().au_page_bounds);
+        assert(post.journal_tj() == self.journal_tj());
         CachedJournal::State::load_index_matches_loose_full(
             self.journal,
             post.journal,

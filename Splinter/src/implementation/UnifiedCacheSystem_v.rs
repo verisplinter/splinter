@@ -367,6 +367,8 @@ state_machine!{ UnifiedCacheSystem {
         let updated = Map::new(|id| req_map.contains_key(id), |id| req_map[id].addr());
         let new_outstanding = pre.outstanding_cache_reqs.union_prefer_right(updated);
 
+        require !(pre.recovery_state is Begin);
+        require !(pre.recovery_state is AwaitingSuperblock);
         require updated.is_injective();
         require !updated.contains_value(spec_superblock_addr());
         require multiset_to_map(reqs) == req_map;
@@ -396,6 +398,8 @@ state_machine!{ UnifiedCacheSystem {
             |addr| resp_map[finished[addr]],
         );
 
+        require !(pre.recovery_state is Begin);
+        require !(pre.recovery_state is AwaitingSuperblock);
         require reqs.is_empty();
         require multiset_to_map(resps) == resp_map;
         require Cache::State::next(

@@ -74,6 +74,16 @@ pub proof fn abstract_superblock_marshalling_matches(image: AbstractSuperblockIm
 {
 }
 
+// Placeholder until the concrete parser/marshaller are wired in.
+// This is deliberately weaker than raw-wf: callers must prove well-formedness
+// from the context that produced the raw superblock page.
+#[verifier::external_body]
+pub proof fn assumed_parse_marshalled_abstract_superblock(image: AbstractSuperblockImage)
+    ensures
+        parse_abstract_superblock(marshal_abstract_superblock(image)) == image,
+{
+}
+
 // Placeholder until the concrete superblock marshaller/parser is wired in.
 // This is the one trusted bridge that says a marshalled logical superblock
 // parses back to the same well-formed image.

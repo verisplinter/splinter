@@ -1077,6 +1077,139 @@ pub proof fn init_refines(pre: SystemModel::State<UnifiedCacheProgramModel>)
     }
 }
 
+pub proof fn load_ephemeral_refines(
+    pre: UnifiedCacheJournalSource,
+    post: UnifiedCacheJournalSource,
+    image: AbstractSuperblockImage,
+)
+    requires
+        inv(pre),
+        !pre.superblock_loaded(),
+        pre.persistent_superblock_image_i() == image,
+        post.persistent_image == Option::Some(image),
+        post.cache == pre.cache,
+        post.disk.content == pre.disk.content,
+        post.disk.inv(),
+        post.in_flight is None,
+        post.in_flight_image is None,
+        AtomicJournalState::State::initialize(
+            post.journal,
+            image.journal_snapshot,
+            image.journal_seq_end,
+        ),
+        pre.journal_caching_disk_i().cache == Map::<Address, RawPage>::empty(),
+        pre.journal_caching_disk_i().status == Map::<Address, PageStatus>::empty(),
+        post.journal_caching_disk_i().cache == Map::<Address, RawPage>::empty(),
+        post.journal_caching_disk_i().status == Map::<Address, PageStatus>::empty(),
+    ensures
+        CrashAwareCachingDiskJournal::State::next(
+            unified_cache_journal_i(pre),
+            unified_cache_journal_i(post),
+            CrashAwareCachingDiskJournal::Label::LoadEphemeral,
+        ),
+        inv(post),
+{
+    reveal(AtomicJournalState::State::initialize);
+
+    assert(pre.journal == AtomicJournalState::State::empty());
+    assert(pre.in_flight is None);
+    assert(pre.in_flight_image is None);
+    assert(post.superblock_loaded());
+    assert(post.persistent_superblock_image_i() == image);
+    assert(post.persistent_superblock_image_i().wf());
+    assert(post.journal.wf());
+    assert(post.cache.inv());
+
+    assert(post.journal_image_projection_aus_i(image)
+        =~= pre.journal_image_projection_aus_i(image)) by {
+        let pre_tj = UnifiedCacheJournalSource::journal_image_tj_i(pre.disk.content, image);
+        let post_tj = UnifiedCacheJournalSource::journal_image_tj_i(post.disk.content, image);
+        assert(pre_tj == post_tj);
+    }
+    assert(post.journal_projection_aus() =~= pre.journal_projection_aus()) by {
+        assert(!post.journal.ready());
+        assert(!pre.journal.ready());
+    }
+    assert(post.persistent_journal_image_i() == pre.persistent_journal_image_i()) by {
+        assert_maps_equal!(
+            post.persistent_journal_image_i().persistent,
+            pre.persistent_journal_image_i().persistent,
+            addr => {
+                if post.persistent_journal_image_i().persistent.contains_key(addr) {
+                    assert(pre.persistent_journal_image_i().persistent.contains_key(addr));
+                }
+                if pre.persistent_journal_image_i().persistent.contains_key(addr) {
+                    assert(post.persistent_journal_image_i().persistent.contains_key(addr));
+                }
+            }
+        );
+    }
+    let persistent_image = pre.persistent_journal_image_i();
+    assert(post.persistent_journal_image_i() == persistent_image);
+    assert(pre.persistent_journal_i() == PersistentCachingDiskJournal::Image{
+        image: persistent_image,
+    });
+    assert(post.persistent_journal_i() == PersistentCachingDiskJournal::Metadata{
+        meta: persistent_image.metadata(),
+    });
+
+    assert(post.journal_caching_disk_i().persistent == persistent_image.persistent) by {
+        assert_maps_equal!(
+            post.journal_caching_disk_i().persistent,
+            persistent_image.persistent,
+            addr => {
+                if post.journal_caching_disk_i().persistent.contains_key(addr) {
+                    assert(persistent_image.persistent.contains_key(addr));
+                }
+                if persistent_image.persistent.contains_key(addr) {
+                    assert(post.journal_caching_disk_i().persistent.contains_key(addr));
+                }
+            }
+        );
+    }
+    assert(post.journal_caching_disk_i()
+        == CachingDiskJournal::State::disk_from_persistent(persistent_image.persistent));
+    assert(post.journal_caching_disk_state_i()
+        == CachingDiskJournal::State::load_from_persistent(
+            persistent_image.snapshot,
+            persistent_image.persistent,
+        ));
+
+    let src = unified_cache_journal_i(pre);
+    let dst = unified_cache_journal_i(post);
+    assert(src.ephemeral is Unknown);
+    assert(src.persistent == PersistentCachingDiskJournal::Image{image: persistent_image});
+    assert(dst.ephemeral == EphemeralCachingDiskJournal::Known{
+        v: CachingDiskJournal::State::load_from_persistent(
+            persistent_image.snapshot,
+            persistent_image.persistent,
+        ),
+    });
+    assert(dst.persistent == PersistentCachingDiskJournal::Metadata{
+        meta: persistent_image.metadata(),
+    });
+    assert(CrashAwareCachingDiskJournal::State::load_ephemeral(
+        src,
+        dst,
+        CrashAwareCachingDiskJournal::Label::LoadEphemeral,
+    )) by {
+        reveal(CrashAwareCachingDiskJournal::State::load_ephemeral);
+    }
+    assert(CrashAwareCachingDiskJournal::State::next_by(
+        src,
+        dst,
+        CrashAwareCachingDiskJournal::Label::LoadEphemeral,
+        CrashAwareCachingDiskJournal::Step::load_ephemeral(),
+    )) by {
+        reveal(CrashAwareCachingDiskJournal::State::next_by);
+    }
+    reveal(CrashAwareCachingDiskJournal::State::next);
+    src.next_refines(dst, CrashAwareCachingDiskJournal::Label::LoadEphemeral);
+    assert(post.semantic_inv());
+    assert(post.inv());
+    assert(inv(post));
+}
+
 pub proof fn query_end_lsn_refines(
     pre: UnifiedCacheJournalSource,
     post: UnifiedCacheJournalSource,

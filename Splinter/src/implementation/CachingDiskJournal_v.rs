@@ -27,6 +27,409 @@ use crate::journal::LinkedJournal_v::*;
 
 verus!{
 
+pub open spec fn build_au_page_bounds_from_reads_page_walk_depth(
+    reads: Map<Address, JournalRecord>,
+    boundary_lsn: LSN,
+    root: Pointer,
+    depth: nat,
+) -> AUPageBounds
+    decreases depth
+{
+    if root is None || depth == 0 {
+        Map::empty()
+    } else {
+        let addr = root.unwrap();
+        let prior = build_au_page_bounds_from_reads_page_walk_depth(
+            reads,
+            boundary_lsn,
+            reads[addr].cropped_prior(boundary_lsn),
+            (depth - 1) as nat,
+        );
+        let page = if prior.contains_key(addr.au) && addr.page <= prior[addr.au] {
+            prior[addr.au]
+        } else {
+            addr.page
+        };
+        prior.insert(addr.au, page)
+    }
+}
+
+pub open spec fn build_au_page_bounds_from_reads_au_walk_depth(
+    reads: Map<Address, JournalRecord>,
+    boundary_lsn: LSN,
+    root: Pointer,
+    first: AU,
+    au_depth: nat,
+    page_depth: nat,
+) -> AUPageBounds
+    decreases au_depth
+{
+    if root is None || au_depth == 0 {
+        Map::empty()
+    } else {
+        let addr = root.unwrap();
+        if addr.au == first {
+            build_au_page_bounds_from_reads_page_walk_depth(
+                reads,
+                boundary_lsn,
+                root,
+                page_depth,
+            )
+        } else {
+            let bottom = addr.first_page();
+            let prior = build_au_page_bounds_from_reads_au_walk_depth(
+                reads,
+                boundary_lsn,
+                reads[bottom].cropped_prior(boundary_lsn),
+                first,
+                (au_depth - 1) as nat,
+                page_depth,
+            );
+            prior.insert(addr.au, addr.page)
+        }
+    }
+}
+
+pub open spec fn load_index_au_page_bounds(
+    pre_journal: CachedJournal::State,
+    new_journal: CachedJournal::State,
+    reads: Map<Address, JournalRecord>,
+    discovered_aus: Set<AU>,
+) -> AUPageBounds
+{
+    let lbl = CachedJournal::Label::LoadIndex{reads, discovered_aus};
+    if exists |au_depth: nat, page_depth: nat| #[trigger] CachedJournal::State::load_index(
+        pre_journal,
+        new_journal,
+        lbl,
+        au_depth,
+        page_depth,
+    ) {
+        let (au_depth, page_depth) = choose |au_depth: nat, page_depth: nat|
+            #[trigger] CachedJournal::State::load_index(
+            pre_journal,
+            new_journal,
+            lbl,
+            au_depth,
+            page_depth,
+        );
+        build_au_page_bounds_from_reads_au_walk_depth(
+            reads,
+            pre_journal.snapshot.boundary_lsn,
+            pre_journal.snapshot.freshest_rec(),
+            pre_journal.snapshot.first(),
+            au_depth,
+            page_depth,
+        )
+    } else {
+        Map::empty()
+    }
+}
+
+pub proof fn page_walk_reads_cover_build_bounds_matches_full_by_value(
+    reads: Map<Address, JournalRecord>,
+    entries: Map<Address, JournalRecord>,
+    boundary_lsn: LSN,
+    root: Pointer,
+    depth: nat,
+)
+    requires
+        page_walk_reads_cover(reads, boundary_lsn, root, depth),
+        (DiskView{boundary_lsn, entries}).decodable(root),
+        (DiskView{boundary_lsn, entries}).acyclic(),
+        forall |addr: Address| #[trigger] reads.contains_key(addr)
+            && entries.contains_key(addr) ==> reads[addr] == entries[addr],
+    ensures ({
+        let full_dv = DiskView{boundary_lsn, entries};
+        build_au_page_bounds_from_reads_page_walk_depth(reads, boundary_lsn, root, depth)
+            =~= full_dv.build_au_page_bounds_page_walk(root)
+    }),
+    decreases depth,
+{
+    let full_dv = DiskView{boundary_lsn, entries};
+    reveal(DiskView::build_au_page_bounds_page_walk);
+    if root is None {
+        assert_maps_equal!(
+            build_au_page_bounds_from_reads_page_walk_depth(reads, boundary_lsn, root, depth),
+            full_dv.build_au_page_bounds_page_walk(root),
+        );
+    } else {
+        assert(depth > 0);
+        let addr = root.unwrap();
+        assert(reads.contains_key(addr));
+        assert(entries.contains_key(addr));
+        assert(reads[addr] == entries[addr]);
+        let next = reads[addr].cropped_prior(boundary_lsn);
+        assert(next == full_dv.next(root));
+
+        page_walk_reads_cover_build_bounds_matches_full_by_value(
+            reads,
+            entries,
+            boundary_lsn,
+            next,
+            (depth - 1) as nat,
+        );
+
+        let read_prior = build_au_page_bounds_from_reads_page_walk_depth(
+            reads,
+            boundary_lsn,
+            next,
+            (depth - 1) as nat,
+        );
+        let full_prior = full_dv.build_au_page_bounds_page_walk(next);
+        let page = if read_prior.contains_key(addr.au) && addr.page <= read_prior[addr.au] {
+            read_prior[addr.au]
+        } else {
+            addr.page
+        };
+        assert(read_prior == full_prior);
+        assert(full_dv.build_au_page_bounds_page_walk(root)
+            == full_prior.insert(addr.au, page));
+        assert_maps_equal!(
+            build_au_page_bounds_from_reads_page_walk_depth(reads, boundary_lsn, root, depth),
+            full_dv.build_au_page_bounds_page_walk(root),
+        );
+    }
+}
+
+pub proof fn au_walk_reads_cover_build_bounds_matches_full_by_value(
+    reads: Map<Address, JournalRecord>,
+    entries: Map<Address, JournalRecord>,
+    boundary_lsn: LSN,
+    root: Pointer,
+    first: AU,
+    au_depth: nat,
+    page_depth: nat,
+)
+    requires
+        au_walk_reads_cover(reads, boundary_lsn, root, first, au_depth, page_depth),
+        (DiskView{boundary_lsn, entries}).pointer_is_upstream(root, first),
+        forall |addr: Address| #[trigger] reads.contains_key(addr)
+            && entries.contains_key(addr) ==> reads[addr] == entries[addr],
+    ensures ({
+        let full_dv = DiskView{boundary_lsn, entries};
+        build_au_page_bounds_from_reads_au_walk_depth(
+            reads,
+            boundary_lsn,
+            root,
+            first,
+            au_depth,
+            page_depth,
+        ) =~= full_dv.build_au_page_bounds_au_walk(root, first)
+    }),
+    decreases au_depth,
+{
+    let full_dv = DiskView{boundary_lsn, entries};
+    reveal(DiskView::build_au_page_bounds_au_walk);
+    if root is None {
+        assert_maps_equal!(
+            build_au_page_bounds_from_reads_au_walk_depth(
+                reads,
+                boundary_lsn,
+                root,
+                first,
+                au_depth,
+                page_depth,
+            ),
+            full_dv.build_au_page_bounds_au_walk(root, first),
+        );
+    } else {
+        assert(au_depth > 0);
+        let addr = root.unwrap();
+        if addr.au == first {
+            page_walk_reads_cover_build_bounds_matches_full_by_value(
+                reads,
+                entries,
+                boundary_lsn,
+                root,
+                page_depth,
+            );
+            assert(full_dv.build_au_page_bounds_au_walk(root, first)
+                == full_dv.build_au_page_bounds_page_walk(root));
+            assert_maps_equal!(
+                build_au_page_bounds_from_reads_au_walk_depth(
+                    reads,
+                    boundary_lsn,
+                    root,
+                    first,
+                    au_depth,
+                    page_depth,
+                ),
+                full_dv.build_au_page_bounds_au_walk(root, first),
+            );
+        } else {
+            let bottom = addr.first_page();
+            assert(reads.contains_key(addr));
+            assert(reads.contains_key(bottom));
+            assert(entries.contains_key(addr));
+            full_dv.bottom_properties(root, first);
+            assert(entries.contains_key(bottom));
+            assert(reads[addr] == entries[addr]);
+            assert(reads[bottom] == entries[bottom]);
+            assert(reads[bottom].cropped_prior(boundary_lsn) == full_dv.next(Some(bottom)));
+
+            let next = reads[bottom].cropped_prior(boundary_lsn);
+            au_walk_reads_cover_build_bounds_matches_full_by_value(
+                reads,
+                entries,
+                boundary_lsn,
+                next,
+                first,
+                (au_depth - 1) as nat,
+                page_depth,
+            );
+
+            assert(build_au_page_bounds_from_reads_au_walk_depth(
+                reads,
+                boundary_lsn,
+                root,
+                first,
+                au_depth,
+                page_depth,
+            ) == build_au_page_bounds_from_reads_au_walk_depth(
+                reads,
+                boundary_lsn,
+                next,
+                first,
+                (au_depth - 1) as nat,
+                page_depth,
+            ).insert(addr.au, addr.page));
+            assert(full_dv.build_au_page_bounds_au_walk(root, first)
+                == full_dv.build_au_page_bounds_au_walk(full_dv.next(Some(bottom)), first)
+                    .insert(addr.au, addr.page));
+            assert_maps_equal!(
+                build_au_page_bounds_from_reads_au_walk_depth(
+                    reads,
+                    boundary_lsn,
+                    root,
+                    first,
+                    au_depth,
+                    page_depth,
+                ),
+                full_dv.build_au_page_bounds_au_walk(root, first),
+            );
+        }
+    }
+}
+
+pub proof fn load_index_au_page_bounds_matches_loose_full(
+    pre_journal: CachedJournal::State,
+    new_journal: CachedJournal::State,
+    reads: Map<Address, JournalRecord>,
+    discovered_aus: Set<AU>,
+    entries: Map<Address, JournalRecord>,
+)
+    requires
+        CachedJournal::State::next(
+            pre_journal,
+            new_journal,
+            CachedJournal::Label::LoadIndex{reads, discovered_aus},
+        ),
+        forall |addr: Address| #[trigger] reads.contains_key(addr)
+            && entries.contains_key(addr) ==> reads[addr] == entries[addr],
+        (DiskView{boundary_lsn: pre_journal.snapshot.boundary_lsn, entries}).path_decodable(
+            pre_journal.snapshot.freshest_rec(),
+        ),
+        (DiskView{boundary_lsn: pre_journal.snapshot.boundary_lsn, entries}).path_build_tight(
+            pre_journal.snapshot.freshest_rec(),
+        ).pointer_is_upstream(pre_journal.snapshot.freshest_rec(), pre_journal.snapshot.first()),
+    ensures
+        new_journal.status is Some,
+        load_index_au_page_bounds(pre_journal, new_journal, reads, discovered_aus)
+            =~= (DiskView{
+                boundary_lsn: pre_journal.snapshot.boundary_lsn,
+                entries,
+            }).loose_build_au_page_bounds_au_walk(
+                pre_journal.snapshot.freshest_rec(),
+                pre_journal.snapshot.first(),
+            ),
+{
+    let loose_dv = DiskView{boundary_lsn: pre_journal.snapshot.boundary_lsn, entries};
+    let tight_dv = loose_dv.path_build_tight(pre_journal.snapshot.freshest_rec());
+    reveal(CachedJournal::State::next);
+    reveal(CachedJournal::State::next_by);
+    let lbl = CachedJournal::Label::LoadIndex{reads, discovered_aus};
+    let step = choose |step| CachedJournal::State::next_by(pre_journal, new_journal, lbl, step);
+    match step {
+        CachedJournal::Step::load_index(au_depth, page_depth) => {
+            reveal(CachedJournal::State::load_index);
+            assert(au_walk_reads_cover(
+                reads,
+                pre_journal.snapshot.boundary_lsn,
+                pre_journal.snapshot.freshest_rec(),
+                pre_journal.snapshot.first(),
+                au_depth,
+                page_depth,
+            ));
+            assert(exists |au_depth: nat, page_depth: nat| #[trigger] CachedJournal::State::load_index(
+                pre_journal,
+                new_journal,
+                lbl,
+                au_depth,
+                page_depth,
+            ));
+            let (chosen_au_depth, chosen_page_depth) = choose |au_depth: nat, page_depth: nat|
+                #[trigger] CachedJournal::State::load_index(
+                pre_journal,
+                new_journal,
+                lbl,
+                au_depth,
+                page_depth,
+            );
+            assert(CachedJournal::State::load_index(
+                pre_journal,
+                new_journal,
+                lbl,
+                chosen_au_depth,
+                chosen_page_depth,
+            ));
+            assert(au_walk_reads_cover(
+                reads,
+                pre_journal.snapshot.boundary_lsn,
+                pre_journal.snapshot.freshest_rec(),
+                pre_journal.snapshot.first(),
+                chosen_au_depth,
+                chosen_page_depth,
+            ));
+            loose_dv.path_build_tight_is_sub_disk(pre_journal.snapshot.freshest_rec());
+            assert forall |addr: Address| #[trigger] reads.contains_key(addr)
+                && tight_dv.entries.contains_key(addr)
+                implies reads[addr] == tight_dv.entries[addr] by {
+                assert(tight_dv.entries <= entries);
+                assert(entries.contains_key(addr));
+                assert(tight_dv.entries[addr] == entries[addr]);
+            }
+            au_walk_reads_cover_build_bounds_matches_full_by_value(
+                reads,
+                tight_dv.entries,
+                pre_journal.snapshot.boundary_lsn,
+                pre_journal.snapshot.freshest_rec(),
+                pre_journal.snapshot.first(),
+                chosen_au_depth,
+                chosen_page_depth,
+            );
+            loose_dv.loose_build_au_page_bounds_au_walk_matches_tight(
+                pre_journal.snapshot.freshest_rec(),
+                pre_journal.snapshot.first(),
+            );
+            assert(DiskView{
+                boundary_lsn: pre_journal.snapshot.boundary_lsn,
+                entries: tight_dv.entries,
+            } == tight_dv);
+            assert_maps_equal!(
+                load_index_au_page_bounds(pre_journal, new_journal, reads, discovered_aus),
+                loose_dv.loose_build_au_page_bounds_au_walk(
+                    pre_journal.snapshot.freshest_rec(),
+                    pre_journal.snapshot.first(),
+                )
+            );
+        },
+        _ => {
+            assert(false);
+        },
+    }
+}
+
 pub proof fn mini_allocator_add_aus_preserves_all_aus(mini_allocator: MiniAllocator, aus: Set<AU>)
     requires
         mini_allocator.wf(),
@@ -182,6 +585,10 @@ state_machine!{ CachingDiskJournal {
 
     transition!{ load_index(lbl: Label, new_journal: CachedJournal::State, reads: Map<Address, RawPage>) {
         require let Label::LoadIndex{discovered_aus} = lbl;
+        let journal_lbl = CachedJournal::Label::LoadIndex{
+            reads: to_journal_records(reads),
+            discovered_aus,
+        };
         require CachingDisk::State::next(
             pre.disk,
             pre.disk,
@@ -190,12 +597,16 @@ state_machine!{ CachingDiskJournal {
         require CachedJournal::State::next(
             pre.journal,
             new_journal,
-            CachedJournal::Label::LoadIndex{
-                reads: to_journal_records(reads),
-                discovered_aus,
-            },
+            journal_lbl,
+        );
+        let new_au_page_bounds = load_index_au_page_bounds(
+            pre.journal,
+            new_journal,
+            to_journal_records(reads),
+            discovered_aus,
         );
         update journal = new_journal;
+        update au_page_bounds = new_au_page_bounds;
     }}
 
     transition!{ read_for_recovery(lbl: Label, reads: Map<Address, RawPage>) {
@@ -877,7 +1288,7 @@ impl CachingDiskJournal::State {
         snapshot: JournalSnapshot,
         persistent: Map<Address, RawPage>,
     ) -> Self {
-        let base = Self{
+        Self{
             journal: CachedJournal::State{
                 snapshot,
                 status: Option::None,
@@ -885,13 +1296,6 @@ impl CachingDiskJournal::State {
             disk: Self::disk_from_persistent(persistent),
             mini_allocator: MiniAllocator::empty(),
             au_page_bounds: Map::empty(),
-        };
-        Self{
-            au_page_bounds: base.journal_disk_view().loose_build_au_page_bounds_au_walk(
-                base.journal.snapshot.freshest_rec(),
-                snapshot.first(),
-            ),
-            ..base
         }
     }
 
@@ -1556,6 +1960,17 @@ impl CachingDiskJournal::State {
         self.visible_lsn_au_index()
     }
 
+    pub open spec fn au_page_bounds_i(self) -> AUPageBounds {
+        if self.journal.status is Some {
+            self.au_page_bounds
+        } else {
+            self.journal_disk_view().loose_build_au_page_bounds_au_walk(
+                self.journal.snapshot.freshest_rec(),
+                self.journal.snapshot.first(),
+            )
+        }
+    }
+
     pub open spec fn frozen_seq_end(self, snapshot: JournalSnapshot) -> LSN {
         if snapshot.freshest_rec() is Some {
             self.journal_disk_view().entries[snapshot.freshest_rec().unwrap()].message_seq.seq_end
@@ -1631,7 +2046,7 @@ impl CachingDiskJournal::State {
             },
             disk_view: self.journal_disk_view(),
             lsn_au_index: self.lsn_au_index_or_empty(),
-            au_page_bounds: self.au_page_bounds,
+            au_page_bounds: self.au_page_bounds_i(),
             mini_allocator: self.mini_allocator,
         }
     }
