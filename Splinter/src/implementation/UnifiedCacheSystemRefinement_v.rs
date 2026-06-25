@@ -34,6 +34,8 @@ use crate::implementation::MultisetMapRelation_v::{
 };
 use crate::implementation::CachingDiskAdapterRefinement_v::{
     cache_internal_refines_caching_disk_internal,
+    cache_internal_preserves_empty_projection,
+    cache_internal_preserves_protected_entries,
     cache_disk_ops_begin_preserves_filled_page,
     cache_disk_ops_begin_refines_caching_disk_internal, cache_filled_addr, cache_filled_page,
     cache_disk_ops_end_refines_caching_disk_internal,
@@ -898,346 +900,71 @@ pub proof fn cache_access_preserves_cache_disk_response_inv(
     }
 }
 
-pub proof fn cache_internal_preserves_tracked_cache_entry(
-    pre_cache: Cache::State,
-    post_cache: Cache::State,
-    tracked_reqs: Map<ID, Address>,
-    addr: Address,
+pub proof fn cache_internal_preserves_outstanding_cache_entries(
+    pre: SystemModel::State<UnifiedCacheProgramModel>,
+    post: SystemModel::State<UnifiedCacheProgramModel>,
 )
     requires
-        pre_cache.inv(),
-        Cache::State::next(pre_cache, post_cache, Cache::Label::Internal{}),
-        tracked_reqs.values().contains(addr),
-        tracked_reqs.values() <= pre_cache.lookup_map.dom(),
-        forall |id: ID| #[trigger] tracked_reqs.contains_key(id) ==> {
-            let tracked_addr = tracked_reqs[id];
-            let slot = pre_cache.lookup_map[tracked_addr];
-            match pre_cache.entries[slot] {
-                Entry::Loading{addr: entry_addr} => entry_addr == tracked_addr,
-                Entry::Filled{addr: entry_addr, ..} =>
-                    entry_addr == tracked_addr && pre_cache.status_map[slot] is Writeback,
-                _ => false,
-            }
-        },
+        pre.program.state.cache.inv(),
+        unified_cache_cache_request_wf(pre),
+        Cache::State::next(
+            pre.program.state.cache,
+            post.program.state.cache,
+            Cache::Label::Internal{},
+        ),
+        post.program.state.outstanding_cache_reqs
+            == pre.program.state.outstanding_cache_reqs,
     ensures
-        pre_cache.lookup_map.contains_key(addr),
-        pre_cache.entries.contains_key(pre_cache.lookup_map[addr]),
-        post_cache.lookup_map.contains_key(addr),
-        post_cache.entries.contains_key(post_cache.lookup_map[addr]),
-        post_cache.lookup_map[addr] == pre_cache.lookup_map[addr],
-        post_cache.entries[post_cache.lookup_map[addr]]
-            == pre_cache.entries[pre_cache.lookup_map[addr]],
-        post_cache.status_map[post_cache.lookup_map[addr]]
-            == pre_cache.status_map[pre_cache.lookup_map[addr]],
+        forall |addr: Address| {
+            #[trigger] pre.program.state.outstanding_cache_reqs.values().contains(addr)
+        } ==> {
+            &&& pre.program.state.cache.lookup_map.contains_key(addr)
+            &&& pre.program.state.cache.entries.contains_key(
+                pre.program.state.cache.lookup_map[addr],
+            )
+            &&& post.program.state.cache.lookup_map.contains_key(addr)
+            &&& post.program.state.cache.entries.contains_key(
+                post.program.state.cache.lookup_map[addr],
+            )
+            &&& post.program.state.cache.lookup_map[addr]
+                == pre.program.state.cache.lookup_map[addr]
+            &&& post.program.state.cache.entries[
+                post.program.state.cache.lookup_map[addr]
+            ] == pre.program.state.cache.entries[
+                pre.program.state.cache.lookup_map[addr]
+            ]
+            &&& post.program.state.cache.status_map[
+                post.program.state.cache.lookup_map[addr]
+            ] == pre.program.state.cache.status_map[
+                pre.program.state.cache.lookup_map[addr]
+            ]
+        },
 {
-    Cache::State::inv_next(pre_cache, post_cache, Cache::Label::Internal{});
-    pre_cache.build_lookup_map_ensures();
-    post_cache.build_lookup_map_ensures();
+    let pre_state = pre.program.state;
+    let post_state = post.program.state;
+    let tracked_reqs = pre_state.outstanding_cache_reqs;
+    let protected_addrs = tracked_reqs.values();
 
-    let id = choose |id: ID| tracked_reqs.contains_key(id) && tracked_reqs[id] == addr;
-    assert(tracked_reqs.contains_key(id));
-    assert(tracked_reqs[id] == addr);
-    assert(pre_cache.lookup_map.contains_key(addr));
-    let pre_slot = pre_cache.lookup_map[addr];
-    assert(match pre_cache.entries[pre_slot] {
-        Entry::Loading{addr: entry_addr} => entry_addr == addr,
-        Entry::Filled{addr: entry_addr, ..} =>
-            entry_addr == addr && pre_cache.status_map[pre_slot] is Writeback,
-        _ => false,
-    });
-
-    reveal(Cache::State::next);
-    reveal(Cache::State::next_by);
-    let step = choose |step: Cache::Step| Cache::State::next_by(
-        pre_cache,
-        post_cache,
-        Cache::Label::Internal{},
-        step,
-    );
-    match step {
-        Cache::Step::reserve(new_slots_mapping) => {
-            assert(Cache::State::reserve(
-                pre_cache,
-                post_cache,
-                Cache::Label::Internal{},
-                new_slots_mapping,
-            )) by {
-                reveal(Cache::State::reserve);
-            }
-            let updated_entries = Map::new(
-                |slot| new_slots_mapping.contains_key(slot),
-                |slot| Entry::Reserved{addr: new_slots_mapping[slot]},
-            );
-            assert(post_cache.entries == pre_cache.entries.union_prefer_right(updated_entries));
-            assert(post_cache.status_map == pre_cache.status_map);
-            assert(!new_slots_mapping.contains_key(pre_slot)) by {
-                if new_slots_mapping.contains_key(pre_slot) {
-                    assert(pre_cache.valid_new_slots_mapping(new_slots_mapping));
-                    assert(pre_cache.entries[pre_slot] is Empty);
-                    match pre_cache.entries[pre_slot] {
-                        Entry::Loading{..} => {
-                            assert(false);
-                        },
-                        Entry::Filled{..} => {
-                            assert(false);
-                        },
-                        _ => {
-                            assert(false);
-                        },
-                    }
-                }
-            }
-            assert(!updated_entries.contains_key(pre_slot));
-            assert(!new_slots_mapping.invert().contains_key(addr)) by {
-                if new_slots_mapping.invert().contains_key(addr) {
-                    Cache::State::invert_contains_pair(new_slots_mapping, addr);
-                    assert(new_slots_mapping.values().contains(addr));
-                    assert(pre_cache.valid_new_slots_mapping(new_slots_mapping));
-                    assert(pre_cache.lookup_map.dom().contains(addr));
-                    assert(false);
-                }
-            }
-            assert(post_cache.lookup_map
-                == pre_cache.lookup_map.union_prefer_right(new_slots_mapping.invert()));
-            assert(post_cache.lookup_map.contains_key(addr));
-            assert(post_cache.lookup_map[addr] == pre_slot);
-            assert(post_cache.entries[pre_slot] == pre_cache.entries[pre_slot]);
-            assert(post_cache.status_map[pre_slot] == pre_cache.status_map[pre_slot]);
-        },
-        Cache::Step::evict(evicted_slots) => {
-            assert(Cache::State::evict(
-                pre_cache,
-                post_cache,
-                Cache::Label::Internal{},
-                evicted_slots,
-            )) by {
-                reveal(Cache::State::evict);
-            }
-            let evicted_addrs = Map::new(
-                |slot: Slot| evicted_slots.contains(slot),
-                |slot: Slot| pre_cache.entries[slot].get_addr(),
-            ).values();
-            assert(!evicted_slots.contains(pre_slot)) by {
-                if evicted_slots.contains(pre_slot) {
-                    assert(pre_cache.entries[pre_slot] is Filled);
-                    assert(pre_cache.status_map[pre_slot] is Clean);
-                    match pre_cache.entries[pre_slot] {
-                        Entry::Loading{..} => {
-                            assert(false);
-                        },
-                        Entry::Filled{..} => {
-                            assert(pre_cache.status_map[pre_slot] is Writeback);
-                            assert(false);
-                        },
-                        _ => {
-                            assert(false);
-                        },
-                    }
-                }
-            }
-            assert(!evicted_addrs.contains(addr)) by {
-                if evicted_addrs.contains(addr) {
-                    let evicted_map = Map::new(
-                        |slot: Slot| evicted_slots.contains(slot),
-                        |slot: Slot| pre_cache.entries[slot].get_addr(),
-                    );
-                    let slot = choose |slot: Slot| {
-                        &&& evicted_map.contains_key(slot)
-                        &&& evicted_map[slot] == addr
-                    };
-                    assert(evicted_slots.contains(slot));
-                    assert(pre_cache.entries[slot] is Filled);
-                    assert(pre_cache.entries[slot].get_addr() == addr);
-                    assert(pre_cache.build_lookup_map_props(pre_cache.lookup_map));
-                    assert(pre_cache.lookup_map[addr] == slot);
-                    assert(slot == pre_slot);
-                    assert(false);
-                }
-            }
-            let updated_entries = Map::new(
-                |slot| evicted_slots.contains(slot),
-                |slot| Entry::Empty,
-            );
-            let updated_status_map = Map::new(
-                |slot| evicted_slots.contains(slot),
-                |slot| Status::NotFilled,
-            );
-            assert(post_cache.lookup_map == pre_cache.lookup_map.remove_keys(evicted_addrs));
-            assert(post_cache.lookup_map.contains_key(addr));
-            assert(post_cache.lookup_map[addr] == pre_slot);
-            assert(post_cache.entries == pre_cache.entries.union_prefer_right(updated_entries));
-            assert(post_cache.status_map
-                == pre_cache.status_map.union_prefer_right(updated_status_map));
-            assert(!updated_entries.contains_key(pre_slot));
-            assert(!updated_status_map.contains_key(pre_slot));
-            assert(post_cache.entries[pre_slot] == pre_cache.entries[pre_slot]);
-            assert(post_cache.status_map[pre_slot] == pre_cache.status_map[pre_slot]);
-        },
-        Cache::Step::noop() => {
-            assert(Cache::State::noop(pre_cache, post_cache, Cache::Label::Internal{})) by {
-                reveal(Cache::State::noop);
-            }
-            assert(post_cache == pre_cache);
-        },
-        _ => {
-            assert(false);
-        },
-    }
-    assert(pre_cache.entries.contains_key(pre_cache.lookup_map[addr])) by {
-        assert(pre_cache.build_lookup_map_props(pre_cache.lookup_map));
-    }
-    assert(post_cache.entries.contains_key(post_cache.lookup_map[addr])) by {
-        assert(post_cache.build_lookup_map_props(post_cache.lookup_map));
-    }
-}
-
-pub proof fn cache_internal_post_filled_addr_was_pre_filled(
-    pre_cache: Cache::State,
-    post_cache: Cache::State,
-    addr: Address,
-)
-    requires
-        pre_cache.inv(),
-        Cache::State::next(pre_cache, post_cache, Cache::Label::Internal{}),
-        cache_filled_addr(post_cache, addr),
-    ensures
-        cache_filled_addr(pre_cache, addr),
-{
-    Cache::State::inv_next(pre_cache, post_cache, Cache::Label::Internal{});
-    pre_cache.build_lookup_map_ensures();
-    post_cache.build_lookup_map_ensures();
-
-    reveal(Cache::State::next);
-    reveal(Cache::State::next_by);
-    let step = choose |step: Cache::Step| Cache::State::next_by(
-        pre_cache,
-        post_cache,
-        Cache::Label::Internal{},
-        step,
-    );
-    let post_slot = post_cache.lookup_map[addr];
-    match step {
-        Cache::Step::reserve(new_slots_mapping) => {
-            assert(Cache::State::reserve(
-                pre_cache,
-                post_cache,
-                Cache::Label::Internal{},
-                new_slots_mapping,
-            )) by {
-                reveal(Cache::State::reserve);
-            }
-            let updated_entries = Map::new(
-                |slot| new_slots_mapping.contains_key(slot),
-                |slot| Entry::Reserved{addr: new_slots_mapping[slot]},
-            );
-            assert(post_cache.entries == pre_cache.entries.union_prefer_right(updated_entries));
-            assert(!updated_entries.contains_key(post_slot)) by {
-                if updated_entries.contains_key(post_slot) {
-                    assert(post_cache.entries[post_slot] == Entry::Reserved{
-                        addr: new_slots_mapping[post_slot],
-                    });
-                    assert(post_cache.entries[post_slot] is Filled);
-                    assert(false);
-                }
-            }
-            assert(!new_slots_mapping.invert().contains_key(addr)) by {
-                if new_slots_mapping.invert().contains_key(addr) {
-                    Cache::State::invert_contains_pair(new_slots_mapping, addr);
-                    assert(new_slots_mapping.values().contains(addr));
-                    assert(pre_cache.valid_new_slots_mapping(new_slots_mapping));
-                    if pre_cache.lookup_map.contains_key(addr) {
-                        assert(false);
-                    }
-                }
-            }
-            assert(post_cache.lookup_map
-                == pre_cache.lookup_map.union_prefer_right(new_slots_mapping.invert()));
-            assert(pre_cache.lookup_map.contains_key(addr));
-            assert(pre_cache.lookup_map[addr] == post_slot);
-            assert(pre_cache.entries[post_slot] == post_cache.entries[post_slot]);
-        },
-        Cache::Step::evict(evicted_slots) => {
-            assert(Cache::State::evict(
-                pre_cache,
-                post_cache,
-                Cache::Label::Internal{},
-                evicted_slots,
-            )) by {
-                reveal(Cache::State::evict);
-            }
-            let evicted_addrs = Map::new(
-                |slot: Slot| evicted_slots.contains(slot),
-                |slot: Slot| pre_cache.entries[slot].get_addr(),
-            ).values();
-            assert(post_cache.lookup_map == pre_cache.lookup_map.remove_keys(evicted_addrs));
-            assert(pre_cache.lookup_map.contains_key(addr));
-            assert(pre_cache.lookup_map[addr] == post_slot);
-            assert(pre_cache.entries[post_slot] == post_cache.entries[post_slot]) by {
-                let updated_entries = Map::new(
-                    |slot| evicted_slots.contains(slot),
-                    |slot| Entry::Empty,
-                );
-                assert(post_cache.entries == pre_cache.entries.union_prefer_right(updated_entries));
-                assert(!updated_entries.contains_key(post_slot)) by {
-                    if updated_entries.contains_key(post_slot) {
-                        assert(post_cache.entries[post_slot] is Empty);
-                        assert(post_cache.entries[post_slot] is Filled);
-                        assert(false);
-                    }
-                }
-            }
-        },
-        Cache::Step::noop() => {
-            assert(Cache::State::noop(pre_cache, post_cache, Cache::Label::Internal{})) by {
-                reveal(Cache::State::noop);
-            }
-            assert(post_cache == pre_cache);
-        },
-        _ => {
-            assert(false);
-        },
-    }
-}
-
-pub proof fn cache_internal_preserves_empty_projection(
-    pre_cache: Cache::State,
-    post_cache: Cache::State,
-    aus: Set<AU>,
-)
-    requires
-        pre_cache.inv(),
-        Cache::State::next(pre_cache, post_cache, Cache::Label::Internal{}),
-        project_cache_pages(pre_cache, aus) == Map::<Address, RawPage>::empty(),
-        project_cache_status(pre_cache, aus) == Map::<Address, PageStatus>::empty(),
-    ensures
-        project_cache_pages(post_cache, aus) == Map::<Address, RawPage>::empty(),
-        project_cache_status(post_cache, aus) == Map::<Address, PageStatus>::empty(),
-{
-    assert_maps_equal!(
-        project_cache_pages(post_cache, aus),
-        Map::<Address, RawPage>::empty(),
-        addr => {
-            if project_cache_pages(post_cache, aus).contains_key(addr) {
-                assert(addresses_in_aus(aus).contains(addr));
-                assert(cache_filled_addr(post_cache, addr));
-                cache_internal_post_filled_addr_was_pre_filled(pre_cache, post_cache, addr);
-                assert(project_cache_pages(pre_cache, aus).contains_key(addr));
-                assert(false);
-            }
+    Cache::State::inv_next(pre_state.cache, post_state.cache, Cache::Label::Internal{});
+    assert(protected_addrs <= pre_state.cache.lookup_map.dom());
+    assert forall |addr: Address| #[trigger] protected_addrs.contains(addr) implies {
+        let slot = pre_state.cache.lookup_map[addr];
+        match pre_state.cache.entries[slot] {
+            Entry::Loading{addr: entry_addr} => entry_addr == addr,
+            Entry::Filled{addr: entry_addr, ..} =>
+                entry_addr == addr && pre_state.cache.status_map[slot] is Writeback,
+            _ => false,
         }
-    );
-    assert_maps_equal!(
-        project_cache_status(post_cache, aus),
-        Map::<Address, PageStatus>::empty(),
-        addr => {
-            if project_cache_status(post_cache, aus).contains_key(addr) {
-                assert(addresses_in_aus(aus).contains(addr));
-                assert(cache_filled_addr(post_cache, addr));
-                cache_internal_post_filled_addr_was_pre_filled(pre_cache, post_cache, addr);
-                assert(project_cache_status(pre_cache, aus).contains_key(addr));
-                assert(false);
-            }
-        }
+    } by {
+        let id = choose |id: ID| tracked_reqs.contains_key(id) && tracked_reqs[id] == addr;
+        assert(tracked_reqs.contains_key(id));
+        assert(tracked_reqs[id] == addr);
+        assert(unified_cache_cache_request_wf(pre));
+    }
+    cache_internal_preserves_protected_entries(
+        pre_state.cache,
+        post_state.cache,
+        protected_addrs,
     );
 }
 
@@ -1263,17 +990,13 @@ pub proof fn cache_internal_preserves_cache_request_wf(
     let tracked_reqs = pre_state.outstanding_cache_reqs;
 
     Cache::State::inv_next(pre_state.cache, post_state.cache, Cache::Label::Internal{});
+    cache_internal_preserves_outstanding_cache_entries(pre, post);
     assert(post_state.outstanding_cache_reqs.is_injective());
     assert(!post_state.outstanding_cache_reqs.contains_value(spec_superblock_addr()));
     assert forall |addr: Address| #[trigger] post_state.outstanding_cache_reqs.values().contains(addr)
         implies post_state.cache.lookup_map.dom().contains(addr) by {
         assert(tracked_reqs.values().contains(addr));
-        cache_internal_preserves_tracked_cache_entry(
-            pre_state.cache,
-            post_state.cache,
-            tracked_reqs,
-            addr,
-        );
+        assert(post_state.cache.lookup_map.contains_key(addr));
     }
     assert(post_state.outstanding_cache_reqs.values() <= post_state.cache.lookup_map.dom());
     assert forall |id: ID| #[trigger] post_state.outstanding_cache_reqs.contains_key(id) implies {
@@ -1289,12 +1012,7 @@ pub proof fn cache_internal_preserves_cache_request_wf(
         assert(tracked_reqs.contains_key(id));
         let addr = tracked_reqs[id];
         assert(post_state.outstanding_cache_reqs[id] == addr);
-        cache_internal_preserves_tracked_cache_entry(
-            pre_state.cache,
-            post_state.cache,
-            tracked_reqs,
-            addr,
-        );
+        assert(tracked_reqs.values().contains(addr));
         let pre_slot = pre_state.cache.lookup_map[addr];
         let post_slot = post_state.cache.lookup_map[addr];
         assert(post_slot == pre_slot);
@@ -1325,6 +1043,8 @@ pub proof fn cache_internal_preserves_cache_disk_response_inv(
     let post_state = post.program.state;
     let tracked_reqs = pre_state.outstanding_cache_reqs;
 
+    cache_internal_preserves_outstanding_cache_entries(pre, post);
+
     assert forall |id: ID| {
         &&& #[trigger] post.disk.responses.contains_key(id)
         &&& post.program.state.outstanding_cache_reqs.contains_key(id)
@@ -1349,12 +1069,7 @@ pub proof fn cache_internal_preserves_cache_disk_response_inv(
         assert(post.disk.content == pre.disk.content);
         assert(unified_cache_cache_disk_response_inv(pre));
         if pre.disk.responses[id] is WriteResp {
-            cache_internal_preserves_tracked_cache_entry(
-                pre_state.cache,
-                post_state.cache,
-                tracked_reqs,
-                addr,
-            );
+            assert(tracked_reqs.values().contains(addr));
             let pre_slot = pre_state.cache.lookup_map[addr];
             let post_slot = post_state.cache.lookup_map[addr];
             assert(post_slot == pre_slot);
