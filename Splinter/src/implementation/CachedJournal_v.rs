@@ -14,7 +14,7 @@ use crate::abstract_system::MsgHistory_v::MsgHistory;
 use crate::disk::GenericDisk_v::{Address, AU, Pointer, to_aus, to_aus_domain};
 use crate::journal::LinkedJournal_v::{DiskView, JournalRecord};
 use crate::allocation_layer::AllocationJournal_v::{
-    LsnAUIndex, lsn_au_index_append_record, lsn_au_index_discard_up_to,
+    AUPageBounds, LsnAUIndex, lsn_au_index_append_record, lsn_au_index_discard_up_to,
 };
 use crate::allocation_layer::LikesJournal_v::*;
 
@@ -119,6 +119,252 @@ pub open spec fn au_walk_reads_cover(
                 (au_depth - 1) as nat,
                 page_depth,
             )
+        }
+    }
+}
+
+pub open spec fn page_walk_addrs_in(
+    reads: Map<Address, JournalRecord>,
+    boundary_lsn: LSN,
+    root: Pointer,
+    depth: nat,
+    addrs: Set<Address>,
+) -> bool
+    decreases depth
+{
+    if root is None {
+        true
+    } else if depth == 0 {
+        false
+    } else {
+        &&& addrs.contains(root.unwrap())
+        &&& page_walk_addrs_in(
+            reads,
+            boundary_lsn,
+            reads[root.unwrap()].cropped_prior(boundary_lsn),
+            (depth - 1) as nat,
+            addrs,
+        )
+    }
+}
+
+pub open spec fn au_walk_addrs_in(
+    reads: Map<Address, JournalRecord>,
+    boundary_lsn: LSN,
+    root: Pointer,
+    first: AU,
+    au_depth: nat,
+    page_depth: nat,
+    addrs: Set<Address>,
+) -> bool
+    decreases au_depth
+{
+    if root is None {
+        true
+    } else if au_depth == 0 {
+        false
+    } else {
+        let addr = root.unwrap();
+        if addr.au == first {
+            page_walk_addrs_in(reads, boundary_lsn, root, page_depth, addrs)
+        } else {
+            let bottom = addr.first_page();
+            &&& addrs.contains(addr)
+            &&& addrs.contains(bottom)
+            &&& au_walk_addrs_in(
+                reads,
+                boundary_lsn,
+                reads[bottom].cropped_prior(boundary_lsn),
+                first,
+                (au_depth - 1) as nat,
+                page_depth,
+                addrs,
+            )
+        }
+    }
+}
+
+pub proof fn page_walk_addrs_in_entries_subset(
+    reads: Map<Address, JournalRecord>,
+    entries: Map<Address, JournalRecord>,
+    boundary_lsn: LSN,
+    root: Pointer,
+    depth: nat,
+    addrs: Set<Address>,
+)
+    requires
+        page_walk_reads_cover(reads, boundary_lsn, root, depth),
+        (DiskView{boundary_lsn, entries}).decodable(root),
+        (DiskView{boundary_lsn, entries}).acyclic(),
+        forall |addr: Address| #[trigger] reads.contains_key(addr)
+            && entries.contains_key(addr) ==> reads[addr] == entries[addr],
+        forall |addr: Address| #[trigger] entries.contains_key(addr) ==> addrs.contains(addr),
+    ensures
+        page_walk_addrs_in(reads, boundary_lsn, root, depth, addrs),
+    decreases depth,
+{
+    let dv = DiskView{boundary_lsn, entries};
+    if root is Some && depth > 0 {
+        let addr = root.unwrap();
+        assert(reads.contains_key(addr));
+        assert(entries.contains_key(addr));
+        assert(addrs.contains(addr));
+        assert(reads[addr] == entries[addr]);
+        let next = reads[addr].cropped_prior(boundary_lsn);
+        assert(next == dv.next(root));
+        assert(dv.decodable(next));
+        page_walk_addrs_in_entries_subset(
+            reads,
+            entries,
+            boundary_lsn,
+            next,
+            (depth - 1) as nat,
+            addrs,
+        );
+    }
+}
+
+pub proof fn au_walk_addrs_in_entries_subset(
+    reads: Map<Address, JournalRecord>,
+    entries: Map<Address, JournalRecord>,
+    boundary_lsn: LSN,
+    root: Pointer,
+    first: AU,
+    au_depth: nat,
+    page_depth: nat,
+    addrs: Set<Address>,
+)
+    requires
+        au_walk_reads_cover(reads, boundary_lsn, root, first, au_depth, page_depth),
+        (DiskView{boundary_lsn, entries}).pointer_is_upstream(root, first),
+        forall |addr: Address| #[trigger] reads.contains_key(addr)
+            && entries.contains_key(addr) ==> reads[addr] == entries[addr],
+        forall |addr: Address| #[trigger] entries.contains_key(addr) ==> addrs.contains(addr),
+    ensures
+        au_walk_addrs_in(reads, boundary_lsn, root, first, au_depth, page_depth, addrs),
+    decreases au_depth,
+{
+    let dv = DiskView{boundary_lsn, entries};
+    if root is Some && au_depth > 0 {
+        let addr = root.unwrap();
+        if addr.au == first {
+            page_walk_addrs_in_entries_subset(
+                reads,
+                entries,
+                boundary_lsn,
+                root,
+                page_depth,
+                addrs,
+            );
+        } else {
+            let bottom = addr.first_page();
+            assert(reads.contains_key(addr));
+            assert(reads.contains_key(bottom));
+            assert(entries.contains_key(addr));
+            dv.bottom_properties(root, first);
+            assert(entries.contains_key(bottom));
+            assert(addrs.contains(addr));
+            assert(addrs.contains(bottom));
+            assert(reads[addr] == entries[addr]);
+            assert(reads[bottom] == entries[bottom]);
+            let next = reads[bottom].cropped_prior(boundary_lsn);
+            assert(next == dv.next(Some(bottom)));
+            assert(dv.pointer_is_upstream(next, first));
+            au_walk_addrs_in_entries_subset(
+                reads,
+                entries,
+                boundary_lsn,
+                next,
+                first,
+                (au_depth - 1) as nat,
+                page_depth,
+                addrs,
+            );
+        }
+    }
+}
+
+pub proof fn page_walk_reads_cover_restrict(
+    reads: Map<Address, JournalRecord>,
+    addrs: Set<Address>,
+    boundary_lsn: LSN,
+    root: Pointer,
+    depth: nat,
+)
+    requires
+        page_walk_reads_cover(reads, boundary_lsn, root, depth),
+        page_walk_addrs_in(reads, boundary_lsn, root, depth, addrs),
+    ensures
+        page_walk_reads_cover(reads.restrict(addrs), boundary_lsn, root, depth),
+    decreases depth,
+{
+    if root is Some && depth > 0 {
+        let addr = root.unwrap();
+        let restricted = reads.restrict(addrs);
+        assert(addrs.contains(addr));
+        assert(reads.contains_key(addr));
+        assert(restricted.contains_key(addr));
+        assert(restricted[addr] == reads[addr]);
+        let next = reads[addr].cropped_prior(boundary_lsn);
+        assert(restricted[addr].cropped_prior(boundary_lsn) == next);
+        page_walk_reads_cover_restrict(
+            reads,
+            addrs,
+            boundary_lsn,
+            next,
+            (depth - 1) as nat,
+        );
+    }
+}
+
+pub proof fn au_walk_reads_cover_restrict(
+    reads: Map<Address, JournalRecord>,
+    addrs: Set<Address>,
+    boundary_lsn: LSN,
+    root: Pointer,
+    first: AU,
+    au_depth: nat,
+    page_depth: nat,
+)
+    requires
+        au_walk_reads_cover(reads, boundary_lsn, root, first, au_depth, page_depth),
+        au_walk_addrs_in(reads, boundary_lsn, root, first, au_depth, page_depth, addrs),
+    ensures
+        au_walk_reads_cover(
+            reads.restrict(addrs),
+            boundary_lsn,
+            root,
+            first,
+            au_depth,
+            page_depth,
+        ),
+    decreases au_depth,
+{
+    if root is Some && au_depth > 0 {
+        let addr = root.unwrap();
+        let restricted = reads.restrict(addrs);
+        if addr.au == first {
+            page_walk_reads_cover_restrict(reads, addrs, boundary_lsn, root, page_depth);
+        } else {
+            let bottom = addr.first_page();
+            assert(addrs.contains(addr));
+            assert(addrs.contains(bottom));
+            assert(reads.contains_key(addr));
+            assert(reads.contains_key(bottom));
+            assert(restricted.contains_key(addr));
+            assert(restricted.contains_key(bottom));
+            assert(restricted[bottom] == reads[bottom]);
+            let next = reads[bottom].cropped_prior(boundary_lsn);
+            assert(restricted[bottom].cropped_prior(boundary_lsn) == next);
+            au_walk_reads_cover_restrict(
+                reads,
+                addrs,
+                boundary_lsn,
+                next,
+                first,
+                (au_depth - 1) as nat,
+                page_depth,
+            );
         }
     }
 }
@@ -1827,9 +2073,251 @@ pub open spec fn freeze_reads_for_seq_end(
     }
 }
 
+pub open spec fn build_au_page_bounds_from_reads_page_walk_depth(
+    reads: Map<Address, JournalRecord>,
+    boundary_lsn: LSN,
+    root: Pointer,
+    depth: nat,
+) -> AUPageBounds
+    decreases depth
+{
+    if root is None || depth == 0 {
+        Map::empty()
+    } else {
+        let addr = root.unwrap();
+        let prior = build_au_page_bounds_from_reads_page_walk_depth(
+            reads,
+            boundary_lsn,
+            reads[addr].cropped_prior(boundary_lsn),
+            (depth - 1) as nat,
+        );
+        let page = if prior.contains_key(addr.au) && addr.page <= prior[addr.au] {
+            prior[addr.au]
+        } else {
+            addr.page
+        };
+        prior.insert(addr.au, page)
+    }
+}
+
+pub open spec fn build_au_page_bounds_from_reads_au_walk_depth(
+    reads: Map<Address, JournalRecord>,
+    boundary_lsn: LSN,
+    root: Pointer,
+    first: AU,
+    au_depth: nat,
+    page_depth: nat,
+) -> AUPageBounds
+    decreases au_depth
+{
+    if root is None || au_depth == 0 {
+        Map::empty()
+    } else {
+        let addr = root.unwrap();
+        if addr.au == first {
+            build_au_page_bounds_from_reads_page_walk_depth(
+                reads,
+                boundary_lsn,
+                root,
+                page_depth,
+            )
+        } else {
+            let bottom = addr.first_page();
+            let prior = build_au_page_bounds_from_reads_au_walk_depth(
+                reads,
+                boundary_lsn,
+                reads[bottom].cropped_prior(boundary_lsn),
+                first,
+                (au_depth - 1) as nat,
+                page_depth,
+            );
+            prior.insert(addr.au, addr.page)
+        }
+    }
+}
+
+pub proof fn build_au_page_bounds_from_reads_page_walk_depth_supermap(
+    reads: Map<Address, JournalRecord>,
+    entries: Map<Address, JournalRecord>,
+    boundary_lsn: LSN,
+    root: Pointer,
+    depth: nat,
+)
+    requires
+        reads <= entries,
+        page_walk_reads_cover(reads, boundary_lsn, root, depth),
+    ensures
+        build_au_page_bounds_from_reads_page_walk_depth(
+            reads,
+            boundary_lsn,
+            root,
+            depth,
+        ) =~= build_au_page_bounds_from_reads_page_walk_depth(
+            entries,
+            boundary_lsn,
+            root,
+            depth,
+        ),
+    decreases depth
+{
+    if root is Some && depth > 0 {
+        let addr = root.unwrap();
+        assert(reads.contains_key(addr));
+        assert(entries.contains_key(addr));
+        assert(reads[addr] == entries[addr]);
+        let next = reads[addr].cropped_prior(boundary_lsn);
+        assert(next == entries[addr].cropped_prior(boundary_lsn));
+        build_au_page_bounds_from_reads_page_walk_depth_supermap(
+            reads,
+            entries,
+            boundary_lsn,
+            next,
+            (depth - 1) as nat,
+        );
+        let reads_prior = build_au_page_bounds_from_reads_page_walk_depth(
+            reads,
+            boundary_lsn,
+            next,
+            (depth - 1) as nat,
+        );
+        let entries_prior = build_au_page_bounds_from_reads_page_walk_depth(
+            entries,
+            boundary_lsn,
+            next,
+            (depth - 1) as nat,
+        );
+        assert(reads_prior =~= entries_prior);
+        assert_maps_equal!(
+            build_au_page_bounds_from_reads_page_walk_depth(
+                reads,
+                boundary_lsn,
+                root,
+                depth,
+            ),
+            build_au_page_bounds_from_reads_page_walk_depth(
+                entries,
+                boundary_lsn,
+                root,
+                depth,
+            ),
+            au => {
+                if reads_prior.contains_key(addr.au) {
+                    assert(entries_prior.contains_key(addr.au));
+                    assert(reads_prior[addr.au] == entries_prior[addr.au]);
+                }
+                if entries_prior.contains_key(addr.au) {
+                    assert(reads_prior.contains_key(addr.au));
+                    assert(reads_prior[addr.au] == entries_prior[addr.au]);
+                }
+            }
+        );
+    }
+}
+
+pub proof fn build_au_page_bounds_from_reads_au_walk_depth_supermap(
+    reads: Map<Address, JournalRecord>,
+    entries: Map<Address, JournalRecord>,
+    boundary_lsn: LSN,
+    root: Pointer,
+    first: AU,
+    au_depth: nat,
+    page_depth: nat,
+)
+    requires
+        reads <= entries,
+        au_walk_reads_cover(reads, boundary_lsn, root, first, au_depth, page_depth),
+    ensures
+        build_au_page_bounds_from_reads_au_walk_depth(
+            reads,
+            boundary_lsn,
+            root,
+            first,
+            au_depth,
+            page_depth,
+        ) =~= build_au_page_bounds_from_reads_au_walk_depth(
+            entries,
+            boundary_lsn,
+            root,
+            first,
+            au_depth,
+            page_depth,
+        ),
+    decreases au_depth
+{
+    if root is Some && au_depth > 0 {
+        let addr = root.unwrap();
+        if addr.au == first {
+            build_au_page_bounds_from_reads_page_walk_depth_supermap(
+                reads,
+                entries,
+                boundary_lsn,
+                root,
+                page_depth,
+            );
+        } else {
+            let bottom = addr.first_page();
+            assert(reads.contains_key(addr));
+            assert(reads.contains_key(bottom));
+            assert(entries.contains_key(addr));
+            assert(entries.contains_key(bottom));
+            assert(reads[addr] == entries[addr]);
+            assert(reads[bottom] == entries[bottom]);
+            let next = reads[bottom].cropped_prior(boundary_lsn);
+            assert(next == entries[bottom].cropped_prior(boundary_lsn));
+            build_au_page_bounds_from_reads_au_walk_depth_supermap(
+                reads,
+                entries,
+                boundary_lsn,
+                next,
+                first,
+                (au_depth - 1) as nat,
+                page_depth,
+            );
+            let reads_prior = build_au_page_bounds_from_reads_au_walk_depth(
+                reads,
+                boundary_lsn,
+                next,
+                first,
+                (au_depth - 1) as nat,
+                page_depth,
+            );
+            let entries_prior = build_au_page_bounds_from_reads_au_walk_depth(
+                entries,
+                boundary_lsn,
+                next,
+                first,
+                (au_depth - 1) as nat,
+                page_depth,
+            );
+            assert(reads_prior =~= entries_prior);
+            assert_maps_equal!(
+                build_au_page_bounds_from_reads_au_walk_depth(
+                    reads,
+                    boundary_lsn,
+                    root,
+                    first,
+                    au_depth,
+                    page_depth,
+                ),
+                build_au_page_bounds_from_reads_au_walk_depth(
+                    entries,
+                    boundary_lsn,
+                    root,
+                    first,
+                    au_depth,
+                    page_depth,
+                ),
+                au => {}
+            );
+        }
+    }
+}
+
 pub struct JournalStatus {
     pub unmarshalled_tail: MsgHistory, // in memory journal
     pub lsn_au_index: LsnAUIndex,
+    pub au_page_bounds: AUPageBounds,
+    pub clean_watermark_au_page_bounds: AUPageBounds,
     pub clean_watermark_lsn: LSN,
 }
 
@@ -1846,6 +2334,12 @@ state_machine!{ CachedJournal {
             &&& self.seq_start() <= self.seq_end()
             &&& self.status.unwrap().unmarshalled_tail.wf()
             &&& self.seq_start() <= self.clean_watermark() <= self.marshalled_seq_end()
+            &&& self.status.unwrap().clean_watermark_au_page_bounds.dom()
+                <= self.status.unwrap().au_page_bounds.dom()
+            &&& forall |au: AU| #[trigger] self.status.unwrap()
+                .clean_watermark_au_page_bounds.contains_key(au) ==>
+                self.status.unwrap().clean_watermark_au_page_bounds[au]
+                    <= self.status.unwrap().au_page_bounds[au]
         }
     }
 
@@ -1910,6 +2404,7 @@ state_machine!{ CachedJournal {
         require let Label::FreezeForCommit{frozen, reads} = lbl;
 
         let index = pre.status.unwrap().lsn_au_index;
+        let bounds = pre.status.unwrap().au_page_bounds;
         require pre.seq_start() <= frozen.boundary_lsn;
         require frozen.boundary_lsn <= pre.seq_end();
 
@@ -1921,6 +2416,8 @@ state_machine!{ CachedJournal {
             &&& frozen.first() == index[frozen.boundary_lsn]
             &&& index.contains_value(root.au)
             &&& frozen.boundary_lsn < largest_lsn_plus_one_au(index, root.au)
+            &&& bounds.contains_key(root.au)
+            &&& root.page <= bounds[root.au]
         };
 
     }}
@@ -1942,6 +2439,8 @@ state_machine!{ CachedJournal {
 
         update status = Some(JournalStatus{
             clean_watermark_lsn: target_lsn,
+            clean_watermark_au_page_bounds: pre.status.unwrap().clean_watermark_au_page_bounds
+                .union_prefer_right(pre.status.unwrap().au_page_bounds.restrict(lbl->aus)),
             ..pre.status.unwrap()
         });
     }}
@@ -1979,6 +2478,9 @@ state_machine!{ CachedJournal {
         update snapshot = JournalSnapshot{boundary_lsn: start_lsn, root: new_root};
         update status = Some(JournalStatus{
             lsn_au_index: new_lsn_au_index,
+            au_page_bounds: pre.status.unwrap().au_page_bounds.restrict(new_lsn_au_index.values()),
+            clean_watermark_au_page_bounds: pre.status.unwrap().clean_watermark_au_page_bounds
+                .restrict(new_lsn_au_index.values()),
             clean_watermark_lsn: new_clean_watermark,
             unmarshalled_tail: pre.status.unwrap().unmarshalled_tail.bounded_discard(start_lsn),
             ..pre.status.unwrap()
@@ -2000,6 +2502,8 @@ state_machine!{ CachedJournal {
         update snapshot = JournalSnapshot{root: Some(JournalRoot{freshest_rec: addr, first: new_first}), ..pre.snapshot};
         update status = Some(JournalStatus{
             lsn_au_index: lsn_au_index_append_record(pre.status.unwrap().lsn_au_index, marshalled_msgs, addr.au),
+            au_page_bounds: pre.status.unwrap().au_page_bounds.insert(addr.au, addr.page),
+            clean_watermark_au_page_bounds: pre.status.unwrap().clean_watermark_au_page_bounds,
             unmarshalled_tail:  pre.status.unwrap().unmarshalled_tail.discard_old(cut),
             // Marshal only dirties cache pages; cleaning/flush advances watermark later.
             clean_watermark_lsn: pre.status.unwrap().clean_watermark_lsn,
@@ -2026,11 +2530,21 @@ state_machine!{ CachedJournal {
             au_depth,
             page_depth,
         );
+        let au_page_bounds = build_au_page_bounds_from_reads_au_walk_depth(
+            reads,
+            bdy,
+            ptr,
+            first,
+            au_depth,
+            page_depth,
+        );
         let clean_watermark_lsn = seq_end;
         require discovered_aus == lsn_au_index.values();
 
         update status = Some(JournalStatus{
             lsn_au_index,
+            au_page_bounds,
+            clean_watermark_au_page_bounds: au_page_bounds,
             unmarshalled_tail: MsgHistory::empty_history_at(seq_end),
             clean_watermark_lsn,
         });
@@ -2169,15 +2683,185 @@ state_machine!{ CachedJournal {
             post.snapshot == pre.snapshot,
             post.status is Some,
             discovered_aus == post.status.unwrap().lsn_au_index.values(),
+            exists |au_depth: nat, page_depth: nat| {
+                &&& #[trigger] CachedJournal::State::load_index(
+                    pre,
+                    post,
+                    CachedJournal::Label::LoadIndex{reads, discovered_aus},
+                    au_depth,
+                    page_depth,
+                )
+                &&& post.status.unwrap().au_page_bounds
+                    == build_au_page_bounds_from_reads_au_walk_depth(
+                        reads,
+                        pre.snapshot.boundary_lsn,
+                        pre.snapshot.freshest_rec(),
+                        pre.snapshot.first(),
+                        au_depth,
+                        page_depth,
+                    )
+            },
     {
         reveal(CachedJournal::State::next);
         reveal(CachedJournal::State::next_by);
         let lbl = CachedJournal::Label::LoadIndex{reads, discovered_aus};
         let step = choose |step| CachedJournal::State::next_by(pre, post, lbl, step);
         match step {
-            CachedJournal::Step::load_index(au_depth, page_depth) => {},
+            CachedJournal::Step::load_index(au_depth, page_depth) => {
+                reveal(CachedJournal::State::load_index);
+                assert(exists |au_depth: nat, page_depth: nat| {
+                    &&& #[trigger] CachedJournal::State::load_index(
+                        pre,
+                        post,
+                        lbl,
+                        au_depth,
+                        page_depth,
+                    )
+                    &&& post.status.unwrap().au_page_bounds
+                        == build_au_page_bounds_from_reads_au_walk_depth(
+                            reads,
+                            pre.snapshot.boundary_lsn,
+                            pre.snapshot.freshest_rec(),
+                            pre.snapshot.first(),
+                            au_depth,
+                            page_depth,
+                        )
+                });
+            },
             _ => { assert(false); },
         }
+    }
+
+    pub proof fn load_index_with_restricted_reads(
+        pre: Self,
+        post: Self,
+        reads: Map<Address, JournalRecord>,
+        addrs: Set<Address>,
+        discovered_aus: Set<AU>,
+        au_depth: nat,
+        page_depth: nat,
+    )
+        requires
+            CachedJournal::State::load_index(
+                pre,
+                post,
+                CachedJournal::Label::LoadIndex{reads, discovered_aus},
+                au_depth,
+                page_depth,
+            ),
+            au_walk_addrs_in(
+                reads,
+                pre.snapshot.boundary_lsn,
+                pre.snapshot.freshest_rec(),
+                pre.snapshot.first(),
+                au_depth,
+                page_depth,
+                addrs,
+            ),
+        ensures
+            CachedJournal::State::next(
+                pre,
+                post,
+                CachedJournal::Label::LoadIndex{
+                    reads: reads.restrict(addrs),
+                    discovered_aus,
+                },
+            ),
+    {
+        let lbl = CachedJournal::Label::LoadIndex{reads, discovered_aus};
+        let ptr = pre.snapshot.freshest_rec();
+        let bdy = pre.snapshot.boundary_lsn;
+        let first = pre.snapshot.first();
+        let sub_reads = reads.restrict(addrs);
+        let sub_lbl = CachedJournal::Label::LoadIndex{
+            reads: sub_reads,
+            discovered_aus,
+        };
+        assert(CachedJournal::State::load_index(
+            pre,
+            post,
+            lbl,
+            au_depth,
+            page_depth,
+        )) by {
+            reveal(CachedJournal::State::load_index);
+        }
+        assert(au_walk_reads_cover(reads, bdy, ptr, first, au_depth, page_depth));
+        au_walk_reads_cover_restrict(reads, addrs, bdy, ptr, first, au_depth, page_depth);
+        assert(au_walk_reads_cover(sub_reads, bdy, ptr, first, au_depth, page_depth));
+        assert(sub_reads <= reads);
+        build_lsn_au_index_from_reads_au_walk_depth_supermap(
+            sub_reads,
+            reads,
+            bdy,
+            ptr,
+            first,
+            au_depth,
+            page_depth,
+        );
+        build_au_page_bounds_from_reads_au_walk_depth_supermap(
+            sub_reads,
+            reads,
+            bdy,
+            ptr,
+            first,
+            au_depth,
+            page_depth,
+        );
+        assert(build_lsn_au_index_from_reads_au_walk_depth(
+            sub_reads,
+            bdy,
+            ptr,
+            first,
+            au_depth,
+            page_depth,
+        ) =~= build_lsn_au_index_from_reads_au_walk_depth(
+            reads,
+            bdy,
+            ptr,
+            first,
+            au_depth,
+            page_depth,
+        ));
+        assert(build_au_page_bounds_from_reads_au_walk_depth(
+            sub_reads,
+            bdy,
+            ptr,
+            first,
+            au_depth,
+            page_depth,
+        ) =~= build_au_page_bounds_from_reads_au_walk_depth(
+            reads,
+            bdy,
+            ptr,
+            first,
+            au_depth,
+            page_depth,
+        ));
+        if ptr is Some {
+            assert(addrs.contains(ptr.unwrap()));
+            assert(sub_reads.contains_key(ptr.unwrap()));
+            assert(reads.contains_key(ptr.unwrap()));
+            assert(sub_reads[ptr.unwrap()] == reads[ptr.unwrap()]);
+        }
+        assert(CachedJournal::State::load_index(
+            pre,
+            post,
+            sub_lbl,
+            au_depth,
+            page_depth,
+        )) by {
+            reveal(CachedJournal::State::load_index);
+        }
+        assert(CachedJournal::State::next_by(
+            pre,
+            post,
+            sub_lbl,
+            CachedJournal::Step::load_index(au_depth, page_depth),
+        )) by {
+            reveal(CachedJournal::State::next_by);
+        }
+        reveal(CachedJournal::State::next);
     }
 
     pub proof fn load_index_discovered_aus_in_reads(
@@ -2367,6 +3051,7 @@ state_machine!{ CachedJournal {
             post.snapshot == pre.snapshot,
             post.status is Some,
             post.status.unwrap().lsn_au_index == pre.status.unwrap().lsn_au_index,
+            post.status.unwrap().au_page_bounds == pre.status.unwrap().au_page_bounds,
             post.status.unwrap().clean_watermark_lsn
                 == pre.status.unwrap().clean_watermark_lsn,
             post.status.unwrap().unmarshalled_tail
@@ -2390,6 +3075,7 @@ state_machine!{ CachedJournal {
             post.snapshot == pre.snapshot,
             post.status is Some,
             post.status.unwrap().lsn_au_index == pre.status.unwrap().lsn_au_index,
+            post.status.unwrap().au_page_bounds == pre.status.unwrap().au_page_bounds,
             post.status.unwrap().unmarshalled_tail == pre.status.unwrap().unmarshalled_tail,
             pre.clean_watermark() <= post.clean_watermark(),
     {
