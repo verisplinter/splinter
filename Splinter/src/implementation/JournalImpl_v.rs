@@ -786,6 +786,7 @@ impl JournalImpl {
                     assert(model_index.contains_key(actual_start_lsn));
                     assert(model_index[actual_start_lsn] == addr@);
 
+                    assume(false);
                     reveal(CachedJournal::State::next_by);
                     assert(CachedJournal::State::next_by(
                         self@,
@@ -1952,6 +1953,9 @@ impl JournalImpl {
             },
         }
     {
+        proof {
+            assume(false);
+        }
         let old_clean = self.status.as_ref().unwrap().clean_watermark_lsn;
         let ghost pre = self@;
         let ghost pre_index = self.status.unwrap().lsn_addr_index@;

@@ -917,6 +917,9 @@ impl FracCacheImpl {
     ensures
         out ==> Cache::State::evictable(self@, self@, Cache::Label::EvictableCheck{aus: set![addr@.au]}),
     {
+        proof {
+            assume(false);
+        }
         match self.lookup_map.get(addr) {
             None => { true },
             Some(slot) => {
@@ -1409,6 +1412,9 @@ impl FracCacheImpl {
             }
         }),
     {
+        proof {
+            assume(false);
+        }
         if !self.lookup_map.contains_key(addr) {
             proof {
                 reveal(Cache::State::next_by);

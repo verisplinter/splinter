@@ -50,6 +50,22 @@ pub open spec fn singleton_message_seq(msg: Message) -> Seq<Message>
     seq![msg]
 }
 
+pub open spec fn cache_read_requests_disk_backed(
+    requests: Set<DiskRequest>,
+    disk_backed_addrs: Set<Address>,
+) -> bool
+{
+    forall |req: DiskRequest| #[trigger] requests.contains(req) && req is ReadReq
+        ==> disk_backed_addrs.contains(req->from)
+}
+
+pub open spec fn cache_write_response_addrs(
+    responses: Map<Address, DiskResponse>,
+) -> Set<Address>
+{
+    Set::new(|addr: Address| responses.contains_key(addr) && responses[addr] is WriteResp)
+}
+
 pub enum AtomicSyncPhase {
     None,
     Started{ image: AbstractSuperblockImage },
@@ -81,6 +97,7 @@ state_machine!{ UnifiedCacheSystem {
         pub recovery_state: RecoveryState,
         pub cache: Cache::State,
         pub outstanding_cache_reqs: Map<ID, Address>,
+        pub disk_backed_addrs: Set<Address>,
         pub free_aus: Set<AU>,
         pub journal: AtomicJournalState::State,
         pub branch: AtomicBranchState::State,
@@ -103,6 +120,7 @@ state_machine!{ UnifiedCacheSystem {
         init recovery_state = RecoveryState::Begin;
         init cache = Cache::State::empty(cache_slots);
         init outstanding_cache_reqs = Map::empty();
+        init disk_backed_addrs = Set::<Address>::empty().insert(spec_superblock_addr());
         init free_aus = free_aus;
         init journal = AtomicJournalState::State::empty();
         init branch = AtomicBranchState::State::empty();
@@ -391,6 +409,7 @@ state_machine!{ UnifiedCacheSystem {
         require !(pre.recovery_state is AwaitingSuperblock);
         require updated.is_injective();
         require !updated.contains_value(spec_superblock_addr());
+        require cache_read_requests_disk_backed(req_map.values(), pre.disk_backed_addrs);
         require multiset_to_map(reqs) == req_map;
         require resps.is_empty();
         require Cache::State::next(
@@ -417,6 +436,7 @@ state_machine!{ UnifiedCacheSystem {
             |addr| finished.contains_key(addr),
             |addr| resp_map[finished[addr]],
         );
+        let write_resp_addrs = cache_write_response_addrs(cache_resps);
 
         require !(pre.recovery_state is Begin);
         require !(pre.recovery_state is AwaitingSuperblock);
@@ -430,6 +450,7 @@ state_machine!{ UnifiedCacheSystem {
 
         update cache = new_cache;
         update outstanding_cache_reqs = new_outstanding;
+        update disk_backed_addrs = pre.disk_backed_addrs + write_resp_addrs;
     }}
 
     transition!{ cache_internal(lbl: Label, new_cache: Cache::State) {

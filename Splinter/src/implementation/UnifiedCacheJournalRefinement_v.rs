@@ -719,6 +719,54 @@ impl UnifiedCacheJournalSource {
         reveal(CrashAwareCachingDiskJournal::State::next);
     }
 
+    pub proof fn loaded_caching_disk_internal_refines_journal_internal_preserves_inv(
+        self,
+        post: Self,
+    )
+        requires
+            inv(self),
+            self.same_except_cache_and_disk(post),
+            self.superblock_loaded(),
+            self.journal.ready(),
+            post.cache == self.cache,
+            post.disk.inv(),
+            async_disk_superblock_page_wf(post.disk.content),
+            post.persistent_superblock_image_i() == self.persistent_superblock_image_i(),
+            CachingDisk::State::next(
+                self.journal_caching_disk_i(),
+                post.journal_caching_disk_i(),
+                CachingDisk::Label::Internal{},
+            ),
+        ensures
+            CrashAwareCachingDiskJournal::State::next(
+                self.i(),
+                post.i(),
+                CrashAwareCachingDiskJournal::Label::Internal,
+            ),
+            inv(post),
+    {
+        self.loaded_caching_disk_internal_refines_journal_internal(post);
+        CachingDisk::State::inv_next(
+            self.journal_caching_disk_i(),
+            post.journal_caching_disk_i(),
+            CachingDisk::Label::Internal{},
+        );
+        assert(post.inv()) by {
+            assert(post.journal.wf());
+            assert(async_disk_superblock_page_wf(post.disk.content));
+            assert(post.persistent_superblock_image_i().wf());
+            assert(post.cache.inv());
+            assert(post.disk.inv());
+            assert(post.journal_caching_disk_i().inv());
+            assert(post.journal.ready());
+        }
+        self.i().next_refines(post.i(), CrashAwareCachingDiskJournal::Label::Internal);
+        assert(post.semantic_inv()) by {
+            assert(post.journal.ready());
+        }
+        assert(inv(post));
+    }
+
     pub proof fn loaded_cache_internal_refines_journal_internal(
         self,
         post: Self,

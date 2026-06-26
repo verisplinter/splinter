@@ -3500,6 +3500,124 @@ pub proof fn async_disk_process_write_refines_persist_writeback(
     }
 }
 
+pub proof fn async_disk_process_write_refines_projected_internal(
+    cache: Cache::State,
+    pre_disk: AsyncDisk::State,
+    post_disk: AsyncDisk::State,
+    owned_aus: Set<AU>,
+    id: ID,
+)
+    requires
+        AsyncDisk::State::next_by(
+            pre_disk,
+            post_disk,
+            AsyncDisk::Label::Internal{},
+            AsyncDisk::Step::process_write(id),
+        ),
+        pre_disk.requests.contains_key(id),
+        pre_disk.requests[id] is WriteReq,
+        owned_aus.contains(pre_disk.requests[id]->to.au) ==> {
+            &&& cache_filled_addr(cache, pre_disk.requests[id]->to)
+            &&& cache_filled_page(cache, pre_disk.requests[id]->to) == pre_disk.requests[id]->data
+            &&& filled_cache_status(cache).contains_key(pre_disk.requests[id]->to)
+            &&& filled_cache_status(cache)[pre_disk.requests[id]->to]
+                == CachingDiskPageStatus::Writeback
+        },
+    ensures
+        CachingDisk::State::next(
+            caching_disk_i(cache, pre_disk, owned_aus),
+            caching_disk_i(cache, post_disk, owned_aus),
+            CachingDisk::Label::Internal{},
+        ),
+{
+    reveal(AsyncDisk::State::next_by);
+    let req = pre_disk.requests[id];
+    let addr = req->to;
+    assert(post_disk.content == pre_disk.content.insert(addr, req->data));
+    if owned_aus.contains(addr.au) {
+        async_disk_process_write_refines_persist_writeback(
+            cache,
+            pre_disk,
+            post_disk,
+            owned_aus,
+            id,
+        );
+        assert(CachingDisk::State::next_by(
+            caching_disk_i(cache, pre_disk, owned_aus),
+            caching_disk_i(cache, post_disk, owned_aus),
+            CachingDisk::Label::Internal{},
+            CachingDisk::Step::persist_writeback(set![addr]),
+        ));
+        reveal(CachingDisk::State::next);
+    } else {
+        let pre_cd = caching_disk_i(cache, pre_disk, owned_aus);
+        let post_cd = caching_disk_i(cache, post_disk, owned_aus);
+        assert(post_cd.cache == pre_cd.cache);
+        assert(post_cd.status == pre_cd.status);
+        assert(post_cd.persistent == pre_cd.persistent) by {
+            assert_maps_equal!(
+                post_cd.persistent,
+                pre_cd.persistent,
+                a => {
+                    if post_cd.persistent.contains_key(a) {
+                        assert(addresses_in_aus(owned_aus).contains(a));
+                        assert(owned_aus.contains(a.au));
+                        assert(a != addr);
+                        assert(post_disk.content[a] == pre_disk.content[a]);
+                    }
+                    if pre_cd.persistent.contains_key(a) {
+                        assert(addresses_in_aus(owned_aus).contains(a));
+                        assert(owned_aus.contains(a.au));
+                        assert(a != addr);
+                        assert(post_disk.content[a] == pre_disk.content[a]);
+                    }
+                }
+            );
+        }
+        assert(post_cd == pre_cd);
+        assert(pre_cd.all_status(Set::<Address>::empty(), CachingDiskPageStatus::Writeback));
+        assert(pre_cd.cache.restrict(Set::<Address>::empty()) == Map::<Address, RawPage>::empty()) by {
+            assert_maps_equal!(
+                pre_cd.cache.restrict(Set::<Address>::empty()),
+                Map::<Address, RawPage>::empty(),
+                a => {
+                    if pre_cd.cache.restrict(Set::<Address>::empty()).contains_key(a) {
+                        assert(false);
+                    }
+                }
+            );
+        }
+        assert(pre_cd.persistent.union_prefer_right(
+            pre_cd.cache.restrict(Set::<Address>::empty()),
+        ) == pre_cd.persistent) by {
+            assert_maps_equal!(
+                pre_cd.persistent.union_prefer_right(
+                    pre_cd.cache.restrict(Set::<Address>::empty()),
+                ),
+                pre_cd.persistent,
+                a => {}
+            );
+        }
+        assert(CachingDisk::State::persist_writeback(
+            pre_cd,
+            post_cd,
+            CachingDisk::Label::Internal{},
+            Set::<Address>::empty(),
+        )) by {
+            reveal(CachingDisk::State::persist_writeback);
+        }
+        assert(CachingDisk::State::next_by(
+            pre_cd,
+            post_cd,
+            CachingDisk::Label::Internal{},
+            CachingDisk::Step::persist_writeback(Set::<Address>::empty()),
+        )) by {
+            reveal(CachingDisk::State::next_by);
+        }
+        reveal(CachingDisk::State::next);
+    }
+}
+
 pub proof fn cache_writeback_complete_refines_mark_clean(
     pre_cache: Cache::State,
     post_cache: Cache::State,

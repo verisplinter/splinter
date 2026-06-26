@@ -570,6 +570,101 @@ impl UnifiedCacheBranchSource {
         assert(self.i() == post.i());
     }
 
+    pub proof fn loaded_caching_disk_internal_refines_branch_internal_preserves_inv(
+        self,
+        post: Self,
+    )
+        requires
+            inv(self),
+            self.same_except_cache_and_disk(post),
+            self.superblock_loaded(),
+            post.cache == self.cache,
+            post.disk.inv(),
+            async_disk_superblock_page_wf(post.disk.content),
+            post.persistent_superblock_image_i() == self.persistent_superblock_image_i(),
+            CachingDisk::State::next(
+                self.branch_caching_disk_i(),
+                post.branch_caching_disk_i(),
+                CachingDisk::Label::Internal{},
+            ),
+        ensures
+            CrashAwareCachingDiskBranch::State::next(
+                self.i(),
+                post.i(),
+                CrashAwareCachingDiskBranch::Label::Internal,
+            ),
+            inv(post),
+    {
+        assert(post.superblock_loaded());
+        assert(self.persistent_branch_i() == post.persistent_branch_i());
+        assert(self.frozen_branch_metadata_i() == post.frozen_branch_metadata_i());
+        assert(self.branch_caching_disk_state_i().sealed_roots
+            == post.branch_caching_disk_state_i().sealed_roots);
+        assert(self.branch_caching_disk_state_i().branch_summary
+            == post.branch_caching_disk_state_i().branch_summary);
+        assert(self.branch_caching_disk_state_i().metadata_loaded
+            == post.branch_caching_disk_state_i().metadata_loaded);
+        assert(self.branch_caching_disk_state_i().persisted_root_count
+            == post.branch_caching_disk_state_i().persisted_root_count);
+        assert(self.branch_caching_disk_state_i().active_branch
+            == post.branch_caching_disk_state_i().active_branch);
+        assert(self.branch_caching_disk_state_i().mini_allocator
+            == post.branch_caching_disk_state_i().mini_allocator);
+        assert(self.branch_caching_disk_state_i().seq_end
+            == post.branch_caching_disk_state_i().seq_end);
+
+        assert(CachingDiskBranch::State::disk_internal(
+            self.branch_caching_disk_state_i(),
+            post.branch_caching_disk_state_i(),
+            CachingDiskBranch::Label::Internal,
+            post.branch_caching_disk_i(),
+        )) by {
+            reveal(CachingDiskBranch::State::disk_internal);
+        }
+        assert(CachingDiskBranch::State::next_by(
+            self.branch_caching_disk_state_i(),
+            post.branch_caching_disk_state_i(),
+            CachingDiskBranch::Label::Internal,
+            CachingDiskBranch::Step::disk_internal(post.branch_caching_disk_i()),
+        )) by {
+            reveal(CachingDiskBranch::State::next_by);
+        }
+        reveal(CachingDiskBranch::State::next);
+        assert(CrashAwareCachingDiskBranch::State::internal(
+            self.i(),
+            post.i(),
+            CrashAwareCachingDiskBranch::Label::Internal,
+            post.branch_caching_disk_state_i(),
+        )) by {
+            reveal(CrashAwareCachingDiskBranch::State::internal);
+        }
+        assert(CrashAwareCachingDiskBranch::State::next_by(
+            self.i(),
+            post.i(),
+            CrashAwareCachingDiskBranch::Label::Internal,
+            CrashAwareCachingDiskBranch::Step::internal(post.branch_caching_disk_state_i()),
+        )) by {
+            reveal(CrashAwareCachingDiskBranch::State::next_by);
+        }
+        reveal(CrashAwareCachingDiskBranch::State::next);
+        CachingDisk::State::inv_next(
+            self.branch_caching_disk_i(),
+            post.branch_caching_disk_i(),
+            CachingDisk::Label::Internal{},
+        );
+        assert(post.inv()) by {
+            assert(post.branch.wf());
+            assert(async_disk_superblock_page_wf(post.disk.content));
+            assert(post.persistent_superblock_image_i().wf());
+            assert(post.cache.inv());
+            assert(post.disk.inv());
+            assert(post.branch_caching_disk_i().inv());
+        }
+        self.i().next_refines(post.i(), CrashAwareCachingDiskBranch::Label::Internal);
+        assert(post.semantic_inv());
+        assert(inv(post));
+    }
+
     pub proof fn unchanged_by_same_cache_and_disk_content(
         self,
         post: Self,
