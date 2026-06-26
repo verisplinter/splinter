@@ -1134,6 +1134,50 @@ impl CrashAwareCachingDiskBranch::State {
         }
     }
 
+    pub proof fn load_metadata_discovered_aus_subset_full_accessible(
+        pre: Self,
+        post: Self,
+        root: Address,
+        discovered_aus: Set<AU>,
+    )
+        requires
+            pre.inv(),
+            CrashAwareCachingDiskBranch::State::next(
+                pre,
+                post,
+                CrashAwareCachingDiskBranch::Label::LoadMetadata{root, discovered_aus},
+            ),
+        ensures
+            pre.ephemeral is Known,
+            discovered_aus <= pre.ephemeral->v.full_accessible_aus(),
+    {
+        let lbl = CrashAwareCachingDiskBranch::Label::LoadMetadata{root, discovered_aus};
+        reveal(CrashAwareCachingDiskBranch::State::next);
+        reveal(CrashAwareCachingDiskBranch::State::next_by);
+        let step = choose |step| CrashAwareCachingDiskBranch::State::next_by(pre, post, lbl, step);
+        match step {
+            CrashAwareCachingDiskBranch::Step::load_metadata(new_ephemeral) => {
+                assert(CrashAwareCachingDiskBranch::State::load_metadata(
+                    pre,
+                    post,
+                    lbl,
+                    new_ephemeral,
+                )) by {
+                    reveal(CrashAwareCachingDiskBranch::State::load_metadata);
+                }
+                CachingDiskBranch::State::load_metadata_discovered_aus_subset_full_accessible(
+                    pre.ephemeral->v,
+                    new_ephemeral,
+                    root,
+                    discovered_aus,
+                );
+            },
+            _ => {
+                assert(false);
+            },
+        }
+    }
+
     pub proof fn load_metadata_accessible_aus_growth(
         pre: Self,
         post: Self,

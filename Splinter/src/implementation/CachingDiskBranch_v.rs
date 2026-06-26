@@ -5408,6 +5408,99 @@ impl CachingDiskBranch::State {
         }
     }
 
+    pub proof fn load_metadata_discovered_aus_subset_full_accessible(
+        pre: Self,
+        post: Self,
+        root: Address,
+        discovered_aus: Set<AU>,
+    )
+        requires
+            pre.inv(),
+            CachingDiskBranch::State::next(
+                pre,
+                post,
+                CachingDiskBranch::Label::LoadMetadata{root, discovered_aus},
+            ),
+        ensures
+            discovered_aus <= pre.full_accessible_aus(),
+    {
+        let lbl = CachingDiskBranch::Label::LoadMetadata{root, discovered_aus};
+        reveal(CachingDiskBranch::State::next);
+        reveal(CachingDiskBranch::State::next_by);
+        let step = choose |step: CachingDiskBranch::Step|
+            CachingDiskBranch::State::next_by(pre, post, lbl, step);
+        match step {
+            CachingDiskBranch::Step::load_metadata(reads) => {
+                assert(CachingDiskBranch::State::load_metadata(pre, post, lbl, reads)) by {
+                    reveal(CachingDiskBranch::State::load_metadata);
+                }
+                CachingDiskBranch::State::inv_next(pre, post, lbl);
+                assert(post.inv());
+                assert(post.disk == pre.disk);
+                assert(post.sealed_roots == pre.sealed_roots);
+                assert(post.visible_branch_nodes() == pre.visible_branch_nodes()) by {
+                    assert_maps_equal!(
+                        post.visible_branch_nodes(),
+                        pre.visible_branch_nodes(),
+                        addr => {}
+                    );
+                }
+                assert(post.interpreted_branch_summary()
+                    == pre.interpreted_branch_summary()) by {
+                    assert_maps_equal!(
+                        post.interpreted_branch_summary(),
+                        pre.interpreted_branch_summary(),
+                        au => {}
+                    );
+                }
+                let idx = choose |i: int| 0 <= i < pre.sealed_roots.len()
+                    && pre.sealed_roots[i] == root;
+                assert(0 <= idx < pre.sealed_roots.len());
+                assert(post.sealed_roots[idx] == root);
+                assert(post.branch_summary == pre.branch_summary.insert(root.au, discovered_aus));
+                assert(post.branch_summary.contains_key(root.au));
+                assert(post.branch_summary[root.au] == discovered_aus);
+                assert(post.loaded_branch_summary_agrees());
+                assert(discovered_aus == root_summary_from_read(
+                    root,
+                    post.visible_branch_nodes(),
+                ));
+                assert(discovered_aus == root_summary_from_read(
+                    root,
+                    pre.visible_branch_nodes(),
+                ));
+                assert(crate::disk::GenericDisk_v::set_addrs_disjoint_aus(
+                    pre.sealed_roots.to_set(),
+                )) by {
+                    assert(pre.sealed_stack_i().wf(pre.interpreted_branch_summary()));
+                }
+                branch_summary_from_reads_up_to_self_ensures(
+                    pre.sealed_roots,
+                    pre.visible_branch_nodes(),
+                    pre.sealed_roots.len() as nat,
+                );
+                root_aus_up_to_full(pre.sealed_roots);
+                to_aus_finite(pre.sealed_roots.to_set());
+                assert(pre.interpreted_branch_summary().dom().finite());
+                lemma_values_finite(pre.interpreted_branch_summary());
+                assert(pre.interpreted_branch_summary()[root.au] == discovered_aus);
+                assert(pre.interpreted_branch_summary().values().contains(discovered_aus));
+                assert forall |au: AU| #[trigger] discovered_aus.contains(au)
+                    implies pre.full_accessible_aus().contains(au) by {
+                    assert(summary_aus(pre.interpreted_branch_summary()).contains(au)) by {
+                        lemma_union_set_of_sets_subset(
+                            pre.interpreted_branch_summary().values(),
+                            discovered_aus,
+                        );
+                    }
+                }
+            },
+            _ => {
+                assert(false);
+            },
+        }
+    }
+
     pub proof fn load_metadata_accessible_aus_growth(
         pre: Self,
         post: Self,
