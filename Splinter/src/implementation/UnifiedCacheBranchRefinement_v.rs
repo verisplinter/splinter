@@ -45,6 +45,7 @@ use crate::implementation::CachedBranch_v::{
 use crate::implementation::CachingDiskAdapterRefinement_v::{
     cache_filled_addr, cache_filled_page,
     cache_access_refines_caching_disk_access,
+    cache_evictable_refines_observe_clean_aus,
     cache_internal_refines_caching_disk_internal,
     cache_disk_ops_begin_refines_caching_disk_internal,
     cache_disk_ops_end_refines_caching_disk_internal,
@@ -61,6 +62,7 @@ use crate::implementation::CachingDiskBranch_v::{
     empty_caching_disk_branch_image_wf,
     loaded_branch_summary_agrees,
     mini_allocator_allocated_addrs_subset_all_aus, sealed_nodes_of,
+    sealed_summary_aus_between,
     split_read_addrs, to_branch_nodes, root_aus_up_to, root_aus_up_to_contains,
     root_aus_up_to_full,
     root_aus_up_to_member_has_index, CachingDiskBranch,
@@ -3199,6 +3201,7 @@ pub proof fn append_refines(
             CrashAwareCachingDiskBranch::Label::Append{keys, msgs},
         ),
         writes.dom() <= addresses_in_aus(pre.branch_projection_aus()),
+        writes.dom() <= Set::new(|addr: Address| addr.wf()),
         post.branch_projection_aus() =~= pre.branch_projection_aus(),
         post.branch.seq_end() == pre.branch.seq_end() + keys.len(),
         post.branch.metadata_loaded(),
@@ -3471,6 +3474,93 @@ pub proof fn append_refines(
             }
         }
     }
+    assert(writes.dom() <= Set::new(|addr: Address| addr.wf())) by {
+        assert forall |addr: Address| #[trigger] writes.dom().contains(addr)
+            implies Set::new(|addr: Address| addr.wf()).contains(addr) by {
+            assert(writes.contains_key(addr));
+            assert(write_nodes.contains_key(addr));
+            if pre.branch.active_branch.root is Some {
+                let branch_lbl = CachedBranch::Label::Append{
+                    mini_allocator: pre.branch.mini_allocator,
+                    receipt,
+                    keys,
+                    msgs,
+                    read_nodes,
+                    write_nodes,
+                };
+                assert(CachedBranch::State::next(
+                    pre.branch.active_branch,
+                    post.branch.active_branch,
+                    branch_lbl,
+                ));
+                reveal(CachedBranch::State::next);
+                reveal(CachedBranch::State::next_by);
+                assert(CachedBranch::State::next_by(
+                    pre.branch.active_branch,
+                    post.branch.active_branch,
+                    branch_lbl,
+                    CachedBranch::Step::append_step(),
+                ));
+                assert(CachedBranch::State::append_step(
+                    pre.branch.active_branch,
+                    post.branch.active_branch,
+                    branch_lbl,
+                )) by {
+                    reveal(CachedBranch::State::append_step);
+                }
+                reveal(CachedBranch::State::append_step);
+                assert(write_nodes == loaded_append_write_nodes(receipt, keys, msgs));
+                assert(addr == receipt.target().addr);
+                assert(receipt.needed_addrs().contains(addr)) by {
+                    let i = receipt.lines.len() - 1;
+                    assert(0 <= i < receipt.lines.len());
+                    assert(receipt.lines[i].addr == addr);
+                }
+                active_receipt_needed_addr_in_branch_projection(
+                    pre,
+                    reads,
+                    receipt,
+                    addr,
+                );
+                assert(addr.wf());
+            } else {
+                assert(init_root is Some);
+                let init_addr = init_root.unwrap();
+                let branch_lbl = CachedBranch::Label::Initialize{
+                    mini_allocator: pre.branch.mini_allocator,
+                    init_root: init_addr,
+                    keys,
+                    msgs,
+                    write_nodes,
+                };
+                assert(CachedBranch::State::next(
+                    pre.branch.active_branch,
+                    post.branch.active_branch,
+                    branch_lbl,
+                ));
+                reveal(CachedBranch::State::next);
+                reveal(CachedBranch::State::next_by);
+                assert(CachedBranch::State::next_by(
+                    pre.branch.active_branch,
+                    post.branch.active_branch,
+                    branch_lbl,
+                    CachedBranch::Step::initialize_branch(),
+                ));
+                assert(CachedBranch::State::initialize_branch(
+                    pre.branch.active_branch,
+                    post.branch.active_branch,
+                    branch_lbl,
+                )) by {
+                    reveal(CachedBranch::State::initialize_branch);
+                }
+                reveal(CachedBranch::State::initialize_branch);
+                assert(write_nodes == loaded_initialize_write_nodes(init_addr, keys, msgs));
+                assert(addr == init_addr);
+                assert(pre.branch.mini_allocator.can_allocate(init_addr));
+                assert(init_addr.wf());
+            }
+        }
+    }
 
     cache_access_refines_caching_disk_access(
         pre.cache,
@@ -3605,6 +3695,423 @@ pub proof fn append_refines(
     }
     assert(post.semantic_inv());
     assert(inv(post));
+}
+
+pub proof fn append_refines_with_extra_reads(
+    pre: UnifiedCacheBranchSource,
+    post: UnifiedCacheBranchSource,
+    keys: Seq<Key>,
+    msgs: Seq<Message>,
+    receipt: LoadedPathReceipt,
+    init_root: Option<Address>,
+    reads: Map<Address, RawPage>,
+    writes: Map<Address, RawPage>,
+)
+    requires
+        inv(pre),
+        pre.superblock_loaded(),
+        pre.branch.metadata_loaded(),
+        post.disk == pre.disk,
+        post.persistent_image == pre.persistent_image,
+        post.in_flight == pre.in_flight,
+        post.in_flight_image == pre.in_flight_image,
+        Cache::State::next(
+            pre.cache,
+            post.cache,
+            Cache::Label::Access{reads, writes},
+        ),
+        AtomicBranchState::State::next(
+            pre.branch,
+            post.branch,
+            AtomicBranchState::Label::Append{
+                keys,
+                msgs,
+                receipt,
+                init_root,
+                read_nodes: to_branch_nodes(reads),
+                write_nodes: to_branch_nodes(writes),
+            },
+        ),
+    ensures
+        CrashAwareCachingDiskBranch::State::next(
+            unified_cache_branch_i(pre),
+            unified_cache_branch_i(post),
+            CrashAwareCachingDiskBranch::Label::Append{keys, msgs},
+        ),
+        writes.dom() <= addresses_in_aus(pre.branch_projection_aus()),
+        writes.dom() <= Set::new(|addr: Address| addr.wf()),
+        post.branch_projection_aus() =~= pre.branch_projection_aus(),
+        post.branch.seq_end() == pre.branch.seq_end() + keys.len(),
+        post.branch.metadata_loaded(),
+        post.branch.prepared == pre.branch.prepared,
+        inv(post),
+{
+    let tight_reads = if pre.branch.active_branch.root is Some {
+        reads.restrict(receipt.needed_addrs())
+    } else {
+        Map::<Address, RawPage>::empty()
+    };
+    let read_nodes = to_branch_nodes(reads);
+    let tight_read_nodes = to_branch_nodes(tight_reads);
+    let write_nodes = to_branch_nodes(writes);
+    let atomic_lbl = AtomicBranchState::Label::Append{
+        keys,
+        msgs,
+        receipt,
+        init_root,
+        read_nodes,
+        write_nodes,
+    };
+    let tight_atomic_lbl = AtomicBranchState::Label::Append{
+        keys,
+        msgs,
+        receipt,
+        init_root,
+        read_nodes: tight_read_nodes,
+        write_nodes,
+    };
+
+    assert(tight_reads <= reads) by {
+        assert forall |addr: Address| #[trigger] tight_reads.contains_key(addr)
+            implies {
+                &&& reads.contains_key(addr)
+                &&& tight_reads[addr] == reads[addr]
+            } by {
+            if pre.branch.active_branch.root is Some {
+                assert(tight_reads == reads.restrict(receipt.needed_addrs()));
+            } else {
+                assert(tight_reads == Map::<Address, RawPage>::empty());
+            }
+        }
+    }
+    cache_access_restrict_reads_same_post(pre.cache, post.cache, reads, tight_reads, writes);
+    assert(Cache::State::next(
+        pre.cache,
+        post.cache,
+        Cache::Label::Access{reads: tight_reads, writes},
+    ));
+
+    assert(if pre.branch.active_branch.root is Some {
+        tight_reads.dom() == receipt.needed_addrs()
+    } else {
+        tight_reads.dom() == Set::<Address>::empty()
+    }) by {
+        if pre.branch.active_branch.root is Some {
+            reveal(AtomicBranchState::State::next);
+            reveal(AtomicBranchState::State::next_by);
+            let atomic_step = choose |step: AtomicBranchState::Step|
+                AtomicBranchState::State::next_by(pre.branch, post.branch, atomic_lbl, step);
+            match atomic_step {
+                AtomicBranchState::Step::append_nonempty(new_active_branch) => {
+                    assert(AtomicBranchState::State::append_nonempty(
+                        pre.branch,
+                        post.branch,
+                        atomic_lbl,
+                        new_active_branch,
+                    )) by {
+                        reveal(AtomicBranchState::State::append_nonempty);
+                    }
+                    reveal(AtomicBranchState::State::append_nonempty);
+                    let branch_lbl = CachedBranch::Label::Append{
+                        mini_allocator: pre.branch.mini_allocator,
+                        receipt,
+                        keys,
+                        msgs,
+                        read_nodes,
+                        write_nodes,
+                    };
+                    assert(CachedBranch::State::next(
+                        pre.branch.active_branch,
+                        new_active_branch,
+                        branch_lbl,
+                    ));
+                    reveal(CachedBranch::State::next);
+                    reveal(CachedBranch::State::next_by);
+                    assert(CachedBranch::State::next_by(
+                        pre.branch.active_branch,
+                        new_active_branch,
+                        branch_lbl,
+                        CachedBranch::Step::append_step(),
+                    ));
+                    assert(CachedBranch::State::append_step(
+                        pre.branch.active_branch,
+                        new_active_branch,
+                        branch_lbl,
+                    )) by {
+                        reveal(CachedBranch::State::append_step);
+                    }
+                    reveal(CachedBranch::State::append_step);
+                    assert(pre.branch.active_branch.can_append(
+                        pre.branch.mini_allocator,
+                        receipt,
+                        keys,
+                        msgs,
+                        read_nodes,
+                        write_nodes,
+                    ));
+                    assert(receipt.valid_for(
+                        pre.branch.active_branch.root.unwrap(),
+                        read_nodes,
+                    ));
+                    assert(receipt.needed_addrs() <= reads.dom()) by {
+                        assert forall |addr: Address| #[trigger] receipt.needed_addrs().contains(addr)
+                            implies reads.dom().contains(addr) by {
+                            assert(read_nodes.contains_key(addr));
+                            assert(reads.contains_key(addr));
+                        }
+                    }
+                    assert(tight_reads.dom() =~= receipt.needed_addrs()) by {
+                        assert forall |addr: Address| #[trigger] tight_reads.dom().contains(addr)
+                            implies receipt.needed_addrs().contains(addr) by {
+                            assert(tight_reads.contains_key(addr));
+                            assert(tight_reads == reads.restrict(receipt.needed_addrs()));
+                        }
+                        assert forall |addr: Address| #[trigger] receipt.needed_addrs().contains(addr)
+                            implies tight_reads.dom().contains(addr) by {
+                            assert(reads.dom().contains(addr));
+                            assert(tight_reads == reads.restrict(receipt.needed_addrs()));
+                            assert(tight_reads.contains_key(addr));
+                        }
+                    }
+                },
+                _ => {
+                    assert(false);
+                },
+            }
+        } else {
+            assert(tight_reads == Map::<Address, RawPage>::empty());
+        }
+    }
+
+    assert(AtomicBranchState::State::next(pre.branch, post.branch, tight_atomic_lbl)) by {
+        reveal(AtomicBranchState::State::next);
+        reveal(AtomicBranchState::State::next_by);
+        let atomic_step = choose |step: AtomicBranchState::Step|
+            AtomicBranchState::State::next_by(pre.branch, post.branch, atomic_lbl, step);
+        match atomic_step {
+            AtomicBranchState::Step::append_nonempty(new_active_branch) => {
+                assert(AtomicBranchState::State::append_nonempty(
+                    pre.branch,
+                    post.branch,
+                    atomic_lbl,
+                    new_active_branch,
+                )) by {
+                    reveal(AtomicBranchState::State::append_nonempty);
+                }
+                reveal(AtomicBranchState::State::append_nonempty);
+                assert(pre.branch.active_branch.root is Some);
+                assert(init_root is None);
+                let branch_lbl = CachedBranch::Label::Append{
+                    mini_allocator: pre.branch.mini_allocator,
+                    receipt,
+                    keys,
+                    msgs,
+                    read_nodes,
+                    write_nodes,
+                };
+                assert(CachedBranch::State::next(
+                    pre.branch.active_branch,
+                    new_active_branch,
+                    branch_lbl,
+                ));
+                reveal(CachedBranch::State::next);
+                reveal(CachedBranch::State::next_by);
+                assert(CachedBranch::State::next_by(
+                    pre.branch.active_branch,
+                    new_active_branch,
+                    branch_lbl,
+                    CachedBranch::Step::append_step(),
+                ));
+                assert(CachedBranch::State::append_step(
+                    pre.branch.active_branch,
+                    new_active_branch,
+                    branch_lbl,
+                )) by {
+                    reveal(CachedBranch::State::append_step);
+                }
+                reveal(CachedBranch::State::append_step);
+                assert(pre.branch.active_branch.can_append(
+                    pre.branch.mini_allocator,
+                    receipt,
+                    keys,
+                    msgs,
+                    read_nodes,
+                    write_nodes,
+                ));
+                assert(receipt.valid_for(pre.branch.active_branch.root.unwrap(), read_nodes));
+                assert(receipt.needed_addrs() <= reads.dom()) by {
+                    assert forall |addr: Address| #[trigger] receipt.needed_addrs().contains(addr)
+                        implies reads.dom().contains(addr) by {
+                        assert(read_nodes.contains_key(addr));
+                        assert(reads.contains_key(addr));
+                    }
+                }
+                assert(tight_reads.dom() =~= receipt.needed_addrs()) by {
+                    assert forall |addr: Address| #[trigger] tight_reads.dom().contains(addr)
+                        implies receipt.needed_addrs().contains(addr) by {
+                        assert(tight_reads.contains_key(addr));
+                        assert(tight_reads == reads.restrict(receipt.needed_addrs()));
+                    }
+                    assert forall |addr: Address| #[trigger] receipt.needed_addrs().contains(addr)
+                        implies tight_reads.dom().contains(addr) by {
+                        assert(reads.dom().contains(addr));
+                        assert(tight_reads == reads.restrict(receipt.needed_addrs()));
+                        assert(tight_reads.contains_key(addr));
+                    }
+                }
+                assert(receipt.valid_for(
+                    pre.branch.active_branch.root.unwrap(),
+                    tight_read_nodes,
+                )) by {
+                    assert(receipt.wf());
+                    assert(receipt.root == pre.branch.active_branch.root.unwrap());
+                    assert(receipt.needed_addrs() <= tight_read_nodes.dom()) by {
+                        assert forall |addr: Address| #[trigger] receipt.needed_addrs().contains(addr)
+                            implies tight_read_nodes.dom().contains(addr) by {
+                            assert(tight_reads.contains_key(addr));
+                            assert(tight_read_nodes.contains_key(addr));
+                        }
+                    }
+                    assert forall |i: int| 0 <= i < receipt.lines.len()
+                        implies {
+                            &&& tight_read_nodes.contains_key(receipt.lines[i].addr)
+                            &&& #[trigger] tight_read_nodes[receipt.lines[i].addr]
+                                == receipt.lines[i].node
+                        } by {
+                        let addr = receipt.lines[i].addr;
+                        assert(receipt.needed_addrs().contains(addr));
+                        assert(tight_reads.contains_key(addr));
+                        assert(tight_reads[addr] == reads[addr]);
+                        assert(tight_read_nodes[addr] == read_nodes[addr]);
+                        assert(read_nodes[addr] == receipt.lines[i].node);
+                    }
+                }
+                assert(crate::implementation::CachedBranch_v::loaded_append_ready(
+                    receipt,
+                    tight_read_nodes,
+                    keys,
+                    msgs,
+                )) by {
+                    assert(crate::implementation::CachedBranch_v::loaded_append_ready(
+                        receipt,
+                        read_nodes,
+                        keys,
+                        msgs,
+                    ));
+                    assert(receipt.valid_for(receipt.root, tight_read_nodes));
+                }
+                let tight_branch_lbl = CachedBranch::Label::Append{
+                    mini_allocator: pre.branch.mini_allocator,
+                    receipt,
+                    keys,
+                    msgs,
+                    read_nodes: tight_read_nodes,
+                    write_nodes,
+                };
+                assert(pre.branch.active_branch.can_append(
+                    pre.branch.mini_allocator,
+                    receipt,
+                    keys,
+                    msgs,
+                    tight_read_nodes,
+                    write_nodes,
+                ));
+                assert(CachedBranch::State::append_step(
+                    pre.branch.active_branch,
+                    new_active_branch,
+                    tight_branch_lbl,
+                )) by {
+                    reveal(CachedBranch::State::append_step);
+                }
+                assert(CachedBranch::State::next_by(
+                    pre.branch.active_branch,
+                    new_active_branch,
+                    tight_branch_lbl,
+                    CachedBranch::Step::append_step(),
+                )) by {
+                    reveal(CachedBranch::State::next_by);
+                }
+                reveal(CachedBranch::State::next);
+                assert(CachedBranch::State::next(
+                    pre.branch.active_branch,
+                    new_active_branch,
+                    tight_branch_lbl,
+                ));
+                assert(AtomicBranchState::State::append_nonempty(
+                    pre.branch,
+                    post.branch,
+                    tight_atomic_lbl,
+                    new_active_branch,
+                )) by {
+                    reveal(AtomicBranchState::State::append_nonempty);
+                }
+                assert(AtomicBranchState::State::next_by(
+                    pre.branch,
+                    post.branch,
+                    tight_atomic_lbl,
+                    AtomicBranchState::Step::append_nonempty(new_active_branch),
+                )) by {
+                    reveal(AtomicBranchState::State::next_by);
+                }
+            },
+            AtomicBranchState::Step::append_empty(new_active_branch) => {
+                assert(AtomicBranchState::State::append_empty(
+                    pre.branch,
+                    post.branch,
+                    atomic_lbl,
+                    new_active_branch,
+                )) by {
+                    reveal(AtomicBranchState::State::append_empty);
+                }
+                reveal(AtomicBranchState::State::append_empty);
+                assert(pre.branch.active_branch.root is None);
+                assert(init_root is Some);
+                assert(tight_reads == Map::<Address, RawPage>::empty());
+                let branch_lbl = CachedBranch::Label::Initialize{
+                    mini_allocator: pre.branch.mini_allocator,
+                    init_root: init_root.unwrap(),
+                    keys,
+                    msgs,
+                    write_nodes,
+                };
+                assert(CachedBranch::State::next(
+                    pre.branch.active_branch,
+                    new_active_branch,
+                    branch_lbl,
+                ));
+                assert(AtomicBranchState::State::append_empty(
+                    pre.branch,
+                    post.branch,
+                    tight_atomic_lbl,
+                    new_active_branch,
+                )) by {
+                    reveal(AtomicBranchState::State::append_empty);
+                }
+                assert(AtomicBranchState::State::next_by(
+                    pre.branch,
+                    post.branch,
+                    tight_atomic_lbl,
+                    AtomicBranchState::Step::append_empty(new_active_branch),
+                )) by {
+                    reveal(AtomicBranchState::State::next_by);
+                }
+            },
+            _ => {
+                assert(false);
+            },
+        }
+    }
+
+    append_refines(
+        pre,
+        post,
+        keys,
+        msgs,
+        receipt,
+        init_root,
+        tight_reads,
+        writes,
+    );
 }
 
 pub proof fn grow_refines(
@@ -5100,6 +5607,239 @@ pub proof fn fill_aus_refines(
         dst,
         target_lbl,
         CrashAwareCachingDiskBranch::Step::internal_alloc(new_cdb),
+    )) by {
+        reveal(CrashAwareCachingDiskBranch::State::next_by);
+    }
+    reveal(CrashAwareCachingDiskBranch::State::next);
+    src.next_refines(dst, target_lbl);
+
+    assert(post.inv()) by {
+        assert(post.branch.wf());
+        assert(async_disk_superblock_page_wf(post.disk.content));
+        assert(post.persistent_superblock_image_i().wf());
+        assert(post.cache.inv());
+        assert(post.disk.inv());
+        assert(post.branch_caching_disk_i().inv());
+        assert(post.branch.persistent_image.sealed_roots
+            == post.persistent_superblock_image_i().branch_roots);
+        assert(post.branch.persistent_image.seq_end
+            == post.persistent_superblock_image_i().branch_seq_end);
+        assert(post.in_flight is Some <==> post.branch.in_flight is Some);
+        assert(post.in_flight is Some <==> post.in_flight_image is Some);
+    }
+    assert(post.semantic_inv());
+    assert(inv(post));
+}
+
+pub proof fn observe_persisted_roots_refines(
+    pre: UnifiedCacheBranchSource,
+    post: UnifiedCacheBranchSource,
+    target_count: nat,
+    aus: Set<AU>,
+)
+    requires
+        inv(pre),
+        pre.superblock_loaded(),
+        pre.branch.metadata_loaded(),
+        post.disk == pre.disk,
+        post.persistent_image == pre.persistent_image,
+        post.in_flight == pre.in_flight,
+        post.in_flight_image == pre.in_flight_image,
+        aus == sealed_summary_aus_between(
+            pre.branch.image.sealed_roots,
+            pre.branch.branch_summary,
+            pre.branch.persisted_root_count,
+            target_count,
+        ),
+        Cache::State::next(
+            pre.cache,
+            post.cache,
+            Cache::Label::EvictableCheck{aus},
+        ),
+        AtomicBranchState::State::next(
+            pre.branch,
+            post.branch,
+            AtomicBranchState::Label::ObservePersistedRoots{target_count},
+        ),
+    ensures
+        CrashAwareCachingDiskBranch::State::next(
+            unified_cache_branch_i(pre),
+            unified_cache_branch_i(post),
+            CrashAwareCachingDiskBranch::Label::Internal,
+        ),
+        post.cache == pre.cache,
+        post.branch_projection_aus() =~= pre.branch_projection_aus(),
+        post.branch.metadata_loaded(),
+        post.branch.seq_end() == pre.branch.seq_end(),
+        post.branch.in_flight == pre.branch.in_flight,
+        post.branch.prepared == pre.branch.prepared,
+        inv(post),
+{
+    let cache_lbl = Cache::Label::EvictableCheck{aus};
+    let atomic_lbl = AtomicBranchState::Label::ObservePersistedRoots{target_count};
+
+    Cache::State::inv_next(pre.cache, post.cache, cache_lbl);
+    AtomicBranchState::State::wf_next(pre.branch, post.branch, atomic_lbl);
+
+    reveal(Cache::State::next);
+    reveal(Cache::State::next_by);
+    let cache_step = choose |step: Cache::Step|
+        Cache::State::next_by(pre.cache, post.cache, cache_lbl, step);
+    match cache_step {
+        Cache::Step::evictable() => {
+            assert(Cache::State::evictable(pre.cache, post.cache, cache_lbl)) by {
+                reveal(Cache::State::evictable);
+            }
+            reveal(Cache::State::evictable);
+            assert(post.cache == pre.cache);
+        },
+        _ => {
+            assert(false);
+        },
+    }
+
+    reveal(AtomicBranchState::State::next);
+    reveal(AtomicBranchState::State::next_by);
+    let atomic_step = choose |step: AtomicBranchState::Step|
+        AtomicBranchState::State::next_by(pre.branch, post.branch, atomic_lbl, step);
+    match atomic_step {
+        AtomicBranchState::Step::observe_persisted_roots() => {
+            assert(AtomicBranchState::State::observe_persisted_roots(
+                pre.branch,
+                post.branch,
+                atomic_lbl,
+            )) by {
+                reveal(AtomicBranchState::State::observe_persisted_roots);
+            }
+            reveal(AtomicBranchState::State::observe_persisted_roots);
+            assert(post.branch.image == pre.branch.image);
+            assert(post.branch.persistent_image == pre.branch.persistent_image);
+            assert(post.branch.in_flight == pre.branch.in_flight);
+            assert(post.branch.prepared == pre.branch.prepared);
+            assert(post.branch.branch_summary == pre.branch.branch_summary);
+            assert(post.branch.persisted_root_count == target_count);
+            assert(post.branch.active_branch == pre.branch.active_branch);
+            assert(post.branch.mini_allocator == pre.branch.mini_allocator);
+            assert(post.branch.seq_end == pre.branch.seq_end);
+        },
+        _ => {
+            assert(false);
+        },
+    }
+
+    assert(post.superblock_loaded());
+    assert(post.persistent_superblock_image_i() == pre.persistent_superblock_image_i());
+    assert(post.branch.metadata_loaded()) by {
+        assert(post.branch.image == pre.branch.image);
+        assert(post.branch.branch_summary == pre.branch.branch_summary);
+        assert(pre.branch.metadata_loaded());
+    }
+    assert(post.branch.owned_aus() =~= pre.branch.owned_aus()) by {
+        assert(post.branch.branch_summary == pre.branch.branch_summary);
+        assert(post.branch.mini_allocator == pre.branch.mini_allocator);
+    }
+    assert(post.branch_projection_aus() =~= pre.branch_projection_aus()) by {
+        assert(pre.branch_projection_aus() == pre.branch.owned_aus());
+        assert(post.branch_projection_aus() == post.branch.owned_aus());
+    }
+
+    cache_evictable_refines_observe_clean_aus(
+        pre.cache,
+        pre.disk,
+        pre.branch_projection_aus(),
+        aus,
+    );
+    assert(CachingDisk::State::next(
+        pre.branch_caching_disk_i(),
+        pre.branch_caching_disk_i(),
+        CachingDisk::Label::ObserveCleanAUs{aus},
+    ));
+
+    assert(post.branch_caching_disk_i() == pre.branch_caching_disk_i()) by {
+        assert(post.cache == pre.cache);
+        assert(post.disk == pre.disk);
+        assert(post.branch_projection_aus() =~= pre.branch_projection_aus());
+        assert_maps_equal!(
+            post.branch_caching_disk_i().cache,
+            pre.branch_caching_disk_i().cache,
+            addr => {}
+        );
+        assert_maps_equal!(
+            post.branch_caching_disk_i().status,
+            pre.branch_caching_disk_i().status,
+            addr => {}
+        );
+        assert_maps_equal!(
+            post.branch_caching_disk_i().persistent,
+            pre.branch_caching_disk_i().persistent,
+            addr => {
+                if post.branch_caching_disk_i().persistent.contains_key(addr) {
+                    assert(pre.branch_caching_disk_i().persistent.contains_key(addr));
+                }
+                if pre.branch_caching_disk_i().persistent.contains_key(addr) {
+                    assert(post.branch_caching_disk_i().persistent.contains_key(addr));
+                }
+            }
+        );
+    }
+
+    let inner_pre = pre.branch_caching_disk_state_i();
+    let inner_post = post.branch_caching_disk_state_i();
+    assert(inner_pre.disk == pre.branch_caching_disk_i());
+    assert(inner_post.disk == pre.branch_caching_disk_i());
+    assert(inner_pre.sealed_roots == pre.branch.image.sealed_roots);
+    assert(inner_post.sealed_roots == inner_pre.sealed_roots);
+    assert(inner_post.branch_summary == inner_pre.branch_summary);
+    assert(inner_post.metadata_loaded == inner_pre.metadata_loaded);
+    assert(inner_pre.metadata_loaded);
+    assert(inner_post.persisted_root_count == target_count);
+    assert(inner_post.active_branch == inner_pre.active_branch);
+    assert(inner_post.mini_allocator == inner_pre.mini_allocator);
+    assert(inner_post.seq_end == inner_pre.seq_end);
+    assert(aus == sealed_summary_aus_between(
+        inner_pre.sealed_roots,
+        inner_pre.branch_summary,
+        inner_pre.persisted_root_count,
+        target_count,
+    ));
+    assert(CachingDiskBranch::State::observe_persisted_roots(
+        inner_pre,
+        inner_post,
+        CachingDiskBranch::Label::Internal,
+        target_count,
+    )) by {
+        reveal(CachingDiskBranch::State::observe_persisted_roots);
+    }
+    assert(CachingDiskBranch::State::next_by(
+        inner_pre,
+        inner_post,
+        CachingDiskBranch::Label::Internal,
+        CachingDiskBranch::Step::observe_persisted_roots(target_count),
+    )) by {
+        reveal(CachingDiskBranch::State::next_by);
+    }
+    reveal(CachingDiskBranch::State::next);
+    CachingDiskBranch::State::inv_next(inner_pre, inner_post, CachingDiskBranch::Label::Internal);
+
+    let src = unified_cache_branch_i(pre);
+    let dst = unified_cache_branch_i(post);
+    let target_lbl = CrashAwareCachingDiskBranch::Label::Internal;
+    assert(src.ephemeral is Known);
+    assert(dst.ephemeral is Known);
+    assert(dst.prepared == src.prepared);
+    assert(CrashAwareCachingDiskBranch::State::internal(
+        src,
+        dst,
+        target_lbl,
+        inner_post,
+    )) by {
+        reveal(CrashAwareCachingDiskBranch::State::internal);
+    }
+    assert(CrashAwareCachingDiskBranch::State::next_by(
+        src,
+        dst,
+        target_lbl,
+        CrashAwareCachingDiskBranch::Step::internal(inner_post),
     )) by {
         reveal(CrashAwareCachingDiskBranch::State::next_by);
     }

@@ -588,11 +588,6 @@ state_machine!{ CachingDiskJournal {
             CachingDisk::Label::Access{reads, writes: Map::empty()},
         );
         require to_journal_records(reads) <= pre.journal_disk_view().entries;
-        require forall |addr: Address| #[trigger] reads.contains_key(addr) ==> {
-            let bounds = pre.journal.status.unwrap().au_page_bounds;
-            &&& bounds.contains_key(addr.au)
-            &&& addr.page <= bounds[addr.au]
-        };
         require CachedJournal::State::next(
             pre.journal,
             pre.journal,

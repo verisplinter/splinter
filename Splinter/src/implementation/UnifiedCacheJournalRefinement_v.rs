@@ -1815,6 +1815,316 @@ pub proof fn load_index_refines(
     assert(inv(post));
 }
 
+pub proof fn read_for_recovery_refines(
+    pre: UnifiedCacheJournalSource,
+    post: UnifiedCacheJournalSource,
+    addr: Address,
+    journal_reads: Map<Address, RawPage>,
+    cache_reads: Map<Address, RawPage>,
+    writes: Map<Address, RawPage>,
+)
+    requires
+        inv(pre),
+        pre.superblock_loaded(),
+        pre.journal.ready(),
+        post.disk == pre.disk,
+        post.persistent_image == pre.persistent_image,
+        post.in_flight == pre.in_flight,
+        post.in_flight_image == pre.in_flight_image,
+        journal_reads.contains_key(addr),
+        journal_reads <= cache_reads,
+        writes.dom().disjoint(addresses_in_aus(pre.journal_projection_aus())),
+        Cache::State::next(
+            pre.cache,
+            post.cache,
+            Cache::Label::Access{reads: cache_reads, writes},
+        ),
+        AtomicJournalState::State::next(
+            pre.journal,
+            post.journal,
+            AtomicJournalState::Label::ReadForRecovery{
+                messages: to_journal_records(journal_reads)[addr].message_seq.maybe_discard_old(
+                    pre.journal.journal.snapshot.boundary_lsn,
+                ),
+                reads: to_journal_records(journal_reads),
+            },
+        ),
+    ensures
+        CrashAwareCachingDiskJournal::State::next(
+            unified_cache_journal_i(pre),
+            unified_cache_journal_i(post),
+            CrashAwareCachingDiskJournal::Label::ReadForRecovery{
+                records: to_journal_records(journal_reads)[addr].message_seq.maybe_discard_old(
+                    pre.journal.journal.snapshot.boundary_lsn,
+                ),
+            },
+        ),
+        post.journal == pre.journal,
+        post.journal_projection_aus() =~= pre.journal_projection_aus(),
+        inv(post),
+{
+    let records = to_journal_records(journal_reads)[addr].message_seq.maybe_discard_old(
+        pre.journal.journal.snapshot.boundary_lsn,
+    );
+    let cache_lbl = Cache::Label::Access{reads: cache_reads, writes};
+    let atomic_lbl = AtomicJournalState::Label::ReadForRecovery{
+        messages: records,
+        reads: to_journal_records(journal_reads),
+    };
+
+    AtomicJournalState::State::wf_next(pre.journal, post.journal, atomic_lbl);
+    reveal(AtomicJournalState::State::next);
+    reveal(AtomicJournalState::State::next_by);
+    let atomic_step = choose |step: AtomicJournalState::Step|
+        AtomicJournalState::State::next_by(pre.journal, post.journal, atomic_lbl, step);
+    match atomic_step {
+        AtomicJournalState::Step::read_for_recovery(new_journal) => {
+            assert(AtomicJournalState::State::read_for_recovery(
+                pre.journal,
+                post.journal,
+                atomic_lbl,
+                new_journal,
+            )) by {
+                reveal(AtomicJournalState::State::read_for_recovery);
+            }
+            reveal(AtomicJournalState::State::read_for_recovery);
+            let full_cj_lbl = CachedJournal::Label::ReadForRecovery{
+                messages: records,
+                reads: to_journal_records(journal_reads),
+            };
+            assert(CachedJournal::State::next(
+                pre.journal.journal,
+                new_journal,
+                full_cj_lbl,
+            ));
+
+            reveal(CachedJournal::State::next);
+            reveal(CachedJournal::State::next_by);
+            let cj_step = choose |step: CachedJournal::Step|
+                CachedJournal::State::next_by(
+                    pre.journal.journal,
+                    new_journal,
+                    full_cj_lbl,
+                    step,
+                );
+            match cj_step {
+                CachedJournal::Step::read_for_recovery(start_lsn, read_addr) => {
+                    assert(CachedJournal::State::read_for_recovery(
+                        pre.journal.journal,
+                        new_journal,
+                        full_cj_lbl,
+                        start_lsn,
+                        read_addr,
+                    )) by {
+                        reveal(CachedJournal::State::read_for_recovery);
+                    }
+                    reveal(CachedJournal::State::read_for_recovery);
+                    assert(new_journal == pre.journal.journal);
+                    assert(post.journal.journal == pre.journal.journal);
+                    assert(post.journal.mini_allocator == pre.journal.mini_allocator);
+                    assert(post.journal.persistent_seq_end == pre.journal.persistent_seq_end);
+                    assert(post.journal.in_flight == pre.journal.in_flight);
+                    assert(post.journal.prepared == pre.journal.prepared);
+                    assert(post.journal == pre.journal);
+
+                    let full_reads = to_journal_records(journal_reads);
+                    assert(full_reads.contains_key(read_addr));
+                    assert(journal_reads.contains_key(read_addr));
+                    assert(cache_reads.contains_key(read_addr));
+                    assert(cache_reads[read_addr] == journal_reads[read_addr]);
+
+                    let index = pre.journal.journal.status.unwrap().lsn_au_index;
+                    assert(index.contains_key(start_lsn));
+                    assert(index[start_lsn] == read_addr.au);
+                    assert(index.values().contains(read_addr.au));
+                    assert(pre.journal.journal.status.unwrap().au_page_bounds.contains_key(read_addr.au));
+                    assert(read_addr.page
+                        <= pre.journal.journal.status.unwrap().au_page_bounds[read_addr.au]);
+                    assert(pre.journal.loaded_index_aus().contains(read_addr.au));
+                    assert(pre.journal_projection_aus().contains(read_addr.au));
+                    assert(addresses_in_aus(pre.journal_projection_aus()).contains(read_addr));
+
+                    Cache::State::access_read_valid(
+                        pre.cache,
+                        post.cache,
+                        cache_reads,
+                        writes,
+                        read_addr,
+                    );
+                    pre.cache.build_lookup_map_ensures();
+                    assert(cache_filled_addr(pre.cache, read_addr));
+                    assert(cache_filled_page(pre.cache, read_addr) == cache_reads[read_addr]);
+                    assert(project_cache_pages(pre.cache, pre.journal_projection_aus()).contains_key(read_addr));
+                    assert(pre.journal_caching_disk_i().cache.contains_key(read_addr));
+                    assert(pre.journal_caching_disk_i().cache[read_addr] == cache_reads[read_addr]);
+
+                    let raw_journal_reads = Map::<Address, RawPage>::empty().insert(
+                        read_addr,
+                        cache_reads[read_addr],
+                    );
+                    let restricted_reads = to_journal_records(raw_journal_reads);
+                    let restricted_cj_lbl = CachedJournal::Label::ReadForRecovery{
+                        messages: records,
+                        reads: restricted_reads,
+                    };
+                    assert(raw_journal_reads <= pre.journal_caching_disk_i().cache) by {
+                        assert forall |read: Address| #[trigger] raw_journal_reads.contains_key(read)
+                            implies pre.journal_caching_disk_i().cache.contains_key(read)
+                                && raw_journal_reads[read] == pre.journal_caching_disk_i().cache[read] by {
+                            assert(read == read_addr);
+                        }
+                    }
+                    let disk_lbl = CachingDisk::Label::Access{
+                        reads: raw_journal_reads,
+                        writes: Map::<Address, RawPage>::empty(),
+                    };
+                    let empty_raw_writes = Map::<Address, RawPage>::empty();
+                    let empty_status_updates = status_map(
+                        empty_raw_writes.dom(),
+                        PageStatus::Dirty,
+                    );
+                    assert(empty_status_updates == Map::<Address, PageStatus>::empty()) by {
+                        assert_maps_equal!(
+                            empty_status_updates,
+                            Map::<Address, PageStatus>::empty(),
+                            status_addr => {}
+                        );
+                    }
+                    assert(pre.journal_caching_disk_i().cache.union_prefer_right(empty_raw_writes)
+                        == pre.journal_caching_disk_i().cache) by {
+                        assert_maps_equal!(
+                            pre.journal_caching_disk_i().cache.union_prefer_right(empty_raw_writes),
+                            pre.journal_caching_disk_i().cache,
+                            cache_addr => {}
+                        );
+                    }
+                    assert(pre.journal_caching_disk_i().status.union_prefer_right(empty_status_updates)
+                        == pre.journal_caching_disk_i().status) by {
+                        assert_maps_equal!(
+                            pre.journal_caching_disk_i().status.union_prefer_right(empty_status_updates),
+                            pre.journal_caching_disk_i().status,
+                            status_addr => {}
+                        );
+                    }
+                    assert(CachingDisk::State::access(
+                        pre.journal_caching_disk_i(),
+                        pre.journal_caching_disk_i(),
+                        disk_lbl,
+                    )) by {
+                        reveal(CachingDisk::State::access);
+                    }
+                    assert(CachingDisk::State::next_by(
+                        pre.journal_caching_disk_i(),
+                        pre.journal_caching_disk_i(),
+                        disk_lbl,
+                        CachingDisk::Step::access(),
+                    )) by {
+                        reveal(CachingDisk::State::next_by);
+                    }
+                    reveal(CachingDisk::State::next);
+
+                    assert(restricted_reads.contains_key(read_addr));
+                    assert(restricted_reads[read_addr] == full_reads[read_addr]);
+                    assert(restricted_reads[read_addr].message_seq == full_reads[read_addr].message_seq);
+                    assert(CachedJournal::State::read_for_recovery(
+                        pre.journal.journal,
+                        pre.journal.journal,
+                        restricted_cj_lbl,
+                        start_lsn,
+                        read_addr,
+                    ));
+                    assert(CachedJournal::State::next_by(
+                        pre.journal.journal,
+                        pre.journal.journal,
+                        restricted_cj_lbl,
+                        CachedJournal::Step::read_for_recovery(start_lsn, read_addr),
+                    )) by {
+                        reveal(CachedJournal::State::next_by);
+                    }
+                    reveal(CachedJournal::State::next);
+
+                    let src = pre.i();
+                    let inner = src.ephemeral->v;
+                    assert(src.ephemeral is Known);
+                    assert(inner == pre.journal_caching_disk_state_i());
+                    assert(to_journal_records(raw_journal_reads) <= inner.journal_disk_view().entries) by {
+                        assert forall |read: Address| #[trigger] to_journal_records(raw_journal_reads).contains_key(read)
+                            implies inner.journal_disk_view().entries.contains_key(read)
+                                && to_journal_records(raw_journal_reads)[read]
+                                    == inner.journal_disk_view().entries[read] by {
+                            assert(raw_journal_reads.contains_key(read));
+                            assert(read == read_addr);
+                            assert(inner.disk.cache.contains_key(read));
+                            assert(inner.disk.visible().contains_key(read));
+                            assert(inner.disk.visible()[read] == inner.disk.cache[read]);
+                        }
+                    }
+                    assert forall |read: Address| #[trigger] raw_journal_reads.contains_key(read) implies {
+                        &&& inner.au_page_bounds_i().contains_key(read.au)
+                        &&& read.page <= inner.au_page_bounds_i()[read.au]
+                    } by {
+                        assert(read == read_addr);
+                        let disk_view = inner.journal_disk_view();
+                        assert(disk_view.entries.contains_key(read));
+                        assert(inner.au_page_bounds_i()
+                            == pre.journal.journal.status.unwrap().au_page_bounds);
+                    }
+                    let cdj_lbl = CachingDiskJournal::Label::ReadForRecovery{messages: records};
+                    assert(CachingDiskJournal::State::read_for_recovery(
+                        inner,
+                        inner,
+                        cdj_lbl,
+                        raw_journal_reads,
+                    )) by {
+                        reveal(CachingDiskJournal::State::read_for_recovery);
+                    }
+                    assert(CachingDiskJournal::State::next_by(
+                        inner,
+                        inner,
+                        cdj_lbl,
+                        CachingDiskJournal::Step::read_for_recovery(raw_journal_reads),
+                    )) by {
+                        reveal(CachingDiskJournal::State::next_by);
+                    }
+                    reveal(CachingDiskJournal::State::next);
+                },
+                _ => {
+                    assert(false);
+                },
+            }
+        },
+        _ => {
+            assert(false);
+        },
+    }
+
+    assert(post.journal == pre.journal);
+    assert(post.journal_projection_aus() =~= pre.journal_projection_aus());
+    pre.inv_preserved_by_cache_access_outside_journal_projection(post, cache_reads, writes);
+    assert(post.persistent_journal_i() == pre.persistent_journal_i());
+    pre.journal_interpretation_unchanged_by_same_projection(post);
+    assert(post.i() == pre.i());
+
+    let src = pre.i();
+    let dst = post.i();
+    let lbl = CrashAwareCachingDiskJournal::Label::ReadForRecovery{records};
+    assert(src == dst);
+    assert(CrashAwareCachingDiskJournal::State::read_for_recovery(src, dst, lbl)) by {
+        reveal(CrashAwareCachingDiskJournal::State::read_for_recovery);
+    }
+    assert(CrashAwareCachingDiskJournal::State::next_by(
+        src,
+        dst,
+        lbl,
+        CrashAwareCachingDiskJournal::Step::read_for_recovery(),
+    )) by {
+        reveal(CrashAwareCachingDiskJournal::State::next_by);
+    }
+    reveal(CrashAwareCachingDiskJournal::State::next);
+    assert(post.semantic_inv());
+    assert(inv(post));
+}
+
 pub proof fn observe_clean_aus_refines(
     pre: UnifiedCacheJournalSource,
     post: UnifiedCacheJournalSource,
@@ -2794,6 +3104,7 @@ pub proof fn recovery_complete_refines_query_end_lsn(
             },
         ),
         inv(unified_cache_journal_source(post)),
+        pre.program.state.journal.journal.seq_end() == pre.program.state.branch.seq_end(),
 {
     let pre_state = pre.program.state;
     let post_state = post.program.state;
@@ -2817,6 +3128,42 @@ pub proof fn recovery_complete_refines_query_end_lsn(
     assert(dst.cache == src.cache);
     assert(dst.disk == src.disk);
     query_end_lsn_refines(src, dst, end_lsn);
+    assert(pre_state.journal.journal.seq_end() == end_lsn) by {
+        reveal(AtomicJournalState::State::next);
+        reveal(AtomicJournalState::State::next_by);
+        assert(AtomicJournalState::State::next_by(
+            pre_state.journal,
+            pre_state.journal,
+            atomic_lbl,
+            AtomicJournalState::Step::query_end_lsn(),
+        ));
+        assert(AtomicJournalState::State::query_end_lsn(
+            pre_state.journal,
+            pre_state.journal,
+            atomic_lbl,
+        ));
+        reveal(AtomicJournalState::State::query_end_lsn);
+        let cached_lbl = CachedJournal::Label::QueryEndLsn{end_lsn};
+        assert(CachedJournal::State::next(
+            pre_state.journal.journal,
+            pre_state.journal.journal,
+            cached_lbl,
+        ));
+        reveal(CachedJournal::State::next);
+        reveal(CachedJournal::State::next_by);
+        assert(CachedJournal::State::next_by(
+            pre_state.journal.journal,
+            pre_state.journal.journal,
+            cached_lbl,
+            CachedJournal::Step::query_end_lsn(),
+        ));
+        assert(CachedJournal::State::query_end_lsn(
+            pre_state.journal.journal,
+            pre_state.journal.journal,
+            cached_lbl,
+        ));
+        reveal(CachedJournal::State::query_end_lsn);
+    }
 }
 
 pub proof fn put_preserves_projection_aus(

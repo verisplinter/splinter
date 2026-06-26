@@ -2406,6 +2406,9 @@ state_machine!{ CachedJournal {
         require start_lsn < record.message_seq.seq_end;
         require pre.status.unwrap().lsn_au_index.contains_key(start_lsn);
         require pre.status.unwrap().lsn_au_index[start_lsn] == addr.au;
+        let bounds = pre.status.unwrap().au_page_bounds;
+        require bounds.contains_key(addr.au);
+        require addr.page <= bounds[addr.au];
         require messages == cropped;
     }}
 
