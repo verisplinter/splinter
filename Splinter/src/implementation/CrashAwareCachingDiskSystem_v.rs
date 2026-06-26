@@ -345,6 +345,21 @@ state_machine!{ CrashAwareCachingDiskSystem {
         update journal = new_journal;
     }}
 
+    transition!{ journal_observe_clean_aus(
+        lbl: Label,
+        new_journal: CrashAwareCachingDiskJournal::State,
+        aus: Set<AU>,
+    ) {
+        require lbl is Noop;
+        require CrashAwareCachingDiskJournal::State::next(
+            pre.journal,
+            new_journal,
+            CrashAwareCachingDiskJournal::Label::ObserveCleanAUs{aus},
+        );
+
+        update journal = new_journal;
+    }}
+
     transition!{ journal_load_index(
         lbl: Label,
         new_journal: CrashAwareCachingDiskJournal::State,
@@ -1070,6 +1085,68 @@ state_machine!{ CrashAwareCachingDiskSystem {
             let new_e = new_journal.ephemeral->v;
             assert(CachingDiskJournal::State::next(old_e, new_e, CachingDiskJournal::Label::Internal));
             CachingDiskJournal::State::internal_preserves_accessible_aus(old_e, new_e);
+        }
+        assert(post.free_aus == pre.free_aus);
+        assert(post.branch == pre.branch);
+        assert(post.journal_owned_aus() <= pre.journal_owned_aus());
+        assert(post.branch_owned_aus() <= pre.branch_owned_aus());
+        Self::allocation_wf_from_subset(pre, post);
+    }
+
+    #[inductive(journal_observe_clean_aus)]
+    fn journal_observe_clean_aus_inductive(
+        pre: Self,
+        post: Self,
+        lbl: Label,
+        new_journal: CrashAwareCachingDiskJournal::State,
+        aus: Set<AU>,
+    ) {
+        let journal_lbl = CrashAwareCachingDiskJournal::Label::ObserveCleanAUs{aus};
+        CrashAwareCachingDiskJournal::State::inv_next(pre.journal, new_journal, journal_lbl);
+        Self::journal_next_knownness(pre.journal, new_journal, journal_lbl);
+        assert(CrashAwareCachingDiskJournal::State::observe_clean_aus(
+            pre.journal,
+            new_journal,
+            journal_lbl,
+            new_journal.ephemeral->v,
+        )) by {
+            reveal(CrashAwareCachingDiskJournal::State::next);
+            reveal(CrashAwareCachingDiskJournal::State::next_by);
+            let step = choose |step: CrashAwareCachingDiskJournal::Step|
+                CrashAwareCachingDiskJournal::State::next_by(pre.journal, new_journal, journal_lbl, step);
+            match step {
+                CrashAwareCachingDiskJournal::Step::observe_clean_aus(new_ephemeral) => {},
+                _ => { assert(false); },
+            }
+        }
+        if pre.journal.ephemeral is Known {
+            let old_e = pre.journal.ephemeral->v;
+            let new_e = new_journal.ephemeral->v;
+            let cj_lbl = CachingDiskJournal::Label::ObserveCleanAUs{aus};
+            assert(CachingDiskJournal::State::next(old_e, new_e, cj_lbl));
+            assert(new_e.accessible_aus() =~= old_e.accessible_aus()) by {
+                reveal(CachingDiskJournal::State::next);
+                reveal(CachingDiskJournal::State::next_by);
+                let step = choose |step: CachingDiskJournal::Step|
+                    CachingDiskJournal::State::next_by(old_e, new_e, cj_lbl, step);
+                match step {
+                    CachingDiskJournal::Step::observe_clean_aus(new_cached_journal) => {
+                        assert(CachingDiskJournal::State::observe_clean_aus(
+                            old_e,
+                            new_e,
+                            cj_lbl,
+                            new_cached_journal,
+                        ));
+                        reveal(CachingDiskJournal::State::observe_clean_aus);
+                        CachedJournal::State::observe_clean_aus_effect(
+                            old_e.journal,
+                            new_e.journal,
+                            aus,
+                        );
+                    },
+                    _ => { assert(false); },
+                }
+            }
         }
         assert(post.free_aus == pre.free_aus);
         assert(post.branch == pre.branch);
@@ -2260,6 +2337,18 @@ state_machine!{ CrashAwareCachingDiskSystem {
             },
             CrashAwareCachingDiskSystem::Step::journal_internal(new_journal) => {
                 Self::journal_internal_inductive(pre, post, lbl, new_journal);
+            },
+            CrashAwareCachingDiskSystem::Step::journal_observe_clean_aus(
+                new_journal,
+                aus,
+            ) => {
+                Self::journal_observe_clean_aus_inductive(
+                    pre,
+                    post,
+                    lbl,
+                    new_journal,
+                    aus,
+                );
             },
             CrashAwareCachingDiskSystem::Step::journal_load_index(
                 new_journal,

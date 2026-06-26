@@ -140,6 +140,7 @@ impl Marshal for BranchMessageFormat {
                     assert(self.payload_fmt.parse(body) == (*v as nat));
                     assert(self.parsable(subr));
                     assert(self.parse(subr) == Message::Define { value: Value(*v) });
+                    assert(self.parse(subr) == value.parsedv());
                 }
                 end
             }
@@ -154,6 +155,7 @@ impl Marshal for BranchMessageFormat {
                     assert(self.payload_fmt.parse(body) == (*v as nat));
                     assert(self.parsable(subr));
                     assert(self.parse(subr) == Message::Update { delta: Delta(*v) });
+                    assert(self.parse(subr) == value.parsedv());
                 }
                 end
             }

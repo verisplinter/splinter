@@ -216,14 +216,6 @@ pub open spec fn journal_caching_disk_state_i(
         journal: model.program.state.journal.journal,
         disk: journal_caching_disk_i(model),
         mini_allocator: model.program.state.journal.mini_allocator,
-        au_page_bounds: (DiskView{
-            boundary_lsn: model.program.state.journal.journal.snapshot.boundary_lsn,
-            entries: to_journal_records(journal_caching_disk_i(model).visible())
-                .restrict(addresses_in_aus(model.program.state.journal.loaded_index_aus())),
-        }).loose_build_au_page_bounds_au_walk(
-            model.program.state.journal.journal.snapshot.freshest_rec(),
-            model.program.state.journal.journal.snapshot.first(),
-        ),
     }
 }
 
@@ -569,8 +561,8 @@ pub open spec fn journal_owned_disk_records_do_not_impersonate_index(
             &&& index[lsn] == addr.au
             &&& record.contains_lsn(disk_view.boundary_lsn, lsn)
         } ==> {
-            &&& journal.au_page_bounds.contains_key(addr.au)
-            &&& addr.page <= journal.au_page_bounds[addr.au]
+            &&& journal.au_page_bounds_i().contains_key(addr.au)
+            &&& addr.page <= journal.au_page_bounds_i()[addr.au]
         }
     }
 }
@@ -746,8 +738,8 @@ pub proof fn journal_cache_internal_preserves_component_refinement(
         assert(journal_caching_disk_i(post).visible()
             == journal_caching_disk_i(pre).visible());
     }
-    assert(journal_caching_disk_state_i(post).au_page_bounds
-        == journal_caching_disk_state_i(pre).au_page_bounds) by {
+    assert(journal_caching_disk_state_i(post).au_page_bounds_i()
+        == journal_caching_disk_state_i(pre).au_page_bounds_i()) by {
         assert(journal_caching_disk_i(post).visible()
             == journal_caching_disk_i(pre).visible());
     }
@@ -767,8 +759,8 @@ pub proof fn journal_cache_internal_preserves_component_refinement(
                     &&& index[lsn] == addr.au
                     &&& record.contains_lsn(disk_view.boundary_lsn, lsn)
                 } implies {
-                    &&& journal_caching_disk_state_i(post).au_page_bounds.contains_key(addr.au)
-                    &&& addr.page <= journal_caching_disk_state_i(post).au_page_bounds[addr.au]
+                    &&& journal_caching_disk_state_i(post).au_page_bounds_i().contains_key(addr.au)
+                    &&& addr.page <= journal_caching_disk_state_i(post).au_page_bounds_i()[addr.au]
                 } by {
                 let post_disk_view = journal_caching_disk_state_i(post).journal_disk_view();
                 let pre_disk_view = journal_caching_disk_state_i(pre).journal_disk_view();
@@ -776,8 +768,8 @@ pub proof fn journal_cache_internal_preserves_component_refinement(
                 let pre_index = pre.program.state.journal.journal.status.unwrap().lsn_au_index;
                 assert(post_disk_view == pre_disk_view);
                 assert(post_index == pre_index);
-                assert(journal_caching_disk_state_i(post).au_page_bounds
-                    == journal_caching_disk_state_i(pre).au_page_bounds);
+                assert(journal_caching_disk_state_i(post).au_page_bounds_i()
+                    == journal_caching_disk_state_i(pre).au_page_bounds_i());
             }
         }
     }
@@ -815,14 +807,14 @@ pub proof fn journal_cache_internal_preserves_component_refinement(
             assert(journal_caching_disk_i(post).visible()
                 == journal_caching_disk_i(pre).visible());
         }
-        assert(journal_caching_disk_state_i(post).au_page_bounds
-            == journal_caching_disk_state_i(pre).au_page_bounds) by {
+        assert(journal_caching_disk_state_i(post).au_page_bounds_i()
+            == journal_caching_disk_state_i(pre).au_page_bounds_i()) by {
             assert(journal_caching_disk_i(post).visible()
                 == journal_caching_disk_i(pre).visible());
         }
         assert(dst.ephemeral->v.journal == src.ephemeral->v.journal);
         assert(dst.ephemeral->v.mini_allocator == src.ephemeral->v.mini_allocator);
-        assert(dst.ephemeral->v.au_page_bounds == src.ephemeral->v.au_page_bounds) by {
+        assert(dst.ephemeral->v.au_page_bounds_i() == src.ephemeral->v.au_page_bounds_i()) by {
             let index_addrs = addresses_in_aus(pre.program.state.journal.loaded_index_aus());
             assert(post.program.state.journal == pre.program.state.journal);
             assert(post.program.state.journal.loaded_index_aus()
@@ -886,8 +878,8 @@ pub proof fn journal_cache_internal_preserves_component_refinement(
                         &&& index[lsn] == addr.au
                         &&& record.contains_lsn(disk_view.boundary_lsn, lsn)
                     } implies {
-                        &&& journal_caching_disk_state_i(post).au_page_bounds.contains_key(addr.au)
-                        &&& addr.page <= journal_caching_disk_state_i(post).au_page_bounds[addr.au]
+                        &&& journal_caching_disk_state_i(post).au_page_bounds_i().contains_key(addr.au)
+                        &&& addr.page <= journal_caching_disk_state_i(post).au_page_bounds_i()[addr.au]
                     } by {
                     let post_disk_view = journal_caching_disk_state_i(post).journal_disk_view();
                     let pre_disk_view = journal_caching_disk_state_i(pre).journal_disk_view();
@@ -895,8 +887,8 @@ pub proof fn journal_cache_internal_preserves_component_refinement(
                     let pre_index = pre.program.state.journal.journal.status.unwrap().lsn_au_index;
                     assert(post_disk_view == pre_disk_view);
                     assert(post_index == pre_index);
-                    assert(journal_caching_disk_state_i(post).au_page_bounds
-                        == journal_caching_disk_state_i(pre).au_page_bounds);
+                    assert(journal_caching_disk_state_i(post).au_page_bounds_i()
+                        == journal_caching_disk_state_i(pre).au_page_bounds_i());
                 }
             }
         }
@@ -1894,8 +1886,8 @@ pub proof fn journal_read_for_recovery_refines(
         }
     }
     assert forall |read: Address| #[trigger] raw_journal_reads.contains_key(read) implies {
-        &&& src.ephemeral->v.au_page_bounds.contains_key(read.au)
-        &&& read.page <= src.ephemeral->v.au_page_bounds[read.au]
+        &&& src.ephemeral->v.au_page_bounds_i().contains_key(read.au)
+        &&& read.page <= src.ephemeral->v.au_page_bounds_i()[read.au]
     } by {
         assert(read == read_addr);
         assert(src.ephemeral->v.journal_disk_view().entries.contains_key(read));
@@ -2204,7 +2196,7 @@ pub proof fn journal_observe_clean_aus_refines(
                 assert(dst.ephemeral->v.journal.snapshot == src.ephemeral->v.journal.snapshot);
                 assert(dst.ephemeral->v.journal.seq_end() == src.ephemeral->v.journal.seq_end());
                 assert(dst.ephemeral->v.journal_disk_view() == src.ephemeral->v.journal_disk_view());
-                assert(dst.ephemeral->v.au_page_bounds == src.ephemeral->v.au_page_bounds);
+                assert(dst.ephemeral->v.au_page_bounds_i() == src.ephemeral->v.au_page_bounds_i());
             }
             assert(dst.ephemeral->v.frozen_tj(frozen.snapshot)
                 == src.ephemeral->v.frozen_tj(frozen.snapshot)) by {
@@ -2487,7 +2479,7 @@ pub proof fn journal_fill_aus_refines(
             assert(dst.ephemeral->v.journal_disk_view().entries.contains_key(addr));
         }
     }
-    assert(dst.ephemeral->v.au_page_bounds == src.ephemeral->v.au_page_bounds) by {
+    assert(dst.ephemeral->v.au_page_bounds_i() == src.ephemeral->v.au_page_bounds_i()) by {
         let pre_index_addrs = addresses_in_aus(pre.program.state.journal.loaded_index_aus());
         let post_index_addrs = addresses_in_aus(post.program.state.journal.loaded_index_aus());
         assert(pre_index_addrs =~= post_index_addrs);

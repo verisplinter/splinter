@@ -1377,6 +1377,32 @@ state_machine!{ Cache {
         assert( State::next_by(s, s, lbl, Step::access()) ); // step witness
     }
 
+    pub proof fn access_read_only_is_noop(pre: State, post: State, reads: Map<Address, RawPage>)
+    requires
+        State::next(pre, post, Label::Access{reads, writes: Map::empty()}),
+    ensures
+        post == pre,
+    {
+        let writes = Map::<Address, RawPage>::empty();
+        let lbl = Label::Access{reads, writes};
+        reveal(State::next_by);
+        reveal(State::next);
+        assert(State::next_by(pre, post, lbl, Step::access()));
+
+        let write_slots = pre.lookup_map.restrict(writes.dom()).values();
+        let updated_entries = pre.write_updated_entries(writes);
+        let updated_status_map = pre.write_updated_status(writes);
+        assert(write_slots =~= Set::<Slot>::empty());
+        assert(updated_entries =~= Map::<Slot, Entry>::empty());
+        assert(updated_status_map =~= Map::<Slot, Status>::empty());
+        assert(pre.entries.union_prefer_right(updated_entries) =~= pre.entries);
+        assert(pre.status_map.union_prefer_right(updated_status_map) =~= pre.status_map);
+        assert(post.lookup_map == pre.lookup_map);
+        assert(post.entries == pre.entries);
+        assert(post.status_map == pre.status_map);
+        assert(post == pre);
+    }
+
     pub proof fn access_unwritten_addr_unchanged(
         pre: State,
         post: State,

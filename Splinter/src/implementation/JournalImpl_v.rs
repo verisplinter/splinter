@@ -13,7 +13,7 @@ use crate::disk::GenericDisk_v::{Address, IAddress, Pointer, Ranking, to_aus};
 use crate::implementation::JournalTypes_v::AJournal;
 use crate::implementation::JournalTypes_v::ILsn;
 use crate::implementation::JournalTypes_v::{journal_marshall_labels, raw_page_to_record, to_journal_records};
-use crate::allocation_layer::AllocationJournal_v::lsn_au_index_discard_up_to;
+use crate::allocation_layer::AllocationJournal_v::{AUPageBounds, lsn_au_index_discard_up_to};
 use crate::allocation_layer::LikesJournal_v::{LsnAddrIndex, discard_old_ptr_by_index, largest_lsn_plus_one, lsn_addr_index_append_record, singleton_index, lsn_disjoint};
 use crate::implementation::Cache_v::{Cache, Entry};
 use crate::implementation::FracCacheImpl_v::{
@@ -160,6 +160,7 @@ impl FrozenJournal {
 pub struct IJournalStatus {
     pub lsn_addr_index: ILsnAddrIndex,
     pub unmarshalled_tail: Vec<KeyedMessage>,
+    pub au_page_bounds: Ghost<AUPageBounds>,
     pub clean_watermark_lsn: ILsn,
 }
 
@@ -186,6 +187,8 @@ impl View for IJournalStatus {
         Self::V {
             unmarshalled_tail: self.tail_as_history(),
             lsn_au_index: lsn_addr_index_to_au_index(self.lsn_addr_index@),
+            au_page_bounds: self.au_page_bounds@,
+            clean_watermark_au_page_bounds: self.au_page_bounds@,
             clean_watermark_lsn: self.clean_watermark_lsn as nat,
         }
     }
@@ -1045,6 +1048,7 @@ impl JournalImpl {
                         self.status = Some(IJournalStatus{
                             unmarshalled_tail: vec![],
                             lsn_addr_index: index,
+                            au_page_bounds: Ghost(Map::empty()),
                             clean_watermark_lsn: i_seq_end,
                         });
 
@@ -1387,6 +1391,7 @@ impl JournalImpl {
         let ghost old_index = status.lsn_addr_index@;
         let new_tail_start = tail_start + cut_count as u64;
         status.lsn_addr_index.index_append_record(tail_start, new_tail_start, addr);
+        status.au_page_bounds = Ghost(status.au_page_bounds@.insert(addr@.au, addr@.page));
         self.snapshot.freshest_rec = Some(addr);
         self.status = Some(status);
 
@@ -1802,6 +1807,11 @@ impl JournalImpl {
         }
         let old_clean = status.clean_watermark_lsn;
         status.lsn_addr_index.discard_up_to(boundary_lsn);
+        let ghost new_lsn_au_index_for_bounds = lsn_au_index_discard_up_to(
+            pre_journal.status.unwrap().lsn_au_index,
+            boundary_lsn as nat,
+        );
+        status.au_page_bounds = Ghost(status.au_page_bounds@.restrict(new_lsn_au_index_for_bounds.values()));
 
         if old_clean < boundary_lsn {
             status.clean_watermark_lsn = boundary_lsn;
@@ -2007,6 +2017,7 @@ impl JournalImpl {
                 self.status.unwrap().lsn_addr_index@ == pre_index,
                 self@.snapshot == pre.snapshot,
                 self@.status.unwrap().unmarshalled_tail == pre.status.unwrap().unmarshalled_tail,
+                self@.status.unwrap().au_page_bounds == pre.status.unwrap().au_page_bounds,
                 self.alloc_au() == pre_alloc_au,
                 self.status.unwrap().lsn_addr_index.seq_end() == index_end,
                 old_clean <= clean_commit <= clean_scan,

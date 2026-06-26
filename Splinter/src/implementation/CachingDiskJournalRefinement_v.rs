@@ -12,7 +12,8 @@ use crate::abstract_system::MsgHistory_v::*;
 use crate::abstract_system::StampedMap_v::LSN;
 use crate::allocation_layer::AllocationJournal_v::{
     AllocationJournal, JournalImage, JournalMetadata, addrs_in_aus, lsn_au_index_append_record,
-    lsn_au_index_discard_up_to, lsn_au_index_discard_up_to_ensures, singleton_index,
+    lsn_au_index_append_record_ensures, lsn_au_index_discard_up_to,
+    lsn_au_index_discard_up_to_ensures, singleton_index,
 };
 use crate::allocation_layer::AllocationJournalRefinement_v::*;
 use crate::disk::GenericDisk_v::{Address, AU, to_aus, to_aus_domain};
@@ -2390,6 +2391,99 @@ impl CachingDiskJournal::State {
             reveal(AllocationJournal::State::next_by);
         }
         reveal(AllocationJournal::State::next);
+    }
+
+    pub proof fn cached_journal_marshal_preserves_loaded_index_values(
+        self,
+        new_journal: CachedJournal::State,
+        addr: Address,
+        writes: Map<Address, RawPage>,
+    )
+        requires
+            self.semantic_inv(),
+            CachedJournal::State::next(
+                self.journal,
+                new_journal,
+                CachedJournal::Label::JournalMarshal{writes: to_journal_records(writes)},
+            ),
+            writes.dom() =~= Set::new(|a: Address| a == addr),
+        ensures
+            cj_lsn_au_index(self.journal).values()
+                <= cj_lsn_au_index(new_journal).values(),
+            cj_lsn_au_index(new_journal).values()
+                <= cj_lsn_au_index(self.journal).values().insert(addr.au),
+    {
+        reveal(CachedJournal::State::next);
+        reveal(CachedJournal::State::next_by);
+        let journal_lbl = CachedJournal::Label::JournalMarshal{
+            writes: to_journal_records(writes),
+        };
+        let journal_step = choose |step: CachedJournal::Step|
+            CachedJournal::State::next_by(self.journal, new_journal, journal_lbl, step);
+        match journal_step {
+            CachedJournal::Step::internal_journal_marshal(cut, hidden_addr) => {
+                reveal(CachedJournal::State::internal_journal_marshal);
+                assert(self.journal.status is Some);
+                assert(new_journal.status is Some);
+                assert(to_journal_records(writes).contains_key(hidden_addr));
+                assert(writes.contains_key(hidden_addr));
+                assert(writes.dom().contains(hidden_addr));
+                assert(hidden_addr == addr);
+
+                let tail = self.journal.status.unwrap().unmarshalled_tail;
+                let marshalled_msgs = tail.discard_recent(cut);
+                assert(marshalled_msgs == self.allocation_unmarshalled_tail().discard_recent(cut));
+                assert(marshalled_msgs.seq_start == self.allocation_unmarshalled_tail().seq_start);
+                assert(marshalled_msgs.seq_end == cut);
+                assert(marshalled_msgs.seq_start < marshalled_msgs.seq_end);
+                assert(marshalled_msgs.wf()) by {
+                    assert forall |lsn: LSN| #[trigger] marshalled_msgs.msgs.dom().contains(lsn)
+                        <==> marshalled_msgs.contains(lsn) by {
+                        if marshalled_msgs.msgs.dom().contains(lsn) {
+                            assert(tail.seq_start <= lsn < cut);
+                        }
+                        if marshalled_msgs.contains(lsn) {
+                            assert(tail.seq_start <= lsn < cut);
+                        }
+                    }
+                }
+
+                let old_index = cj_lsn_au_index(self.journal);
+                let new_index = cj_lsn_au_index(new_journal);
+                assert(new_index == lsn_au_index_append_record(
+                    old_index,
+                    marshalled_msgs,
+                    addr.au,
+                ));
+                assert(crate::allocation_layer::LikesJournal_v::lsn_disjoint(
+                    old_index.dom(),
+                    marshalled_msgs.seq_start,
+                    marshalled_msgs.seq_end,
+                )) by {
+                    assert(self.allocation_view_inv());
+                    assert forall |lsn: LSN| {
+                        &&& #[trigger] old_index.dom().contains(lsn)
+                        &&& marshalled_msgs.seq_start <= lsn
+                        &&& lsn < marshalled_msgs.seq_end
+                    } implies false by {
+                        assert(old_index.contains_key(lsn));
+                        assert(lsn < self.allocation_unmarshalled_tail().seq_start);
+                        assert(marshalled_msgs.seq_start
+                            == self.allocation_unmarshalled_tail().seq_start);
+                    }
+                }
+                lsn_au_index_append_record_ensures(old_index, marshalled_msgs, addr.au);
+                CachingDiskJournal::State::lsn_au_index_append_record_values_subset(
+                    old_index,
+                    marshalled_msgs,
+                    addr.au,
+                );
+                assert(new_index.values() == old_index.values().insert(addr.au));
+            },
+            _ => {
+                assert(false);
+            },
+        }
     }
 
     pub proof fn journal_marshal_refines(

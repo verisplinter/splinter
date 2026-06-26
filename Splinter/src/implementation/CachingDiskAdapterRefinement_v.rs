@@ -192,6 +192,124 @@ pub open spec fn cache_disk_refinement_inv(
     &&& caching_disk_i(cache, disk, owned_aus).inv()
 }
 
+pub proof fn caching_disk_i_by_domains_inv_from_clean_cache_coupling(
+    cache: Cache::State,
+    disk: AsyncDisk::State,
+    cache_addrs: Set<Address>,
+    persistent_addrs: Set<Address>,
+)
+    requires
+        cache.inv(),
+        forall |addr: Address| #[trigger] filled_cache_status(cache).contains_key(addr)
+            && filled_cache_status(cache)[addr] == CachingDiskPageStatus::Clean
+            && cache_addrs.contains(addr)
+            ==> {
+                &&& disk.content.contains_key(addr)
+                &&& disk.content[addr] == cache_filled_page(cache, addr)
+                &&& persistent_addrs.contains(addr)
+            },
+    ensures
+        caching_disk_i_by_domains(cache, disk, cache_addrs, persistent_addrs).inv(),
+{
+    let cd = caching_disk_i_by_domains(cache, disk, cache_addrs, persistent_addrs);
+    assert(cd.status.dom() =~= cd.cache.dom()) by {
+        assert forall |addr: Address| #[trigger] cd.status.dom().contains(addr)
+            implies cd.cache.dom().contains(addr) by {
+            assert(project_cache_status_by_addrs(cache, cache_addrs).contains_key(addr));
+            assert(cache_addrs.contains(addr));
+            assert(filled_cache_status(cache).contains_key(addr));
+            assert(cache_filled_addr(cache, addr));
+            assert(filled_cache_pages(cache).contains_key(addr));
+            assert(project_cache_pages_by_addrs(cache, cache_addrs).contains_key(addr));
+        }
+        assert forall |addr: Address| #[trigger] cd.cache.dom().contains(addr)
+            implies cd.status.dom().contains(addr) by {
+            assert(project_cache_pages_by_addrs(cache, cache_addrs).contains_key(addr));
+            assert(cache_addrs.contains(addr));
+            assert(filled_cache_pages(cache).contains_key(addr));
+            assert(cache_filled_addr(cache, addr));
+            assert(filled_cache_status(cache).contains_key(addr));
+            assert(project_cache_status_by_addrs(cache, cache_addrs).contains_key(addr));
+        }
+    }
+    assert forall |addr: Address| #[trigger] cd.status.contains_key(addr)
+        && cd.status[addr] == CachingDiskPageStatus::Clean
+        implies {
+            &&& cd.persistent.contains_key(addr)
+            &&& cd.persistent[addr] == cd.cache[addr]
+        } by {
+        assert(project_cache_status_by_addrs(cache, cache_addrs).contains_key(addr));
+        assert(cache_addrs.contains(addr));
+        assert(filled_cache_status(cache).contains_key(addr));
+        assert(filled_cache_status(cache)[addr] == CachingDiskPageStatus::Clean);
+        assert(disk.content.contains_key(addr));
+        assert(disk.content[addr] == cache_filled_page(cache, addr));
+        assert(persistent_addrs.contains(addr));
+        assert(project_persistent_by_addrs(disk, persistent_addrs).contains_key(addr));
+        assert(cd.persistent.contains_key(addr));
+        assert(cd.persistent[addr] == disk.content[addr]);
+        assert(cd.cache[addr] == cache_filled_page(cache, addr));
+    }
+}
+
+pub proof fn caching_disk_i_inv_from_clean_cache_coupling(
+    cache: Cache::State,
+    disk: AsyncDisk::State,
+    owned_aus: Set<AU>,
+)
+    requires
+        cache.inv(),
+        forall |addr: Address| #[trigger] filled_cache_status(cache).contains_key(addr)
+            && filled_cache_status(cache)[addr] == CachingDiskPageStatus::Clean
+            && addresses_in_aus(owned_aus).contains(addr)
+            ==> {
+                &&& disk.content.contains_key(addr)
+                &&& disk.content[addr] == cache_filled_page(cache, addr)
+            },
+    ensures
+        caching_disk_i(cache, disk, owned_aus).inv(),
+{
+    caching_disk_i_by_domains_inv_from_clean_cache_coupling(
+        cache,
+        disk,
+        addresses_in_aus(owned_aus),
+        addresses_in_aus(owned_aus),
+    );
+}
+
+pub proof fn caching_disk_i_domains_wf_from_sources(
+    cache: Cache::State,
+    disk: AsyncDisk::State,
+    owned_aus: Set<AU>,
+)
+    requires
+        forall |addr: Address| #[trigger] filled_cache_pages(cache).contains_key(addr)
+            ==> addr.wf(),
+        forall |addr: Address| {
+            &&& #[trigger] disk.content.contains_key(addr)
+            &&& addresses_in_aus(owned_aus).contains(addr)
+        } ==> addr.wf(),
+    ensures
+        caching_disk_i(cache, disk, owned_aus).cache.dom()
+            <= Set::new(|addr: Address| addr.wf()),
+        caching_disk_i(cache, disk, owned_aus).persistent.dom()
+            <= Set::new(|addr: Address| addr.wf()),
+{
+    let cd = caching_disk_i(cache, disk, owned_aus);
+    assert forall |addr: Address| #[trigger] cd.cache.dom().contains(addr)
+        implies Set::new(|addr: Address| addr.wf()).contains(addr) by {
+        assert(project_cache_pages(cache, owned_aus).contains_key(addr));
+        assert(filled_cache_pages(cache).contains_key(addr));
+        assert(addr.wf());
+    }
+    assert forall |addr: Address| #[trigger] cd.persistent.dom().contains(addr)
+        implies Set::new(|addr: Address| addr.wf()).contains(addr) by {
+        assert(project_persistent(disk, owned_aus).contains_key(addr));
+        assert(disk.content.contains_key(addr));
+        assert(addr.wf());
+    }
+}
+
 pub proof fn projected_cache_access_effect(
     pre: Cache::State,
     post: Cache::State,
@@ -1851,6 +1969,133 @@ pub proof fn cache_internal_post_filled_addr_was_pre_filled(
             assert(false);
         },
     }
+}
+
+pub proof fn cache_internal_preserves_clean_filled_addr(
+    pre_cache: Cache::State,
+    post_cache: Cache::State,
+    addr: Address,
+)
+    requires
+        pre_cache.inv(),
+        Cache::State::next(pre_cache, post_cache, Cache::Label::Internal{}),
+        filled_cache_status(post_cache).contains_key(addr),
+        filled_cache_status(post_cache)[addr] == CachingDiskPageStatus::Clean,
+    ensures
+        filled_cache_status(pre_cache).contains_key(addr),
+        filled_cache_status(pre_cache)[addr] == CachingDiskPageStatus::Clean,
+        cache_filled_page(post_cache, addr) == cache_filled_page(pre_cache, addr),
+{
+    Cache::State::inv_next(pre_cache, post_cache, Cache::Label::Internal{});
+    assert(cache_filled_addr(post_cache, addr));
+    cache_internal_post_filled_addr_was_pre_filled(pre_cache, post_cache, addr);
+    assert(cache_filled_addr(pre_cache, addr));
+
+    pre_cache.build_lookup_map_ensures();
+    post_cache.build_lookup_map_ensures();
+    reveal(Cache::State::next);
+    reveal(Cache::State::next_by);
+    let step = choose |step: Cache::Step| Cache::State::next_by(
+        pre_cache,
+        post_cache,
+        Cache::Label::Internal{},
+        step,
+    );
+    let post_slot = post_cache.lookup_map[addr];
+    match step {
+        Cache::Step::reserve(new_slots_mapping) => {
+            assert(Cache::State::reserve(
+                pre_cache,
+                post_cache,
+                Cache::Label::Internal{},
+                new_slots_mapping,
+            )) by {
+                reveal(Cache::State::reserve);
+            }
+            let updated_entries = Map::new(
+                |slot| new_slots_mapping.contains_key(slot),
+                |slot| Entry::Reserved{addr: new_slots_mapping[slot]},
+            );
+            assert(post_cache.entries == pre_cache.entries.union_prefer_right(updated_entries));
+            assert(post_cache.status_map == pre_cache.status_map);
+            assert(!updated_entries.contains_key(post_slot)) by {
+                if updated_entries.contains_key(post_slot) {
+                    assert(post_cache.entries[post_slot] == Entry::Reserved{
+                        addr: new_slots_mapping[post_slot],
+                    });
+                    assert(post_cache.entries[post_slot] is Filled);
+                    assert(false);
+                }
+            }
+            assert(post_cache.lookup_map
+                == pre_cache.lookup_map.union_prefer_right(new_slots_mapping.invert()));
+            assert(pre_cache.lookup_map.contains_key(addr));
+            assert(pre_cache.lookup_map[addr] == post_slot);
+            assert(pre_cache.entries[post_slot] == post_cache.entries[post_slot]);
+            assert(pre_cache.status_map[post_slot] == post_cache.status_map[post_slot]);
+        },
+        Cache::Step::evict(evicted_slots) => {
+            assert(Cache::State::evict(
+                pre_cache,
+                post_cache,
+                Cache::Label::Internal{},
+                evicted_slots,
+            )) by {
+                reveal(Cache::State::evict);
+            }
+            let evicted_addrs = Map::new(
+                |slot: Slot| evicted_slots.contains(slot),
+                |slot: Slot| pre_cache.entries[slot].get_addr(),
+            ).values();
+            assert(post_cache.lookup_map == pre_cache.lookup_map.remove_keys(evicted_addrs));
+            assert(!evicted_addrs.contains(addr)) by {
+                if evicted_addrs.contains(addr) {
+                    assert(!post_cache.lookup_map.contains_key(addr));
+                    assert(cache_filled_addr(post_cache, addr));
+                    assert(false);
+                }
+            }
+            assert(pre_cache.lookup_map.contains_key(addr));
+            assert(pre_cache.lookup_map[addr] == post_slot) by {
+                pre_cache.build_lookup_map_ensures();
+                post_cache.build_lookup_map_ensures();
+            }
+            assert(!evicted_slots.contains(post_slot)) by {
+                if evicted_slots.contains(post_slot) {
+                    assert(evicted_addrs.contains(addr));
+                    assert(false);
+                }
+            }
+            let updated_entries = Map::new(
+                |slot| evicted_slots.contains(slot),
+                |slot| Entry::Empty,
+            );
+            let updated_status_map = Map::new(
+                |slot| evicted_slots.contains(slot),
+                |slot| CacheStatus::NotFilled,
+            );
+            assert(post_cache.entries == pre_cache.entries.union_prefer_right(updated_entries));
+            assert(post_cache.status_map == pre_cache.status_map.union_prefer_right(
+                updated_status_map,
+            ));
+            assert(!updated_entries.contains_key(post_slot));
+            assert(!updated_status_map.contains_key(post_slot));
+            assert(pre_cache.entries[post_slot] == post_cache.entries[post_slot]);
+            assert(pre_cache.status_map[post_slot] == post_cache.status_map[post_slot]);
+        },
+        Cache::Step::noop() => {
+            assert(Cache::State::noop(pre_cache, post_cache, Cache::Label::Internal{})) by {
+                reveal(Cache::State::noop);
+            }
+            assert(post_cache == pre_cache);
+        },
+        _ => {
+            assert(false);
+        },
+    }
+    assert(cache_filled_page(post_cache, addr) == cache_filled_page(pre_cache, addr));
+    assert(filled_cache_status(pre_cache).contains_key(addr));
+    assert(filled_cache_status(pre_cache)[addr] == CachingDiskPageStatus::Clean);
 }
 
 pub proof fn cache_internal_preserves_empty_projection(

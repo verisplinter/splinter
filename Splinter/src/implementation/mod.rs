@@ -7,6 +7,8 @@
 // pub mod Implementation_v;
 pub mod MultisetMapRelation_v;
 // pub mod AtomicState_v;
+pub mod AtomicJournalState_v;
+pub mod AtomicBranchState_v;
 pub mod AnotherAtomicState_v;
 // pub mod AnotherAtomicJournalRefinement_v;
 // pub mod AnotherAtomicBranchRefinement_v;

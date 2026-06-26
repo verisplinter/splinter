@@ -139,7 +139,8 @@ proof fn journal_step_preserves_frozen(
 )
     requires
         CrashAwareCachingDiskJournal::State::next(pre, post, lbl),
-        lbl is Internal || lbl is LoadIndex || lbl is InternalAlloc || lbl is CommitPrepared,
+        lbl is Internal || lbl is ObserveCleanAUs || lbl is LoadIndex
+            || lbl is InternalAlloc || lbl is CommitPrepared,
     ensures
         post.frozen == pre.frozen,
 {
@@ -157,6 +158,9 @@ proof fn journal_step_preserves_frozen(
         },
         CrashAwareCachingDiskJournal::Step::internal(new_ephemeral) => {
             reveal(CrashAwareCachingDiskJournal::State::internal);
+        },
+        CrashAwareCachingDiskJournal::Step::observe_clean_aus(new_ephemeral) => {
+            reveal(CrashAwareCachingDiskJournal::State::observe_clean_aus);
         },
         CrashAwareCachingDiskJournal::Step::internal_alloc(new_ephemeral) => {
             reveal(CrashAwareCachingDiskJournal::State::internal_alloc);
@@ -1328,6 +1332,62 @@ proof fn journal_internal_refines_coordination(
     let cpost = caching_disk_system_coordination_i(post);
     let clbl = CoordinationSystem::Label::Label{ctam_label: caching_disk_system_i_lbl(pre, post, lbl)};
     let journal_lbl = CrashAwareCachingDiskJournal::Label::Internal;
+
+    pre.journal.next_refines_abstract(new_journal, journal_lbl);
+    assert(post.journal == new_journal);
+    journal_step_preserves_frozen(pre.journal, new_journal, journal_lbl);
+    assert(post.journal.frozen == pre.journal.frozen);
+    assert(post.branch.frozen == pre.branch.frozen);
+    assert(post.superblockstore == pre.superblockstore);
+    caching_disk_system_commit_flags_unchanged(pre, post);
+    assert(CoordinationSystem::State::journal_internal(
+        cpre,
+        cpost,
+        clbl,
+        new_journal.i_abstract(),
+    )) by {
+        reveal(CoordinationSystem::State::journal_internal);
+    }
+    assert(CoordinationSystem::State::next_by(
+        cpre,
+        cpost,
+        clbl,
+        CoordinationSystem::Step::journal_internal(new_journal.i_abstract()),
+    ));
+}
+
+proof fn journal_observe_clean_aus_refines_coordination(
+    pre: CrashAwareCachingDiskSystem::State,
+    post: CrashAwareCachingDiskSystem::State,
+    lbl: CrashAwareCachingDiskSystem::Label,
+    new_journal: CrashAwareCachingDiskJournal::State,
+    aus: Set<AU>,
+)
+    requires
+        refinement_inv(pre),
+        CrashAwareCachingDiskSystem::State::journal_observe_clean_aus(
+            pre,
+            post,
+            lbl,
+            new_journal,
+            aus,
+        ),
+    ensures
+        CoordinationSystem::State::next(
+            caching_disk_system_coordination_i(pre),
+            caching_disk_system_coordination_i(post),
+            CoordinationSystem::Label::Label{ctam_label: caching_disk_system_i_lbl(pre, post, lbl)},
+        ),
+{
+    reveal(CrashAwareCachingDiskSystem::State::journal_observe_clean_aus);
+    reveal(CoordinationSystem::State::next);
+    reveal(CoordinationSystem::State::next_by);
+    reveal(caching_disk_system_coordination_i);
+
+    let cpre = caching_disk_system_coordination_i(pre);
+    let cpost = caching_disk_system_coordination_i(post);
+    let clbl = CoordinationSystem::Label::Label{ctam_label: caching_disk_system_i_lbl(pre, post, lbl)};
+    let journal_lbl = CrashAwareCachingDiskJournal::Label::ObserveCleanAUs{aus};
 
     pre.journal.next_refines_abstract(new_journal, journal_lbl);
     assert(post.journal == new_journal);
@@ -2686,6 +2746,18 @@ pub proof fn next_refines_coordination(
                 reveal(CrashAwareCachingDiskSystem::State::journal_internal);
             }
             journal_internal_refines_coordination(pre, post, lbl, new_journal);
+        },
+        CrashAwareCachingDiskSystem::Step::journal_observe_clean_aus(new_journal, aus) => {
+            assert(CrashAwareCachingDiskSystem::State::journal_observe_clean_aus(
+                pre,
+                post,
+                lbl,
+                new_journal,
+                aus,
+            )) by {
+                reveal(CrashAwareCachingDiskSystem::State::journal_observe_clean_aus);
+            }
+            journal_observe_clean_aus_refines_coordination(pre, post, lbl, new_journal, aus);
         },
         CrashAwareCachingDiskSystem::Step::journal_load_index(new_journal, discovered_aus) => {
             assert(CrashAwareCachingDiskSystem::State::journal_load_index(

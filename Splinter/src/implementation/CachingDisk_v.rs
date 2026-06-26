@@ -955,6 +955,50 @@ impl CachingDisk::State {
         );
     }
 
+    pub proof fn persistent_visible_agree_on_subset(
+        self,
+        addrs: Set<Address>,
+        other: Set<Address>,
+    )
+        requires
+            self.persistent_visible_agree_on(addrs),
+            other <= addrs,
+        ensures
+            self.persistent_visible_agree_on(other),
+    {
+        assert_maps_equal!(
+            self.persistent.restrict(other),
+            self.visible().restrict(other),
+            addr => {
+                if other.contains(addr) {
+                    assert(addrs.contains(addr));
+                    assert(self.persistent.restrict(addrs)
+                        == self.visible().restrict(addrs));
+                    if self.persistent.contains_key(addr) {
+                        assert(self.persistent.restrict(addrs).contains_key(addr));
+                        assert(self.visible().restrict(addrs).contains_key(addr));
+                        assert(self.persistent.restrict(addrs)[addr]
+                            == self.visible().restrict(addrs)[addr]);
+                        assert(self.persistent.restrict(addrs)[addr]
+                            == self.persistent[addr]);
+                        assert(self.visible().restrict(addrs)[addr]
+                            == self.visible()[addr]);
+                    }
+                    if self.visible().contains_key(addr) {
+                        assert(self.visible().restrict(addrs).contains_key(addr));
+                        assert(self.persistent.restrict(addrs).contains_key(addr));
+                        assert(self.persistent.restrict(addrs)[addr]
+                            == self.visible().restrict(addrs)[addr]);
+                        assert(self.visible().restrict(addrs)[addr]
+                            == self.visible()[addr]);
+                        assert(self.persistent.restrict(addrs)[addr]
+                            == self.persistent[addr]);
+                    }
+                }
+            }
+        );
+    }
+
     pub proof fn same_views_preserve_persistent_visible_agree_on(
         pre: Self,
         post: Self,
@@ -968,6 +1012,29 @@ impl CachingDisk::State {
             post.persistent_visible_agree_on(addrs),
     {
         assert(post.persistent.restrict(addrs) == post.visible().restrict(addrs));
+    }
+
+    pub proof fn addrs_clean_or_evictable_subset(
+        self,
+        addrs: Set<Address>,
+        other: Set<Address>,
+    )
+        requires
+            self.addrs_clean_or_evictable(addrs),
+            other <= addrs,
+        ensures
+            self.addrs_clean_or_evictable(other),
+    {
+        assert forall |addr: Address| {
+            &&& #[trigger] self.cache.contains_key(addr)
+            &&& other.contains(addr)
+        } implies {
+            &&& self.status.contains_key(addr)
+            &&& self.status[addr] == PageStatus::Clean
+        } by {
+            assert(addrs.contains(addr));
+            assert(self.addrs_clean_or_evictable(addrs));
+        };
     }
 
     pub proof fn extension_preserves_persistent_visible_agree_on(
@@ -1361,6 +1428,94 @@ impl CachingDisk::State {
                 CachingDisk::Step::internal_noop() => {
                     assert(pre.cache.contains_key(addr));
                     assert(pre.addrs_clean_or_evictable(addrs));
+                },
+                _ => {
+                    assert(false);
+                },
+            }
+        };
+    }
+
+    pub proof fn internal_preserves_cache_clean_or_evictable(pre: Self, post: Self)
+        requires
+            pre.inv(),
+            post.inv(),
+            pre.addrs_clean_or_evictable(pre.cache.dom()),
+            CachingDisk::State::next(pre, post, CachingDisk::Label::Internal{}),
+        ensures
+            post.addrs_clean_or_evictable(post.cache.dom()),
+    {
+        reveal(CachingDisk::State::next);
+        reveal(CachingDisk::State::next_by);
+        let lbl = CachingDisk::Label::Internal{};
+        let step = choose |step| CachingDisk::State::next_by(pre, post, lbl, step);
+        match step {
+            CachingDisk::Step::load(addrs_to_load) => {
+                Self::load_effect(pre, post, addrs_to_load);
+            },
+            CachingDisk::Step::begin_writeback(addrs_to_writeback) => {
+                Self::begin_writeback_effect(pre, post, addrs_to_writeback);
+            },
+            CachingDisk::Step::persist_writeback(addrs_to_persist) => {
+                Self::persist_writeback_effect(pre, post, addrs_to_persist);
+            },
+            CachingDisk::Step::mark_clean(addrs_to_clean) => {
+                Self::mark_clean_effect(pre, post, addrs_to_clean);
+            },
+            CachingDisk::Step::evict_clean(addrs_to_evict) => {
+                Self::evict_clean_effect(pre, post, addrs_to_evict);
+            },
+            CachingDisk::Step::internal_noop() => {
+                assert(post == pre);
+            },
+            _ => {
+                assert(false);
+            },
+        }
+
+        assert forall |addr: Address| {
+            &&& #[trigger] post.cache.contains_key(addr)
+            &&& post.cache.dom().contains(addr)
+        } implies {
+            &&& post.status.contains_key(addr)
+            &&& post.status[addr] == PageStatus::Clean
+        } by {
+            match step {
+                CachingDisk::Step::load(addrs_to_load) => {
+                    if addrs_to_load.contains(addr) {
+                    } else {
+                        assert(pre.cache.contains_key(addr));
+                        assert(pre.addrs_clean_or_evictable(pre.cache.dom()));
+                    }
+                },
+                CachingDisk::Step::begin_writeback(addrs_to_writeback) => {
+                    assert(pre.cache.contains_key(addr));
+                    assert(pre.addrs_clean_or_evictable(pre.cache.dom()));
+                    if addrs_to_writeback.contains(addr) {
+                        assert(pre.all_status(addrs_to_writeback, PageStatus::Dirty));
+                        assert(pre.status[addr] == PageStatus::Dirty);
+                        assert(pre.status[addr] == PageStatus::Clean);
+                        assert(false);
+                    }
+                },
+                CachingDisk::Step::persist_writeback(addrs_to_persist) => {
+                    assert(pre.cache.contains_key(addr));
+                    assert(pre.addrs_clean_or_evictable(pre.cache.dom()));
+                },
+                CachingDisk::Step::mark_clean(addrs_to_clean) => {
+                    if addrs_to_clean.contains(addr) {
+                    } else {
+                        assert(pre.cache.contains_key(addr));
+                        assert(pre.addrs_clean_or_evictable(pre.cache.dom()));
+                    }
+                },
+                CachingDisk::Step::evict_clean(addrs_to_evict) => {
+                    assert(pre.cache.contains_key(addr));
+                    assert(pre.addrs_clean_or_evictable(pre.cache.dom()));
+                },
+                CachingDisk::Step::internal_noop() => {
+                    assert(pre.cache.contains_key(addr));
+                    assert(pre.addrs_clean_or_evictable(pre.cache.dom()));
                 },
                 _ => {
                     assert(false);

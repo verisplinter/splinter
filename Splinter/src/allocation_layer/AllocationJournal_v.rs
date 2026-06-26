@@ -7255,6 +7255,8 @@ state_machine!{ AllocationJournal {
         );
         assert(tight_bounds.contains_key(addr.au));
         assert(addr.page <= tight_bounds[addr.au]);
+        image.valid_image_implies_tight_valid_image();
+        assert(tight_dv.pointer_is_upstream(tight.freshest_rec, frozen.first));
         tight_dv.build_au_page_bounds_au_walk_bound_has_entry(
             tight.freshest_rec,
             frozen.first,
@@ -7263,12 +7265,26 @@ state_machine!{ AllocationJournal {
         let bound_addr = Address{au: addr.au, page: tight_bounds[addr.au]};
         assert(tight_dv.entries.contains_key(bound_addr));
         image.valid_image_implies_tight_seq_bounds();
-        image.tj.disk_view.build_tight_entry_lsn_bounded(
-            image.tj.freshest_rec,
+        tight_dv.decodable_implies_path_decodable(tight.freshest_rec);
+        image.tj.disk_view.path_build_tight_idempotent(tight.freshest_rec);
+        assert(tight_dv == image.tj.disk_view.path_build_tight(tight.freshest_rec));
+        assert(image.tj.disk_view.path_build_tight(tight.freshest_rec) == tight_dv);
+        tight_dv.path_build_tight_equals_build_tight(tight.freshest_rec);
+        assert(tight_dv.path_build_tight(tight.freshest_rec) == tight_dv);
+        assert(tight_dv.path_build_tight(tight.freshest_rec)
+            == tight_dv.build_tight(tight.freshest_rec));
+        assert_maps_equal!(
+            tight_dv.build_tight(tight.freshest_rec).entries,
+            tight_dv.entries
+        );
+        assert(tight_dv.build_tight(tight.freshest_rec) == tight_dv);
+        tight_dv.build_tight_entry_lsn_bounded(
+            tight.freshest_rec,
             bound_addr,
         );
         assert(tight_dv.boundary_lsn < tight_dv.entries[bound_addr].message_seq.seq_end);
-        assert(tight_dv.entries[bound_addr].message_seq.seq_end <= image.tj.seq_end());
+        assert(tight_dv.entries[bound_addr].message_seq.seq_end <= tight.seq_end());
+        assert(tight.seq_end() == image.tj.seq_end());
         assert(image.tj.seq_end() == frozen.seq_end);
         assert(tight_dv.is_sub_disk_with_newer_lsn(pre.tj().disk_view));
         assert(pre.tj().disk_view.entries.contains_key(bound_addr));

@@ -688,6 +688,9 @@ pub proof fn sealed_sparse_map_up_to_query(
     } else {
         sealed_sparse_map_up_to_query(sealed_stack, branch_summary, (end - 1) as nat, key);
         let branch = sealed_stack.sealed_branch_at(branch_summary, (end - 1) as nat);
+        sealed_stack.sealed_branch_at_is_tight(branch_summary, (end - 1) as nat);
+        assert(branch.valid_sealed_branch());
+        assert(branch.inv());
         linked_branch_sparse_query(branch, key);
     }
 }

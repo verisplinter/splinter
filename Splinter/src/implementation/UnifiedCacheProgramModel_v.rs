@@ -105,6 +105,7 @@ impl ProgramModelTrait for UnifiedCacheProgramModel {
     open spec fn is_mkfs(disk: DiskModel) -> bool
     {
         &&& DiskLayout::spec_new().mkfs(disk.content)
+        &&& disk.content.dom() =~= set![spec_superblock_addr()]
         &&& abstract_superblock_raw_wf(disk.content[spec_superblock_addr()])
         &&& parse_abstract_superblock(disk.content[spec_superblock_addr()])
             == empty_abstract_superblock_image()

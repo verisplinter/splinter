@@ -2100,6 +2100,16 @@ pub open spec fn build_au_page_bounds_from_reads_page_walk_depth(
     }
 }
 
+pub open spec fn au_page_bounds_observe_addr(bounds: AUPageBounds, addr: Address) -> AUPageBounds
+{
+    let page = if bounds.contains_key(addr.au) && addr.page <= bounds[addr.au] {
+        bounds[addr.au]
+    } else {
+        addr.page
+    };
+    bounds.insert(addr.au, page)
+}
+
 pub open spec fn build_au_page_bounds_from_reads_au_walk_depth(
     reads: Map<Address, JournalRecord>,
     boundary_lsn: LSN,
@@ -2502,7 +2512,7 @@ state_machine!{ CachedJournal {
         update snapshot = JournalSnapshot{root: Some(JournalRoot{freshest_rec: addr, first: new_first}), ..pre.snapshot};
         update status = Some(JournalStatus{
             lsn_au_index: lsn_au_index_append_record(pre.status.unwrap().lsn_au_index, marshalled_msgs, addr.au),
-            au_page_bounds: pre.status.unwrap().au_page_bounds.insert(addr.au, addr.page),
+            au_page_bounds: au_page_bounds_observe_addr(pre.status.unwrap().au_page_bounds, addr),
             clean_watermark_au_page_bounds: pre.status.unwrap().clean_watermark_au_page_bounds,
             unmarshalled_tail:  pre.status.unwrap().unmarshalled_tail.discard_old(cut),
             // Marshal only dirties cache pages; cleaning/flush advances watermark later.
@@ -2575,7 +2585,38 @@ state_machine!{ CachedJournal {
     fn discard_old_inductive(pre: Self, post: Self, lbl: Label) { }
 
     #[inductive(internal_journal_marshal)]
-    fn internal_journal_marshal_inductive(pre: Self, post: Self, lbl: Label, cut: LSN, addr: Address) { }
+    fn internal_journal_marshal_inductive(pre: Self, post: Self, lbl: Label, cut: LSN, addr: Address) {
+        assert(post.status.unwrap().clean_watermark_au_page_bounds.dom()
+            <= post.status.unwrap().au_page_bounds.dom()) by {
+            assert forall |au: AU| #[trigger] post.status.unwrap()
+                .clean_watermark_au_page_bounds.dom().contains(au)
+                implies post.status.unwrap().au_page_bounds.dom().contains(au) by {
+                assert(pre.wf());
+                assert(pre.status.unwrap().clean_watermark_au_page_bounds.dom()
+                    <= pre.status.unwrap().au_page_bounds.dom());
+            }
+        }
+        assert forall |au: AU| #[trigger] post.status.unwrap()
+            .clean_watermark_au_page_bounds.contains_key(au)
+            implies post.status.unwrap().clean_watermark_au_page_bounds[au]
+                <= post.status.unwrap().au_page_bounds[au] by {
+            assert(pre.wf());
+            assert(pre.status.unwrap().clean_watermark_au_page_bounds[au]
+                <= pre.status.unwrap().au_page_bounds[au]);
+            if au == addr.au {
+                if addr.page <= pre.status.unwrap().au_page_bounds[au] {
+                    assert(post.status.unwrap().au_page_bounds[au]
+                        == pre.status.unwrap().au_page_bounds[au]);
+                } else {
+                    assert(pre.status.unwrap().au_page_bounds[au] < addr.page);
+                    assert(post.status.unwrap().au_page_bounds[au] == addr.page);
+                }
+            } else {
+                assert(post.status.unwrap().au_page_bounds[au]
+                    == pre.status.unwrap().au_page_bounds[au]);
+            }
+        }
+    }
     
     #[inductive(load_index)]
     fn load_index_inductive(pre: Self, post: Self, lbl: Label, au_depth: nat, page_depth: nat) { }

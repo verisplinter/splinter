@@ -24,6 +24,8 @@ use crate::implementation::CachedJournal_v::{
 use crate::implementation::CachingDiskAdapterRefinement_v::{
 	    cache_filled_addr, cache_filled_page,
 	    caching_disk_i as adapter_caching_disk_i, project_cache_pages, project_cache_status,
+	    cache_access_refines_caching_disk_access,
+	    cache_evictable_refines_observe_clean_aus,
 	    cache_internal_refines_caching_disk_internal,
 	    cache_disk_ops_begin_refines_caching_disk_internal,
 	    cache_disk_ops_end_refines_caching_disk_internal,
@@ -31,8 +33,9 @@ use crate::implementation::CachingDiskAdapterRefinement_v::{
 	    projected_cache_access_outside_aus_unchanged, projected_cache_read_only_access_unchanged,
 	};
 use crate::implementation::CachingDisk_v::{addresses_in_aus, status_map, CachingDisk, PageStatus};
-use crate::implementation::CachingDiskJournal_v::CachingDiskJournal;
+use crate::implementation::CachingDiskJournal_v::{CachingDiskJournal, cj_lsn_au_index};
 use crate::implementation::CrashAwareCachingDiskJournal_v::{
+    caching_disk_journal_accessible_aus,
     CachingDiskJournalFrozenMetadata, CachingDiskJournalImage, CrashAwareCachingDiskJournal,
     EphemeralCachingDiskJournal, PersistentCachingDiskJournal,
 };
@@ -179,9 +182,22 @@ impl UnifiedCacheJournalSource {
         }
     }
 
+    pub open spec fn caching_disk_i_for_aus(self, aus: Set<AU>) -> CachingDisk::State
+    {
+        adapter_caching_disk_i(self.cache, self.disk, aus)
+    }
+
     pub open spec fn journal_caching_disk_i(self) -> CachingDisk::State
     {
-        adapter_caching_disk_i(self.cache, self.disk, self.journal_projection_aus())
+        self.caching_disk_i_for_aus(self.journal_projection_aus())
+    }
+
+    pub open spec fn journal_fill_aus_shared_projection_inv(self, aus: Set<AU>) -> bool
+    {
+        let disk = self.caching_disk_i_for_aus(self.journal_projection_aus() + aus);
+        &&& disk.inv()
+        &&& disk.cache.dom() <= Set::new(|addr: Address| addr.wf())
+        &&& disk.persistent.dom() <= Set::new(|addr: Address| addr.wf())
     }
 
     pub open spec fn journal_caching_disk_state_i(self) -> CachingDiskJournal::State
@@ -1792,6 +1808,760 @@ pub proof fn load_index_refines(
         assert(post.disk.inv());
         assert(post.journal_caching_disk_i().inv());
         assert(post.journal.persistent_seq_end == pre.journal.persistent_seq_end);
+        assert(post.in_flight is Some <==> post.journal.in_flight is Some);
+        assert(post.in_flight is Some <==> post.in_flight_image is Some);
+    }
+    assert(post.semantic_inv());
+    assert(inv(post));
+}
+
+pub proof fn observe_clean_aus_refines(
+    pre: UnifiedCacheJournalSource,
+    post: UnifiedCacheJournalSource,
+    aus: Set<AU>,
+)
+    requires
+        inv(pre),
+        pre.superblock_loaded(),
+        post.disk == pre.disk,
+        post.persistent_image == pre.persistent_image,
+        post.in_flight == pre.in_flight,
+        post.in_flight_image == pre.in_flight_image,
+        Cache::State::next(
+            pre.cache,
+            post.cache,
+            Cache::Label::EvictableCheck{aus},
+        ),
+        AtomicJournalState::State::next(
+            pre.journal,
+            post.journal,
+            AtomicJournalState::Label::ObserveCleanAUs{aus},
+        ),
+    ensures
+        CrashAwareCachingDiskJournal::State::next(
+            unified_cache_journal_i(pre),
+            unified_cache_journal_i(post),
+            CrashAwareCachingDiskJournal::Label::ObserveCleanAUs{aus},
+        ),
+        post.cache == pre.cache,
+        post.journal_projection_aus() =~= pre.journal_projection_aus(),
+        post.journal.ready(),
+        post.journal.persistent_seq_end == pre.journal.persistent_seq_end,
+        post.journal.in_flight == pre.journal.in_flight,
+        post.journal.prepared == pre.journal.prepared,
+        post.journal.journal.seq_end() == pre.journal.journal.seq_end(),
+        inv(post),
+{
+    let atomic_lbl = AtomicJournalState::Label::ObserveCleanAUs{aus};
+    let cache_lbl = Cache::Label::EvictableCheck{aus};
+
+    reveal(Cache::State::next);
+    reveal(Cache::State::next_by);
+    let cache_step = choose |step: Cache::Step|
+        Cache::State::next_by(pre.cache, post.cache, cache_lbl, step);
+    match cache_step {
+        Cache::Step::evictable() => {
+            reveal(Cache::State::evictable);
+            assert(post.cache == pre.cache);
+        },
+        _ => {
+            assert(false);
+        },
+    }
+
+    AtomicJournalState::State::wf_next(pre.journal, post.journal, atomic_lbl);
+    reveal(AtomicJournalState::State::next);
+    reveal(AtomicJournalState::State::next_by);
+    let atomic_step = choose |step: AtomicJournalState::Step|
+        AtomicJournalState::State::next_by(pre.journal, post.journal, atomic_lbl, step);
+    match atomic_step {
+        AtomicJournalState::Step::observe_clean_aus(new_journal) => {
+            assert(AtomicJournalState::State::observe_clean_aus(
+                pre.journal,
+                post.journal,
+                atomic_lbl,
+                new_journal,
+            )) by {
+                reveal(AtomicJournalState::State::observe_clean_aus);
+            }
+            assert(post.journal.journal == new_journal);
+            assert(post.journal.mini_allocator == pre.journal.mini_allocator);
+            assert(post.journal.persistent_seq_end == pre.journal.persistent_seq_end);
+            assert(post.journal.in_flight == pre.journal.in_flight);
+            assert(post.journal.prepared == pre.journal.prepared);
+            CachedJournal::State::observe_clean_aus_effect(
+                pre.journal.journal,
+                post.journal.journal,
+                aus,
+            );
+            assert(post.journal.loaded_index_aus() == pre.journal.loaded_index_aus());
+            assert(post.journal.owned_aus() =~= pre.journal.owned_aus());
+            assert(post.journal.journal.seq_end() == pre.journal.journal.seq_end());
+        },
+        _ => {
+            assert(false);
+        },
+    }
+
+    assert(post.superblock_loaded());
+    assert(post.persistent_superblock_image_i() == pre.persistent_superblock_image_i());
+    assert(post.journal_projection_aus() =~= pre.journal_projection_aus()) by {
+        assert(pre.journal.ready());
+        assert(post.journal.ready());
+        assert(pre.journal_projection_aus() == pre.journal.owned_aus());
+        assert(post.journal_projection_aus() == post.journal.owned_aus());
+    }
+    assert(post.journal_caching_disk_i() == pre.journal_caching_disk_i()) by {
+        assert_maps_equal!(
+            post.journal_caching_disk_i().cache,
+            pre.journal_caching_disk_i().cache,
+            addr => {}
+        );
+        assert_maps_equal!(
+            post.journal_caching_disk_i().status,
+            pre.journal_caching_disk_i().status,
+            addr => {}
+        );
+        assert_maps_equal!(
+            post.journal_caching_disk_i().persistent,
+            pre.journal_caching_disk_i().persistent,
+            addr => {}
+        );
+    }
+
+    cache_evictable_refines_observe_clean_aus(
+        pre.cache,
+        pre.disk,
+        pre.journal_projection_aus(),
+        aus,
+    );
+    assert(CachingDisk::State::next(
+        pre.journal_caching_disk_i(),
+        pre.journal_caching_disk_i(),
+        CachingDisk::Label::ObserveCleanAUs{aus},
+    ));
+    assert(CachingDiskJournal::State::observe_clean_aus(
+        pre.journal_caching_disk_state_i(),
+        post.journal_caching_disk_state_i(),
+        CachingDiskJournal::Label::ObserveCleanAUs{aus},
+        post.journal.journal,
+    )) by {
+        reveal(CachingDiskJournal::State::observe_clean_aus);
+    }
+    assert(CachingDiskJournal::State::next_by(
+        pre.journal_caching_disk_state_i(),
+        post.journal_caching_disk_state_i(),
+        CachingDiskJournal::Label::ObserveCleanAUs{aus},
+        CachingDiskJournal::Step::observe_clean_aus(post.journal.journal),
+    )) by {
+        reveal(CachingDiskJournal::State::next_by);
+    }
+    reveal(CachingDiskJournal::State::next);
+
+    let src = unified_cache_journal_i(pre);
+    let dst = unified_cache_journal_i(post);
+    let target_lbl = CrashAwareCachingDiskJournal::Label::ObserveCleanAUs{aus};
+    assert(src.ephemeral is Known);
+    assert(dst.ephemeral is Known);
+    assert(CrashAwareCachingDiskJournal::State::observe_clean_aus(
+        src,
+        dst,
+        target_lbl,
+        post.journal_caching_disk_state_i(),
+    )) by {
+        reveal(CrashAwareCachingDiskJournal::State::observe_clean_aus);
+    }
+    assert(CrashAwareCachingDiskJournal::State::next_by(
+        src,
+        dst,
+        target_lbl,
+        CrashAwareCachingDiskJournal::Step::observe_clean_aus(
+            post.journal_caching_disk_state_i(),
+        ),
+    )) by {
+        reveal(CrashAwareCachingDiskJournal::State::next_by);
+    }
+    reveal(CrashAwareCachingDiskJournal::State::next);
+    src.next_refines(dst, target_lbl);
+
+    assert(post.inv()) by {
+        assert(post.journal.wf());
+        assert(async_disk_superblock_page_wf(post.disk.content));
+        assert(post.persistent_superblock_image_i().wf());
+        assert(post.cache.inv()) by {
+            Cache::State::inv_next(pre.cache, post.cache, cache_lbl);
+        }
+        assert(post.disk.inv());
+        assert(post.journal_caching_disk_i().inv());
+        assert(post.journal.persistent_seq_end
+            == post.persistent_superblock_image_i().journal_seq_end);
+        assert(post.in_flight is Some <==> post.journal.in_flight is Some);
+        assert(post.in_flight is Some <==> post.in_flight_image is Some);
+    }
+    assert(post.semantic_inv());
+    assert(inv(post));
+}
+
+pub proof fn journal_marshal_refines(
+    pre: UnifiedCacheJournalSource,
+    post: UnifiedCacheJournalSource,
+    addr: Address,
+    raw_page: RawPage,
+)
+    requires
+        inv(pre),
+        pre.superblock_loaded(),
+        post.disk == pre.disk,
+        post.persistent_image == pre.persistent_image,
+        post.in_flight == pre.in_flight,
+        post.in_flight_image == pre.in_flight_image,
+        Cache::State::next(
+            pre.cache,
+            post.cache,
+            Cache::Label::Access{
+                reads: Map::empty(),
+                writes: Map::<Address, RawPage>::empty().insert(addr, raw_page),
+            },
+        ),
+        AtomicJournalState::State::next(
+            pre.journal,
+            post.journal,
+            AtomicJournalState::Label::JournalMarshal{
+                addr,
+                writes: to_journal_records(
+                    Map::<Address, RawPage>::empty().insert(addr, raw_page),
+                ),
+            },
+        ),
+    ensures
+        CrashAwareCachingDiskJournal::State::next(
+            unified_cache_journal_i(pre),
+            unified_cache_journal_i(post),
+            CrashAwareCachingDiskJournal::Label::Internal,
+        ),
+        addr.wf(),
+        pre.journal_projection_aus().contains(addr.au),
+        post.journal.ready(),
+        post.journal.persistent_seq_end == pre.journal.persistent_seq_end,
+        post.journal.in_flight == pre.journal.in_flight,
+        post.journal.prepared == pre.journal.prepared,
+        post.journal.journal.seq_end() == pre.journal.journal.seq_end(),
+        inv(post),
+{
+    let writes = Map::<Address, RawPage>::empty().insert(addr, raw_page);
+    let cache_lbl = Cache::Label::Access{reads: Map::empty(), writes};
+    let atomic_lbl = AtomicJournalState::Label::JournalMarshal{
+        addr,
+        writes: to_journal_records(writes),
+    };
+
+    AtomicJournalState::State::wf_next(pre.journal, post.journal, atomic_lbl);
+    Cache::State::inv_next(pre.cache, post.cache, cache_lbl);
+
+    reveal(AtomicJournalState::State::next);
+    reveal(AtomicJournalState::State::next_by);
+    let atomic_step = choose |step: AtomicJournalState::Step|
+        AtomicJournalState::State::next_by(pre.journal, post.journal, atomic_lbl, step);
+    match atomic_step {
+        AtomicJournalState::Step::journal_marshal(new_journal) => {
+            assert(AtomicJournalState::State::journal_marshal(
+                pre.journal,
+                post.journal,
+                atomic_lbl,
+                new_journal,
+            )) by {
+                reveal(AtomicJournalState::State::journal_marshal);
+            }
+            assert(post.journal.journal == new_journal);
+            assert(post.journal.mini_allocator
+                == pre.journal.mini_allocator.allocate(addr).observe(addr));
+            assert(post.journal.persistent_seq_end == pre.journal.persistent_seq_end);
+            assert(post.journal.in_flight == pre.journal.in_flight);
+            assert(post.journal.prepared == pre.journal.prepared);
+            assert(pre.journal.mini_allocator.tight_next_addr(
+                pre.journal.journal.snapshot.freshest_rec(),
+                addr,
+            ));
+            assert(pre.journal.mini_allocator.can_allocate(addr));
+        },
+        _ => {
+            assert(false);
+        },
+    }
+
+    assert(pre.journal.ready());
+    assert(post.superblock_loaded());
+    assert(post.persistent_superblock_image_i() == pre.persistent_superblock_image_i());
+    assert(writes.dom() =~= Set::new(|a: Address| a == addr));
+    assert(writes.dom() <= addresses_in_aus(pre.journal_projection_aus())) by {
+        assert(pre.journal_projection_aus() == pre.journal.owned_aus());
+        assert(pre.journal.mini_allocator.all_aus().contains(addr.au));
+        assert(pre.journal.owned_aus().contains(addr.au));
+        assert forall |a: Address| #[trigger] writes.contains_key(a)
+            implies addresses_in_aus(pre.journal_projection_aus()).contains(a) by {
+            assert(a == addr);
+        }
+    }
+
+    reveal(CachedJournal::State::next);
+    reveal(CachedJournal::State::next_by);
+    let journal_lbl = CachedJournal::Label::JournalMarshal{
+        writes: to_journal_records(writes),
+    };
+    CachedJournal::State::status_some_next_effect(
+        pre.journal.journal,
+        post.journal.journal,
+        journal_lbl,
+    );
+    assert(post.journal.ready());
+    let journal_step = choose |step: CachedJournal::Step|
+        CachedJournal::State::next_by(pre.journal.journal, post.journal.journal, journal_lbl, step);
+    match journal_step {
+        CachedJournal::Step::internal_journal_marshal(cut, hidden_addr) => {
+            reveal(CachedJournal::State::internal_journal_marshal);
+            assert(hidden_addr == addr) by {
+                assert(to_journal_records(writes).contains_key(hidden_addr));
+                assert(writes.contains_key(hidden_addr));
+                assert(writes.contains_key(addr));
+            }
+            let marshalled_msgs =
+                pre.journal.journal.status.unwrap().unmarshalled_tail.discard_recent(cut);
+            CachingDiskJournal::State::lsn_au_index_append_record_values_subset(
+                cj_lsn_au_index(pre.journal.journal),
+                marshalled_msgs,
+                addr.au,
+            );
+            assert(post.journal.journal.status.unwrap().unmarshalled_tail.seq_end
+                == pre.journal.journal.status.unwrap().unmarshalled_tail.seq_end);
+            assert(post.journal.journal.seq_end() == pre.journal.journal.seq_end());
+        },
+        _ => {
+            assert(false);
+        },
+    }
+
+    let old_cdj_for_index = pre.journal_caching_disk_state_i();
+    assert(old_cdj_for_index.semantic_inv()) by {
+        let src = unified_cache_journal_i(pre);
+        assert(src.refinement_inv());
+        assert(src.ephemeral is Known);
+        assert(src.ephemeral->v == old_cdj_for_index);
+    }
+    old_cdj_for_index.cached_journal_marshal_preserves_loaded_index_values(
+        post.journal.journal,
+        addr,
+        writes,
+    );
+    crate::implementation::CachingDiskJournal_v::mini_allocator_allocate_preserves_all_aus(
+        pre.journal.mini_allocator,
+        addr,
+    );
+    assert(post.journal.mini_allocator.all_aus()
+        == pre.journal.mini_allocator.all_aus()) by {
+        assert(pre.journal.mini_allocator.allocate(addr).all_aus()
+            == pre.journal.mini_allocator.all_aus());
+        assert forall |au: AU| #[trigger] post.journal.mini_allocator.all_aus().contains(au)
+            <==> pre.journal.mini_allocator.all_aus().contains(au) by { }
+    }
+    assert(post.journal.loaded_index_aus() <= pre.journal.loaded_index_aus().insert(addr.au)) by {
+        assert forall |au: AU| #[trigger] post.journal.loaded_index_aus().contains(au)
+            implies pre.journal.loaded_index_aus().insert(addr.au).contains(au) by {
+            assert(cj_lsn_au_index(post.journal.journal).values().contains(au));
+        }
+    }
+    assert(pre.journal_projection_aus().contains(addr.au)) by {
+        assert(writes.dom().contains(addr));
+        assert(addresses_in_aus(pre.journal_projection_aus()).contains(addr));
+    }
+    assert(post.journal_projection_aus() =~= pre.journal_projection_aus()) by {
+        assert(pre.journal_projection_aus() == pre.journal.owned_aus());
+        assert(post.journal_projection_aus() == post.journal.owned_aus());
+        assert(pre.journal.owned_aus() == pre.journal.loaded_index_aus()
+            + pre.journal.mini_allocator.all_aus());
+        assert(post.journal.owned_aus() == post.journal.loaded_index_aus()
+            + post.journal.mini_allocator.all_aus());
+        assert(pre.journal.mini_allocator.all_aus().contains(addr.au));
+        assert forall |au: AU| #[trigger] post.journal_projection_aus().contains(au)
+            implies pre.journal_projection_aus().contains(au) by {
+            if post.journal.loaded_index_aus().contains(au) {
+                assert(pre.journal.loaded_index_aus().insert(addr.au).contains(au));
+            }
+        }
+        assert forall |au: AU| #[trigger] pre.journal_projection_aus().contains(au)
+            implies post.journal_projection_aus().contains(au) by {
+            if pre.journal.loaded_index_aus().contains(au) {
+                assert(cj_lsn_au_index(pre.journal.journal).values().contains(au));
+                assert(cj_lsn_au_index(post.journal.journal).values().contains(au));
+            }
+        }
+    }
+
+    cache_access_refines_caching_disk_access(
+        pre.cache,
+        post.cache,
+        pre.disk,
+        pre.journal_projection_aus(),
+        Map::empty(),
+        writes,
+    );
+    assert(CachingDisk::State::next(
+        pre.journal_caching_disk_i(),
+        post.journal_caching_disk_i(),
+        CachingDisk::Label::Access{reads: Map::empty(), writes},
+    )) by {
+        assert(pre.journal_caching_disk_i()
+            == adapter_caching_disk_i(pre.cache, pre.disk, pre.journal_projection_aus()));
+        assert(post.journal_caching_disk_i()
+            == adapter_caching_disk_i(post.cache, post.disk, pre.journal_projection_aus())) by {
+            assert(post.journal_projection_aus() =~= pre.journal_projection_aus());
+        }
+    }
+
+    let old_cdj = pre.journal_caching_disk_state_i();
+    let new_cdj = post.journal_caching_disk_state_i();
+    let cdj_lbl = CachingDiskJournal::Label::Internal;
+    assert(old_cdj.mini_allocator.tight_next_addr(old_cdj.journal.snapshot.freshest_rec(), addr));
+    assert(CachingDiskJournal::State::journal_marshal(
+        old_cdj,
+        new_cdj,
+        cdj_lbl,
+        post.journal.journal,
+        post.journal_caching_disk_i(),
+        addr,
+        writes,
+    )) by {
+        reveal(CachingDiskJournal::State::journal_marshal);
+        assert(to_journal_records(writes).dom() =~= writes.dom()) by {
+            assert forall |a: Address| #[trigger] to_journal_records(writes).contains_key(a)
+                <==> writes.contains_key(a) by { }
+        }
+        assert(cj_lsn_au_index(old_cdj.journal).values()
+            <= cj_lsn_au_index(post.journal.journal).values());
+    }
+    assert(CachingDiskJournal::State::next_by(
+        old_cdj,
+        new_cdj,
+        cdj_lbl,
+        CachingDiskJournal::Step::journal_marshal(
+            post.journal.journal,
+            post.journal_caching_disk_i(),
+            addr,
+            writes,
+        ),
+    )) by {
+        reveal(CachingDiskJournal::State::next_by);
+    }
+    reveal(CachingDiskJournal::State::next);
+
+    let src = unified_cache_journal_i(pre);
+    let dst = unified_cache_journal_i(post);
+    assert(src.ephemeral is Known);
+    assert(dst.ephemeral is Known);
+    assert(CrashAwareCachingDiskJournal::State::internal(
+        src,
+        dst,
+        CrashAwareCachingDiskJournal::Label::Internal,
+        new_cdj,
+    )) by {
+        reveal(CrashAwareCachingDiskJournal::State::internal);
+    }
+    assert(CrashAwareCachingDiskJournal::State::next_by(
+        src,
+        dst,
+        CrashAwareCachingDiskJournal::Label::Internal,
+        CrashAwareCachingDiskJournal::Step::internal(new_cdj),
+    )) by {
+        reveal(CrashAwareCachingDiskJournal::State::next_by);
+    }
+    reveal(CrashAwareCachingDiskJournal::State::next);
+    src.next_refines(dst, CrashAwareCachingDiskJournal::Label::Internal);
+
+    assert(post.inv()) by {
+        assert(post.journal.wf());
+        assert(async_disk_superblock_page_wf(post.disk.content));
+        assert(post.persistent_superblock_image_i().wf());
+        assert(post.cache.inv());
+        assert(post.disk.inv());
+        assert(post.journal_caching_disk_i().inv());
+        assert(post.journal.persistent_seq_end
+            == post.persistent_superblock_image_i().journal_seq_end);
+        assert(post.in_flight is Some <==> post.journal.in_flight is Some);
+        assert(post.in_flight is Some <==> post.in_flight_image is Some);
+    }
+    assert(post.semantic_inv());
+    assert(inv(post));
+}
+
+pub proof fn fill_aus_refines(
+    pre: UnifiedCacheJournalSource,
+    post: UnifiedCacheJournalSource,
+    aus: Set<AU>,
+)
+    requires
+        inv(pre),
+        pre.superblock_loaded(),
+        pre.journal.ready(),
+        post.cache == pre.cache,
+        post.disk == pre.disk,
+        post.persistent_image == pre.persistent_image,
+        post.in_flight == pre.in_flight,
+        post.in_flight_image == pre.in_flight_image,
+        aus.disjoint(pre.journal_projection_aus()),
+        pre.journal_fill_aus_shared_projection_inv(aus),
+        AtomicJournalState::State::next(
+            pre.journal,
+            post.journal,
+            AtomicJournalState::Label::FillAUs{aus},
+        ),
+    ensures
+        CrashAwareCachingDiskJournal::State::next(
+            unified_cache_journal_i(pre),
+            unified_cache_journal_i(post),
+            CrashAwareCachingDiskJournal::Label::InternalAlloc{
+                allocs: aus,
+                deallocs: Set::empty(),
+                prune_aus: Set::empty(),
+            },
+        ),
+        post.journal_projection_aus() =~= pre.journal_projection_aus() + aus,
+        post.journal.ready(),
+        post.journal.journal == pre.journal.journal,
+        post.journal.persistent_seq_end == pre.journal.persistent_seq_end,
+        post.journal.in_flight == pre.journal.in_flight,
+        post.journal.prepared == pre.journal.prepared,
+        inv(post),
+{
+    let atomic_lbl = AtomicJournalState::Label::FillAUs{aus};
+    AtomicJournalState::State::wf_next(pre.journal, post.journal, atomic_lbl);
+    reveal(AtomicJournalState::State::next);
+    reveal(AtomicJournalState::State::next_by);
+    let atomic_step = choose |step: AtomicJournalState::Step|
+        AtomicJournalState::State::next_by(pre.journal, post.journal, atomic_lbl, step);
+    match atomic_step {
+        AtomicJournalState::Step::fill_aus() => {
+            assert(AtomicJournalState::State::fill_aus(
+                pre.journal,
+                post.journal,
+                atomic_lbl,
+            )) by {
+                reveal(AtomicJournalState::State::fill_aus);
+            }
+            assert(post.journal.journal == pre.journal.journal);
+            assert(post.journal.mini_allocator == pre.journal.mini_allocator.add_aus(aus));
+            assert(post.journal.persistent_seq_end == pre.journal.persistent_seq_end);
+            assert(post.journal.in_flight == pre.journal.in_flight);
+            assert(post.journal.prepared == pre.journal.prepared);
+        },
+        _ => {
+            assert(false);
+        },
+    }
+
+    assert(post.superblock_loaded());
+    assert(post.persistent_superblock_image_i() == pre.persistent_superblock_image_i());
+    assert(post.journal.ready());
+    crate::implementation::CachingDiskJournal_v::mini_allocator_add_aus_preserves_all_aus(
+        pre.journal.mini_allocator,
+        aus,
+    );
+    assert(post.journal.loaded_index_aus() == pre.journal.loaded_index_aus());
+    assert(post.journal.owned_aus() =~= pre.journal.owned_aus() + aus);
+    assert(post.journal_projection_aus() =~= pre.journal_projection_aus() + aus) by {
+        assert(pre.journal_projection_aus() == pre.journal.owned_aus());
+        assert(post.journal_projection_aus() == post.journal.owned_aus());
+    }
+
+    let empty = Set::<AU>::empty();
+    let target_lbl = CrashAwareCachingDiskJournal::Label::InternalAlloc{
+        allocs: aus,
+        deallocs: empty,
+        prune_aus: empty,
+    };
+    let cdj_lbl = CachingDiskJournal::Label::InternalAlloc{
+        allocs: aus,
+        deallocs: empty,
+        prune_aus: empty,
+    };
+    let old_cdj = pre.journal_caching_disk_state_i();
+    let new_cdj = post.journal_caching_disk_state_i();
+    assert(new_cdj.disk == pre.caching_disk_i_for_aus(pre.journal_projection_aus() + aus)) by {
+        assert(post.cache == pre.cache);
+        assert(post.disk == pre.disk);
+        assert(post.journal_projection_aus() =~= pre.journal_projection_aus() + aus);
+        assert_maps_equal!(
+            new_cdj.disk.cache,
+            pre.caching_disk_i_for_aus(pre.journal_projection_aus() + aus).cache,
+            addr => {}
+        );
+        assert_maps_equal!(
+            new_cdj.disk.status,
+            pre.caching_disk_i_for_aus(pre.journal_projection_aus() + aus).status,
+            addr => {}
+        );
+        assert_maps_equal!(
+            new_cdj.disk.persistent,
+            pre.caching_disk_i_for_aus(pre.journal_projection_aus() + aus).persistent,
+            addr => {}
+        );
+    }
+    assert(old_cdj.journal.status is Some);
+    assert(aus.disjoint(old_cdj.mini_allocator.all_aus())) by {
+        assert(pre.journal_projection_aus() == pre.journal.owned_aus());
+        assert forall |au: AU| #[trigger] aus.contains(au)
+            implies !old_cdj.mini_allocator.all_aus().contains(au) by {
+            assert(pre.journal.owned_aus().contains(au) ==> false) by {
+                if pre.journal.owned_aus().contains(au) {
+                    assert(pre.journal_projection_aus().contains(au));
+                    assert(false);
+                }
+            }
+        }
+    }
+    assert(aus.disjoint(cj_lsn_au_index(old_cdj.journal).values())) by {
+        assert(pre.journal_projection_aus() == pre.journal.owned_aus());
+        assert forall |au: AU| #[trigger] aus.contains(au)
+            implies !cj_lsn_au_index(old_cdj.journal).values().contains(au) by {
+            if cj_lsn_au_index(old_cdj.journal).values().contains(au) {
+                assert(pre.journal.loaded_index_aus().contains(au));
+                assert(pre.journal.owned_aus().contains(au));
+                assert(pre.journal_projection_aus().contains(au));
+                assert(false);
+            }
+        }
+    }
+    assert(new_cdj.disk.inv());
+    assert(old_cdj.disk.cache <= new_cdj.disk.cache) by {
+        assert forall |addr: Address| #[trigger] old_cdj.disk.cache.contains_key(addr)
+            implies new_cdj.disk.cache.contains_key(addr)
+                && new_cdj.disk.cache[addr] == old_cdj.disk.cache[addr] by {
+            assert(addresses_in_aus(pre.journal_projection_aus()).contains(addr));
+            assert(addresses_in_aus(post.journal_projection_aus()).contains(addr));
+        }
+    }
+    assert(old_cdj.disk.persistent <= new_cdj.disk.persistent) by {
+        assert forall |addr: Address| #[trigger] old_cdj.disk.persistent.contains_key(addr)
+            implies new_cdj.disk.persistent.contains_key(addr)
+                && new_cdj.disk.persistent[addr] == old_cdj.disk.persistent[addr] by {
+            assert(addresses_in_aus(pre.journal_projection_aus()).contains(addr));
+            assert(addresses_in_aus(post.journal_projection_aus()).contains(addr));
+        }
+    }
+    assert(old_cdj.disk.status <= new_cdj.disk.status) by {
+        assert forall |addr: Address| #[trigger] old_cdj.disk.status.contains_key(addr)
+            implies new_cdj.disk.status.contains_key(addr)
+                && new_cdj.disk.status[addr] == old_cdj.disk.status[addr] by {
+            assert(addresses_in_aus(pre.journal_projection_aus()).contains(addr));
+            assert(addresses_in_aus(post.journal_projection_aus()).contains(addr));
+        }
+    }
+    assert(new_cdj.disk.cache.dom() <= addresses_in_aus(
+        cj_lsn_au_index(old_cdj.journal).values() + old_cdj.mini_allocator.all_aus() + aus,
+    )) by {
+        assert(post.journal_projection_aus() =~=
+            cj_lsn_au_index(old_cdj.journal).values() + old_cdj.mini_allocator.all_aus() + aus);
+    }
+    assert(new_cdj.disk.persistent.dom() <= addresses_in_aus(
+        cj_lsn_au_index(old_cdj.journal).values() + old_cdj.mini_allocator.all_aus() + aus,
+    )) by {
+        assert(post.journal_projection_aus() =~=
+            cj_lsn_au_index(old_cdj.journal).values() + old_cdj.mini_allocator.all_aus() + aus);
+    }
+    assert(new_cdj.disk.status.dom() <= addresses_in_aus(
+        cj_lsn_au_index(old_cdj.journal).values() + old_cdj.mini_allocator.all_aus() + aus,
+    )) by {
+        assert(post.journal_projection_aus() =~=
+            cj_lsn_au_index(old_cdj.journal).values() + old_cdj.mini_allocator.all_aus() + aus);
+    }
+    assert(new_cdj.disk.cache.dom() - old_cdj.disk.cache.dom() <= addresses_in_aus(aus)) by {
+        assert forall |addr: Address| #[trigger] (new_cdj.disk.cache.dom() - old_cdj.disk.cache.dom()).contains(addr)
+            implies addresses_in_aus(aus).contains(addr) by {
+            assert(addresses_in_aus(post.journal_projection_aus()).contains(addr));
+            if !addresses_in_aus(aus).contains(addr) {
+                assert(addresses_in_aus(pre.journal_projection_aus()).contains(addr));
+                assert(old_cdj.disk.cache.contains_key(addr));
+                assert(false);
+            }
+        }
+    }
+    assert(new_cdj.disk.persistent.dom() - old_cdj.disk.persistent.dom() <= addresses_in_aus(aus)) by {
+        assert forall |addr: Address| #[trigger] (new_cdj.disk.persistent.dom() - old_cdj.disk.persistent.dom()).contains(addr)
+            implies addresses_in_aus(aus).contains(addr) by {
+            assert(addresses_in_aus(post.journal_projection_aus()).contains(addr));
+            if !addresses_in_aus(aus).contains(addr) {
+                assert(addresses_in_aus(pre.journal_projection_aus()).contains(addr));
+                assert(old_cdj.disk.persistent.contains_key(addr));
+                assert(false);
+            }
+        }
+    }
+    assert(new_cdj.disk.status.dom() - old_cdj.disk.status.dom() <= addresses_in_aus(aus)) by {
+        assert forall |addr: Address| #[trigger] (new_cdj.disk.status.dom() - old_cdj.disk.status.dom()).contains(addr)
+            implies addresses_in_aus(aus).contains(addr) by {
+            assert(addresses_in_aus(post.journal_projection_aus()).contains(addr));
+            if !addresses_in_aus(aus).contains(addr) {
+                assert(addresses_in_aus(pre.journal_projection_aus()).contains(addr));
+                assert(old_cdj.disk.status.contains_key(addr));
+                assert(false);
+            }
+        }
+    }
+    assert(new_cdj.disk.cache.dom() <= Set::new(|addr: Address| addr.wf()));
+    assert(new_cdj.disk.persistent.dom() <= Set::new(|addr: Address| addr.wf()));
+    assert(CachingDiskJournal::State::mini_allocator_fill(
+        old_cdj,
+        new_cdj,
+        cdj_lbl,
+        new_cdj.disk,
+    )) by {
+        reveal(CachingDiskJournal::State::mini_allocator_fill);
+    }
+    assert(CachingDiskJournal::State::next_by(
+        old_cdj,
+        new_cdj,
+        cdj_lbl,
+        CachingDiskJournal::Step::mini_allocator_fill(new_cdj.disk),
+    )) by {
+        reveal(CachingDiskJournal::State::next_by);
+    }
+    reveal(CachingDiskJournal::State::next);
+
+    let src = unified_cache_journal_i(pre);
+    let dst = unified_cache_journal_i(post);
+    assert(src.ephemeral is Known);
+    assert(dst.ephemeral is Known);
+    assert(aus.disjoint(caching_disk_journal_accessible_aus(src.ephemeral->v))) by {
+        assert(src.ephemeral->v == old_cdj);
+        assert(caching_disk_journal_accessible_aus(old_cdj)
+            == cj_lsn_au_index(old_cdj.journal).values() + old_cdj.mini_allocator.all_aus());
+    }
+    assert(CrashAwareCachingDiskJournal::State::internal_alloc(
+        src,
+        dst,
+        target_lbl,
+        new_cdj,
+    )) by {
+        reveal(CrashAwareCachingDiskJournal::State::internal_alloc);
+    }
+    assert(CrashAwareCachingDiskJournal::State::next_by(
+        src,
+        dst,
+        target_lbl,
+        CrashAwareCachingDiskJournal::Step::internal_alloc(new_cdj),
+    )) by {
+        reveal(CrashAwareCachingDiskJournal::State::next_by);
+    }
+    reveal(CrashAwareCachingDiskJournal::State::next);
+    src.next_refines(dst, target_lbl);
+
+    assert(post.inv()) by {
+        assert(post.journal.wf());
+        assert(async_disk_superblock_page_wf(post.disk.content));
+        assert(post.persistent_superblock_image_i().wf());
+        assert(post.cache.inv());
+        assert(post.disk.inv());
+        assert(post.journal_caching_disk_i().inv());
+        assert(post.journal.persistent_seq_end
+            == post.persistent_superblock_image_i().journal_seq_end);
         assert(post.in_flight is Some <==> post.journal.in_flight is Some);
         assert(post.in_flight is Some <==> post.in_flight_image is Some);
     }
