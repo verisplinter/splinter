@@ -2455,6 +2455,37 @@ pub proof fn empty_caching_disk_branch_image_wf()
     assert(image.wf());
 }
 
+pub proof fn empty_caching_disk_branch_image_summary_aus_empty()
+    ensures
+        summary_aus(empty_caching_disk_branch_image().branch_summary()) =~= Set::<AU>::empty(),
+{
+    let image = empty_caching_disk_branch_image();
+    let branch_summary = image.branch_summary();
+    assert(image.sealed_roots.len() == 0);
+    assert(branch_summary == Map::<AU, Summary>::empty()) by {
+        assert(branch_summary_from_reads_up_to(
+            image.sealed_roots,
+            image.persistent_branch_nodes(),
+            image.sealed_roots.len() as nat,
+        ) == Map::<AU, Summary>::empty());
+    }
+    assert(branch_summary.values() =~= Set::<Set<AU>>::empty()) by {
+        assert forall |s: Set<AU>| #[trigger] branch_summary.values().contains(s)
+            implies Set::<Set<AU>>::empty().contains(s) by {
+            let au = choose |au: AU| branch_summary.contains_key(au) && branch_summary[au] == s;
+            assert(false);
+        }
+    }
+    assert(summary_aus(branch_summary) =~= Set::<AU>::empty()) by {
+        assert forall |au: AU| #[trigger] summary_aus(branch_summary).contains(au)
+            implies Set::<AU>::empty().contains(au) by {
+            let witness = lemma_union_set_of_sets_contains(branch_summary.values(), au);
+            assert(branch_summary.values().contains(witness));
+            assert(false);
+        }
+    }
+}
+
 state_machine!{ CachingDiskBranch {
 	    fields {
 	        pub sealed_roots: Seq<Address>,
@@ -2809,12 +2840,13 @@ state_machine!{ CachingDiskBranch {
         &&& self.mini_allocator.wf()
         &&& self.persisted_root_count <= self.sealed_roots.len()
         &&& branch_summary_reads_valid(self.sealed_roots, self.visible_branch_nodes())
-	        &&& self.branch_summary.dom().finite()
-	        &&& self.branch_summary.values().finite()
-	        &&& self.loaded_branch_summary_agrees()
-	        &&& self.metadata_loaded ==> self.branch_metadata_loaded()
-	        &&& self.metadata_loaded ==>
-                summary_aus(self.branch_summary).disjoint(self.mini_allocator.all_aus())
+		        &&& self.branch_summary.dom().finite()
+		        &&& self.branch_summary.values().finite()
+		        &&& self.loaded_branch_summary_agrees()
+		        &&& !self.metadata_loaded ==> self.mini_allocator.all_aus() =~= Set::<AU>::empty()
+		        &&& self.metadata_loaded ==> self.branch_metadata_loaded()
+		        &&& self.metadata_loaded ==>
+	                summary_aus(self.branch_summary).disjoint(self.mini_allocator.all_aus())
 	        &&& self.sealed_stack_i().wf(self.interpreted_branch_summary())
         &&& self.active_branch_i().inv()
         &&& summary_aus(self.interpreted_branch_summary()).disjoint(self.mini_allocator.all_aus())
@@ -3060,6 +3092,27 @@ state_machine!{ CachingDiskBranch {
                 assert(post.persisted_root_count == pre.persisted_root_count);
                 assert(post.active_branch == pre.active_branch);
                 assert(post.mini_allocator == pre.mini_allocator);
+                if pre.metadata_loaded {
+                    assert(pre.branch_metadata_loaded());
+                    branch_summary_from_reads_up_to_self_ensures(
+                        pre.sealed_roots,
+                        pre.visible_branch_nodes(),
+                        pre.sealed_roots.len() as nat,
+                    );
+                    assert(pre.interpreted_branch_summary().dom()
+                        =~= root_aus_up_to(pre.sealed_roots, pre.sealed_roots.len() as nat));
+                    assert(pre.branch_summary == pre.interpreted_branch_summary());
+                    assert(root_aus_up_to(pre.sealed_roots, pre.sealed_roots.len() as nat)
+                        <= pre.branch_summary.dom());
+                    assert(root_aus_up_to(post.sealed_roots, post.sealed_roots.len() as nat)
+                        <= post.branch_summary.dom());
+                    assert(post.metadata_loaded);
+                }
+                if !post.metadata_loaded {
+                    assert(!pre.metadata_loaded);
+                    assert(pre.mini_allocator.all_aus() =~= Set::<AU>::empty());
+                    assert(post.mini_allocator.all_aus() =~= Set::<AU>::empty());
+                }
                 assert(post.seq_end == pre.seq_end);
                 assert(post.branch_summary.dom().finite()) by {
                     assert(post.branch_summary.dom() <= pre.branch_summary.dom().insert(root.au));
@@ -4703,6 +4756,48 @@ impl CachingDiskBranch::State {
         assert(self.branch_summary == self.interpreted_branch_summary());
     }
 
+    pub proof fn loaded_summary_aus_subset_interpreted(self)
+        requires
+            self.inv(),
+        ensures
+            summary_aus(self.branch_summary) <= summary_aus(self.interpreted_branch_summary()),
+    {
+        branch_summary_from_reads_up_to_self_ensures(
+            self.sealed_roots,
+            self.visible_branch_nodes(),
+            self.sealed_roots.len() as nat,
+        );
+        assert(self.interpreted_branch_summary().dom()
+            =~= root_aus_up_to(self.sealed_roots, self.sealed_roots.len() as nat));
+        root_aus_up_to_full(self.sealed_roots);
+        to_aus_finite(self.sealed_roots.to_set());
+        assert(self.interpreted_branch_summary().dom().finite());
+        assert forall |au: AU| #[trigger] summary_aus(self.branch_summary).contains(au)
+            implies summary_aus(self.interpreted_branch_summary()).contains(au) by {
+            let summary = lemma_union_set_of_sets_contains(self.branch_summary.values(), au);
+            let root_au = choose |root_au: AU|
+                self.branch_summary.contains_key(root_au)
+                    && self.branch_summary[root_au] == summary;
+            assert(self.branch_summary.dom().contains(root_au));
+            assert(root_aus_up_to(self.sealed_roots, self.sealed_roots.len() as nat).contains(root_au));
+            let idx = root_aus_up_to_member_has_index(
+                self.sealed_roots,
+                self.sealed_roots.len() as nat,
+                root_au,
+            );
+            assert(self.sealed_roots[idx].au == root_au);
+            assert(self.loaded_branch_summary_agrees());
+            assert(self.branch_summary[root_au]
+                == root_summary_from_read(self.sealed_roots[idx], self.visible_branch_nodes()));
+            assert(self.interpreted_branch_summary()[root_au]
+                == root_summary_from_read(self.sealed_roots[idx], self.visible_branch_nodes()));
+            assert(self.interpreted_branch_summary()[root_au] == summary);
+            lemma_values_finite(self.interpreted_branch_summary());
+            assert(self.interpreted_branch_summary().values().contains(summary));
+            lemma_union_set_of_sets_subset(self.interpreted_branch_summary().values(), summary);
+        };
+    }
+
     pub proof fn loaded_index_root_aux_in_summary(self, root: Address, aux: Address)
         requires
             self.inv(),
@@ -4749,6 +4844,56 @@ impl CachingDiskBranch::State {
         assert(self.branch_summary[root.au].contains(aux.au));
         assert(self.branch_summary.values().contains(self.branch_summary[root.au]));
         lemma_union_set_of_sets_subset(self.branch_summary.values(), self.branch_summary[root.au]);
+    }
+
+    pub proof fn interpreted_index_root_aux_in_summary(self, root: Address, aux: Address)
+        requires
+            self.inv(),
+            self.sealed_roots.to_set().contains(root),
+            self.visible_branch_nodes().contains_key(root),
+            self.visible_branch_nodes()[root] is Index,
+            self.visible_branch_nodes()[root]->aux_ptr == Some(aux),
+        ensures
+            self.interpreted_branch_summary().contains_key(root.au),
+            self.interpreted_branch_summary()[root.au].contains(aux.au),
+            summary_aus(self.interpreted_branch_summary()).contains(aux.au),
+    {
+        let summary = self.interpreted_branch_summary();
+        assert(self.sealed_stack_i().wf(summary));
+        self.sealed_stack_i().root_au_in_summary(summary, root);
+        self.sealed_stack_i().tight_branch_facts(summary, root);
+        let branch = self.sealed_stack_i().tight_branch(root, summary[root.au]);
+        assert(tight_branch_in_loose_disk(
+            self.sealed_stack_i().sealed_disk,
+            root,
+            summary[root.au],
+            branch,
+        ));
+        assert(branch.disk_view.entries.contains_key(root));
+        assert(branch.disk_view.entries[root] == branch.root());
+        assert(branch.disk_view.entries <= self.sealed_stack_i().sealed_disk.entries);
+        assert(self.sealed_stack_i().sealed_disk.entries.contains_key(root));
+        assert(self.sealed_stack_i().sealed_disk.entries[root] == branch.disk_view.entries[root]);
+        assert(self.sealed_stack_i().sealed_disk.entries[root] == self.visible_branch_nodes()[root]) by {
+            assert(summary_aus(summary).contains(root.au));
+            assert(sealed_nodes_of(self.disk.visible(), summary).contains_key(root));
+        };
+        assert(branch.root() == self.visible_branch_nodes()[root]);
+        assert(branch.root() is Index);
+        assert(branch.root()->aux_ptr == Some(aux));
+        assert(branch.sealed_root());
+        assert(branch.disk_view.valid_address(aux));
+        assert(branch.disk_view.entries.contains_key(aux));
+        assert(branch.full_repr().contains(aux));
+        assert(addrs_closed(branch.full_repr(), branch.get_summary()));
+        assert(branch.get_summary() == summary[root.au]);
+        assert(summary[root.au].contains(aux.au));
+        to_aus_finite(self.sealed_roots.to_set());
+        assert(summary.dom() == to_aus(self.sealed_roots.to_set()));
+        assert(summary.dom().finite());
+        lemma_values_finite(summary);
+        assert(summary.values().contains(summary[root.au]));
+        lemma_union_set_of_sets_subset(summary.values(), summary[root.au]);
     }
 
     pub open spec fn sealed_stack_i(self) -> SealedAllocationBranchStack {
@@ -5571,6 +5716,100 @@ impl CachingDiskBranch::State {
         }
     }
 
+    pub proof fn internal_reflects_metadata_loaded(pre: Self, post: Self)
+        requires
+            pre.inv(),
+            CachingDiskBranch::State::next(pre, post, CachingDiskBranch::Label::Internal),
+        ensures
+            post.metadata_loaded ==> pre.metadata_loaded,
+    {
+        reveal(CachingDiskBranch::State::next);
+        reveal(CachingDiskBranch::State::next_by);
+        let lbl = CachingDiskBranch::Label::Internal;
+        let step = choose |step: CachingDiskBranch::Step|
+            CachingDiskBranch::State::next_by(pre, post, lbl, step);
+        match step {
+            CachingDiskBranch::Step::disk_internal(new_disk) => {
+                reveal(CachingDiskBranch::State::disk_internal);
+                assert(post.metadata_loaded == pre.metadata_loaded);
+            },
+            CachingDiskBranch::Step::observe_persisted_roots(target_count) => {
+                reveal(CachingDiskBranch::State::observe_persisted_roots);
+                assert(post.metadata_loaded == pre.metadata_loaded);
+            },
+            CachingDiskBranch::Step::freeze_as() => {
+                reveal(CachingDiskBranch::State::freeze_as);
+                assert(post == pre);
+            },
+            CachingDiskBranch::Step::internal_noop() => {
+                reveal(CachingDiskBranch::State::internal_noop);
+                assert(post == pre);
+            },
+            CachingDiskBranch::Step::internal_grow(new_disk, new_root_addr, reads, writes) => {
+                reveal(CachingDiskBranch::State::internal_grow);
+                assert(pre.metadata_loaded);
+            },
+            CachingDiskBranch::Step::internal_split(new_disk, new_child_addr, receipt, split_arg, reads, writes) => {
+                reveal(CachingDiskBranch::State::internal_split);
+                assert(pre.metadata_loaded);
+            },
+            CachingDiskBranch::Step::internal_seal(written_disk, aux_ptr, reads, writes) => {
+                reveal(CachingDiskBranch::State::internal_seal);
+                assert(pre.metadata_loaded);
+            },
+            _ => {
+                assert(false);
+            },
+        }
+    }
+
+    pub proof fn internal_preserves_unloaded_branch_summary(pre: Self, post: Self)
+        requires
+            pre.inv(),
+            CachingDiskBranch::State::next(pre, post, CachingDiskBranch::Label::Internal),
+        ensures
+            !post.metadata_loaded ==> post.branch_summary == pre.branch_summary,
+    {
+        reveal(CachingDiskBranch::State::next);
+        reveal(CachingDiskBranch::State::next_by);
+        let lbl = CachingDiskBranch::Label::Internal;
+        let step = choose |step: CachingDiskBranch::Step|
+            CachingDiskBranch::State::next_by(pre, post, lbl, step);
+        match step {
+            CachingDiskBranch::Step::disk_internal(new_disk) => {
+                reveal(CachingDiskBranch::State::disk_internal);
+                assert(post.branch_summary == pre.branch_summary);
+            },
+            CachingDiskBranch::Step::observe_persisted_roots(target_count) => {
+                reveal(CachingDiskBranch::State::observe_persisted_roots);
+                assert(pre.metadata_loaded);
+            },
+            CachingDiskBranch::Step::freeze_as() => {
+                reveal(CachingDiskBranch::State::freeze_as);
+                assert(post == pre);
+            },
+            CachingDiskBranch::Step::internal_noop() => {
+                reveal(CachingDiskBranch::State::internal_noop);
+                assert(post == pre);
+            },
+            CachingDiskBranch::Step::internal_grow(new_disk, new_root_addr, reads, writes) => {
+                reveal(CachingDiskBranch::State::internal_grow);
+                assert(pre.metadata_loaded);
+            },
+            CachingDiskBranch::Step::internal_split(new_disk, new_child_addr, receipt, split_arg, reads, writes) => {
+                reveal(CachingDiskBranch::State::internal_split);
+                assert(pre.metadata_loaded);
+            },
+            CachingDiskBranch::Step::internal_seal(written_disk, aux_ptr, reads, writes) => {
+                reveal(CachingDiskBranch::State::internal_seal);
+                assert(pre.metadata_loaded);
+            },
+            _ => {
+                assert(false);
+            },
+        }
+    }
+
     pub proof fn internal_preserves_full_accessible_aus(pre: Self, post: Self)
         requires
             pre.inv(),
@@ -5670,6 +5909,49 @@ impl CachingDiskBranch::State {
         }
     }
 
+    pub proof fn load_metadata_preserves_semantic_owned_aus(
+        pre: Self,
+        post: Self,
+        root: Address,
+        discovered_aus: Set<AU>,
+    )
+        requires
+            pre.inv(),
+            CachingDiskBranch::State::next(
+                pre,
+                post,
+                CachingDiskBranch::Label::LoadMetadata{root, discovered_aus},
+            ),
+        ensures
+            post.semantic_owned_aus() == pre.semantic_owned_aus(),
+    {
+        let lbl = CachingDiskBranch::Label::LoadMetadata{root, discovered_aus};
+        reveal(CachingDiskBranch::State::next);
+        reveal(CachingDiskBranch::State::next_by);
+        let step = choose |step: CachingDiskBranch::Step|
+            CachingDiskBranch::State::next_by(pre, post, lbl, step);
+        match step {
+            CachingDiskBranch::Step::load_metadata(reads) => {
+                assert(CachingDiskBranch::State::load_metadata(pre, post, lbl, reads)) by {
+                    reveal(CachingDiskBranch::State::load_metadata);
+                }
+                assert(post.sealed_roots == pre.sealed_roots);
+                assert(post.disk == pre.disk);
+                assert(post.mini_allocator == pre.mini_allocator);
+                assert(post.interpreted_branch_summary() == pre.interpreted_branch_summary()) by {
+                    assert_maps_equal!(
+                        post.interpreted_branch_summary(),
+                        pre.interpreted_branch_summary(),
+                        au => {}
+                    );
+                }
+            },
+            _ => {
+                assert(false);
+            },
+        }
+    }
+
     pub proof fn load_metadata_discovered_aus_subset_full_accessible(
         pre: Self,
         post: Self,
@@ -5685,6 +5967,7 @@ impl CachingDiskBranch::State {
             ),
         ensures
             discovered_aus <= pre.full_accessible_aus(),
+            discovered_aus <= pre.semantic_owned_aus(),
     {
         let lbl = CachingDiskBranch::Label::LoadMetadata{root, discovered_aus};
         reveal(CachingDiskBranch::State::next);
@@ -5748,7 +6031,8 @@ impl CachingDiskBranch::State {
                 assert(pre.interpreted_branch_summary()[root.au] == discovered_aus);
                 assert(pre.interpreted_branch_summary().values().contains(discovered_aus));
                 assert forall |au: AU| #[trigger] discovered_aus.contains(au)
-                    implies pre.full_accessible_aus().contains(au) by {
+                    implies pre.full_accessible_aus().contains(au)
+                        && pre.semantic_owned_aus().contains(au) by {
                     assert(summary_aus(pre.interpreted_branch_summary()).contains(au)) by {
                         lemma_union_set_of_sets_subset(
                             pre.interpreted_branch_summary().values(),
@@ -5777,6 +6061,7 @@ impl CachingDiskBranch::State {
                 CachingDiskBranch::Label::LoadMetadata{root, discovered_aus},
             ),
         ensures
+            summary_aus(post.branch_summary) <= summary_aus(pre.branch_summary) + discovered_aus,
             post.accessible_aus() <= pre.accessible_aus() + discovered_aus,
     {
         let lbl = CachingDiskBranch::Label::LoadMetadata{root, discovered_aus};
@@ -5834,6 +6119,7 @@ impl CachingDiskBranch::State {
         ensures
             deallocs == Set::<AU>::empty(),
             post.semantic_owned_aus() <= pre.semantic_owned_aus() + allocs,
+            post.branch_summary == pre.branch_summary,
     {
         let lbl = CachingDiskBranch::Label::InternalAlloc{allocs, deallocs};
         reveal(CachingDiskBranch::State::next);

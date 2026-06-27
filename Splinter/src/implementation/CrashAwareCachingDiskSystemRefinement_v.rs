@@ -19,13 +19,15 @@ use crate::allocation_layer::AllocationJournal_v::JournalImage;
 use crate::implementation::CrashAwareCachingDiskBranchRefinement_v::*;
 use crate::implementation::CrashAwareCachingDiskJournalRefinement_v::*;
 use crate::implementation::AllocationBranchStackRefinement_v::{append_puts, append_puts_wf};
+use crate::allocation_layer::AllocationBranchBetree_v::summary_aus;
 use crate::implementation::CrashAwareCachingDiskSystem_v::{CrashAwareCachingDiskSystem, SuperblockStore};
 use crate::implementation::CrashAwareCachingDiskBranch_v::{
     CrashAwareCachingDiskBranch, PersistentCachingDiskBranch,
 };
 use crate::implementation::CachingDiskBranch_v::{
     CachingDiskBranch, CachingDiskBranchImage, empty_caching_disk_branch_image,
-    empty_caching_disk_branch_image_wf, to_branch_nodes,
+    empty_caching_disk_branch_image_summary_aus_empty, empty_caching_disk_branch_image_wf,
+    to_branch_nodes,
 };
 use crate::implementation::CrashAwareCachingDiskJournal_v::{
     CachingDiskJournalImage, CrashAwareCachingDiskJournal,
@@ -2640,6 +2642,10 @@ pub proof fn init_refines_ctam(model: CrashAwareCachingDiskSystem::State)
                 image: empty_caching_disk_branch_image(),
             });
             assert(branch.inv());
+            empty_caching_disk_branch_image_summary_aus_empty();
+            assert(summary_aus(empty_caching_disk_branch_image().branch_summary()) =~= Set::<AU>::empty());
+            assert(model.branch_owned_aus() =~= Set::<AU>::empty());
+            assert(model.component_disjoint());
             assert(model.journal.inv());
             assert(model.branch.inv());
             assert(model.components_wf());

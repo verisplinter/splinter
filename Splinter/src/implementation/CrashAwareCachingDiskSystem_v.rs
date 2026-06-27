@@ -1,9 +1,9 @@
 // CrashAwareCachingDiskSystem: a proof-oriented coordination composition of the
 // crash-aware caching-disk journal and branch store.
 //
-// This module deliberately does not project from AtomicState or
-// SystemModel<ConcreteProgramModel>. Physical cache/disk projection lives in
-// BracketRefinement_v; CrashAwareCachingDiskSystem only coordinates component states.
+// This module deliberately does not project from a concrete executable stack.
+// Physical cache/disk projection is handled by the unified-cache refinement;
+// CrashAwareCachingDiskSystem only coordinates component states.
 
 #![allow(unused_imports)]
 
@@ -41,7 +41,9 @@ use crate::implementation::AbstractSuperblock_v::{
     AbstractSuperblockImage, empty_abstract_superblock_image, superblock_matches,
 };
 use crate::allocation_layer::AllocationBranchBetree_v::summary_aus;
-use crate::betree::Utils_v::lemma_union_set_of_sets_contains;
+use crate::betree::Utils_v::{
+    lemma_union_set_of_sets_contains, lemma_union_set_of_sets_subset,
+};
 use crate::disk::GenericDisk_v::{Address, AU, to_aus, to_aus_preserves_lte};
 use crate::implementation::CachingDisk_v::CachingDiskRawPage as RawPage;
 use crate::spec::KeyType_t::Key;
@@ -663,6 +665,7 @@ state_machine!{ CrashAwareCachingDiskSystem {
     pub open spec fn components_wf(self) -> bool
     {
         &&& self.journal.inv()
+        &&& self.journal.refinement_inv()
         &&& self.branch.inv()
     }
 
@@ -715,9 +718,29 @@ state_machine!{ CrashAwareCachingDiskSystem {
         persistent_aus + ephemeral_aus
     }
 
+    pub open spec fn branch_state_allocation_known_aus(
+        branch: CrashAwareCachingDiskBranch::State,
+    ) -> Set<AU>
+    {
+        if branch.ephemeral is Known {
+            if branch.ephemeral->v.metadata_loaded {
+                Self::branch_state_owned_aus(branch)
+            } else {
+                summary_aus(branch.ephemeral->v.branch_summary)
+            }
+        } else {
+            Set::empty()
+        }
+    }
+
     pub open spec fn branch_owned_aus(self) -> Set<AU>
     {
         Self::branch_state_owned_aus(self.branch)
+    }
+
+    pub open spec fn branch_allocation_known_aus(self) -> Set<AU>
+    {
+        Self::branch_state_allocation_known_aus(self.branch)
     }
 
     pub open spec fn component_owned_aus(self) -> Set<AU>
@@ -753,6 +776,7 @@ state_machine!{ CrashAwareCachingDiskSystem {
     pub open spec fn allocation_wf(self) -> bool
     {
         &&& self.free_aus.disjoint(Self::reserved_aus())
+        &&& self.free_aus.disjoint(self.branch_allocation_known_aus())
         &&& self.journal_allocation_ready() ==> self.free_aus.disjoint(self.journal_owned_aus())
         &&& self.branch_allocation_ready() ==> self.free_aus.disjoint(self.branch_owned_aus())
         &&& self.component_disjoint()
@@ -891,6 +915,138 @@ state_machine!{ CrashAwareCachingDiskSystem {
         Self::branch_owned_aus_ephemeral_growth(pre_branch, post_branch, Set::<AU>::empty());
     }
 
+    pub proof fn branch_allocation_known_subset_owned(branch: CrashAwareCachingDiskBranch::State)
+        requires
+            branch.inv(),
+        ensures
+            Self::branch_state_allocation_known_aus(branch)
+                <= Self::branch_state_owned_aus(branch),
+    {
+        if branch.ephemeral is Known {
+            if branch.ephemeral->v.metadata_loaded {
+            } else {
+                Self::branch_summary_subset_of_state_owned_aus(branch);
+            }
+        } else {
+            assert(Self::branch_state_allocation_known_aus(branch) =~= Set::<AU>::empty());
+        }
+    }
+
+    pub proof fn journal_next_preserves_refinement_inv(
+        pre_journal: CrashAwareCachingDiskJournal::State,
+        post_journal: CrashAwareCachingDiskJournal::State,
+        lbl: CrashAwareCachingDiskJournal::Label,
+    )
+        requires
+            pre_journal.refinement_inv(),
+            CrashAwareCachingDiskJournal::State::next(pre_journal, post_journal, lbl),
+        ensures
+            post_journal.refinement_inv(),
+    {
+        pre_journal.next_refines(post_journal, lbl);
+    }
+
+    pub proof fn branch_internal_preserves_allocation_known_aus(
+        pre_branch: CrashAwareCachingDiskBranch::State,
+        post_branch: CrashAwareCachingDiskBranch::State,
+    )
+        requires
+            pre_branch.inv(),
+            CrashAwareCachingDiskBranch::State::next(
+                pre_branch,
+                post_branch,
+                CrashAwareCachingDiskBranch::Label::Internal,
+            ),
+            Self::branch_state_owned_aus(post_branch)
+                <= Self::branch_state_owned_aus(pre_branch),
+        ensures
+            Self::branch_state_allocation_known_aus(post_branch)
+                <= Self::branch_state_allocation_known_aus(pre_branch),
+    {
+        CrashAwareCachingDiskBranch::State::inv_next(
+            pre_branch,
+            post_branch,
+            CrashAwareCachingDiskBranch::Label::Internal,
+        );
+        Self::branch_next_knownness(
+            pre_branch,
+            post_branch,
+            CrashAwareCachingDiskBranch::Label::Internal,
+        );
+        if post_branch.ephemeral is Known {
+            assert(CrashAwareCachingDiskBranch::State::internal(
+                pre_branch,
+                post_branch,
+                CrashAwareCachingDiskBranch::Label::Internal,
+                post_branch.ephemeral->v,
+            )) by {
+                reveal(CrashAwareCachingDiskBranch::State::next);
+                reveal(CrashAwareCachingDiskBranch::State::next_by);
+                let step = choose |step: CrashAwareCachingDiskBranch::Step|
+                    CrashAwareCachingDiskBranch::State::next_by(
+                        pre_branch,
+                        post_branch,
+                        CrashAwareCachingDiskBranch::Label::Internal,
+                        step,
+                    );
+                match step {
+                    CrashAwareCachingDiskBranch::Step::internal(new_ephemeral) => {},
+                    _ => { assert(false); },
+                }
+            }
+            reveal(CrashAwareCachingDiskBranch::State::internal);
+            let new_b = post_branch.ephemeral->v;
+            if new_b.metadata_loaded {
+                assert(Self::branch_state_allocation_known_aus(post_branch)
+                    == Self::branch_state_owned_aus(post_branch));
+                if pre_branch.ephemeral is Known {
+                    let old_b = pre_branch.ephemeral->v;
+                    assert(CachingDiskBranch::State::next(
+                        old_b,
+                        new_b,
+                        CachingDiskBranch::Label::Internal,
+                    ));
+                    CachingDiskBranch::State::internal_reflects_metadata_loaded(old_b, new_b);
+                    assert(old_b.metadata_loaded);
+                    assert(Self::branch_state_allocation_known_aus(pre_branch)
+                        == Self::branch_state_owned_aus(pre_branch));
+                }
+            } else {
+                assert(pre_branch.ephemeral is Known);
+                let old_b = pre_branch.ephemeral->v;
+                assert(CachingDiskBranch::State::next(
+                    old_b,
+                    new_b,
+                    CachingDiskBranch::Label::Internal,
+                ));
+                CachingDiskBranch::State::internal_preserves_unloaded_branch_summary(old_b, new_b);
+                assert(new_b.branch_summary == old_b.branch_summary);
+            }
+        } else {
+            assert(Self::branch_state_allocation_known_aus(post_branch) =~= Set::<AU>::empty());
+        }
+    }
+
+    pub proof fn branch_summary_subset_of_state_owned_aus(
+        branch: CrashAwareCachingDiskBranch::State,
+    )
+        requires
+            branch.inv(),
+            branch.ephemeral is Known,
+        ensures
+            summary_aus(branch.ephemeral->v.branch_summary)
+                <= Self::branch_state_owned_aus(branch),
+    {
+        let b = branch.ephemeral->v;
+        assert(b.inv());
+        b.loaded_summary_aus_subset_interpreted();
+        assert forall |au: AU| #[trigger] summary_aus(b.branch_summary).contains(au)
+            implies Self::branch_state_owned_aus(branch).contains(au) by {
+            assert(summary_aus(b.interpreted_branch_summary()).contains(au));
+            assert(b.semantic_owned_aus().contains(au));
+        };
+    }
+
     #[inductive(query)]
     fn query_inductive(
         pre: Self,
@@ -950,6 +1106,7 @@ state_machine!{ CrashAwareCachingDiskSystem {
                             msgs: singleton_message_seq(msg),
                         };
                         CrashAwareCachingDiskJournal::State::inv_next(pre.journal, new_journal, journal_lbl);
+                        Self::journal_next_preserves_refinement_inv(pre.journal, new_journal, journal_lbl);
                         CrashAwareCachingDiskBranch::State::inv_next(pre.branch, new_branch, branch_lbl);
                         Self::journal_next_knownness(pre.journal, new_journal, journal_lbl);
                         Self::branch_next_knownness(pre.branch, new_branch, branch_lbl);
@@ -1088,6 +1245,7 @@ state_machine!{ CrashAwareCachingDiskSystem {
     ) {
         let journal_lbl = CrashAwareCachingDiskJournal::Label::Internal;
         CrashAwareCachingDiskJournal::State::inv_next(pre.journal, new_journal, journal_lbl);
+        Self::journal_next_preserves_refinement_inv(pre.journal, new_journal, journal_lbl);
         Self::journal_next_knownness(pre.journal, new_journal, journal_lbl);
         assert(CrashAwareCachingDiskJournal::State::internal(
             pre.journal,
@@ -1114,8 +1272,50 @@ state_machine!{ CrashAwareCachingDiskSystem {
         assert(post.journal == new_journal);
         assert(post.free_aus == pre.free_aus);
         assert(post.branch == pre.branch);
-        assert(post.journal_owned_aus() <= pre.journal_owned_aus());
         assert(post.branch_owned_aus() <= pre.branch_owned_aus());
+        assert(post.journal_owned_aus() <= pre.journal_owned_aus());
+        assert(post.journal_allocation_ready() ==> pre.journal_allocation_ready()) by {
+            if post.journal_allocation_ready() {
+                assert(pre.journal.ephemeral is Known);
+                let old_e = pre.journal.ephemeral->v;
+                let new_e = post.journal.ephemeral->v;
+                assert(CachingDiskJournal::State::next(old_e, new_e, CachingDiskJournal::Label::Internal));
+                if old_e.journal.status is None {
+                    reveal(CachingDiskJournal::State::next);
+                    reveal(CachingDiskJournal::State::next_by);
+                    let step = choose |step: CachingDiskJournal::Step|
+                        CachingDiskJournal::State::next_by(old_e, new_e, CachingDiskJournal::Label::Internal, step);
+                    match step {
+                        CachingDiskJournal::Step::caching_disk_internal(new_disk) => {
+                            reveal(CachingDiskJournal::State::caching_disk_internal);
+                        },
+                        CachingDiskJournal::Step::journal_marshal(new_journal, new_disk, addr, writes) => {
+                            reveal(CachingDiskJournal::State::journal_marshal);
+                            reveal(CachedJournal::State::next);
+                            reveal(CachedJournal::State::next_by);
+                            let journal_lbl = CachedJournal::Label::JournalMarshal{
+                                writes: to_journal_records(writes),
+                            };
+                            let journal_step = choose |step: CachedJournal::Step|
+                                CachedJournal::State::next_by(old_e.journal, new_journal, journal_lbl, step);
+                            match journal_step {
+                                CachedJournal::Step::internal_journal_marshal(cut, hidden_addr) => {
+                                    reveal(CachedJournal::State::internal_journal_marshal);
+                                },
+                                _ => { assert(false); },
+                            }
+                        },
+                        CachingDiskJournal::Step::internal_noop() => {
+                            reveal(CachingDiskJournal::State::internal_noop);
+                        },
+                        _ => { assert(false); },
+                    }
+                    assert(new_e.journal.status is None);
+                    assert(false);
+                }
+                assert(pre.journal_allocation_ready());
+            }
+        };
         Self::allocation_wf_from_subset(pre, post);
     }
 
@@ -1129,6 +1329,7 @@ state_machine!{ CrashAwareCachingDiskSystem {
     ) {
         let journal_lbl = CrashAwareCachingDiskJournal::Label::ObserveCleanAUs{aus};
         CrashAwareCachingDiskJournal::State::inv_next(pre.journal, new_journal, journal_lbl);
+        Self::journal_next_preserves_refinement_inv(pre.journal, new_journal, journal_lbl);
         Self::journal_next_knownness(pre.journal, new_journal, journal_lbl);
         assert(CrashAwareCachingDiskJournal::State::observe_clean_aus(
             pre.journal,
@@ -1182,8 +1383,46 @@ state_machine!{ CrashAwareCachingDiskSystem {
         }
         assert(post.free_aus == pre.free_aus);
         assert(post.branch == pre.branch);
-        assert(post.journal_owned_aus() <= pre.journal_owned_aus());
         assert(post.branch_owned_aus() <= pre.branch_owned_aus());
+        assert(post.journal_owned_aus() <= pre.journal_owned_aus()) by {
+            assert forall |au: AU| #[trigger] post.journal_owned_aus().contains(au)
+                implies pre.journal_owned_aus().contains(au) by {
+                assert(pre.journal.ephemeral is Known);
+                let old_e = pre.journal.ephemeral->v;
+                let new_e = post.journal.ephemeral->v;
+                assert(post.journal.ephemeral is Known);
+                assert(post.journal.ephemeral->v == new_e);
+                assert(caching_disk_journal_accessible_aus(new_e)
+                    =~= caching_disk_journal_accessible_aus(old_e));
+                assert(caching_disk_journal_accessible_aus(new_e).contains(au));
+            }
+        };
+        assert(post.journal_allocation_ready() ==> pre.journal_allocation_ready()) by {
+            if post.journal_allocation_ready() {
+                assert(pre.journal.ephemeral is Known);
+                let old_e = pre.journal.ephemeral->v;
+                let new_e = post.journal.ephemeral->v;
+                let cj_lbl = CachingDiskJournal::Label::ObserveCleanAUs{aus};
+                assert(CachingDiskJournal::State::next(old_e, new_e, cj_lbl));
+                reveal(CachingDiskJournal::State::next);
+                reveal(CachingDiskJournal::State::next_by);
+                let step = choose |step: CachingDiskJournal::Step|
+                    CachingDiskJournal::State::next_by(old_e, new_e, cj_lbl, step);
+                match step {
+                    CachingDiskJournal::Step::observe_clean_aus(new_cached_journal) => {
+                        reveal(CachingDiskJournal::State::observe_clean_aus);
+                        CachedJournal::State::observe_clean_aus_effect(
+                            old_e.journal,
+                            new_cached_journal,
+                            aus,
+                        );
+                    },
+                    _ => { assert(false); },
+                }
+                assert(old_e.journal.status is Some);
+                assert(pre.journal_allocation_ready());
+            }
+        };
         Self::allocation_wf_from_subset(pre, post);
     }
 
@@ -1197,6 +1436,7 @@ state_machine!{ CrashAwareCachingDiskSystem {
     ) {
         let journal_lbl = CrashAwareCachingDiskJournal::Label::LoadIndex{discovered_aus};
         CrashAwareCachingDiskJournal::State::inv_next(pre.journal, new_journal, journal_lbl);
+        Self::journal_next_preserves_refinement_inv(pre.journal, new_journal, journal_lbl);
         Self::journal_next_knownness(pre.journal, new_journal, journal_lbl);
         assert(CrashAwareCachingDiskJournal::State::load_index(
             pre.journal,
@@ -1267,8 +1507,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
 	                discovered_aus,
 	            );
 	        }
-        assert(Self::journal_state_owned_aus(post.journal)
-            <= Self::journal_state_owned_aus(pre.journal));
         assert(Self::branch_state_owned_aus(post.branch)
             <= Self::branch_state_owned_aus(pre.branch));
         assert(post.journal_allocation_ready() ==> post.journal_owned_aus() <= discovered_aus) by {
@@ -1316,6 +1554,7 @@ state_machine!{ CrashAwareCachingDiskSystem {
     ) {
         let journal_lbl = CrashAwareCachingDiskJournal::Label::InternalAlloc{allocs, deallocs, prune_aus};
         CrashAwareCachingDiskJournal::State::inv_next(pre.journal, new_journal, journal_lbl);
+        Self::journal_next_preserves_refinement_inv(pre.journal, new_journal, journal_lbl);
         Self::journal_next_knownness(pre.journal, new_journal, journal_lbl);
         assert(CrashAwareCachingDiskJournal::State::internal_alloc(
             pre.journal,
@@ -1354,53 +1593,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
         assert(post.journal_owned_aus() <= pre.journal_owned_aus() + allocs);
         assert(post.branch_owned_aus() <= pre.branch_owned_aus());
         assert(deallocs <= pre.journal_owned_aus());
-        assert(allocs.disjoint(Self::reserved_aus() + pre.branch_owned_aus())) by {
-            assert forall |au: AU| #[trigger] allocs.contains(au)
-                implies !(Self::reserved_aus() + pre.branch_owned_aus()).contains(au) by {
-                assert(pre.free_aus.contains(au));
-                if (Self::reserved_aus() + pre.branch_owned_aus()).contains(au) {
-                    if Self::reserved_aus().contains(au) {
-                    } else {
-                        assert(pre.branch_allocation_ready());
-                        assert(pre.branch_owned_aus().contains(au));
-                    }
-                    assert(false);
-                }
-            }
-        };
-        assert(deallocs.disjoint(post.journal_owned_aus())) by {
-            assert(post.journal.ephemeral is Known);
-            let new_e = post.journal.ephemeral->v;
-            assert(deallocs.disjoint(caching_disk_journal_accessible_aus(new_e)));
-            assert forall |au: AU| #[trigger] deallocs.contains(au)
-                implies !post.journal_owned_aus().contains(au) by {
-                if post.journal_owned_aus().contains(au) {
-                    assert(caching_disk_journal_accessible_aus(new_e).contains(au));
-                    assert(false);
-                }
-            }
-        };
-        assert(deallocs.disjoint(post.branch_owned_aus())) by {
-            assert forall |au: AU| #[trigger] deallocs.contains(au)
-                implies !post.branch_owned_aus().contains(au) by {
-                if post.branch_owned_aus().contains(au) {
-                    assert(pre.journal_owned_aus().contains(au));
-                    assert(pre.branch_owned_aus().contains(au));
-                    assert(false);
-                }
-            }
-        };
-        assert(deallocs.disjoint(Self::reserved_aus())) by {
-            assert forall |au: AU| #[trigger] deallocs.contains(au)
-                implies !Self::reserved_aus().contains(au) by {
-                if Self::reserved_aus().contains(au) {
-                    assert(pre.journal_owned_aus().contains(au));
-                    assert(pre.component_owned_aus().contains(au));
-                    assert(false);
-                }
-            }
-        };
-        assert(deallocs.disjoint(post.component_owned_aus()));
         assert(post.components_wf());
         Self::allocation_wf_from_alloc_update(
             pre,
@@ -1443,6 +1635,7 @@ state_machine!{ CrashAwareCachingDiskSystem {
             CachingDiskBranch::State::internal_preserves_accessible_aus(old_b, new_b);
             CachingDiskBranch::State::internal_preserves_full_accessible_aus(old_b, new_b);
             CachingDiskBranch::State::internal_preserves_owned_aus(old_b, new_b);
+            CachingDiskBranch::State::internal_reflects_metadata_loaded(old_b, new_b);
             assert(new_b.semantic_owned_aus() <= old_b.semantic_owned_aus());
         }
         assert(post.free_aus == pre.free_aus);
@@ -1450,6 +1643,18 @@ state_machine!{ CrashAwareCachingDiskSystem {
         assert(post.journal_owned_aus() <= pre.journal_owned_aus());
         Self::branch_owned_aus_ephemeral_subset(pre.branch, post.branch);
         assert(post.branch_owned_aus() <= pre.branch_owned_aus());
+        assert(post.branch_allocation_ready() ==> pre.branch_allocation_ready()) by {
+            if post.branch_allocation_ready() {
+                assert(pre.branch.ephemeral is Known);
+                let old_b = pre.branch.ephemeral->v;
+                let new_b = post.branch.ephemeral->v;
+                assert(CachingDiskBranch::State::next(old_b, new_b, CachingDiskBranch::Label::Internal));
+                CachingDiskBranch::State::internal_reflects_metadata_loaded(old_b, new_b);
+                assert(pre.branch_allocation_ready());
+            }
+        };
+        Self::branch_internal_preserves_allocation_known_aus(pre.branch, post.branch);
+        assert(post.branch_allocation_known_aus() <= pre.branch_allocation_known_aus());
         Self::allocation_wf_from_subset(pre, post);
     }
 
@@ -1464,6 +1669,7 @@ state_machine!{ CrashAwareCachingDiskSystem {
         let journal_lbl = CrashAwareCachingDiskJournal::Label::Internal;
         let branch_lbl = CrashAwareCachingDiskBranch::Label::Internal;
         CrashAwareCachingDiskJournal::State::inv_next(pre.journal, new_journal, journal_lbl);
+        Self::journal_next_preserves_refinement_inv(pre.journal, new_journal, journal_lbl);
         CrashAwareCachingDiskBranch::State::inv_next(pre.branch, new_branch, branch_lbl);
         Self::journal_next_knownness(pre.journal, new_journal, journal_lbl);
         Self::branch_next_knownness(pre.branch, new_branch, branch_lbl);
@@ -1510,12 +1716,67 @@ state_machine!{ CrashAwareCachingDiskSystem {
             CachingDiskBranch::State::internal_preserves_accessible_aus(old_b, new_b);
             CachingDiskBranch::State::internal_preserves_full_accessible_aus(old_b, new_b);
             CachingDiskBranch::State::internal_preserves_owned_aus(old_b, new_b);
+            CachingDiskBranch::State::internal_reflects_metadata_loaded(old_b, new_b);
             assert(new_b.semantic_owned_aus() <= old_b.semantic_owned_aus());
         }
         assert(post.free_aus == pre.free_aus);
-        assert(post.journal_owned_aus() <= pre.journal_owned_aus());
         Self::branch_owned_aus_ephemeral_subset(pre.branch, post.branch);
         assert(post.branch_owned_aus() <= pre.branch_owned_aus());
+        assert(post.journal_owned_aus() <= pre.journal_owned_aus());
+        assert(post.journal_allocation_ready() ==> pre.journal_allocation_ready()) by {
+            if post.journal_allocation_ready() {
+                assert(pre.journal.ephemeral is Known);
+                let old_e = pre.journal.ephemeral->v;
+                let new_e = post.journal.ephemeral->v;
+                assert(CachingDiskJournal::State::next(old_e, new_e, CachingDiskJournal::Label::Internal));
+                if old_e.journal.status is None {
+                    reveal(CachingDiskJournal::State::next);
+                    reveal(CachingDiskJournal::State::next_by);
+                    let step = choose |step: CachingDiskJournal::Step|
+                        CachingDiskJournal::State::next_by(old_e, new_e, CachingDiskJournal::Label::Internal, step);
+                    match step {
+                        CachingDiskJournal::Step::caching_disk_internal(new_disk) => {
+                            reveal(CachingDiskJournal::State::caching_disk_internal);
+                        },
+                        CachingDiskJournal::Step::journal_marshal(new_journal, new_disk, addr, writes) => {
+                            reveal(CachingDiskJournal::State::journal_marshal);
+                            reveal(CachedJournal::State::next);
+                            reveal(CachedJournal::State::next_by);
+                            let journal_lbl = CachedJournal::Label::JournalMarshal{
+                                writes: to_journal_records(writes),
+                            };
+                            let journal_step = choose |step: CachedJournal::Step|
+                                CachedJournal::State::next_by(old_e.journal, new_journal, journal_lbl, step);
+                            match journal_step {
+                                CachedJournal::Step::internal_journal_marshal(cut, hidden_addr) => {
+                                    reveal(CachedJournal::State::internal_journal_marshal);
+                                },
+                                _ => { assert(false); },
+                            }
+                        },
+                        CachingDiskJournal::Step::internal_noop() => {
+                            reveal(CachingDiskJournal::State::internal_noop);
+                        },
+                        _ => { assert(false); },
+                    }
+                    assert(new_e.journal.status is None);
+                    assert(false);
+                }
+                assert(pre.journal_allocation_ready());
+            }
+        };
+        assert(post.branch_allocation_ready() ==> pre.branch_allocation_ready()) by {
+            if post.branch_allocation_ready() {
+                assert(pre.branch.ephemeral is Known);
+                let old_b = pre.branch.ephemeral->v;
+                let new_b = post.branch.ephemeral->v;
+                assert(CachingDiskBranch::State::next(old_b, new_b, CachingDiskBranch::Label::Internal));
+                CachingDiskBranch::State::internal_reflects_metadata_loaded(old_b, new_b);
+                assert(pre.branch_allocation_ready());
+            }
+        };
+        Self::branch_internal_preserves_allocation_known_aus(pre.branch, post.branch);
+        assert(post.branch_allocation_known_aus() <= pre.branch_allocation_known_aus());
         Self::allocation_wf_from_subset(pre, post);
     }
 
@@ -1564,7 +1825,32 @@ state_machine!{ CrashAwareCachingDiskSystem {
             let new_b = new_branch.ephemeral->v;
             let cb_lbl = CachingDiskBranch::Label::LoadMetadata{root, discovered_aus};
             assert(CachingDiskBranch::State::next(old_b, new_b, cb_lbl));
+            assert(CachingDiskBranch::State::load_metadata(old_b, new_b, cb_lbl, choose |reads|
+                CachingDiskBranch::State::load_metadata(old_b, new_b, cb_lbl, reads)
+            )) by {
+                reveal(CachingDiskBranch::State::next);
+                reveal(CachingDiskBranch::State::next_by);
+                let step = choose |step: CachingDiskBranch::Step|
+                    CachingDiskBranch::State::next_by(old_b, new_b, cb_lbl, step);
+                match step {
+                    CachingDiskBranch::Step::load_metadata(reads) => {},
+                    _ => { assert(false); },
+                }
+            }
+            reveal(CachingDiskBranch::State::load_metadata);
+            CachingDiskBranch::State::load_metadata_preserves_semantic_owned_aus(
+                old_b,
+                new_b,
+                root,
+                discovered_aus,
+            );
         }
+        CrashAwareCachingDiskBranch::State::load_metadata_accessible_aus_growth(
+            pre.branch,
+            new_branch,
+            root,
+            discovered_aus,
+        );
         assert(post.free_aus == pre.free_aus - discovered_aus);
         assert(post.journal == pre.journal);
         assert(post.journal_owned_aus() <= pre.journal_owned_aus());
@@ -1574,12 +1860,11 @@ state_machine!{ CrashAwareCachingDiskSystem {
         assert(new_branch.prepared == pre.branch.prepared);
         if pre.branch.ephemeral is Known {
             assert(new_branch.ephemeral is Known);
-            assert(new_branch.ephemeral->v.semantic_owned_aus()
-                == pre.branch.ephemeral->v.semantic_owned_aus());
             Self::branch_owned_aus_ephemeral_subset(pre.branch, new_branch);
         }
-        assert(post.branch_owned_aus() <= pre.branch_owned_aus() + discovered_aus);
         assert(post.branch_owned_aus() <= pre.branch_owned_aus());
+        assert(post.branch_allocation_known_aus()
+            <= pre.branch_allocation_known_aus() + discovered_aus);
         Self::allocation_wf_from_recovery_growth(
             pre,
             post,
@@ -1638,6 +1923,7 @@ state_machine!{ CrashAwareCachingDiskSystem {
                 allocs,
                 deallocs,
             );
+            assert(new_b.branch_summary == old_b.branch_summary);
             assert(new_b.full_accessible_aus() <= old_b.full_accessible_aus() + allocs);
             assert(new_b.semantic_owned_aus() <= old_b.semantic_owned_aus() + allocs);
         }
@@ -1647,20 +1933,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
         assert(post.journal_owned_aus() <= pre.journal_owned_aus());
         Self::branch_owned_aus_ephemeral_growth(pre.branch, post.branch, allocs);
         assert(post.branch_owned_aus() <= pre.branch_owned_aus() + allocs);
-        assert(allocs.disjoint(Self::reserved_aus() + pre.journal_owned_aus())) by {
-            assert forall |au: AU| #[trigger] allocs.contains(au)
-                implies !(Self::reserved_aus() + pre.journal_owned_aus()).contains(au) by {
-                assert(pre.free_aus.contains(au));
-                if (Self::reserved_aus() + pre.journal_owned_aus()).contains(au) {
-                    if Self::reserved_aus().contains(au) {
-                    } else {
-                        assert(pre.journal_allocation_ready());
-                        assert(pre.journal_owned_aus().contains(au));
-                    }
-                    assert(false);
-                }
-            }
-        };
         assert(post.components_wf());
         Self::allocation_wf_from_alloc_update(
             pre,
@@ -1683,6 +1955,7 @@ state_machine!{ CrashAwareCachingDiskSystem {
         let journal_lbl = CrashAwareCachingDiskJournal::Label::LoadEphemeral;
         CrashAwareCachingDiskBranch::State::inv_next(pre.branch, new_branch, branch_lbl);
         CrashAwareCachingDiskJournal::State::inv_next(pre.journal, new_journal, journal_lbl);
+        Self::journal_next_preserves_refinement_inv(pre.journal, new_journal, journal_lbl);
         Self::branch_next_knownness(pre.branch, new_branch, branch_lbl);
         Self::journal_next_knownness(pre.journal, new_journal, journal_lbl);
         assert(CrashAwareCachingDiskJournal::State::load_ephemeral(pre.journal, new_journal, journal_lbl)) by {
@@ -1788,7 +2061,32 @@ state_machine!{ CrashAwareCachingDiskSystem {
                 }
             }
         };
-        Self::allocation_wf_from_subset(pre, post);
+        assert(post.journal_allocation_ready() ==> (
+            pre.journal_allocation_ready()
+                || post.journal_owned_aus() =~= Set::<AU>::empty()
+        )) by {
+            if post.journal_allocation_ready() && !pre.journal_allocation_ready() {
+                assert(post.journal_owned_aus() =~= Set::<AU>::empty());
+            }
+        };
+        assert(post.branch_allocation_ready() ==> (
+            pre.branch_allocation_ready()
+                || post.branch_owned_aus() =~= Set::<AU>::empty()
+        )) by {
+            if post.branch_allocation_ready() && !pre.branch_allocation_ready() {
+                assert(post.branch_owned_aus() =~= Set::<AU>::empty()) by {
+                    assert forall |au: AU| #[trigger] post.branch_owned_aus().contains(au)
+                        implies false by {
+                        assert(pre.branch_owned_aus().contains(au));
+                        assert(pre.branch.ephemeral is Unknown);
+                        assert(pre.branch.persistent is Image);
+                        assert(summary_aus(pre.branch.persistent->image.branch_summary()).contains(au));
+                        assert(false);
+                    }
+                };
+            }
+        };
+        Self::allocation_wf_from_subset_or_empty_new_ready(pre, post);
     }
 
     #[inductive(recover)]
@@ -1805,6 +2103,7 @@ state_machine!{ CrashAwareCachingDiskSystem {
         let journal_lbl = CrashAwareCachingDiskJournal::Label::ReadForRecovery{records};
         let branch_lbl = CrashAwareCachingDiskBranch::Label::Append{keys, msgs};
         CrashAwareCachingDiskJournal::State::inv_next(pre.journal, new_journal, journal_lbl);
+        Self::journal_next_preserves_refinement_inv(pre.journal, new_journal, journal_lbl);
         CrashAwareCachingDiskBranch::State::inv_next(pre.branch, new_branch, branch_lbl);
         Self::journal_next_knownness(pre.journal, new_journal, journal_lbl);
         Self::branch_next_knownness(pre.branch, new_branch, branch_lbl);
@@ -1869,6 +2168,7 @@ state_machine!{ CrashAwareCachingDiskSystem {
             sealed_roots: superblock_image.branch_roots,
         };
         CrashAwareCachingDiskJournal::State::inv_next(pre.journal, new_journal, journal_lbl);
+        Self::journal_next_preserves_refinement_inv(pre.journal, new_journal, journal_lbl);
         CrashAwareCachingDiskBranch::State::inv_next(pre.branch, new_branch, branch_lbl);
         Self::journal_next_knownness(pre.journal, new_journal, journal_lbl);
         Self::branch_next_knownness(pre.branch, new_branch, branch_lbl);
@@ -1948,6 +2248,7 @@ state_machine!{ CrashAwareCachingDiskSystem {
         let journal_lbl = CrashAwareCachingDiskJournal::Label::CommitPrepared;
         let branch_lbl = CrashAwareCachingDiskBranch::Label::FreezePrepared;
         CrashAwareCachingDiskJournal::State::inv_next(pre.journal, new_journal, journal_lbl);
+        Self::journal_next_preserves_refinement_inv(pre.journal, new_journal, journal_lbl);
         CrashAwareCachingDiskBranch::State::inv_next(pre.branch, new_branch, branch_lbl);
         Self::journal_next_knownness(pre.journal, new_journal, journal_lbl);
         Self::branch_next_knownness(pre.branch, new_branch, branch_lbl);
@@ -2081,6 +2382,7 @@ state_machine!{ CrashAwareCachingDiskSystem {
         };
         let branch_lbl = CrashAwareCachingDiskBranch::Label::CommitComplete;
         CrashAwareCachingDiskJournal::State::inv_next(pre.journal, new_journal, journal_lbl);
+        Self::journal_next_preserves_refinement_inv(pre.journal, new_journal, journal_lbl);
         CrashAwareCachingDiskBranch::State::inv_next(pre.branch, new_branch, branch_lbl);
         SuperblockStore::State::inv_next(pre.superblockstore, new_superblock, SuperblockStore::Label::Complete);
         Self::journal_next_knownness(pre.journal, new_journal, journal_lbl);
@@ -2156,38 +2458,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
             }
         };
         assert(discarded <= pre.journal_owned_aus());
-        assert(discarded.disjoint(post.journal_owned_aus())) by {
-            assert(post.journal.frozen is None);
-            assert(post.journal.ephemeral is Known);
-            let new_e = post.journal.ephemeral->v;
-            assert(discarded.disjoint(caching_disk_journal_accessible_aus(new_e)));
-            assert forall |au: AU| #[trigger] discarded.contains(au)
-                implies !post.journal_owned_aus().contains(au) by {
-                if post.journal_owned_aus().contains(au) {
-                    assert(caching_disk_journal_accessible_aus(new_e).contains(au));
-                    assert(false);
-                }
-            }
-        };
-        assert(discarded.disjoint(post.branch_owned_aus())) by {
-            assert forall |au: AU| #[trigger] discarded.contains(au)
-                implies !post.branch_owned_aus().contains(au) by {
-                if post.branch_owned_aus().contains(au) {
-                    assert(pre.journal_owned_aus().contains(au));
-                    assert(pre.branch_owned_aus().contains(au));
-                }
-            }
-        };
-        assert(discarded.disjoint(Self::reserved_aus())) by {
-            assert forall |au: AU| #[trigger] discarded.contains(au)
-                implies !Self::reserved_aus().contains(au) by {
-                if Self::reserved_aus().contains(au) {
-                    assert(pre.journal_owned_aus().contains(au));
-                    assert(pre.component_owned_aus().contains(au));
-                }
-            }
-        };
-        assert(discarded.disjoint(post.component_owned_aus()));
         assert(post.components_wf());
         Self::allocation_wf_from_alloc_update(
             pre,
@@ -2225,6 +2495,7 @@ state_machine!{ CrashAwareCachingDiskSystem {
         let journal_lbl = CrashAwareCachingDiskJournal::Label::Crash{keep_in_flight};
         let branch_lbl = CrashAwareCachingDiskBranch::Label::Crash{keep_in_flight};
         CrashAwareCachingDiskJournal::State::inv_next(pre.journal, new_journal, journal_lbl);
+        Self::journal_next_preserves_refinement_inv(pre.journal, new_journal, journal_lbl);
         CrashAwareCachingDiskBranch::State::inv_next(pre.branch, new_branch, branch_lbl);
         SuperblockStore::State::inv_next(pre.superblockstore, new_superblock, SuperblockStore::Label::Crash);
         Self::journal_next_knownness(pre.journal, new_journal, journal_lbl);
@@ -2280,6 +2551,27 @@ state_machine!{ CrashAwareCachingDiskSystem {
             }
         };
         assert(post.free_aus == new_free_aus - Self::reserved_aus());
+        if pre.journal.ephemeral is Known {
+            let frozen = if keep_in_flight {
+                pre.journal.frozen.unwrap()
+            } else {
+                pre.journal.persistent.metadata()
+            };
+            if keep_in_flight || pre.journal.ephemeral->v.journal.status is Some {
+                if keep_in_flight {
+                    assert(pre.journal.prepared);
+                    assert(pre.journal.frozen is Some);
+                    assert(materialization_certificate(pre.journal.ephemeral->v, frozen));
+                } else {
+                    assert(pre.journal.ephemeral->v.journal.status is Some);
+                    assert(materialization_certificate(pre.journal.ephemeral->v, frozen));
+                }
+                CrashAwareCachingDiskJournal::State::materialization_certificate_implies_materialized_accessible_aus(
+                    pre.journal.ephemeral->v,
+                    frozen,
+                );
+            }
+        }
         CrashAwareCachingDiskJournal::State::crash_persistent_image_accessible_aus(
             pre.journal,
             new_journal,
@@ -2332,7 +2624,7 @@ state_machine!{ CrashAwareCachingDiskSystem {
                     CachingDiskBranch::Step::freeze_prepared(),
                 ));
             };
-            pre.branch.ephemeral->v.prepared_image_matches_visible_prefix(prepared_branch_image);
+            pre.branch.materialized_image_summary_aus_subset_interpreted(persistent_meta);
             assert(summary_aus(prepared_branch_image.branch_summary())
                 <= pre.branch.ephemeral->v.semantic_owned_aus()) by {
                 assert(summary_aus(prepared_branch_image.branch_summary())
@@ -2355,6 +2647,9 @@ state_machine!{ CrashAwareCachingDiskSystem {
             }
         };
         assert(post.branch_owned_aus() <= pre.branch_owned_aus()) by {
+            assert(post.branch == new_branch);
+            assert(post.branch.ephemeral is Unknown);
+            assert(post.branch.persistent is Image);
             assert forall |au: AU| #[trigger] post.branch_owned_aus().contains(au)
                 implies pre.branch_owned_aus().contains(au) by {
                 if keep_in_flight {
@@ -2376,7 +2671,7 @@ state_machine!{ CrashAwareCachingDiskSystem {
                 }
             }
         };
-        Self::allocation_wf_from_growth_like_components(
+        Self::component_disjoint_from_growth_like_components(
             pre,
             post,
             Set::<AU>::empty(),
@@ -2392,6 +2687,7 @@ state_machine!{ CrashAwareCachingDiskSystem {
                 }
             }
         }
+        assert(post.branch_allocation_known_aus() =~= Set::<AU>::empty());
         assert(post.allocation_wf());
         assert(post.superblockstore.in_flight is None && !post.superblockstore.landed) by {
             reveal(SuperblockStore::State::next);
@@ -2650,6 +2946,7 @@ impl CrashAwareCachingDiskSystem::State {
             post.free_aus <= pre.free_aus,
             post.journal_owned_aus() <= pre.journal_owned_aus(),
             post.branch_owned_aus() <= pre.branch_owned_aus(),
+            post.branch_allocation_known_aus() <= pre.branch_allocation_known_aus(),
             post.journal_allocation_ready() ==> pre.journal_allocation_ready(),
             post.branch_allocation_ready() ==> pre.branch_allocation_ready(),
         ensures
@@ -2661,6 +2958,16 @@ impl CrashAwareCachingDiskSystem::State {
             if Self::reserved_aus().contains(au) {
                 assert(false);
             }
+        }
+        assert(post.free_aus.disjoint(post.branch_allocation_known_aus())) by {
+            assert forall |au: AU| #[trigger] post.free_aus.contains(au)
+                implies !post.branch_allocation_known_aus().contains(au) by {
+                assert(pre.free_aus.contains(au));
+                if post.branch_allocation_known_aus().contains(au) {
+                    assert(pre.branch_allocation_known_aus().contains(au));
+                    assert(false);
+                }
+            };
         }
         if post.journal_allocation_ready() {
             assert(pre.journal_allocation_ready());
@@ -2684,31 +2991,12 @@ impl CrashAwareCachingDiskSystem::State {
                 }
             };
         }
-        assert(Self::reserved_aus().disjoint(post.journal_owned_aus())) by {
-            assert forall |au: AU| #[trigger] Self::reserved_aus().contains(au)
-                implies !post.journal_owned_aus().contains(au) by {
-                if post.journal_owned_aus().contains(au) {
-                    assert(pre.journal_owned_aus().contains(au));
-                }
-            }
-        };
-        assert(Self::reserved_aus().disjoint(post.branch_owned_aus())) by {
-            assert forall |au: AU| #[trigger] Self::reserved_aus().contains(au)
-                implies !post.branch_owned_aus().contains(au) by {
-                if post.branch_owned_aus().contains(au) {
-                    assert(pre.branch_owned_aus().contains(au));
-                }
-            }
-        };
-        assert(post.journal_owned_aus().disjoint(post.branch_owned_aus())) by {
-            assert forall |au: AU| #[trigger] post.journal_owned_aus().contains(au)
-                implies !post.branch_owned_aus().contains(au) by {
-                if post.branch_owned_aus().contains(au) {
-                    assert(pre.journal_owned_aus().contains(au));
-                    assert(pre.branch_owned_aus().contains(au));
-                }
-            }
-        };
+        Self::component_disjoint_from_growth_like_components(
+            pre,
+            post,
+            Set::<AU>::empty(),
+            Set::<AU>::empty(),
+        );
     }
 
     pub proof fn allocation_wf_from_growth(
@@ -2727,6 +3015,7 @@ impl CrashAwareCachingDiskSystem::State {
             post.free_aus <= pre.free_aus - (journal_growth + branch_growth),
             post.journal_owned_aus() <= pre.journal_owned_aus() + journal_growth,
             post.branch_owned_aus() <= pre.branch_owned_aus() + branch_growth,
+            post.branch_allocation_known_aus() <= pre.branch_allocation_known_aus() + branch_growth,
             post.journal_allocation_ready() ==> pre.journal_allocation_ready(),
             post.branch_allocation_ready() ==> pre.branch_allocation_ready(),
         ensures
@@ -2740,6 +3029,21 @@ impl CrashAwareCachingDiskSystem::State {
             if Self::reserved_aus().contains(au) {
                 assert(false);
             }
+        }
+        assert(post.free_aus.disjoint(post.branch_allocation_known_aus())) by {
+            assert forall |au: AU| #[trigger] post.free_aus.contains(au)
+                implies !post.branch_allocation_known_aus().contains(au) by {
+                assert(pre.free_aus.contains(au));
+                assert(!journal_growth.contains(au));
+                assert(!branch_growth.contains(au));
+                if post.branch_allocation_known_aus().contains(au) {
+                    if pre.branch_allocation_known_aus().contains(au) {
+                    } else {
+                        assert(branch_growth.contains(au));
+                    }
+                    assert(false);
+                }
+            };
         }
         if post.journal_allocation_ready() {
             assert(pre.journal_allocation_ready());
@@ -2773,52 +3077,12 @@ impl CrashAwareCachingDiskSystem::State {
                 }
             };
         }
-        assert(Self::reserved_aus().disjoint(post.journal_owned_aus())) by {
-            assert forall |au: AU| #[trigger] Self::reserved_aus().contains(au)
-                implies !post.journal_owned_aus().contains(au) by {
-                if post.journal_owned_aus().contains(au) {
-                    if pre.journal_owned_aus().contains(au) {
-                    } else {
-                        assert(journal_growth.contains(au));
-                        assert((Self::reserved_aus() + pre.branch_owned_aus()).contains(au));
-                    }
-                }
-            }
-        };
-        assert(Self::reserved_aus().disjoint(post.branch_owned_aus())) by {
-            assert forall |au: AU| #[trigger] Self::reserved_aus().contains(au)
-                implies !post.branch_owned_aus().contains(au) by {
-                if post.branch_owned_aus().contains(au) {
-                    if pre.branch_owned_aus().contains(au) {
-                    } else {
-                        assert(branch_growth.contains(au));
-                        assert((Self::reserved_aus() + pre.journal_owned_aus()).contains(au));
-                    }
-                }
-            }
-        };
-        assert(post.journal_owned_aus().disjoint(post.branch_owned_aus())) by {
-            assert forall |au: AU| #[trigger] post.journal_owned_aus().contains(au)
-                implies !post.branch_owned_aus().contains(au) by {
-                if post.branch_owned_aus().contains(au) {
-                    if pre.journal_owned_aus().contains(au) {
-                        if pre.branch_owned_aus().contains(au) {
-                            assert(false);
-                        } else {
-                            assert(branch_growth.contains(au));
-                            assert((Self::reserved_aus() + pre.journal_owned_aus()).contains(au));
-                        }
-                    } else {
-                        assert(journal_growth.contains(au));
-                        if pre.branch_owned_aus().contains(au) {
-                            assert((Self::reserved_aus() + pre.branch_owned_aus()).contains(au));
-                        } else {
-                            assert(branch_growth.contains(au));
-                        }
-                    }
-                }
-            }
-        };
+        Self::component_disjoint_from_growth_like_components(
+            pre,
+            post,
+            journal_growth,
+            branch_growth,
+        );
     }
 
     pub proof fn allocation_wf_from_recovery_growth(
@@ -2832,11 +3096,9 @@ impl CrashAwareCachingDiskSystem::State {
             post.free_aus <= pre.free_aus - (journal_growth + branch_growth),
             post.journal_owned_aus() <= pre.journal_owned_aus(),
             post.branch_owned_aus() <= pre.branch_owned_aus(),
+            post.branch_allocation_known_aus() <= pre.branch_allocation_known_aus() + branch_growth,
             post.journal_allocation_ready() ==> (
                 pre.journal_allocation_ready() || post.journal_owned_aus() <= journal_growth
-            ),
-            post.branch_allocation_ready() ==> (
-                pre.branch_allocation_ready() || post.branch_owned_aus() <= branch_growth
             ),
         ensures
             post.allocation_wf(),
@@ -2847,6 +3109,21 @@ impl CrashAwareCachingDiskSystem::State {
             if Self::reserved_aus().contains(au) {
                 assert(false);
             }
+        }
+        assert(post.free_aus.disjoint(post.branch_allocation_known_aus())) by {
+            assert forall |au: AU| #[trigger] post.free_aus.contains(au)
+                implies !post.branch_allocation_known_aus().contains(au) by {
+                assert(pre.free_aus.contains(au));
+                assert(!journal_growth.contains(au));
+                assert(!branch_growth.contains(au));
+                if post.branch_allocation_known_aus().contains(au) {
+                    if pre.branch_allocation_known_aus().contains(au) {
+                    } else {
+                        assert(branch_growth.contains(au));
+                    }
+                    assert(false);
+                }
+            };
         }
         if post.journal_allocation_ready() {
             assert forall |au: AU| #[trigger] post.free_aus.contains(au)
@@ -2867,44 +3144,19 @@ impl CrashAwareCachingDiskSystem::State {
         if post.branch_allocation_ready() {
             assert forall |au: AU| #[trigger] post.free_aus.contains(au)
                 implies !post.branch_owned_aus().contains(au) by {
-                assert(pre.free_aus.contains(au));
-                assert(!journal_growth.contains(au));
-                assert(!branch_growth.contains(au));
                 if post.branch_owned_aus().contains(au) {
-                    if pre.branch_allocation_ready() {
-                        assert(pre.branch_owned_aus().contains(au));
-                    } else {
-                        assert(branch_growth.contains(au));
-                    }
+                    assert(post.branch_allocation_known_aus() == post.branch_owned_aus());
+                    assert(post.branch_allocation_known_aus().contains(au));
                     assert(false);
                 }
             };
         }
-        assert(Self::reserved_aus().disjoint(post.journal_owned_aus())) by {
-            assert forall |au: AU| #[trigger] Self::reserved_aus().contains(au)
-                implies !post.journal_owned_aus().contains(au) by {
-                if post.journal_owned_aus().contains(au) {
-                    assert(pre.journal_owned_aus().contains(au));
-                }
-            }
-        };
-        assert(Self::reserved_aus().disjoint(post.branch_owned_aus())) by {
-            assert forall |au: AU| #[trigger] Self::reserved_aus().contains(au)
-                implies !post.branch_owned_aus().contains(au) by {
-                if post.branch_owned_aus().contains(au) {
-                    assert(pre.branch_owned_aus().contains(au));
-                }
-            }
-        };
-        assert(post.journal_owned_aus().disjoint(post.branch_owned_aus())) by {
-            assert forall |au: AU| #[trigger] post.journal_owned_aus().contains(au)
-                implies !post.branch_owned_aus().contains(au) by {
-                if post.branch_owned_aus().contains(au) {
-                    assert(pre.journal_owned_aus().contains(au));
-                    assert(pre.branch_owned_aus().contains(au));
-                }
-            }
-        };
+        Self::component_disjoint_from_growth_like_components(
+            pre,
+            post,
+            Set::<AU>::empty(),
+            Set::<AU>::empty(),
+        );
     }
 
     pub proof fn allocation_wf_from_alloc_update(
@@ -2925,6 +3177,7 @@ impl CrashAwareCachingDiskSystem::State {
             post.free_aus <= (pre.free_aus - (journal_growth + branch_growth)) + returned,
             post.journal_owned_aus() <= pre.journal_owned_aus() + journal_growth,
             post.branch_owned_aus() <= pre.branch_owned_aus() + branch_growth,
+            post.branch_allocation_known_aus() <= pre.branch_allocation_known_aus() + branch_growth,
             post.journal_allocation_ready() ==> pre.journal_allocation_ready(),
             post.branch_allocation_ready() ==> pre.branch_allocation_ready(),
             returned.disjoint(post.component_owned_aus()),
@@ -2935,10 +3188,6 @@ impl CrashAwareCachingDiskSystem::State {
             implies !Self::reserved_aus().contains(au) by {
             if returned.contains(au) {
                 assert(!post.component_owned_aus().contains(au));
-                if Self::reserved_aus().contains(au) {
-                    assert(post.component_owned_aus().contains(au));
-                    assert(false);
-                }
             } else {
                 assert(pre.free_aus.contains(au));
                 assert(!journal_growth.contains(au));
@@ -2947,6 +3196,33 @@ impl CrashAwareCachingDiskSystem::State {
                     assert(false);
                 }
             }
+        }
+        assert(post.free_aus.disjoint(post.branch_allocation_known_aus())) by {
+            assert forall |au: AU| #[trigger] post.free_aus.contains(au)
+                implies !post.branch_allocation_known_aus().contains(au) by {
+                if returned.contains(au) {
+                    assert(!post.component_owned_aus().contains(au));
+                    if post.branch_allocation_known_aus().contains(au) {
+                        assert(post.branch_allocation_known_aus() <= post.branch_owned_aus()) by {
+                            Self::branch_summary_subset_of_state_owned_aus(post.branch);
+                        }
+                        assert(post.branch_owned_aus().contains(au));
+                        assert(post.component_owned_aus().contains(au));
+                        assert(false);
+                    }
+                } else {
+                    assert(pre.free_aus.contains(au));
+                    assert(!journal_growth.contains(au));
+                    assert(!branch_growth.contains(au));
+                    if post.branch_allocation_known_aus().contains(au) {
+                        if pre.branch_allocation_known_aus().contains(au) {
+                        } else {
+                            assert(branch_growth.contains(au));
+                        }
+                        assert(false);
+                    }
+                }
+            };
         }
         if post.journal_allocation_ready() {
             assert(pre.journal_allocation_ready());
@@ -2996,19 +3272,91 @@ impl CrashAwareCachingDiskSystem::State {
                 }
             };
         }
-        Self::allocation_wf_from_growth_like_components(pre, post, journal_growth, branch_growth);
+        Self::component_disjoint_from_growth_like_components(
+            pre,
+            post,
+            journal_growth,
+            branch_growth,
+        );
     }
 
-    proof fn allocation_wf_from_growth_like_components(
+    pub proof fn allocation_wf_from_subset_or_empty_new_ready(pre: Self, post: Self)
+        requires
+            pre.allocation_wf(),
+            post.free_aus <= pre.free_aus,
+            post.journal_owned_aus() <= pre.journal_owned_aus(),
+            post.branch_owned_aus() <= pre.branch_owned_aus(),
+            post.branch_allocation_known_aus() <= pre.branch_allocation_known_aus(),
+            post.journal_allocation_ready() ==> (
+                pre.journal_allocation_ready() || post.journal_owned_aus() =~= Set::<AU>::empty()
+            ),
+            post.branch_allocation_ready() ==> (
+                pre.branch_allocation_ready() || post.branch_owned_aus() =~= Set::<AU>::empty()
+            ),
+        ensures
+            post.allocation_wf(),
+    {
+        assert forall |au: AU| #[trigger] post.free_aus.contains(au)
+            implies !Self::reserved_aus().contains(au) by {
+            assert(pre.free_aus.contains(au));
+            if Self::reserved_aus().contains(au) {
+                assert(false);
+            }
+        }
+        assert(post.free_aus.disjoint(post.branch_allocation_known_aus())) by {
+            assert forall |au: AU| #[trigger] post.free_aus.contains(au)
+                implies !post.branch_allocation_known_aus().contains(au) by {
+                assert(pre.free_aus.contains(au));
+                if post.branch_allocation_known_aus().contains(au) {
+                    assert(pre.branch_allocation_known_aus().contains(au));
+                    assert(false);
+                }
+            };
+        }
+        if post.journal_allocation_ready() {
+            assert forall |au: AU| #[trigger] post.free_aus.contains(au)
+                implies !post.journal_owned_aus().contains(au) by {
+                if post.journal_owned_aus().contains(au) {
+                    if pre.journal_allocation_ready() {
+                        assert(pre.free_aus.contains(au));
+                        assert(pre.journal_owned_aus().contains(au));
+                    } else {
+                        assert(false);
+                    }
+                    assert(false);
+                }
+            };
+        }
+        if post.branch_allocation_ready() {
+            assert forall |au: AU| #[trigger] post.free_aus.contains(au)
+                implies !post.branch_owned_aus().contains(au) by {
+                if post.branch_owned_aus().contains(au) {
+                    if pre.branch_allocation_ready() {
+                        assert(pre.free_aus.contains(au));
+                        assert(pre.branch_owned_aus().contains(au));
+                    } else {
+                        assert(false);
+                    }
+                    assert(false);
+                }
+            };
+        }
+        Self::component_disjoint_from_growth_like_components(
+            pre,
+            post,
+            Set::<AU>::empty(),
+            Set::<AU>::empty(),
+        );
+    }
+
+    pub proof fn component_disjoint_from_growth_like_components(
         pre: Self,
         post: Self,
         journal_growth: Set<AU>,
         branch_growth: Set<AU>,
     )
         requires
-            pre.allocation_wf(),
-            journal_growth <= pre.free_aus,
-            branch_growth <= pre.free_aus,
+            pre.component_disjoint(),
             journal_growth.disjoint(branch_growth),
             journal_growth.disjoint(Self::reserved_aus() + pre.branch_owned_aus()),
             branch_growth.disjoint(Self::reserved_aus() + pre.journal_owned_aus()),

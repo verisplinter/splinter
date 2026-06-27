@@ -1727,6 +1727,35 @@ impl CachingDiskJournal::State {
         self.frozen_loose_subdomain_accessible(snapshot, addrs);
     }
 
+    pub proof fn persistent_frozen_loose_domain_persistent_aus_accessible(
+        self,
+        frozen: crate::implementation::CrashAwareCachingDiskJournal_v::CachingDiskJournalFrozenMetadata,
+    )
+        requires
+            self.inv(),
+            self.journal.status is None,
+        ensures
+            to_aus(self.disk.persistent.restrict(
+                self.persistent_frozen_loose_domain(frozen),
+            ).dom()) <= self.accessible_aus(),
+    {
+        let addrs = self.disk.persistent.restrict(
+            self.persistent_frozen_loose_domain(frozen),
+        ).dom();
+        assert(addrs <= self.disk.visible().dom()) by {
+            assert forall |addr: Address| #[trigger] addrs.contains(addr)
+                implies self.disk.visible().dom().contains(addr) by {
+                assert(self.disk.persistent.restrict(
+                    self.persistent_frozen_loose_domain(frozen),
+                ).contains_key(addr));
+                assert(self.disk.persistent.contains_key(addr));
+                assert(self.disk.visible().contains_key(addr));
+            }
+        }
+        to_aus_preserves_lte(addrs, self.disk.visible().dom());
+        assert(to_aus(addrs) <= to_aus(self.disk.visible().dom()));
+    }
+
     pub proof fn frozen_tj_aus_accessible(self, snapshot: JournalSnapshot)
         requires
             self.inv(),

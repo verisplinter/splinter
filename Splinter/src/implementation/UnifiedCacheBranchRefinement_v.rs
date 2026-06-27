@@ -39,8 +39,8 @@ use crate::implementation::Cache_v::Cache;
 use crate::implementation::CachedBranch_v::{
     loaded_append_write_nodes, loaded_grow_write_nodes,
     loaded_initialize_write_nodes, loaded_split_write_nodes,
-    loaded_seal_write_nodes, receipt_valid_implies_tail_valid, CachedBranch, LoadedBranch,
-    LoadedPathReceipt,
+    loaded_seal_write_nodes, receipt_valid_implies_tail_valid, root_summary_from_read,
+    root_summary_read_valid, CachedBranch, LoadedBranch, LoadedPathReceipt,
 };
 use crate::implementation::CachingDiskAdapterRefinement_v::{
     cache_filled_addr, cache_filled_page,
@@ -192,58 +192,10 @@ pub proof fn branch_image_summary_aus_matches_completed_summary(
 {
     let nodes = to_branch_nodes(disk_content);
     let full_summary = completed_branch_summary_from_reads(roots, nodes);
-    branch_summary_from_reads_up_to_self_ensures(roots, nodes, roots.len() as nat);
-    root_aus_up_to_full(roots);
-    to_aus_finite(roots.to_set());
-    assert(full_summary.dom().finite());
-    lemma_values_finite(full_summary);
-    assert forall |au: AU| {
-        #[trigger] UnifiedCacheBranchSource::branch_image_summary_aus_i(disk_content, roots).contains(au)
-    } implies summary_aus(full_summary).contains(au) by {
-        let i = choose |i: int| {
-            &&& 0 <= i < roots.len()
-            &&& crate::implementation::CachedBranch_v::root_summary_read_valid(roots[i], nodes)
-            &&& #[trigger] crate::implementation::CachedBranch_v::root_summary_from_read(
-                roots[i],
-                nodes,
-            ).contains(au)
-        };
-        let root_summary = crate::implementation::CachedBranch_v::root_summary_from_read(
-            roots[i],
-            nodes,
-        );
-        root_aus_up_to_contains(roots, roots.len() as nat, i);
-        assert(root_aus_up_to(roots, roots.len() as nat).contains(roots[i].au));
-        assert(full_summary.contains_key(roots[i].au));
-        assert(full_summary[roots[i].au] == root_summary);
-        assert(full_summary.values().contains(full_summary[roots[i].au]));
-        assert(full_summary.values().contains(root_summary));
-        assert(summary_aus(full_summary).contains(au)) by {
-            lemma_union_set_of_sets_subset(full_summary.values(), root_summary);
-        }
-    }
-    assert forall |au: AU| #[trigger] summary_aus(full_summary).contains(au)
-        implies UnifiedCacheBranchSource::branch_image_summary_aus_i(
-            disk_content,
-            roots,
-        ).contains(au) by {
-        let root_summary = lemma_union_set_of_sets_contains(full_summary.values(), au);
-        assert(full_summary.values().contains(root_summary));
-        let root_au = choose |root_au: AU|
-            full_summary.contains_key(root_au) && full_summary[root_au] == root_summary;
-        assert(full_summary.dom().contains(root_au));
-        assert(root_aus_up_to(roots, roots.len() as nat).contains(root_au));
-        let i = root_aus_up_to_member_has_index(roots, roots.len() as nat, root_au);
-        assert(roots[i].au == root_au);
-        assert(full_summary[roots[i].au] == crate::implementation::CachedBranch_v::root_summary_from_read(
-            roots[i],
-            nodes,
-        ));
-        assert(crate::implementation::CachedBranch_v::root_summary_from_read(
-            roots[i],
-            nodes,
-        ).contains(au));
-    }
+    assert(UnifiedCacheBranchSource::branch_image_summary_i(disk_content, roots)
+        == full_summary);
+    assert(UnifiedCacheBranchSource::branch_image_summary_aus_i(disk_content, roots)
+        == summary_aus(full_summary));
 }
 
 pub proof fn recovery_branch_projection_aus_matches_image_summary(
@@ -384,17 +336,7 @@ impl UnifiedCacheBranchSource {
         roots: Seq<Address>,
     ) -> Set<AU>
     {
-        let nodes = to_branch_nodes(disk_content);
-        Set::new(|au: AU| {
-            exists |i: int| {
-                &&& 0 <= i < roots.len()
-                &&& crate::implementation::CachedBranch_v::root_summary_read_valid(roots[i], nodes)
-                &&& #[trigger] crate::implementation::CachedBranch_v::root_summary_from_read(
-                    roots[i],
-                    nodes,
-                ).contains(au)
-            }
-        })
+        summary_aus(Self::branch_image_summary_i(disk_content, roots))
     }
 
     pub open spec fn branch_image_projection_addrs_i(
@@ -773,6 +715,440 @@ impl UnifiedCacheBranchSource {
             assert(post.i() == self.i());
         }
         assert(inv(post));
+    }
+
+    pub proof fn loaded_branch_image_matches_materialized(
+        self,
+        image: AbstractSuperblockImage,
+        frozen: CachingDiskBranchMetadata,
+    )
+        requires
+            inv(self),
+            self.superblock_loaded(),
+            self.branch.metadata_loaded(),
+            image.wf(),
+            frozen.sealed_roots == image.branch_roots,
+            frozen.seq_end == image.branch_seq_end,
+            CachingDiskBranch::State::next(
+                self.branch_caching_disk_state_i(),
+                self.branch_caching_disk_state_i(),
+                CachingDiskBranch::Label::FreezePrepared{image: frozen},
+            ),
+        ensures
+            self.branch_image_i(image)
+                == CachingDiskBranchImage::materialized_from_persistent(
+                    self.branch_caching_disk_state_i(),
+                    frozen,
+                ),
+            self.branch_image_i(image).loadable(),
+            self.branch_image_i(image).stack_wf(),
+    {
+        let state = self.branch_caching_disk_state_i();
+        let materialized = CachingDiskBranchImage::materialized_from_persistent(state, frozen);
+        let full_image = CachingDiskBranchImage{
+            persistent: self.disk.content,
+            sealed_roots: image.branch_roots,
+            seq_end: image.branch_seq_end,
+        };
+
+        state.materialized_image_matches_visible_prefix(frozen);
+        assert(materialized.wf());
+        assert(materialized.sealed_roots == full_image.sealed_roots);
+        assert(materialized.seq_end == full_image.seq_end);
+        let materialized_aus = summary_aus(materialized.branch_summary());
+        let materialized_addrs = addresses_in_aus(materialized_aus);
+
+        assert(materialized_aus <= self.branch_projection_aus()) by {
+            assert(state.metadata_loaded);
+            assert(state.branch_metadata_loaded());
+            assert(state.branch_summary == state.interpreted_branch_summary());
+            assert(materialized_aus <= summary_aus(state.interpreted_branch_summary()));
+            assert(self.branch_projection_aus() == self.branch.owned_aus());
+            assert(self.branch.owned_aus() == summary_aus(self.branch.branch_summary)
+                + self.branch.mini_allocator.all_aus());
+            assert(state.branch_summary == self.branch.branch_summary);
+            assert forall |au: AU| #[trigger] materialized_aus.contains(au)
+                implies self.branch_projection_aus().contains(au) by {
+                assert(summary_aus(state.interpreted_branch_summary()).contains(au));
+                assert(summary_aus(self.branch.branch_summary).contains(au));
+            }
+        };
+
+        assert(materialized.persistent == self.disk.content.restrict(materialized_addrs)) by {
+            assert(CachingDiskBranchImage::materialized_summary_addrs(
+                state.disk.persistent,
+                frozen,
+            ) == materialized_addrs) by {
+                assert(completed_branch_summary_from_reads(
+                    frozen.sealed_roots,
+                    to_branch_nodes(state.disk.persistent),
+                ) == materialized.branch_summary());
+            }
+            assert_maps_equal!(
+                materialized.persistent,
+                self.disk.content.restrict(materialized_addrs),
+                addr => {
+                    if materialized.persistent.contains_key(addr) {
+                        assert(materialized_addrs.contains(addr));
+                        assert(addresses_in_aus(self.branch_projection_aus()).contains(addr));
+                    }
+                    if self.disk.content.restrict(materialized_addrs).contains_key(addr) {
+                        assert(materialized_addrs.contains(addr));
+                        assert(addresses_in_aus(self.branch_projection_aus()).contains(addr));
+                        assert(state.disk.persistent.contains_key(addr));
+                    }
+                }
+            );
+        };
+
+        assert(full_image.persistent.restrict(materialized_addrs)
+            == materialized.persistent.restrict(materialized_addrs)) by {
+            assert_maps_equal!(
+                full_image.persistent.restrict(materialized_addrs),
+                materialized.persistent.restrict(materialized_addrs),
+                addr => {}
+            );
+        }
+        CachingDiskBranchImage::same_summary_aus_preserves_sealed_stack(
+            materialized,
+            full_image,
+        );
+
+        assert(UnifiedCacheBranchSource::branch_image_projection_addrs_i(
+            self.disk.content,
+            image.branch_roots,
+        ) == materialized_addrs) by {
+            assert(branch_summary_reads_valid(
+                image.branch_roots,
+                to_branch_nodes(self.disk.content),
+            ));
+            assert(UnifiedCacheBranchSource::branch_image_summary_i(
+                self.disk.content,
+                image.branch_roots,
+            ) == completed_branch_summary_from_reads(
+                image.branch_roots,
+                to_branch_nodes(self.disk.content),
+            ));
+            assert(completed_branch_summary_from_reads(
+                image.branch_roots,
+                to_branch_nodes(self.disk.content),
+            ) == full_image.branch_summary());
+            assert(full_image.branch_summary() == materialized.branch_summary());
+        }
+
+        assert(self.branch_image_i(image).persistent == materialized.persistent) by {
+            assert_maps_equal!(
+                self.branch_image_i(image).persistent,
+                materialized.persistent,
+                addr => {}
+            );
+        }
+        assert(self.branch_image_i(image).sealed_roots == materialized.sealed_roots);
+        assert(self.branch_image_i(image).seq_end == materialized.seq_end);
+        assert(self.branch_image_i(image) == materialized);
+        assert(self.branch_image_i(image).loadable());
+        assert(self.branch_image_i(image).stack_wf());
+    }
+
+    pub proof fn unloaded_branch_image_matches_materialized(
+        self,
+        image: AbstractSuperblockImage,
+        frozen: CachingDiskBranchMetadata,
+    )
+        requires
+            inv(self),
+            self.superblock_loaded(),
+            !self.branch.metadata_loaded(),
+            image == self.persistent_superblock_image_i(),
+            image.wf(),
+            frozen.sealed_roots == image.branch_roots,
+            frozen.seq_end == image.branch_seq_end,
+            CachingDiskBranch::State::next(
+                self.branch_caching_disk_state_i(),
+                self.branch_caching_disk_state_i(),
+                CachingDiskBranch::Label::FreezePrepared{image: frozen},
+            ),
+        ensures
+            self.branch_image_i(image)
+                == CachingDiskBranchImage::materialized_from_persistent(
+                    self.branch_caching_disk_state_i(),
+                    frozen,
+                ),
+            self.branch_image_i(image).loadable(),
+            self.branch_image_i(image).stack_wf(),
+    {
+        let state = self.branch_caching_disk_state_i();
+        let materialized = CachingDiskBranchImage::materialized_from_persistent(state, frozen);
+        let full_image = CachingDiskBranchImage{
+            persistent: self.disk.content,
+            sealed_roots: image.branch_roots,
+            seq_end: image.branch_seq_end,
+        };
+
+        state.materialized_image_matches_visible_prefix(frozen);
+        assert(materialized.wf());
+        assert(materialized.sealed_roots == full_image.sealed_roots);
+        assert(materialized.seq_end == full_image.seq_end);
+        let materialized_aus = summary_aus(materialized.branch_summary());
+        let materialized_addrs = addresses_in_aus(materialized_aus);
+
+        assert(materialized_aus <= self.branch_projection_aus()) by {
+            let mat_nodes = materialized.persistent_branch_nodes();
+            let full_nodes = to_branch_nodes(self.disk.content);
+            assert(branch_summary_reads_valid(frozen.sealed_roots, mat_nodes));
+            assert(branch_summary_reads_valid(frozen.sealed_roots, full_nodes)) by {
+                assert forall |i: int| #![trigger frozen.sealed_roots[i]]
+                    0 <= i < frozen.sealed_roots.len()
+                    implies root_summary_read_valid(frozen.sealed_roots[i], full_nodes)
+                by {
+                    let root = frozen.sealed_roots[i];
+                    assert(root_summary_read_valid(root, mat_nodes));
+                    assert(mat_nodes.contains_key(root));
+                    assert(materialized.persistent.contains_key(root));
+                    assert(self.disk.content.contains_key(root));
+                    assert(full_nodes.contains_key(root));
+                    assert(full_nodes[root] == mat_nodes[root]);
+                    if mat_nodes[root] is Index {
+                        let aux = mat_nodes[root]->aux_ptr.unwrap();
+                        assert(mat_nodes.contains_key(aux));
+                        assert(materialized.persistent.contains_key(aux));
+                        assert(self.disk.content.contains_key(aux));
+                        assert(full_nodes.contains_key(aux));
+                        assert(full_nodes[aux] == mat_nodes[aux]);
+                    }
+                }
+            };
+            branch_summary_from_reads_up_to_self_ensures(
+                frozen.sealed_roots,
+                mat_nodes,
+                frozen.sealed_roots.len() as nat,
+            );
+            branch_summary_from_reads_up_to_self_ensures(
+                frozen.sealed_roots,
+                full_nodes,
+                frozen.sealed_roots.len() as nat,
+            );
+            materialized.branch_summary_finite();
+            let full_summary = completed_branch_summary_from_reads(
+                frozen.sealed_roots,
+                full_nodes,
+            );
+            root_aus_up_to_full(frozen.sealed_roots);
+            to_aus_finite(frozen.sealed_roots.to_set());
+            assert(full_summary.dom().finite()) by {
+                assert(full_summary.dom()
+                    =~= root_aus_up_to(frozen.sealed_roots, frozen.sealed_roots.len() as nat));
+                assert(root_aus_up_to(frozen.sealed_roots, frozen.sealed_roots.len() as nat)
+                    =~= to_aus(frozen.sealed_roots.to_set()));
+            }
+            lemma_values_finite(full_summary);
+            assert forall |au: AU| #[trigger] materialized_aus.contains(au)
+                implies self.branch_projection_aus().contains(au) by {
+                let summary = lemma_union_set_of_sets_contains(
+                    materialized.branch_summary().values(),
+                    au,
+                );
+                let root_au = choose |root_au: AU| {
+                    &&& materialized.branch_summary().contains_key(root_au)
+                    &&& materialized.branch_summary()[root_au] == summary
+                };
+                assert(materialized.branch_summary().dom().contains(root_au));
+                assert(root_aus_up_to(
+                    frozen.sealed_roots,
+                    frozen.sealed_roots.len() as nat,
+                ).contains(root_au));
+                let idx = root_aus_up_to_member_has_index(
+                    frozen.sealed_roots,
+                    frozen.sealed_roots.len() as nat,
+                    root_au,
+                );
+                let root = frozen.sealed_roots[idx];
+                assert(root.au == root_au);
+                assert(materialized.branch_summary()[root.au]
+                    == root_summary_from_read(root, mat_nodes));
+                assert(summary == root_summary_from_read(root, mat_nodes));
+                assert(root_summary_from_read(root, full_nodes) == summary) by {
+                    assert(root_summary_read_valid(root, mat_nodes));
+                    assert(root_summary_read_valid(root, full_nodes));
+                    assert(full_nodes[root] == mat_nodes[root]);
+                    if mat_nodes[root] is Index {
+                        let aux = mat_nodes[root]->aux_ptr.unwrap();
+                        assert(full_nodes[root]->aux_ptr == Some(aux));
+                        assert(full_nodes[aux] == mat_nodes[aux]);
+                    }
+                }
+                assert(full_summary[root.au] == summary);
+                assert(UnifiedCacheBranchSource::branch_image_summary_i(
+                    self.disk.content,
+                    image.branch_roots,
+                ) == full_summary);
+                assert(UnifiedCacheBranchSource::branch_image_summary_aus_i(
+                    self.disk.content,
+                    image.branch_roots,
+                ).contains(au)) by {
+                    assert(full_summary.values().contains(summary));
+                    lemma_union_set_of_sets_subset(full_summary.values(), summary);
+                }
+                let addr = Address{au, page: 0};
+                assert(UnifiedCacheBranchSource::branch_image_projection_addrs_i(
+                    self.disk.content,
+                    image.branch_roots,
+                ).contains(addr));
+                to_aus_domain(UnifiedCacheBranchSource::branch_image_projection_addrs_i(
+                    self.disk.content,
+                    image.branch_roots,
+                ));
+                assert(self.branch_projection_aus() == to_aus(
+                    UnifiedCacheBranchSource::branch_image_projection_addrs_i(
+                        self.disk.content,
+                        image.branch_roots,
+                    ),
+                ));
+            }
+        };
+
+        assert(materialized.persistent == self.disk.content.restrict(materialized_addrs)) by {
+            assert(CachingDiskBranchImage::materialized_summary_addrs(
+                state.disk.persistent,
+                frozen,
+            ) == materialized_addrs) by {
+                let full_state_image = CachingDiskBranchImage{
+                    persistent: state.disk.persistent,
+                    sealed_roots: frozen.sealed_roots,
+                    seq_end: frozen.seq_end,
+                };
+                assert(full_state_image.branch_summary() == materialized.branch_summary());
+                assert(completed_branch_summary_from_reads(
+                    frozen.sealed_roots,
+                    to_branch_nodes(state.disk.persistent),
+                ) == materialized.branch_summary());
+            }
+            assert_maps_equal!(
+                materialized.persistent,
+                self.disk.content.restrict(materialized_addrs),
+                addr => {
+                    if materialized.persistent.contains_key(addr) {
+                        assert(materialized_addrs.contains(addr));
+                        assert(addresses_in_aus(self.branch_projection_aus()).contains(addr));
+                    }
+                    if self.disk.content.restrict(materialized_addrs).contains_key(addr) {
+                        assert(materialized_addrs.contains(addr));
+                        assert(addresses_in_aus(self.branch_projection_aus()).contains(addr));
+                        assert(state.disk.persistent.contains_key(addr));
+                    }
+                }
+            );
+        };
+
+        assert(full_image.persistent.restrict(materialized_addrs)
+            == materialized.persistent.restrict(materialized_addrs)) by {
+            assert_maps_equal!(
+                full_image.persistent.restrict(materialized_addrs),
+                materialized.persistent.restrict(materialized_addrs),
+                addr => {}
+            );
+        }
+        CachingDiskBranchImage::same_summary_aus_preserves_sealed_stack(
+            materialized,
+            full_image,
+        );
+
+        assert(UnifiedCacheBranchSource::branch_image_projection_addrs_i(
+            self.disk.content,
+            image.branch_roots,
+        ) == materialized_addrs) by {
+            assert(branch_summary_reads_valid(
+                image.branch_roots,
+                to_branch_nodes(self.disk.content),
+            ));
+            assert(UnifiedCacheBranchSource::branch_image_summary_i(
+                self.disk.content,
+                image.branch_roots,
+            ) == completed_branch_summary_from_reads(
+                image.branch_roots,
+                to_branch_nodes(self.disk.content),
+            ));
+            assert(completed_branch_summary_from_reads(
+                image.branch_roots,
+                to_branch_nodes(self.disk.content),
+            ) == full_image.branch_summary());
+            assert(full_image.branch_summary() == materialized.branch_summary());
+        }
+
+        assert(self.branch_image_i(image).persistent == materialized.persistent) by {
+            assert_maps_equal!(
+                self.branch_image_i(image).persistent,
+                materialized.persistent,
+                addr => {}
+            );
+        }
+        assert(self.branch_image_i(image).sealed_roots == materialized.sealed_roots);
+        assert(self.branch_image_i(image).seq_end == materialized.seq_end);
+        assert(self.branch_image_i(image) == materialized);
+        assert(self.branch_image_i(image).loadable());
+        assert(self.branch_image_i(image).stack_wf());
+    }
+
+    pub proof fn post_crash_persistent_image_matches_materialized(
+        self,
+        post: Self,
+        image: AbstractSuperblockImage,
+        frozen: CachingDiskBranchMetadata,
+    )
+        requires
+            inv(self),
+            self.superblock_loaded(),
+            post.persistent_image is None,
+            post.disk.content == self.disk.content,
+            post.persistent_superblock_image_i() == image,
+            image.wf(),
+            frozen.sealed_roots == image.branch_roots,
+            frozen.seq_end == image.branch_seq_end,
+            self.branch.metadata_loaded() || image == self.persistent_superblock_image_i(),
+            CachingDiskBranch::State::next(
+                self.branch_caching_disk_state_i(),
+                self.branch_caching_disk_state_i(),
+                CachingDiskBranch::Label::FreezePrepared{image: frozen},
+            ),
+        ensures
+            post.persistent_branch_image_i()
+                == CachingDiskBranchImage::materialized_from_persistent(
+                    self.branch_caching_disk_state_i(),
+                    frozen,
+                ),
+            post.persistent_branch_image_i().loadable(),
+            post.persistent_branch_image_i().stack_wf(),
+    {
+        if self.branch.metadata_loaded() {
+            self.loaded_branch_image_matches_materialized(image, frozen);
+        } else {
+            self.unloaded_branch_image_matches_materialized(image, frozen);
+        }
+
+        assert(post.branch_image_i(image) == self.branch_image_i(image)) by {
+            assert(post.disk.content == self.disk.content);
+            assert_maps_equal!(
+                post.branch_image_i(image).persistent,
+                self.branch_image_i(image).persistent,
+                addr => {
+                    assert(UnifiedCacheBranchSource::branch_image_projection_addrs_i(
+                        post.disk.content,
+                        image.branch_roots,
+                    ) =~= UnifiedCacheBranchSource::branch_image_projection_addrs_i(
+                        self.disk.content,
+                        image.branch_roots,
+                    ));
+                }
+            );
+        }
+        assert(post.persistent_branch_image_i() == post.branch_image_i(image));
+        assert(post.persistent_branch_image_i()
+            == CachingDiskBranchImage::materialized_from_persistent(
+                self.branch_caching_disk_state_i(),
+                frozen,
+            ));
+        assert(post.persistent_branch_image_i().loadable());
+        assert(post.persistent_branch_image_i().stack_wf());
     }
 
     pub proof fn unchanged_by_cache_access_outside_branch_projection(
@@ -1286,50 +1662,6 @@ pub open spec fn unified_cache_branch_i(
     src.i()
 }
 
-pub open spec fn unified_cache_branch_i_lbl(
-    lbl: AtomicBranchState::Label,
-) -> CrashAwareCachingDiskBranch::Label
-{
-    match lbl {
-        AtomicBranchState::Label::Query{key, msg, ..} => {
-            CrashAwareCachingDiskBranch::Label::Query{
-                key,
-                value: normalize_value(msg),
-            }
-        },
-        AtomicBranchState::Label::LoadMetadata{root, discovered_aus, ..} => {
-            CrashAwareCachingDiskBranch::Label::LoadMetadata{root, discovered_aus}
-        },
-        AtomicBranchState::Label::Append{keys, msgs, ..} => {
-            CrashAwareCachingDiskBranch::Label::Append{keys, msgs}
-        },
-        AtomicBranchState::Label::Grow{..}
-        | AtomicBranchState::Label::Split{..}
-        | AtomicBranchState::Label::Seal{..}
-        | AtomicBranchState::Label::ObservePersistedRoots{..} => {
-            CrashAwareCachingDiskBranch::Label::Internal
-        },
-        AtomicBranchState::Label::FillAUs{aus} => {
-            CrashAwareCachingDiskBranch::Label::InternalAlloc{
-                allocs: aus,
-                deallocs: Set::empty(),
-            }
-        },
-        AtomicBranchState::Label::CommitStart{branch_image} => {
-            CrashAwareCachingDiskBranch::Label::CommitStart{
-                new_boundary_lsn: branch_image.seq_end,
-                sealed_roots: branch_image.sealed_roots,
-            }
-        },
-        AtomicBranchState::Label::CommitPrepared => {
-            CrashAwareCachingDiskBranch::Label::FreezePrepared
-        },
-        AtomicBranchState::Label::CommitComplete => {
-            CrashAwareCachingDiskBranch::Label::CommitComplete
-        },
-    }
-}
-
 pub open spec fn inv(src: UnifiedCacheBranchSource) -> bool
 {
     &&& src.inv()
@@ -1438,12 +1770,48 @@ pub proof fn init_refines(pre: SystemModel::State<UnifiedCacheProgramModel>)
                 src.disk.content,
                 src.persistent_superblock_image_i().branch_roots,
             ) =~= Set::<Address>::empty()) by {
-                assert(src.persistent_superblock_image_i().branch_roots == Seq::<Address>::empty());
+                let roots = src.persistent_superblock_image_i().branch_roots;
+                assert(roots == Seq::<Address>::empty());
+                assert(branch_summary_reads_valid(roots, to_branch_nodes(src.disk.content))) by {
+                    assert forall |i: int| #![trigger roots[i]]
+                        0 <= i < roots.len()
+                        implies crate::implementation::CachedBranch_v::root_summary_read_valid(
+                            roots[i],
+                            to_branch_nodes(src.disk.content),
+                        ) by {
+                        assert(false);
+                    }
+                }
+                assert(completed_branch_summary_from_reads(
+                    roots,
+                    to_branch_nodes(src.disk.content),
+                ) == Map::<AU, Summary>::empty());
+                assert(UnifiedCacheBranchSource::branch_image_summary_i(
+                    src.disk.content,
+                    roots,
+                ) == Map::<AU, Summary>::empty());
+                assert(UnifiedCacheBranchSource::branch_image_summary_aus_i(
+                    src.disk.content,
+                    roots,
+                ) =~= Set::<AU>::empty()) by {
+                    lemma_values_finite(Map::<AU, Summary>::empty());
+                    assert forall |au: AU| #[trigger] UnifiedCacheBranchSource::branch_image_summary_aus_i(
+                        src.disk.content,
+                        roots,
+                    ).contains(au) implies false by {
+                        let s = lemma_union_set_of_sets_contains(
+                            Map::<AU, Summary>::empty().values(),
+                            au,
+                        );
+                        assert(Map::<AU, Summary>::empty().values().contains(s));
+                        assert(false);
+                    }
+                }
                 assert forall |addr: Address| #[trigger] UnifiedCacheBranchSource::branch_image_projection_addrs_i(
                     src.disk.content,
-                    src.persistent_superblock_image_i().branch_roots,
+                    roots,
                 ).contains(addr) implies false by {
-                    assert(false);
+                    assert(addresses_in_aus(Set::<AU>::empty()).contains(addr));
                 }
             }
             let init_branch_addrs = UnifiedCacheBranchSource::branch_image_projection_addrs_i(
@@ -6504,39 +6872,6 @@ pub proof fn commit_complete_refines(
     }
     assert(post.semantic_inv());
     assert(inv(post));
-}
-
-pub proof fn next_refines(
-    pre: UnifiedCacheBranchSource,
-    post: UnifiedCacheBranchSource,
-    lbl: AtomicBranchState::Label,
-)
-    requires
-        AtomicBranchState::State::next(pre.branch, post.branch, lbl),
-        inv(pre),
-    ensures
-        CrashAwareCachingDiskBranch::State::next(
-            unified_cache_branch_i(pre),
-            unified_cache_branch_i(post),
-            unified_cache_branch_i_lbl(lbl),
-        ),
-        inv(post),
-{
-    match lbl {
-        AtomicBranchState::Label::Query{..}
-        | AtomicBranchState::Label::LoadMetadata{..}
-        | AtomicBranchState::Label::Append{..}
-        | AtomicBranchState::Label::Grow{..}
-        | AtomicBranchState::Label::Split{..}
-        | AtomicBranchState::Label::Seal{..}
-        | AtomicBranchState::Label::FillAUs{..}
-        | AtomicBranchState::Label::ObservePersistedRoots{..}
-        | AtomicBranchState::Label::CommitStart{..}
-        | AtomicBranchState::Label::CommitPrepared
-        | AtomicBranchState::Label::CommitComplete => {
-            assume(false);
-        },
-    }
 }
 
 } // verus!

@@ -1,3 +1,11 @@
+/*
+Legacy implementation guide.
+
+This is the previous executable Implementation_v body, kept as reference while
+the active implementation path moves to UnifiedCacheProgramModel. It is
+commented out because the concrete and monolithic atomic modules it imports
+have been retired from the active module graph.
+
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
 
@@ -5787,6 +5795,49 @@ ensures
     // verus/source/vstd/std_specs/hash.rs says this is the best we can do right now
     assume( obeys_key_model::<Key>() );
     VecMap::new()
+}
+
+} // verus!
+*/
+
+// Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
+// SPDX-License-Identifier: BSD-2-Clause
+
+// Unified-cache implementation placeholder.
+//
+// The active code below keeps only the unified model aliases needed by
+// downstream code that still names Implementation_v. The old executable body is
+// preserved above as a guide for rebuilding the implementation against the
+// unified model.
+
+#![allow(unused_imports)]
+
+use vstd::prelude::*;
+use vstd::tokens::InstanceId;
+
+use crate::implementation::UnifiedCacheProgramModel_v::UnifiedCacheProgramModel;
+use crate::trusted::KVStoreTokenized_t::KVStoreTokenized;
+
+verus! {
+
+pub type ModelShard = KVStoreTokenized::model<UnifiedCacheProgramModel>;
+pub type RequestShard = KVStoreTokenized::requests<UnifiedCacheProgramModel>;
+pub type ReplyShard = KVStoreTokenized::replies<UnifiedCacheProgramModel>;
+pub type DiskRespShard = KVStoreTokenized::disk_responses_multiset<UnifiedCacheProgramModel>;
+pub type DiskReqShard = KVStoreTokenized::disk_requests_multiset<UnifiedCacheProgramModel>;
+
+pub struct Implementation {
+    pub instance_id: InstanceId,
+}
+
+impl Implementation {
+    pub closed spec fn wf_init(self) -> bool {
+        true
+    }
+
+    pub closed spec fn instance_id(self) -> InstanceId {
+        self.instance_id
+    }
 }
 
 } // verus!

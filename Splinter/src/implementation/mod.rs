@@ -1,6 +1,6 @@
-// Temporarily disabled while AllocationJournal_v is refactored away from
-// the old embedded LinkedJournal state shape.
-// pub mod Implementation_v;
+// The active implementation path is the unified cache system. The old concrete
+// and monolithic atomic models have been removed from the module graph.
+pub mod Implementation_v;
 pub mod MultisetMapRelation_v;
 pub mod AtomicJournalState_v;
 pub mod AtomicBranchState_v;

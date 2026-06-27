@@ -1,7 +1,7 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
 //
-// A staged replacement candidate for AtomicState_v.
+// Journal component state used by the unified shared-cache model.
 //
 // This model keeps journal and branch fields present from initialization, but
 // service readiness is represented by their internal status fields.

@@ -12,8 +12,12 @@ use crate::implementation::CachingDiskBranchRefinement_v::*;
 use crate::implementation::AllocationBranchStack_v::{AllocationBranchStack, normalize_value};
 use crate::implementation::CachingDiskBranch_v::{
     CachingDiskBranch, CachingDiskBranchMetadata, CachingDiskBranchImage,
+    branch_summary_reads_valid, completed_branch_summary_from_reads,
     empty_caching_disk_branch_image, empty_caching_disk_branch_image_wf,
+    to_branch_nodes,
 };
+use crate::implementation::CachingDisk_v::addresses_in_aus;
+use crate::allocation_layer::AllocationBranchBetree_v::summary_aus;
 use crate::implementation::CrashAwareAllocationBranchStackRefinement_v::*;
 use crate::implementation::CrashAwareAllocationBranchStack_v::*;
 use crate::implementation::CrashAwareCachingDiskBranch_v::*;
@@ -80,6 +84,74 @@ pub open spec fn persistent_image_i(
                 empty_caching_disk_branch_image()
             }
         },
+    }
+}
+
+impl CachingDiskBranch::State {
+    pub proof fn materialized_image_matches_visible_prefix(
+        self,
+        frozen: CachingDiskBranchMetadata,
+    )
+        requires
+            self.inv(),
+            CachingDiskBranch::State::next(
+                self,
+                self,
+                CachingDiskBranch::Label::FreezePrepared{image: frozen},
+            ),
+        ensures
+            ({
+                let image = CachingDiskBranchImage::materialized_from_persistent(
+                    self,
+                    frozen,
+                );
+                let full_image = CachingDiskBranchImage{
+                    persistent: self.disk.persistent,
+                    sealed_roots: frozen.sealed_roots,
+                    seq_end: frozen.seq_end,
+                };
+                &&& image.loadable()
+                &&& image.stack_wf()
+                &&& image.sealed_stack_i().wf(image.branch_summary())
+                &&& image.branch_summary()
+                    == self.visible_image_for_metadata(frozen).branch_summary()
+                &&& image.branch_summary() == full_image.branch_summary()
+                &&& summary_aus(image.branch_summary())
+                    <= summary_aus(self.interpreted_branch_summary())
+                &&& image.sealed_stack_i()
+                    == self.visible_image_for_metadata(frozen).sealed_stack_i()
+            }),
+    {
+        let full_image = CachingDiskBranchImage{
+            persistent: self.disk.persistent,
+            sealed_roots: frozen.sealed_roots,
+            seq_end: frozen.seq_end,
+        };
+        let image = CachingDiskBranchImage::materialized_from_persistent(self, frozen);
+        self.prepared_image_matches_visible_prefix(full_image);
+        assert(full_image.loadable());
+        assert(branch_summary_reads_valid(
+            frozen.sealed_roots,
+            to_branch_nodes(self.disk.persistent),
+        ));
+        assert(CachingDiskBranchImage::materialized_summary_addrs(
+            self.disk.persistent,
+            frozen,
+        ) == addresses_in_aus(summary_aus(full_image.branch_summary()))) by {
+            assert(completed_branch_summary_from_reads(
+                frozen.sealed_roots,
+                to_branch_nodes(self.disk.persistent),
+            ) == full_image.branch_summary());
+        }
+        assert(image.persistent.restrict(addresses_in_aus(summary_aus(full_image.branch_summary())))
+            == full_image.persistent.restrict(addresses_in_aus(summary_aus(full_image.branch_summary())))) by {
+            assert_maps_equal!(
+                image.persistent.restrict(addresses_in_aus(summary_aus(full_image.branch_summary()))),
+                full_image.persistent.restrict(addresses_in_aus(summary_aus(full_image.branch_summary()))),
+                addr => {}
+            );
+        }
+        CachingDiskBranchImage::same_summary_aus_preserves_sealed_stack(full_image, image);
     }
 }
 
@@ -869,7 +941,7 @@ impl CrashAwareCachingDiskBranch::State {
                     self.ephemeral->v,
                     frozen,
                 );
-                self.ephemeral->v.prepared_image_matches_visible_prefix(prepared_image);
+                self.ephemeral->v.materialized_image_matches_visible_prefix(frozen);
                 let persistent = self.persistent_image_i();
                 let persistent_meta = self.persistent.metadata();
                 if frozen.sealed_roots == persistent_meta.sealed_roots
@@ -979,7 +1051,9 @@ impl CrashAwareCachingDiskBranch::State {
                                         CachingDiskBranch::Step::freeze_prepared(),
                                     ));
                                 };
-                                self.ephemeral->v.prepared_image_matches_visible_prefix(prepared_image);
+                                self.ephemeral->v.materialized_image_matches_visible_prefix(
+                                    persistent_meta,
+                                );
                                 assert(prepared_image.sealed_stack_i()
                                     == self.persistent_image_i().sealed_stack_i());
                                 assert(prepared_image.branch_summary()

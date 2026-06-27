@@ -12,7 +12,9 @@ use vstd::assert_maps_equal;
 use vstd::multiset::Multiset;
 
 use crate::abstract_system::MsgHistory_v::{KeyedMessage, MsgHistory};
+use crate::abstract_system::StampedMap_v::LSN;
 use crate::allocation_layer::AllocationBranch_v::Summary;
+use crate::allocation_layer::AllocationBranchBetree_v::summary_aus;
 use crate::allocation_layer::MiniAllocator_v::MiniAllocator;
 use crate::betree::LinkedBranch_v::SplitArg;
 use crate::disk::GenericDisk_v::{
@@ -28,8 +30,12 @@ use crate::implementation::AbstractSuperblock_v::{
 use crate::implementation::AtomicBranchState_v::{AtomicBranchImage, AtomicBranchState};
 use crate::implementation::AtomicJournalState_v::AtomicJournalState;
 use crate::implementation::Cache_v::{addr_maps_to_req, Cache, Entry, Slot, Status};
-use crate::implementation::CrashAwareCachingDiskBranch_v::CrashAwareCachingDiskBranch;
-use crate::implementation::CrashAwareCachingDiskJournal_v::CrashAwareCachingDiskJournal;
+use crate::implementation::CrashAwareCachingDiskBranch_v::{
+    CrashAwareCachingDiskBranch, PersistentCachingDiskBranch,
+};
+use crate::implementation::CrashAwareCachingDiskJournal_v::{
+    CachingDiskJournalImage, CrashAwareCachingDiskJournal, PersistentCachingDiskJournal,
+};
 use crate::implementation::CrashAwareCachingDiskSystem_v::{
     CrashAwareCachingDiskSystem, SuperblockStore, singleton_key_seq,
     singleton_message_seq,
@@ -61,8 +67,10 @@ use crate::implementation::CachedBranch_v::{
     loaded_initialize_write_nodes,
 };
 use crate::implementation::CachingDiskBranch_v::{
-    branch_summary_reads_valid, loaded_branch_summary_agrees,
-    root_aus_up_to, root_aus_up_to_contains, sealed_summary_aus_between, to_branch_nodes,
+    branch_summary_reads_valid, loaded_branch_summary_agrees, CachingDiskBranch,
+    CachingDiskBranchImage, CachingDiskBranchMetadata,
+    empty_caching_disk_branch_image_summary_aus_empty, root_aus_up_to, root_aus_up_to_contains,
+    sealed_summary_aus_between, to_branch_nodes,
 };
 use crate::implementation::CachingDisk_v::{CachingDisk, PageStatus, addresses_in_aus};
 use crate::implementation::UnifiedCacheBranchRefinement_v as UnifiedCacheBranchRefinement;
@@ -75,7 +83,7 @@ use crate::implementation::UnifiedCacheSystem_v::{
 use crate::implementation::RecoveryState_v::RecoveryState;
 use crate::spec::AsyncDisk_t::{AsyncDisk, DiskRequest, DiskResponse, RawPage};
 use crate::spec::KeyType_t::Key;
-use crate::spec::MapSpec_t::{EphemeralState, ID, Input, Reply, Request};
+use crate::spec::MapSpec_t::{EphemeralState, ID, Input, Reply, Request, SyncReqId};
 use crate::spec::Messages_t::Message;
 use crate::trusted::ProgramModelTrait_t::{
     DiskLabel, DiskModel, ProgramLabel, ProgramModelTrait, ProgramUserOp,
@@ -673,6 +681,19 @@ pub open spec fn unified_cache_superblock_write_request_inv(
         }
 }
 
+pub open spec fn unified_cache_superblock_image_inv(
+    model: SystemModel::State<UnifiedCacheProgramModel>,
+) -> bool
+{
+    let state = model.program.state;
+    let image = parse_abstract_superblock(model.disk.content[spec_superblock_addr()]);
+    &&& unified_cache_in_flight_superblock_landed(state, model.disk) ==>
+        image == state.atomic_inflight_superblock_i()
+    &&& state.persistent_image is Some
+        && !unified_cache_in_flight_superblock_landed(state, model.disk) ==>
+        image == state.persistent_image.unwrap()
+}
+
 pub open spec fn inv(model: SystemModel::State<UnifiedCacheProgramModel>) -> bool
 {
     &&& unified_cache_component_refinement_inv(model)
@@ -691,6 +712,7 @@ pub open spec fn inv(model: SystemModel::State<UnifiedCacheProgramModel>) -> boo
     &&& unified_cache_sync_phase_inv(model)
     &&& unified_cache_non_cache_write_request_inv(model)
     &&& unified_cache_superblock_write_request_inv(model)
+    &&& unified_cache_superblock_image_inv(model)
     &&& system_model_progress_history_inv(model)
     &&& system_model_progress_unique_inv(model)
     &&& system_model_request_id_unique_inv(model)
@@ -4415,6 +4437,10 @@ pub proof fn init_refines(pre: SystemModel::State<UnifiedCacheProgramModel>)
                 crate::implementation::CachingDiskBranch_v::empty_caching_disk_branch_image_wf();
                 assert(branch_src.persistent_branch_image_i().loadable());
                 assert(branch_src.persistent_branch_image_i().stack_wf());
+                empty_caching_disk_branch_image_summary_aus_empty();
+                assert(dst.branch_owned_aus() =~= Set::<AU>::empty());
+                assert(dst.component_disjoint());
+                assert(dst.allocation_wf());
                 let branch_image_aus =
                     UnifiedCacheBranchRefinement::UnifiedCacheBranchSource::branch_image_summary_aus_i(
                         pre.disk.content,
@@ -4454,6 +4480,10 @@ pub proof fn init_refines(pre: SystemModel::State<UnifiedCacheProgramModel>)
             assert(unified_cache_outstanding_cache_reqs_disk_backed_inv(pre)) by {
                 assert(pre.program.state.outstanding_cache_reqs == Map::<ID, Address>::empty());
             }
+            empty_caching_disk_branch_image_summary_aus_empty();
+            assert(dst.branch_owned_aus() =~= Set::<AU>::empty());
+            assert(dst.component_disjoint());
+            assert(dst.allocation_wf());
             assert(inv(pre));
         },
         UnifiedCacheSystem::Config::dummy_to_use_type_params(_) => {
@@ -10200,7 +10230,12 @@ pub proof fn program_internal_branch_load_metadata_refines(
     to_aus_domain(branch_cdb_pre.disk.visible().dom());
     assert(to_aus(branch_cdb_pre.disk.visible().dom()).contains(root.au));
     assert(branch_cdb_pre.full_accessible_aus().contains(root.au));
-    assert(src.branch_owned_aus().contains(root.au));
+    let interpreted_branch_summary = branch_cdb_pre.interpreted_branch_summary();
+    branch_cdb_pre.sealed_stack_i().root_au_in_summary(interpreted_branch_summary, root);
+    assert(src.branch_owned_aus().contains(root.au)) by {
+        assert(src.branch_owned_aus() == src.branch.ephemeral->v.semantic_owned_aus());
+        assert(branch_cdb_pre.semantic_owned_aus().contains(root.au));
+    }
     assert(!CrashAwareCachingDiskSystem::State::reserved_aus().contains(root.au)) by {
         if CrashAwareCachingDiskSystem::State::reserved_aus().contains(root.au) {
             assert(src.component_owned_aus().contains(root.au));
@@ -10249,7 +10284,11 @@ pub proof fn program_internal_branch_load_metadata_refines(
         to_aus_domain(branch_cdb_pre.disk.visible().dom());
         assert(to_aus(branch_cdb_pre.disk.visible().dom()).contains(aux.au));
         assert(branch_cdb_pre.full_accessible_aus().contains(aux.au));
-        assert(src.branch_owned_aus().contains(aux.au));
+        branch_cdb_pre.interpreted_index_root_aux_in_summary(root, aux);
+        assert(src.branch_owned_aus().contains(aux.au)) by {
+            assert(src.branch_owned_aus() == src.branch.ephemeral->v.semantic_owned_aus());
+            assert(branch_cdb_pre.semantic_owned_aus().contains(aux.au));
+        }
         assert(!CrashAwareCachingDiskSystem::State::reserved_aus().contains(aux.au)) by {
             if CrashAwareCachingDiskSystem::State::reserved_aus().contains(aux.au) {
                 assert(src.component_owned_aus().contains(aux.au));
@@ -10355,7 +10394,8 @@ pub proof fn program_internal_branch_load_metadata_refines(
     }
     assert(discovered_aus <= src.branch_owned_aus()) by {
         assert(src.branch.ephemeral is Known);
-        assert(src.branch_owned_aus() == src.branch.ephemeral->v.full_accessible_aus());
+        assert(discovered_aus <= src.branch.ephemeral->v.semantic_owned_aus());
+        assert(src.branch_owned_aus() == src.branch.ephemeral->v.semantic_owned_aus());
     }
     assert(CrashAwareCachingDiskSystem::State::map_load_metadata(
         src,
@@ -13269,7 +13309,746 @@ pub proof fn crash_refines(
         ),
         inv(post),
 {
-    assume(false);
+    reveal(SystemModel::State::next_by);
+    assert(SystemModel::State::crash(pre, post, lbl, new_program, new_disk));
+    reveal(SystemModel::State::crash);
+    assert(lbl is Crash);
+    assert(post.program == new_program);
+    assert(post.disk == new_disk);
+    assert(post.requests == Multiset::<Request>::empty());
+    assert(post.replies == Multiset::<Reply>::empty());
+    assert(post.sync_requests == Multiset::<SyncReqId>::empty());
+    assert(UnifiedCacheProgramModel::init(post.program));
+    assert(UnifiedCacheSystem::State::init(post.program.state));
+    assert(DiskModel::next(pre.disk, post.disk, DiskLabel::Crash{}));
+
+    reveal(AsyncDisk::State::next);
+    reveal(AsyncDisk::State::next_by);
+    let disk_step = choose |step: AsyncDisk::Step|
+        AsyncDisk::State::next_by(pre.disk, post.disk, DiskLabel::Crash{}, step);
+    match disk_step {
+        AsyncDisk::Step::crash() => {
+            assert(AsyncDisk::State::crash(pre.disk, post.disk, DiskLabel::Crash{})) by {
+                reveal(AsyncDisk::State::crash);
+            }
+        },
+        _ => {
+            assert(false);
+        },
+    }
+    assert(post.disk.content == pre.disk.content);
+    assert(post.disk.requests == Map::<ID, DiskRequest>::empty());
+    assert(post.disk.responses == Map::<ID, DiskResponse>::empty());
+    crate::spec::AsyncDisk_t::inv_next(pre.disk, post.disk, DiskLabel::Crash{});
+
+    reveal(UnifiedCacheSystem::State::init);
+    reveal(UnifiedCacheSystem::State::init_by);
+    let config = choose |config: UnifiedCacheSystem::Config|
+        UnifiedCacheSystem::State::init_by(post.program.state, config);
+    match config {
+        UnifiedCacheSystem::Config::initialize(cache_slots, free_aus) => {
+            assert(UnifiedCacheSystem::State::initialize(
+                post.program.state,
+                cache_slots,
+                free_aus,
+            )) by {
+                reveal(UnifiedCacheSystem::State::initialize);
+            }
+            reveal(UnifiedCacheSystem::State::initialize);
+        },
+        UnifiedCacheSystem::Config::dummy_to_use_type_params(_) => {
+            assert(false);
+        },
+    }
+
+    let src = unified_cache_system_i(pre);
+    let dst = unified_cache_system_i(post);
+    let target_lbl = unified_cache_system_i_lbl(pre, post, lbl);
+    let keep_in_flight = src.superblockstore.landed;
+    assert(target_lbl == CrashAwareCachingDiskSystem::Label::Crash);
+
+    assert(src.inv());
+    assert(keep_in_flight == src.superblockstore.landed);
+    assert(src.superblockstore.inv());
+    assert(dst.superblockstore.in_flight is None);
+    assert(!dst.superblockstore.landed);
+    assert(SuperblockStore::State::next(
+        src.superblockstore,
+        dst.superblockstore,
+        SuperblockStore::Label::Crash,
+    )) by {
+        assert(SuperblockStore::State::crash(
+            src.superblockstore,
+            dst.superblockstore,
+            SuperblockStore::Label::Crash,
+        )) by {
+            reveal(SuperblockStore::State::crash);
+        }
+        assert(SuperblockStore::State::next_by(
+            src.superblockstore,
+            dst.superblockstore,
+            SuperblockStore::Label::Crash,
+            SuperblockStore::Step::crash(),
+        )) by {
+            reveal(SuperblockStore::State::next_by);
+        }
+        reveal(SuperblockStore::State::next);
+    }
+
+    let pre_state = pre.program.state;
+    let post_state = post.program.state;
+    let journal_pre = UnifiedCacheJournalRefinement::unified_cache_journal_source(pre);
+    let journal_post = UnifiedCacheJournalRefinement::unified_cache_journal_source(post);
+    let branch_pre = UnifiedCacheBranchRefinement::unified_cache_branch_source(pre);
+    let branch_post = UnifiedCacheBranchRefinement::unified_cache_branch_source(post);
+    let journal_crash_image = if keep_in_flight {
+        CachingDiskJournalImage::materialized_from_persistent(
+            src.journal.ephemeral->v,
+            src.journal.frozen.unwrap(),
+        )
+    } else if src.journal.ephemeral is Unknown {
+        src.journal.persistent->image
+    } else {
+        CachingDiskJournalImage::materialized_from_persistent(
+            src.journal.ephemeral->v,
+            src.journal.persistent.metadata(),
+        )
+    };
+    let branch_crash_image = if keep_in_flight && src.branch.ephemeral is Known {
+        CachingDiskBranchImage::materialized_from_persistent(
+            src.branch.ephemeral->v,
+            src.branch.frozen.unwrap(),
+        )
+    } else if src.branch.ephemeral is Unknown {
+        src.branch.persistent->image
+    } else {
+        CachingDiskBranchImage::materialized_from_persistent(
+            src.branch.ephemeral->v,
+            src.branch.persistent.metadata(),
+        )
+    };
+
+    assert(src.journal == journal_pre.i());
+    assert(dst.journal == journal_post.i());
+    assert(src.branch == branch_pre.i());
+    assert(dst.branch == branch_post.i());
+    assert(journal_post.persistent_image is None);
+    assert(branch_post.persistent_image is None);
+    assert(journal_post.disk.content == journal_pre.disk.content);
+    assert(branch_post.disk.content == branch_pre.disk.content);
+
+    assert(dst.journal.persistent == PersistentCachingDiskJournal::Image{
+        image: journal_crash_image,
+    }) by {
+        if keep_in_flight {
+            assert(unified_cache_superblock_image_inv(pre));
+            assert(parse_abstract_superblock(pre.disk.content[spec_superblock_addr()])
+                == pre_state.atomic_inflight_superblock_i());
+            assert(journal_post.persistent_superblock_image_i()
+                == pre_state.atomic_inflight_superblock_i()) by {
+                assert(post.disk.content == pre.disk.content);
+                assert(journal_post.persistent_image is None);
+                assert(UnifiedCacheJournalRefinement::async_disk_superblock_raw_i(post.disk.content)
+                    == post.disk.content[spec_superblock_addr()]);
+            }
+            assert(journal_pre.in_flight_image is Some);
+            assert(journal_pre.in_flight_image.unwrap()
+                == pre_state.atomic_inflight_superblock_i());
+            assert(pre_state.atomic_inflight_superblock_i().wf()) by {
+                assert(journal_pre.in_flight_image.unwrap().wf());
+            }
+            assert(journal_pre.superblock_loaded());
+            assert(journal_pre.journal.ready());
+            assert(journal_pre.i().refinement_inv()) by {
+                assert(journal_pre.semantic_inv());
+            }
+            assert(journal_post.journal == AtomicJournalState::State::empty());
+            journal_pre.post_crash_persistent_image_matches_materialized(
+                journal_post,
+                pre_state.atomic_inflight_superblock_i(),
+                src.journal.frozen.unwrap(),
+            );
+            assert(journal_post.persistent_journal_image_i() == journal_crash_image);
+        } else if src.journal.ephemeral is Unknown {
+            assert(!journal_pre.superblock_loaded());
+            assert(journal_pre.persistent_superblock_image_i()
+                == journal_post.persistent_superblock_image_i()) by {
+                assert(post.disk.content == pre.disk.content);
+                assert(UnifiedCacheJournalRefinement::async_disk_superblock_raw_i(post.disk.content)
+                    == UnifiedCacheJournalRefinement::async_disk_superblock_raw_i(pre.disk.content));
+            }
+            assert(journal_post.persistent_journal_image_i()
+                == journal_pre.persistent_journal_image_i()) by {
+                let image = journal_pre.persistent_superblock_image_i();
+                assert(journal_post.persistent_superblock_image_i() == image);
+                assert_maps_equal!(
+                    journal_post.persistent_journal_image_i().persistent,
+                    journal_pre.persistent_journal_image_i().persistent,
+                    addr => {}
+                );
+            }
+        } else {
+            assert(journal_pre.superblock_loaded());
+            assert(unified_cache_superblock_image_inv(pre));
+            assert(journal_post.persistent_superblock_image_i()
+                == journal_pre.persistent_superblock_image_i()) by {
+                assert(post.disk.content == pre.disk.content);
+                assert(parse_abstract_superblock(pre.disk.content[spec_superblock_addr()])
+                    == pre_state.persistent_image.unwrap());
+                assert(journal_pre.persistent_image == pre_state.persistent_image);
+                assert(journal_post.persistent_image is None);
+                assert(UnifiedCacheJournalRefinement::async_disk_superblock_raw_i(post.disk.content)
+                    == post.disk.content[spec_superblock_addr()]);
+            }
+            assert(journal_pre.persistent_superblock_image_i().wf());
+            assert(journal_pre.i().refinement_inv()) by {
+                assert(journal_pre.semantic_inv());
+            }
+            assert(journal_post.journal == AtomicJournalState::State::empty());
+            if journal_pre.journal.ready() {
+                journal_pre.post_crash_persistent_image_matches_materialized(
+                    journal_post,
+                    journal_pre.persistent_superblock_image_i(),
+                    src.journal.persistent.metadata(),
+                );
+            } else {
+                let image = journal_pre.persistent_superblock_image_i();
+                assert(journal_pre.journal.journal.status is None);
+                assert(src.journal.persistent.metadata()
+                    == journal_pre.persistent_journal_image_i().metadata());
+                journal_pre.unloaded_post_crash_persistent_image_matches_materialized(
+                    journal_post,
+                    image,
+                    src.journal.persistent.metadata(),
+                );
+            }
+            assert(journal_post.persistent_journal_image_i() == journal_crash_image);
+        }
+    }
+
+    assert(CrashAwareCachingDiskJournal::State::next(
+        src.journal,
+        dst.journal,
+        CrashAwareCachingDiskJournal::Label::Crash{keep_in_flight},
+    )) by {
+        assert(CrashAwareCachingDiskJournal::State::crash(
+            src.journal,
+            dst.journal,
+            CrashAwareCachingDiskJournal::Label::Crash{keep_in_flight},
+        )) by {
+            reveal(CrashAwareCachingDiskJournal::State::crash);
+        }
+        assert(CrashAwareCachingDiskJournal::State::next_by(
+            src.journal,
+            dst.journal,
+            CrashAwareCachingDiskJournal::Label::Crash{keep_in_flight},
+            CrashAwareCachingDiskJournal::Step::crash(),
+        )) by {
+            reveal(CrashAwareCachingDiskJournal::State::next_by);
+        }
+        reveal(CrashAwareCachingDiskJournal::State::next);
+    }
+
+    assert({
+        &&& dst.branch.persistent == PersistentCachingDiskBranch::Image{
+            image: branch_crash_image,
+        }
+        &&& branch_post.persistent_branch_image_i().loadable()
+        &&& branch_post.persistent_branch_image_i().stack_wf()
+    }) by {
+        if keep_in_flight {
+            assert(unified_cache_superblock_image_inv(pre));
+            assert(parse_abstract_superblock(pre.disk.content[spec_superblock_addr()])
+                == pre_state.atomic_inflight_superblock_i());
+            assert(branch_post.persistent_superblock_image_i()
+                == pre_state.atomic_inflight_superblock_i()) by {
+                assert(post.disk.content == pre.disk.content);
+                assert(branch_post.persistent_image is None);
+                assert(UnifiedCacheBranchRefinement::async_disk_superblock_raw_i(post.disk.content)
+                    == post.disk.content[spec_superblock_addr()]);
+            }
+            assert(branch_pre.in_flight_image is Some);
+            assert(branch_pre.in_flight_image.unwrap()
+                == pre_state.atomic_inflight_superblock_i());
+            assert(pre_state.atomic_inflight_superblock_i().wf()) by {
+                assert(branch_pre.in_flight_image.unwrap().wf());
+            }
+            assert(branch_pre.superblock_loaded());
+            assert(branch_pre.i().refinement_inv()) by {
+                assert(branch_pre.semantic_inv());
+            }
+            assert(branch_pre.branch.metadata_loaded()) by {
+                assert(src.branch.prepared);
+                assert(src.branch.frozen is Some);
+                assert(branch_pre.branch.prepared);
+                assert(pre_state.sync_phase is SuperblockWriteIssued);
+                assert(pre_state.recovery_state is RecoveryComplete) by {
+                    assert(unified_cache_recovery_metadata_inv(pre));
+                    if !(pre_state.recovery_state is RecoveryComplete) {
+                        assert(pre_state.sync_phase is None);
+                        assert(false);
+                    }
+                }
+                assert(unified_cache_ready_inv(pre));
+                assert(pre_state.branch.metadata_loaded());
+            }
+            let image = pre_state.atomic_inflight_superblock_i();
+            let frozen = src.branch.frozen.unwrap();
+            assert(frozen.sealed_roots == image.branch_roots) by {
+                assert(src.branch.frozen == branch_pre.frozen_branch_metadata_i());
+                assert(branch_pre.branch.in_flight is Some);
+                assert(branch_pre.branch.in_flight.unwrap().sealed_roots == image.branch_roots);
+            }
+            assert(frozen.seq_end == image.branch_seq_end) by {
+                assert(src.branch.frozen == branch_pre.frozen_branch_metadata_i());
+                assert(branch_pre.branch.in_flight is Some);
+                assert(branch_pre.branch.in_flight.unwrap().seq_end == image.branch_seq_end);
+            }
+            assert(CachingDiskBranch::State::next(
+                branch_pre.branch_caching_disk_state_i(),
+                branch_pre.branch_caching_disk_state_i(),
+                CachingDiskBranch::Label::FreezePrepared{image: frozen},
+            )) by {
+                assert(frozen.sealed_roots.len()
+                    <= branch_pre.branch_caching_disk_state_i().persisted_root_count) by {
+                    assert(src.branch.prepared);
+                    assert(src.branch.inv());
+                    assert(src.branch.ephemeral is Known);
+                    assert(src.branch.ephemeral->v == branch_pre.branch_caching_disk_state_i());
+                }
+                assert(branch_pre.branch_caching_disk_state_i().sealed_roots.subrange(
+                    0,
+                    frozen.sealed_roots.len() as int,
+                ) == frozen.sealed_roots) by {
+                    assert(src.branch.inv());
+                }
+                assert(CachingDiskBranch::State::freeze_prepared(
+                    branch_pre.branch_caching_disk_state_i(),
+                    branch_pre.branch_caching_disk_state_i(),
+                    CachingDiskBranch::Label::FreezePrepared{image: frozen},
+                )) by {
+                    reveal(CachingDiskBranch::State::freeze_prepared);
+                }
+                assert(CachingDiskBranch::State::next_by(
+                    branch_pre.branch_caching_disk_state_i(),
+                    branch_pre.branch_caching_disk_state_i(),
+                    CachingDiskBranch::Label::FreezePrepared{image: frozen},
+                    CachingDiskBranch::Step::freeze_prepared(),
+                )) by {
+                    reveal(CachingDiskBranch::State::next_by);
+                }
+                reveal(CachingDiskBranch::State::next);
+            }
+            assert(branch_post.branch == AtomicBranchState::State::empty());
+            branch_pre.post_crash_persistent_image_matches_materialized(
+                branch_post,
+                image,
+                frozen,
+            );
+            assert(branch_post.persistent_branch_image_i() == branch_crash_image);
+        } else if src.branch.ephemeral is Unknown {
+            assert(!branch_pre.superblock_loaded());
+            assert(branch_pre.persistent_superblock_image_i()
+                == branch_post.persistent_superblock_image_i()) by {
+                assert(post.disk.content == pre.disk.content);
+                assert(UnifiedCacheBranchRefinement::async_disk_superblock_raw_i(post.disk.content)
+                    == UnifiedCacheBranchRefinement::async_disk_superblock_raw_i(pre.disk.content));
+            }
+            assert(branch_post.persistent_branch_image_i()
+                == branch_pre.persistent_branch_image_i()) by {
+                let image = branch_pre.persistent_superblock_image_i();
+                assert(branch_post.persistent_superblock_image_i() == image);
+                assert_maps_equal!(
+                    branch_post.persistent_branch_image_i().persistent,
+                    branch_pre.persistent_branch_image_i().persistent,
+                    addr => {}
+                );
+            }
+            assert(branch_post.persistent_branch_image_i().loadable()) by {
+                assert(branch_pre.persistent_image is None);
+                assert(pre_state.persistent_image is None);
+                assert(pre_state.recovery_state is Begin
+                    || pre_state.recovery_state is AwaitingSuperblock) by {
+                    assert(unified_cache_recovery_metadata_inv(pre));
+                    match pre_state.recovery_state {
+                        RecoveryState::Begin => {},
+                        RecoveryState::AwaitingSuperblock => {},
+                        RecoveryState::SuperblockAvailable => { assert(false); },
+                        RecoveryState::MetadataLoadComplete => { assert(false); },
+                        RecoveryState::RecoveryComplete => {
+                            assert(unified_cache_ready_inv(pre));
+                            assert(pre_state.persistent_image is Some);
+                            assert(false);
+                        },
+                    }
+                }
+                assert(unified_cache_recovery_superblock_io_inv(pre));
+            }
+            assert(branch_post.persistent_branch_image_i().stack_wf()) by {
+                assert(branch_pre.persistent_image is None);
+                assert(pre_state.persistent_image is None);
+                assert(pre_state.recovery_state is Begin
+                    || pre_state.recovery_state is AwaitingSuperblock) by {
+                    assert(unified_cache_recovery_metadata_inv(pre));
+                    match pre_state.recovery_state {
+                        RecoveryState::Begin => {},
+                        RecoveryState::AwaitingSuperblock => {},
+                        RecoveryState::SuperblockAvailable => { assert(false); },
+                        RecoveryState::MetadataLoadComplete => { assert(false); },
+                        RecoveryState::RecoveryComplete => {
+                            assert(unified_cache_ready_inv(pre));
+                            assert(pre_state.persistent_image is Some);
+                            assert(false);
+                        },
+                    }
+                }
+                assert(unified_cache_recovery_superblock_io_inv(pre));
+            }
+        } else {
+            assert(branch_pre.superblock_loaded());
+            assert(unified_cache_superblock_image_inv(pre));
+            assert(branch_post.persistent_superblock_image_i()
+                == branch_pre.persistent_superblock_image_i()) by {
+                assert(post.disk.content == pre.disk.content);
+                assert(parse_abstract_superblock(pre.disk.content[spec_superblock_addr()])
+                    == pre_state.persistent_image.unwrap());
+                assert(branch_pre.persistent_image == pre_state.persistent_image);
+                assert(branch_post.persistent_image is None);
+                assert(UnifiedCacheBranchRefinement::async_disk_superblock_raw_i(post.disk.content)
+                    == post.disk.content[spec_superblock_addr()]);
+            }
+            assert(branch_pre.persistent_superblock_image_i().wf());
+            assert(branch_pre.i().refinement_inv()) by {
+                assert(branch_pre.semantic_inv());
+            }
+            let image = branch_pre.persistent_superblock_image_i();
+            let frozen = src.branch.persistent.metadata();
+            assert(frozen.sealed_roots == image.branch_roots) by {
+                assert(src.branch.persistent == branch_pre.persistent_branch_i());
+                assert(branch_pre.persistent_branch_i() == PersistentCachingDiskBranch::Metadata{
+                    meta: branch_pre.persistent_branch_image_i().metadata(),
+                });
+            }
+            assert(frozen.seq_end == image.branch_seq_end) by {
+                assert(src.branch.persistent == branch_pre.persistent_branch_i());
+                assert(branch_pre.persistent_branch_i() == PersistentCachingDiskBranch::Metadata{
+                    meta: branch_pre.persistent_branch_image_i().metadata(),
+                });
+            }
+            assert(CachingDiskBranch::State::next(
+                branch_pre.branch_caching_disk_state_i(),
+                branch_pre.branch_caching_disk_state_i(),
+                CachingDiskBranch::Label::FreezePrepared{image: frozen},
+            )) by {
+                assert(frozen.sealed_roots.len()
+                    <= branch_pre.branch_caching_disk_state_i().persisted_root_count) by {
+                    assert(branch_pre.branch.wf());
+                    assert(branch_pre.branch.persistent_image.sealed_roots == image.branch_roots);
+                }
+                assert(branch_pre.branch_caching_disk_state_i().sealed_roots.subrange(
+                    0,
+                    frozen.sealed_roots.len() as int,
+                ) == frozen.sealed_roots) by {
+                    assert(branch_pre.branch.wf());
+                    assert(branch_pre.branch.persistent_image.sealed_roots == image.branch_roots);
+                    assert(branch_pre.branch.image.sealed_roots.take(
+                        branch_pre.branch.persistent_image.sealed_roots.len() as int,
+                    ) == branch_pre.branch.persistent_image.sealed_roots);
+                }
+                assert(CachingDiskBranch::State::freeze_prepared(
+                    branch_pre.branch_caching_disk_state_i(),
+                    branch_pre.branch_caching_disk_state_i(),
+                    CachingDiskBranch::Label::FreezePrepared{image: frozen},
+                )) by {
+                    reveal(CachingDiskBranch::State::freeze_prepared);
+                }
+                assert(CachingDiskBranch::State::next_by(
+                    branch_pre.branch_caching_disk_state_i(),
+                    branch_pre.branch_caching_disk_state_i(),
+                    CachingDiskBranch::Label::FreezePrepared{image: frozen},
+                    CachingDiskBranch::Step::freeze_prepared(),
+                )) by {
+                    reveal(CachingDiskBranch::State::next_by);
+                }
+                reveal(CachingDiskBranch::State::next);
+            }
+            assert(branch_post.branch == AtomicBranchState::State::empty());
+            branch_pre.post_crash_persistent_image_matches_materialized(
+                branch_post,
+                image,
+                frozen,
+            );
+            assert(branch_post.persistent_branch_image_i() == branch_crash_image);
+        }
+    }
+
+    assert(CrashAwareCachingDiskBranch::State::next(
+        src.branch,
+        dst.branch,
+        CrashAwareCachingDiskBranch::Label::Crash{keep_in_flight},
+    )) by {
+        assert(CrashAwareCachingDiskBranch::State::crash(
+            src.branch,
+            dst.branch,
+            CrashAwareCachingDiskBranch::Label::Crash{keep_in_flight},
+        )) by {
+            reveal(CrashAwareCachingDiskBranch::State::crash);
+        }
+        assert(CrashAwareCachingDiskBranch::State::next_by(
+            src.branch,
+            dst.branch,
+            CrashAwareCachingDiskBranch::Label::Crash{keep_in_flight},
+            CrashAwareCachingDiskBranch::Step::crash(),
+        )) by {
+            reveal(CrashAwareCachingDiskBranch::State::next_by);
+        }
+        reveal(CrashAwareCachingDiskBranch::State::next);
+    }
+    src.journal.next_refines(
+        dst.journal,
+        CrashAwareCachingDiskJournal::Label::Crash{keep_in_flight},
+    );
+    src.branch.next_refines(
+        dst.branch,
+        CrashAwareCachingDiskBranch::Label::Crash{keep_in_flight},
+    );
+
+    match config {
+        UnifiedCacheSystem::Config::initialize(cache_slots, free_aus) => {
+            assert(Cache::State::initialize(post_state.cache, cache_slots)) by {
+                reveal(Cache::State::initialize);
+            }
+            Cache::State::initialize_inductive(post_state.cache, cache_slots);
+            assert(post_state.cache.inv());
+            assert(journal_post.cache.inv());
+            assert(branch_post.cache.inv());
+        },
+        UnifiedCacheSystem::Config::dummy_to_use_type_params(_) => {
+            assert(false);
+        },
+    }
+    assert(UnifiedCacheJournalRefinement::inv(journal_post)) by {
+        assert(journal_post.inv()) by {
+            assert(journal_post.journal.wf());
+            assert(UnifiedCacheJournalRefinement::async_disk_superblock_page_wf(
+                post.disk.content,
+            ));
+            assert(journal_post.persistent_superblock_image_i().wf());
+            assert(journal_post.cache.inv());
+            assert(journal_post.disk.inv());
+            assert(journal_post.journal_caching_disk_i().inv());
+            assert(!journal_post.superblock_loaded());
+            assert(journal_post.journal == AtomicJournalState::State::empty());
+            assert(journal_post.in_flight is None);
+            assert(journal_post.in_flight_image is None);
+        }
+        assert(journal_post.semantic_inv()) by {
+            assert(journal_post.i() == dst.journal);
+            assert(dst.journal.refinement_inv());
+        }
+    }
+    assert(UnifiedCacheBranchRefinement::inv(branch_post)) by {
+        assert(branch_post.inv()) by {
+            assert(branch_post.branch.wf()) by {
+                assert(branch_post.branch == AtomicBranchState::State::empty());
+                assert(branch_post.branch.image.sealed_roots == Seq::<Address>::empty());
+                assert(branch_post.branch.persistent_image.sealed_roots == Seq::<Address>::empty());
+                assert(branch_post.branch.image.sealed_roots.take(
+                    branch_post.branch.persistent_image.sealed_roots.len() as int,
+                ) == branch_post.branch.persistent_image.sealed_roots);
+            }
+            assert(UnifiedCacheBranchRefinement::async_disk_superblock_page_wf(
+                post.disk.content,
+            ));
+            assert(branch_post.persistent_superblock_image_i().wf());
+            assert(branch_post.cache.inv());
+            assert(branch_post.disk.inv());
+            assert(branch_post.branch_caching_disk_i().inv());
+            assert(!branch_post.superblock_loaded());
+            assert(branch_post.branch == AtomicBranchState::State::empty());
+            assert(branch_post.in_flight is None);
+            assert(branch_post.in_flight_image is None);
+        }
+        assert(branch_post.semantic_inv()) by {
+            assert(branch_post.i() == dst.branch);
+            assert(dst.branch.refinement_inv());
+        }
+    }
+    assert(unified_cache_recovery_superblock_io_inv(post)) by {
+        assert(post_state.recovery_state is Begin);
+        assert(post_state.persistent_image is None);
+        assert(post_state.sync_phase is None);
+        assert(post_state.sync_req_map == Map::<SyncReqId, nat>::empty());
+        assert(post_state.outstanding_cache_reqs == Map::<ID, Address>::empty());
+        assert(post.disk.requests == Map::<ID, DiskRequest>::empty());
+        assert(post.disk.responses == Map::<ID, DiskResponse>::empty());
+        assert(post_state.cache.lookup_map == Map::<Address, Slot>::empty()) by {
+            match config {
+                UnifiedCacheSystem::Config::initialize(cache_slots, free_aus) => {
+                    assert(Cache::State::initialize(post_state.cache, cache_slots)) by {
+                        reveal(Cache::State::initialize);
+                    }
+                },
+                UnifiedCacheSystem::Config::dummy_to_use_type_params(_) => {
+                    assert(false);
+                },
+            }
+        }
+        assert(journal_post.journal_caching_disk_i().cache
+            == Map::<Address, RawPage>::empty()) by {
+            assert_maps_equal!(
+                journal_post.journal_caching_disk_i().cache,
+                Map::<Address, RawPage>::empty(),
+                addr => {
+                    if journal_post.journal_caching_disk_i().cache.contains_key(addr) {
+                        assert(filled_cache_pages(post_state.cache).contains_key(addr));
+                        assert(cache_filled_addr(post_state.cache, addr));
+                        assert(post_state.cache.lookup_map.contains_key(addr));
+                        assert(false);
+                    }
+                }
+            );
+        }
+        assert(journal_post.journal_caching_disk_i().status
+            == Map::<Address, PageStatus>::empty()) by {
+            assert_maps_equal!(
+                journal_post.journal_caching_disk_i().status,
+                Map::<Address, PageStatus>::empty(),
+                addr => {
+                    if journal_post.journal_caching_disk_i().status.contains_key(addr) {
+                        assert(filled_cache_status(post_state.cache).contains_key(addr));
+                        assert(cache_filled_addr(post_state.cache, addr));
+                        assert(post_state.cache.lookup_map.contains_key(addr));
+                        assert(false);
+                    }
+                }
+            );
+        }
+        assert(branch_post.branch_caching_disk_i().cache
+            == Map::<Address, RawPage>::empty()) by {
+            assert_maps_equal!(
+                branch_post.branch_caching_disk_i().cache,
+                Map::<Address, RawPage>::empty(),
+                addr => {
+                    if branch_post.branch_caching_disk_i().cache.contains_key(addr) {
+                        assert(filled_cache_pages(post_state.cache).contains_key(addr));
+                        assert(cache_filled_addr(post_state.cache, addr));
+                        assert(post_state.cache.lookup_map.contains_key(addr));
+                        assert(false);
+                    }
+                }
+            );
+        }
+        assert(branch_post.branch_caching_disk_i().status
+            == Map::<Address, PageStatus>::empty()) by {
+            assert_maps_equal!(
+                branch_post.branch_caching_disk_i().status,
+                Map::<Address, PageStatus>::empty(),
+                addr => {
+                    if branch_post.branch_caching_disk_i().status.contains_key(addr) {
+                        assert(filled_cache_status(post_state.cache).contains_key(addr));
+                        assert(cache_filled_addr(post_state.cache, addr));
+                        assert(post_state.cache.lookup_map.contains_key(addr));
+                        assert(false);
+                    }
+                }
+            );
+        }
+        let branch_image_aus =
+            UnifiedCacheBranchRefinement::UnifiedCacheBranchSource::branch_image_summary_aus_i(
+                post.disk.content,
+                branch_post.persistent_superblock_image_i().branch_roots,
+            );
+        assert(project_cache_pages(post_state.cache, branch_image_aus)
+            == Map::<Address, RawPage>::empty()) by {
+            assert_maps_equal!(
+                project_cache_pages(post_state.cache, branch_image_aus),
+                Map::<Address, RawPage>::empty(),
+                addr => {
+                    if project_cache_pages(post_state.cache, branch_image_aus).contains_key(addr) {
+                        assert(filled_cache_pages(post_state.cache).contains_key(addr));
+                        assert(cache_filled_addr(post_state.cache, addr));
+                        assert(post_state.cache.lookup_map.contains_key(addr));
+                        assert(false);
+                    }
+                }
+            );
+        }
+        assert(project_cache_status(post_state.cache, branch_image_aus)
+            == Map::<Address, PageStatus>::empty()) by {
+            assert_maps_equal!(
+                project_cache_status(post_state.cache, branch_image_aus),
+                Map::<Address, PageStatus>::empty(),
+                addr => {
+                    if project_cache_status(post_state.cache, branch_image_aus).contains_key(addr) {
+                        assert(filled_cache_status(post_state.cache).contains_key(addr));
+                        assert(cache_filled_addr(post_state.cache, addr));
+                        assert(post_state.cache.lookup_map.contains_key(addr));
+                        assert(false);
+                    }
+                }
+            );
+        }
+        assert(branch_post.persistent_branch_image_i().loadable());
+        assert(branch_post.persistent_branch_image_i().stack_wf());
+    }
+
+    assert(dst.free_aus == post.program.state.free_aus);
+    assert(CrashAwareCachingDiskSystem::State::reserved_aus()
+        == UnifiedCacheSystem::State::reserved_aus());
+    assert(dst.free_aus - CrashAwareCachingDiskSystem::State::reserved_aus()
+        =~= dst.free_aus) by {
+        assert(post.program.state.free_aus.disjoint(UnifiedCacheSystem::State::reserved_aus()));
+    }
+    assert(dst.progress == crate::spec::MapSpec_t::AsyncMap::State::init_ephemeral_state()) by {
+        assert(dst.progress == unified_cache_progress_i(
+            Multiset::<Request>::empty(),
+            Multiset::<Reply>::empty(),
+        ));
+        assert(system_multiset_to_set_i(Multiset::<Request>::empty()) == Set::<Request>::empty()) by {
+            assert forall |req: Request| #[trigger] system_multiset_to_set_i(
+                Multiset::<Request>::empty(),
+            ).contains(req) <==> Set::<Request>::empty().contains(req) by {}
+        }
+        assert(system_multiset_to_set_i(Multiset::<Reply>::empty()) == Set::<Reply>::empty()) by {
+            assert forall |reply: Reply| #[trigger] system_multiset_to_set_i(
+                Multiset::<Reply>::empty(),
+            ).contains(reply) <==> Set::<Reply>::empty().contains(reply) by {}
+        }
+    }
+    assert(dst.sync_reqs == Map::<SyncReqId, LSN>::empty());
+
+    assert(CrashAwareCachingDiskSystem::State::crash(
+        src,
+        dst,
+        target_lbl,
+        dst.journal,
+        dst.branch,
+        dst.superblockstore,
+        dst.free_aus,
+        keep_in_flight,
+    )) by {
+        reveal(CrashAwareCachingDiskSystem::State::crash);
+    }
+    assert(CrashAwareCachingDiskSystem::State::next_by(
+        src,
+        dst,
+        target_lbl,
+        CrashAwareCachingDiskSystem::Step::crash(
+            dst.journal,
+            dst.branch,
+            dst.superblockstore,
+            dst.free_aus,
+            keep_in_flight,
+        ),
+    )) by {
+        reveal(CrashAwareCachingDiskSystem::State::next_by);
+    }
+    reveal(CrashAwareCachingDiskSystem::State::next);
+    assert(CrashAwareCachingDiskSystem::State::next(src, dst, target_lbl));
+    system_i_inv_next(pre, post, target_lbl);
+    assert(unified_cache_system_i(post).inv());
+    assert(inv(post));
 }
 
 pub proof fn noop_refines(
@@ -13293,15 +14072,31 @@ pub proof fn noop_refines(
         ),
         inv(post),
 {
-    assume(false);
+    reveal(SystemModel::State::next_by);
+    assert(SystemModel::State::noop(pre, post, lbl));
+    reveal(SystemModel::State::noop);
+    assert(lbl is Noop);
+    assert(post == pre);
+    assert(unified_cache_system_i_lbl(pre, post, lbl) == CrashAwareCachingDiskSystem::Label::Noop);
+    assert(unified_cache_system_i(post) == unified_cache_system_i(pre));
+    assert(unified_cache_system_i(pre).inv());
+    system_i_noop_next(pre, post, lbl);
+    assert(inv(post));
 }
 
 pub proof fn dummy_to_use_type_params_refines(
     pre: SystemModel::State<UnifiedCacheProgramModel>,
     post: SystemModel::State<UnifiedCacheProgramModel>,
     lbl: SystemModel::Label,
+    dummy: SystemModel::State<UnifiedCacheProgramModel>,
 )
     requires
+        SystemModel::State::next_by(
+            pre,
+            post,
+            lbl,
+            SystemModel::Step::dummy_to_use_type_params(dummy),
+        ),
         inv(pre),
     ensures
         CrashAwareCachingDiskSystem::State::next(
@@ -13311,7 +14106,8 @@ pub proof fn dummy_to_use_type_params_refines(
         ),
         inv(post),
 {
-    assume(false);
+    reveal(SystemModel::State::next_by);
+    assert(false);
 }
 
 pub proof fn next_refines(
@@ -13374,8 +14170,8 @@ pub proof fn next_refines(
         SystemModel::Step::noop() => {
             noop_refines(pre, post, lbl);
         },
-        SystemModel::Step::dummy_to_use_type_params(_) => {
-            dummy_to_use_type_params_refines(pre, post, lbl);
+        SystemModel::Step::dummy_to_use_type_params(dummy) => {
+            dummy_to_use_type_params_refines(pre, post, lbl, dummy);
         },
     }
 }

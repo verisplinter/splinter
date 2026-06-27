@@ -1,7 +1,7 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
 //
-// State-machine refactor for the staged AnotherAtomicState model.
+// State-machine model for the unified shared-cache system.
 
 #![allow(unused_imports)]
 #![allow(unused_variables)]

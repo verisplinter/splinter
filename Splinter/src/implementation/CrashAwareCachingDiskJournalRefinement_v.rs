@@ -180,6 +180,146 @@ impl CrashAwareCachingDiskJournal::State {
         }
     }
 
+    pub proof fn materialization_certificate_implies_persistent_frozen_loose_domain_matches_visible(
+        state: CachingDiskJournal::State,
+        frozen: CachingDiskJournalFrozenMetadata,
+    )
+        requires
+            state.refinement_inv(),
+            materialization_certificate(state, frozen),
+        ensures
+            state.persistent_frozen_loose_domain(frozen)
+                =~= state.frozen_loose_domain(frozen.snapshot),
+    {
+        let meta = frozen_image_metadata_i(frozen);
+        let concrete_prefix = state.frozen_prefix_domain(frozen.snapshot);
+        let allocation_prefix = state.i().frozen_prefix_domain(meta);
+
+        state.frozen_snapshot_valid_implies_i_metadata_valid(frozen.snapshot, frozen.seq_end);
+        state.i_metadata_valid_implies_frozen_tj_matches_i(frozen.snapshot, frozen.seq_end);
+        let freeze_lbl = AllocationJournal::Label::FreezeForCommit{frozen_journal: meta};
+        assert(AllocationJournal::State::next_by(
+            state.i(),
+            state.i(),
+            freeze_lbl,
+            AllocationJournal::Step::freeze_for_commit(),
+        )) by {
+            reveal(AllocationJournal::State::next_by);
+        }
+        assert(AllocationJournal::State::next(state.i(), state.i(), freeze_lbl)) by {
+            reveal(AllocationJournal::State::next);
+        }
+        AllocationJournal::State::frozen_journal_is_valid_image(
+            state.i(),
+            state.i(),
+            freeze_lbl,
+        );
+        let base_image = state.i().frozen_image(meta);
+        let persistent_dv = state.persistent_journal_disk_view(frozen.snapshot);
+        let base_tight = base_image.tight_tj();
+        let root = frozen.snapshot.freshest_rec();
+        let first = frozen.snapshot.first();
+        let base_bounds = base_tight.disk_view.build_au_page_bounds_au_walk(
+            base_tight.freshest_rec,
+            first,
+        );
+        base_image.valid_image_implies_tight_valid_image();
+        base_image.valid_image_implies_tight_seq_bounds();
+        base_image.tj.disk_view.path_build_tight_is_sub_disk(base_image.tj.freshest_rec);
+        base_tight.disk_view.build_au_page_bounds_au_walk_domain_matches_build_tight(
+            base_tight.freshest_rec,
+            first,
+        );
+        assert(base_tight.disk_view.build_tight(base_tight.freshest_rec)
+            == base_tight.disk_view) by {
+            base_tight.disk_view.decodable_implies_path_decodable(base_tight.freshest_rec);
+            base_image.tj.disk_view.path_build_tight_idempotent(base_image.tj.freshest_rec);
+            base_tight.disk_view.path_build_tight_equals_build_tight(base_tight.freshest_rec);
+        }
+        assert(base_tight.disk_view.entries_bounded_by_au_page_bounds(base_bounds)
+            == base_tight.disk_view.entries);
+        assert(base_tight.build_lsn_au_index_from_first(first)
+            == state.i().frozen_lsn_au_index(meta));
+        assert(base_tight.disk_view.entries <= persistent_dv.entries) by {
+            assert forall |addr: Address| #[trigger] base_tight.disk_view.entries.contains_key(addr)
+                implies persistent_dv.entries.contains_key(addr)
+                    && persistent_dv.entries[addr] == base_tight.disk_view.entries[addr] by {
+                assert(base_tight.disk_view.is_sub_disk_with_newer_lsn(state.i().tj().disk_view));
+                assert(state.i().tj().disk_view.entries.contains_key(addr));
+                assert(state.i().tj().disk_view.entries[addr] == base_tight.disk_view.entries[addr]);
+                assert(base_tight.disk_view.is_sub_disk(base_image.tj.disk_view)) by {
+                    base_image.tj.disk_view.path_build_tight_is_sub_disk(base_image.tj.freshest_rec);
+                }
+                assert(base_image.tj.disk_view.entries.contains_key(addr));
+                assert(base_tight.disk_view.entries_bounded_by_au_page_bounds(base_bounds)
+                    .contains_key(addr));
+                assert(base_bounds.contains_key(addr.au));
+                assert(addr.page <= base_bounds[addr.au]);
+                assert(state.i().frozen_loose_domain(meta).contains(addr)) by {
+                    assert(base_tight.disk_view.domain_au_bounded_wrt_index(
+                        state.i().frozen_lsn_au_index(meta),
+                    ));
+                    assert(state.i().frozen_lsn_au_index(meta).values().contains(addr.au));
+                }
+                assert(state.i().frozen_prefix_domain(meta).contains(addr));
+                assert(allocation_prefix.contains(addr));
+                assert(concrete_prefix.contains(addr));
+                assert(state.disk.persistent.restrict(concrete_prefix)
+                    == state.disk.visible().restrict(concrete_prefix));
+                assert(state.disk.visible().contains_key(addr));
+                assert(state.disk.visible().restrict(concrete_prefix).contains_key(addr));
+                assert(state.disk.persistent.restrict(concrete_prefix).contains_key(addr));
+                assert(state.disk.persistent.contains_key(addr));
+                assert(state.disk.persistent.restrict(concrete_prefix)[addr]
+                    == state.disk.visible().restrict(concrete_prefix)[addr]);
+                assert(state.disk.persistent.restrict(concrete_prefix)[addr]
+                    == state.disk.persistent[addr]);
+                assert(state.disk.visible().restrict(concrete_prefix)[addr]
+                    == state.disk.visible()[addr]);
+                assert(state.disk.persistent[addr] == state.disk.visible()[addr]);
+                assert(persistent_dv.entries.contains_key(addr));
+                assert(persistent_dv.entries[addr] == to_journal_records(state.disk.persistent)[addr]);
+                assert(state.i().disk_view.entries[addr] == to_journal_records(state.disk.visible())[addr]);
+                assert(to_journal_records(state.disk.persistent)[addr]
+                    == to_journal_records(state.disk.visible())[addr]);
+            }
+        }
+        assert(base_tight.disk_view.is_sub_disk(persistent_dv)) by {
+            assert(base_tight.disk_view.boundary_lsn == persistent_dv.boundary_lsn);
+            assert(base_tight.disk_view.entries <= persistent_dv.entries);
+        }
+        assert(base_tight.freshest_rec == root);
+        assert(base_tight.disk_view.path_decodable(root)) by {
+            base_tight.disk_view.decodable_implies_path_decodable(base_tight.freshest_rec);
+        }
+        assert(base_tight.disk_view.path_build_tight(root) == base_tight.disk_view) by {
+            assert(root == base_tight.freshest_rec);
+            base_image.tj.disk_view.path_build_tight_idempotent(base_image.tj.freshest_rec);
+            base_tight.disk_view.path_build_tight_equals_build_tight(base_tight.freshest_rec);
+            assert(base_image.tj.disk_view.path_build_tight(base_image.tj.freshest_rec)
+                == base_tight.disk_view);
+            assert(base_tight.disk_view.path_build_tight(base_tight.freshest_rec)
+                == base_tight.disk_view);
+        }
+        base_tight.disk_view.path_build_tight_preserved_in_superdisk(
+            persistent_dv,
+            root,
+        );
+        persistent_dv.loose_build_lsn_au_index_au_walk_matches_tight(root, first);
+        assert(persistent_dv.path_build_tight(root) == base_tight.disk_view);
+        assert(state.persistent_lsn_au_index(frozen.snapshot)
+            == base_tight.disk_view.build_lsn_au_index_au_walk(root, first));
+        assert(base_tight.build_lsn_au_index_from_first(first)
+            == state.i().frozen_lsn_au_index(meta));
+        assert(base_tight.disk_view.build_lsn_au_index_au_walk(root, first)
+            == state.i().frozen_lsn_au_index(meta));
+        assert_maps_equal!(
+            state.persistent_lsn_au_index(frozen.snapshot).restrict(state.frozen_lsns(frozen.snapshot)),
+            state.lsn_au_index_or_empty().restrict(state.frozen_lsns(frozen.snapshot)),
+            lsn => {}
+        );
+    }
+
     pub proof fn materialization_certificate_implies_materialized_image_refines(
         state: CachingDiskJournal::State,
         frozen: CachingDiskJournalFrozenMetadata,
@@ -238,6 +378,10 @@ impl CrashAwareCachingDiskJournal::State {
                 assert(state.disk.persistent.dom().contains(addr));
             }
         }
+        Self::materialization_certificate_implies_persistent_frozen_loose_domain_matches_visible(
+            state,
+            frozen,
+        );
         assert(state.frozen_loose_domain(frozen.snapshot) =~= state.i().frozen_loose_domain(meta));
         assert(image.i().tj.disk_view.entries.dom() <= state.i().frozen_loose_domain(meta)) by {
             assert forall |addr: Address|
@@ -246,7 +390,8 @@ impl CrashAwareCachingDiskJournal::State {
                 assert(image.i().tj.disk_view.entries.contains_key(addr));
                 assert(to_journal_records(image.persistent).contains_key(addr));
                 assert(image.persistent.contains_key(addr));
-                assert(state.disk.persistent.restrict(state.frozen_loose_domain(frozen.snapshot)).contains_key(addr));
+                assert(state.disk.persistent.restrict(state.persistent_frozen_loose_domain(frozen)).contains_key(addr));
+                assert(state.persistent_frozen_loose_domain(frozen).contains(addr));
                 assert(state.frozen_loose_domain(frozen.snapshot).contains(addr));
             }
         }
@@ -434,6 +579,160 @@ impl CrashAwareCachingDiskJournal::State {
         assert(image.i().tj.seq_end() == meta.seq_end);
         assert(image.seq_end == meta.seq_end);
         image.i_valid_image_seq_end_implies_wf();
+    }
+
+    pub proof fn materialization_certificate_implies_materialized_accessible_aus(
+        state: CachingDiskJournal::State,
+        frozen: CachingDiskJournalFrozenMetadata,
+    )
+        requires
+            state.refinement_inv(),
+            materialization_certificate(state, frozen),
+        ensures
+            CachingDiskJournalImage::materialized_from_persistent(
+                state,
+                frozen,
+            ).accessible_aus() <= caching_disk_journal_accessible_aus(state),
+    {
+        Self::materialization_certificate_implies_persistent_frozen_loose_domain_matches_visible(
+            state,
+            frozen,
+        );
+        state.frozen_loose_domain_persistent_aus_accessible(frozen.snapshot);
+        assert(state.persistent_frozen_loose_domain(frozen)
+            =~= state.frozen_loose_domain(frozen.snapshot));
+        assert(CachingDiskJournalImage::materialized_from_persistent(
+            state,
+            frozen,
+        ).persistent == state.disk.persistent.restrict(
+            state.persistent_frozen_loose_domain(frozen),
+        ));
+        assert(state.disk.persistent.restrict(
+            state.persistent_frozen_loose_domain(frozen),
+        ).dom() =~= state.disk.persistent.restrict(
+            state.frozen_loose_domain(frozen.snapshot),
+        ).dom()) by {
+            assert forall |addr: Address|
+                #[trigger] state.disk.persistent.restrict(
+                    state.persistent_frozen_loose_domain(frozen),
+                ).dom().contains(addr)
+                <==> state.disk.persistent.restrict(
+                    state.frozen_loose_domain(frozen.snapshot),
+                ).dom().contains(addr) by {
+                if state.disk.persistent.restrict(
+                    state.persistent_frozen_loose_domain(frozen),
+                ).dom().contains(addr) {
+                    assert(state.disk.persistent.restrict(
+                        state.persistent_frozen_loose_domain(frozen),
+                    ).contains_key(addr));
+                    assert(state.persistent_frozen_loose_domain(frozen).contains(addr));
+                    assert(state.frozen_loose_domain(frozen.snapshot).contains(addr));
+                    assert(state.disk.persistent.restrict(
+                        state.frozen_loose_domain(frozen.snapshot),
+                    ).contains_key(addr));
+                }
+                if state.disk.persistent.restrict(
+                    state.frozen_loose_domain(frozen.snapshot),
+                ).dom().contains(addr) {
+                    assert(state.disk.persistent.restrict(
+                        state.frozen_loose_domain(frozen.snapshot),
+                    ).contains_key(addr));
+                    assert(state.frozen_loose_domain(frozen.snapshot).contains(addr));
+                    assert(state.persistent_frozen_loose_domain(frozen).contains(addr));
+                    assert(state.disk.persistent.restrict(
+                        state.persistent_frozen_loose_domain(frozen),
+                    ).contains_key(addr));
+                }
+            }
+        }
+    }
+
+    pub proof fn materialization_certificate_implies_materialized_index_values_match_visible(
+        state: CachingDiskJournal::State,
+        frozen: CachingDiskJournalFrozenMetadata,
+    )
+        requires
+            state.refinement_inv(),
+            materialization_certificate(state, frozen),
+        ensures
+            ({
+                let image = CachingDiskJournalImage::materialized_from_persistent(
+                    state,
+                    frozen,
+                );
+                let index = image.tj().disk_view.loose_build_lsn_au_index_au_walk(
+                    frozen.snapshot.freshest_rec(),
+                    frozen.snapshot.first(),
+                );
+                index.values() =~= state.lsn_au_index_or_empty().restrict(
+                    state.frozen_lsns(frozen.snapshot),
+                ).values()
+            }),
+    {
+        let meta = frozen_image_metadata_i(frozen);
+        let image = CachingDiskJournalImage::materialized_from_persistent(state, frozen);
+        let root = frozen.snapshot.freshest_rec();
+        let first = frozen.snapshot.first();
+
+        Self::materialization_certificate_implies_materialized_image_refines(
+            state,
+            frozen,
+        );
+        state.frozen_snapshot_valid_implies_i_metadata_valid(frozen.snapshot, frozen.seq_end);
+        state.i_metadata_valid_implies_frozen_tj_matches_i(frozen.snapshot, frozen.seq_end);
+
+        let freeze_lbl = AllocationJournal::Label::FreezeForCommit{frozen_journal: meta};
+        assert(AllocationJournal::State::next_by(
+            state.i(),
+            state.i(),
+            freeze_lbl,
+            AllocationJournal::Step::freeze_for_commit(),
+        )) by {
+            reveal(AllocationJournal::State::next_by);
+        }
+        assert(AllocationJournal::State::next(state.i(), state.i(), freeze_lbl)) by {
+            reveal(AllocationJournal::State::next);
+        }
+        AllocationJournal::State::frozen_journal_is_valid_image(
+            state.i(),
+            state.i(),
+            freeze_lbl,
+        );
+        AllocationJournal::State::acceptable_frozen_image_matches_frozen_image(
+            state.i(),
+            meta,
+            image.i(),
+        );
+
+        let materialized_dv = image.tj().disk_view;
+        let materialized_index = materialized_dv.loose_build_lsn_au_index_au_walk(
+            root,
+            first,
+        );
+        let tight_tj = image.i().tight_tj();
+        let tight_index = tight_tj.build_lsn_au_index_from_first(first);
+        assert(image.i().valid_image());
+        image.i().valid_image_implies_tight_valid_image();
+        assert(materialized_dv.path_decodable(root));
+        assert(materialized_dv.path_build_tight(root).pointer_is_upstream(root, first));
+        materialized_dv.loose_build_lsn_au_index_au_walk_matches_tight(root, first);
+        assert(tight_tj.disk_view == materialized_dv.path_build_tight(root));
+        assert(tight_tj.freshest_rec == root);
+        assert(materialized_index == tight_tj.disk_view.build_lsn_au_index_au_walk(
+            root,
+            first,
+        ));
+        assert(tight_index == tight_tj.disk_view.build_lsn_au_index_au_walk(root, first));
+        assert(tight_index == state.i().frozen_lsn_au_index(meta)) by {
+            assert(image.i().tight_tj() == state.i().frozen_image(meta).tight_tj());
+            assert(state.i().frozen_image(meta).tight_tj().build_lsn_au_index_from_first(first)
+                == state.i().frozen_lsn_au_index(meta));
+        }
+        assert(materialized_index.values() =~= state.i().frozen_lsn_au_index(meta).values());
+        assert(state.i().frozen_lsn_au_index(meta).values()
+            =~= state.lsn_au_index_or_empty().restrict(
+                state.frozen_lsns(frozen.snapshot),
+            ).values());
     }
 
     pub proof fn prepared_materialized_image_refines(
@@ -709,6 +1008,81 @@ impl CrashAwareCachingDiskJournal::State {
         );
 
         let domain = state.frozen_loose_domain(frozen.snapshot);
+        assert(state.persistent_frozen_loose_domain(frozen) =~= domain) by {
+            let persistent_dv = state.persistent_journal_disk_view(frozen.snapshot);
+            let base_image = state.i().frozen_image(meta);
+            let base_tight = base_image.tight_tj();
+            let root = frozen.snapshot.freshest_rec();
+            let first = frozen.snapshot.first();
+            base_image.valid_image_implies_tight_valid_image();
+            base_image.valid_image_implies_tight_seq_bounds();
+            base_image.tj.disk_view.path_build_tight_is_sub_disk(base_image.tj.freshest_rec);
+            assert(base_tight.build_lsn_au_index_from_first(first)
+                == state.i().frozen_lsn_au_index(meta));
+            assert(base_tight.disk_view.entries <= persistent_dv.entries) by {
+                assert forall |addr: Address| #[trigger] base_tight.disk_view.entries.contains_key(addr)
+                    implies persistent_dv.entries.contains_key(addr)
+                        && persistent_dv.entries[addr] == base_tight.disk_view.entries[addr] by {
+                    assert(base_tight.disk_view.is_sub_disk(base_image.tj.disk_view)) by {
+                        base_image.tj.disk_view.path_build_tight_is_sub_disk(base_image.tj.freshest_rec);
+                    }
+                    assert(base_image.tj.disk_view.entries.contains_key(addr));
+                    assert(state.i().frozen_tj(meta).disk_view.entries.contains_key(addr));
+                    assert(state.frozen_tj(frozen.snapshot).disk_view.entries.contains_key(addr));
+                    assert(domain.contains(addr));
+                    assert(state.disk.persistent.restrict(domain)
+                        == state.disk.visible().restrict(domain));
+                    assert(state.disk.visible().restrict(domain).contains_key(addr));
+                    assert(state.disk.persistent.restrict(domain).contains_key(addr));
+                    assert(state.disk.persistent.contains_key(addr));
+                    assert(state.disk.visible().contains_key(addr));
+                    assert(state.disk.persistent.restrict(domain)[addr]
+                        == state.disk.visible().restrict(domain)[addr]);
+                    assert(state.disk.persistent.restrict(domain)[addr]
+                        == state.disk.persistent[addr]);
+                    assert(state.disk.visible().restrict(domain)[addr]
+                        == state.disk.visible()[addr]);
+                    assert(state.disk.persistent[addr] == state.disk.visible()[addr]);
+                    assert(persistent_dv.entries.contains_key(addr));
+                    assert(persistent_dv.entries[addr] == to_journal_records(state.disk.persistent)[addr]);
+                    assert(base_tight.disk_view.entries[addr]
+                        == to_journal_records(state.disk.visible())[addr]);
+                    assert(to_journal_records(state.disk.persistent)[addr]
+                        == to_journal_records(state.disk.visible())[addr]);
+                }
+            }
+            assert(base_tight.disk_view.is_sub_disk(persistent_dv)) by {
+                assert(base_tight.disk_view.boundary_lsn == persistent_dv.boundary_lsn);
+                assert(base_tight.disk_view.entries <= persistent_dv.entries);
+            }
+            assert(base_tight.freshest_rec == root);
+            assert(base_tight.disk_view.path_decodable(root)) by {
+                base_tight.disk_view.decodable_implies_path_decodable(base_tight.freshest_rec);
+            }
+            assert(base_tight.disk_view.path_build_tight(root) == base_tight.disk_view) by {
+                assert(root == base_tight.freshest_rec);
+                base_image.tj.disk_view.path_build_tight_idempotent(base_image.tj.freshest_rec);
+                base_tight.disk_view.path_build_tight_equals_build_tight(base_tight.freshest_rec);
+                assert(base_image.tj.disk_view.path_build_tight(base_image.tj.freshest_rec)
+                    == base_tight.disk_view);
+                assert(base_tight.disk_view.path_build_tight(base_tight.freshest_rec)
+                    == base_tight.disk_view);
+            }
+            base_tight.disk_view.path_build_tight_preserved_in_superdisk(
+                persistent_dv,
+                root,
+            );
+            persistent_dv.loose_build_lsn_au_index_au_walk_matches_tight(root, first);
+            assert(state.persistent_lsn_au_index(frozen.snapshot)
+                == base_tight.disk_view.build_lsn_au_index_au_walk(root, first));
+            assert(base_tight.disk_view.build_lsn_au_index_au_walk(root, first)
+                == state.i().frozen_lsn_au_index(meta));
+            assert_maps_equal!(
+                state.persistent_lsn_au_index(frozen.snapshot).restrict(state.frozen_lsns(frozen.snapshot)),
+                state.lsn_au_index_or_empty().restrict(state.frozen_lsns(frozen.snapshot)),
+                lsn => {}
+            );
+        }
         to_journal_records_restrict(state.disk.persistent, domain);
         to_journal_records_restrict(state.disk.visible(), domain);
         assert(materialized.i().tj.disk_view.entries
@@ -762,27 +1136,17 @@ impl CrashAwareCachingDiskJournal::State {
     )
         requires
             pre.disk.persistent == post.disk.persistent,
-            pre.lsn_au_index_or_empty() == post.lsn_au_index_or_empty(),
-            pre.frozen_seq_end(frozen.snapshot) == post.frozen_seq_end(frozen.snapshot),
+            pre.persistent_frozen_loose_domain(frozen)
+                =~= post.persistent_frozen_loose_domain(frozen),
         ensures
             CachingDiskJournalImage::materialized_from_persistent(pre, frozen)
                 == CachingDiskJournalImage::materialized_from_persistent(post, frozen),
     {
-        assert(pre.frozen_lsns(frozen.snapshot) =~= post.frozen_lsns(frozen.snapshot)) by {
-            assert forall |lsn: LSN| #[trigger] pre.frozen_lsns(frozen.snapshot).contains(lsn)
-                <==> post.frozen_lsns(frozen.snapshot).contains(lsn) by {}
-        }
-        assert(pre.frozen_loose_domain(frozen.snapshot)
-            =~= post.frozen_loose_domain(frozen.snapshot)) by {
-            assert forall |addr: Address|
-                #[trigger] pre.frozen_loose_domain(frozen.snapshot).contains(addr)
-                <==> post.frozen_loose_domain(frozen.snapshot).contains(addr) by {}
-        }
-        assert(pre.disk.persistent.restrict(pre.frozen_loose_domain(frozen.snapshot))
-            == post.disk.persistent.restrict(post.frozen_loose_domain(frozen.snapshot))) by {
+        assert(pre.disk.persistent.restrict(pre.persistent_frozen_loose_domain(frozen))
+            == post.disk.persistent.restrict(post.persistent_frozen_loose_domain(frozen))) by {
             assert_maps_equal!(
-                pre.disk.persistent.restrict(pre.frozen_loose_domain(frozen.snapshot)),
-                post.disk.persistent.restrict(post.frozen_loose_domain(frozen.snapshot)),
+                pre.disk.persistent.restrict(pre.persistent_frozen_loose_domain(frozen)),
+                post.disk.persistent.restrict(post.persistent_frozen_loose_domain(frozen)),
                 addr => {}
             );
         }
