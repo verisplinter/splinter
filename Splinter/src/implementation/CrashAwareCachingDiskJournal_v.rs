@@ -74,6 +74,19 @@ impl CachingDiskJournalImage {
         }
     }
 
+    pub open spec fn materialized_from_loaded_index(
+        state: CachingDiskJournal::State,
+        frozen: CachingDiskJournalFrozenMetadata,
+    ) -> Self {
+        Self{
+            persistent: state.disk.persistent.restrict(
+                state.frozen_loose_domain(frozen.snapshot),
+            ),
+            snapshot: frozen.snapshot,
+            seq_end: frozen.seq_end,
+        }
+    }
+
     pub open spec fn metadata(self) -> CachingDiskJournalFrozenMetadata {
         CachingDiskJournalFrozenMetadata{
             snapshot: self.snapshot,
@@ -393,14 +406,14 @@ state_machine!{ CrashAwareCachingDiskJournal {
         require keep_in_flight ==> pre.prepared;
 
         let prepared_image = if keep_in_flight {
-            CachingDiskJournalImage::materialized_from_persistent(
+            CachingDiskJournalImage::materialized_from_loaded_index(
                 pre.ephemeral->v,
                 pre.frozen.unwrap(),
             )
         } else if pre.ephemeral is Unknown {
             pre.persistent->image
         } else {
-            CachingDiskJournalImage::materialized_from_persistent(
+            CachingDiskJournalImage::materialized_from_loaded_index(
                 pre.ephemeral->v,
                 pre.persistent.metadata(),
             )
@@ -727,14 +740,14 @@ state_machine!{ CrashAwareCachingDiskJournal {
     fn crash_inductive(pre: Self, post: Self, lbl: Label) {
         let keep_in_flight = lbl.arrow_Crash_keep_in_flight();
         let prepared_image = if keep_in_flight {
-            CachingDiskJournalImage::materialized_from_persistent(
+            CachingDiskJournalImage::materialized_from_loaded_index(
                 pre.ephemeral->v,
                 pre.frozen.unwrap(),
             )
         } else if pre.ephemeral is Unknown {
             pre.persistent->image
         } else {
-            CachingDiskJournalImage::materialized_from_persistent(
+            CachingDiskJournalImage::materialized_from_loaded_index(
                 pre.ephemeral->v,
                 pre.persistent.metadata(),
             )
@@ -833,19 +846,6 @@ state_machine!{ CrashAwareCachingDiskJournal {
         requires
             pre.inv(),
             CrashAwareCachingDiskJournal::State::crash(pre, post, lbl),
-            pre.ephemeral is Known ==> {
-                let keep_in_flight = lbl.arrow_Crash_keep_in_flight();
-                let frozen = if keep_in_flight {
-                    pre.frozen.unwrap()
-                } else {
-                    pre.persistent.metadata()
-                };
-                (keep_in_flight || pre.ephemeral->v.journal.status is Some) ==>
-                    CachingDiskJournalImage::materialized_from_persistent(
-                    pre.ephemeral->v,
-                    frozen,
-                ).accessible_aus() <= caching_disk_journal_accessible_aus(pre.ephemeral->v)
-            },
         ensures
             post.persistent is Image,
             pre.ephemeral is Known ==>
@@ -856,14 +856,14 @@ state_machine!{ CrashAwareCachingDiskJournal {
         reveal(CrashAwareCachingDiskJournal::State::crash);
         let keep_in_flight = lbl.arrow_Crash_keep_in_flight();
         let prepared_image = if keep_in_flight {
-            CachingDiskJournalImage::materialized_from_persistent(
+            CachingDiskJournalImage::materialized_from_loaded_index(
                 pre.ephemeral->v,
                 pre.frozen.unwrap(),
             )
         } else if pre.ephemeral is Unknown {
             pre.persistent->image
         } else {
-            CachingDiskJournalImage::materialized_from_persistent(
+            CachingDiskJournalImage::materialized_from_loaded_index(
                 pre.ephemeral->v,
                 pre.persistent.metadata(),
             )
@@ -875,20 +875,17 @@ state_machine!{ CrashAwareCachingDiskJournal {
             } else {
                 pre.persistent.metadata()
             };
-            assert(CachingDiskJournalImage::materialized_from_persistent(
+            assert(CachingDiskJournalImage::materialized_from_loaded_index(
                 pre.ephemeral->v,
                 frozen,
             ).accessible_aus() <= caching_disk_journal_accessible_aus(pre.ephemeral->v)) by {
-                if keep_in_flight || pre.ephemeral->v.journal.status is Some {
-                } else {
-                    pre.ephemeral->v.persistent_frozen_loose_domain_persistent_aus_accessible(frozen);
-                    assert(CachingDiskJournalImage::materialized_from_persistent(
-                        pre.ephemeral->v,
-                        frozen,
-                    ).persistent == pre.ephemeral->v.disk.persistent.restrict(
-                        pre.ephemeral->v.persistent_frozen_loose_domain(frozen),
-                    ));
-                }
+                pre.ephemeral->v.frozen_loose_domain_persistent_aus_accessible(frozen.snapshot);
+                assert(CachingDiskJournalImage::materialized_from_loaded_index(
+                    pre.ephemeral->v,
+                    frozen,
+                ).persistent == pre.ephemeral->v.disk.persistent.restrict(
+                    pre.ephemeral->v.frozen_loose_domain(frozen.snapshot),
+                ));
             };
             assert(prepared_image.accessible_aus()
                 <= caching_disk_journal_accessible_aus(pre.ephemeral->v));

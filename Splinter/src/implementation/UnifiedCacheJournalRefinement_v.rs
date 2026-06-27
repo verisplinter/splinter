@@ -674,6 +674,11 @@ impl UnifiedCacheJournalSource {
                     self.journal_caching_disk_state_i(),
                     frozen,
                 ),
+            self.journal_image_i(image)
+                == CachingDiskJournalImage::materialized_from_loaded_index(
+                    self.journal_caching_disk_state_i(),
+                    frozen,
+                ),
     {
         let state = self.journal_caching_disk_state_i();
         let meta = frozen_image_metadata_i(frozen);
@@ -712,7 +717,12 @@ impl UnifiedCacheJournalSource {
             state,
             frozen,
         );
+        CrashAwareCachingDiskJournal::State::materialized_loaded_index_matches_persistent_when_domains_match(
+            state,
+            frozen,
+        );
         assert(materialized.wf());
+        assert(CachingDiskJournalImage::materialized_from_loaded_index(state, frozen) == materialized);
 
         let full_tj = UnifiedCacheJournalSource::journal_image_tj_i(self.disk.content, image);
         let full_dv = full_tj.disk_view;
@@ -852,11 +862,17 @@ impl UnifiedCacheJournalSource {
                     self.journal_caching_disk_state_i(),
                     frozen,
                 ),
+            post.persistent_journal_image_i()
+                == CachingDiskJournalImage::materialized_from_loaded_index(
+                    self.journal_caching_disk_state_i(),
+                    frozen,
+                ),
     {
         let state = self.journal_caching_disk_state_i();
         let materialized = CachingDiskJournalImage::materialized_from_persistent(state, frozen);
         self.journal_image_matches_materialized(image, frozen);
         assert(materialized == self.journal_image_i(image));
+        assert(CachingDiskJournalImage::materialized_from_loaded_index(state, frozen) == materialized);
 
         CrashAwareCachingDiskJournal::State::materialization_certificate_implies_materialized_image_refines(
             state,
@@ -992,6 +1008,11 @@ impl UnifiedCacheJournalSource {
                     self.journal_caching_disk_state_i(),
                     frozen,
                 ),
+            post.persistent_journal_image_i()
+                == CachingDiskJournalImage::materialized_from_loaded_index(
+                    self.journal_caching_disk_state_i(),
+                    frozen,
+                ),
     {
         let state = self.journal_caching_disk_state_i();
         let materialized = CachingDiskJournalImage::materialized_from_persistent(state, frozen);
@@ -1059,6 +1080,18 @@ impl UnifiedCacheJournalSource {
             assert(state.persistent_lsn_au_index(frozen.snapshot).restrict(frozen_lsns)
                 == source_index);
         }
+        assert(state.frozen_loose_domain(frozen.snapshot)
+            =~= addresses_in_aus(self.journal_image_projection_aus_i(image))) by {
+            assert(self.journal_projection_aus() =~= self.journal_image_projection_aus_i(image));
+            assert(state.visible_lsn_au_index() == source_index) by {
+                assert(state.journal_disk_view() == source_tj.disk_view);
+            }
+            assert(state.lsn_au_index_or_empty() == source_index);
+        }
+        CrashAwareCachingDiskJournal::State::materialized_loaded_index_matches_persistent_when_domains_match(
+            state,
+            frozen,
+        );
         assert(materialized.persistent == source_image.persistent) by {
             assert_maps_equal!(
                 materialized.persistent,
@@ -1096,6 +1129,7 @@ impl UnifiedCacheJournalSource {
             );
         }
         assert(post.persistent_journal_image_i() == materialized);
+        assert(CachingDiskJournalImage::materialized_from_loaded_index(state, frozen) == materialized);
     }
 
     pub proof fn loaded_caching_disk_internal_refines_journal_internal(

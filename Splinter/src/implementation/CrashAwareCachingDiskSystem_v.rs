@@ -665,7 +665,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
     pub open spec fn components_wf(self) -> bool
     {
         &&& self.journal.inv()
-        &&& self.journal.refinement_inv()
         &&& self.branch.inv()
     }
 
@@ -932,20 +931,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
         }
     }
 
-    pub proof fn journal_next_preserves_refinement_inv(
-        pre_journal: CrashAwareCachingDiskJournal::State,
-        post_journal: CrashAwareCachingDiskJournal::State,
-        lbl: CrashAwareCachingDiskJournal::Label,
-    )
-        requires
-            pre_journal.refinement_inv(),
-            CrashAwareCachingDiskJournal::State::next(pre_journal, post_journal, lbl),
-        ensures
-            post_journal.refinement_inv(),
-    {
-        pre_journal.next_refines(post_journal, lbl);
-    }
-
     pub proof fn branch_internal_preserves_allocation_known_aus(
         pre_branch: CrashAwareCachingDiskBranch::State,
         post_branch: CrashAwareCachingDiskBranch::State,
@@ -1106,7 +1091,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
                             msgs: singleton_message_seq(msg),
                         };
                         CrashAwareCachingDiskJournal::State::inv_next(pre.journal, new_journal, journal_lbl);
-                        Self::journal_next_preserves_refinement_inv(pre.journal, new_journal, journal_lbl);
                         CrashAwareCachingDiskBranch::State::inv_next(pre.branch, new_branch, branch_lbl);
                         Self::journal_next_knownness(pre.journal, new_journal, journal_lbl);
                         Self::branch_next_knownness(pre.branch, new_branch, branch_lbl);
@@ -1245,7 +1229,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
     ) {
         let journal_lbl = CrashAwareCachingDiskJournal::Label::Internal;
         CrashAwareCachingDiskJournal::State::inv_next(pre.journal, new_journal, journal_lbl);
-        Self::journal_next_preserves_refinement_inv(pre.journal, new_journal, journal_lbl);
         Self::journal_next_knownness(pre.journal, new_journal, journal_lbl);
         assert(CrashAwareCachingDiskJournal::State::internal(
             pre.journal,
@@ -1329,7 +1312,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
     ) {
         let journal_lbl = CrashAwareCachingDiskJournal::Label::ObserveCleanAUs{aus};
         CrashAwareCachingDiskJournal::State::inv_next(pre.journal, new_journal, journal_lbl);
-        Self::journal_next_preserves_refinement_inv(pre.journal, new_journal, journal_lbl);
         Self::journal_next_knownness(pre.journal, new_journal, journal_lbl);
         assert(CrashAwareCachingDiskJournal::State::observe_clean_aus(
             pre.journal,
@@ -1436,7 +1418,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
     ) {
         let journal_lbl = CrashAwareCachingDiskJournal::Label::LoadIndex{discovered_aus};
         CrashAwareCachingDiskJournal::State::inv_next(pre.journal, new_journal, journal_lbl);
-        Self::journal_next_preserves_refinement_inv(pre.journal, new_journal, journal_lbl);
         Self::journal_next_knownness(pre.journal, new_journal, journal_lbl);
         assert(CrashAwareCachingDiskJournal::State::load_index(
             pre.journal,
@@ -1554,7 +1535,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
     ) {
         let journal_lbl = CrashAwareCachingDiskJournal::Label::InternalAlloc{allocs, deallocs, prune_aus};
         CrashAwareCachingDiskJournal::State::inv_next(pre.journal, new_journal, journal_lbl);
-        Self::journal_next_preserves_refinement_inv(pre.journal, new_journal, journal_lbl);
         Self::journal_next_knownness(pre.journal, new_journal, journal_lbl);
         assert(CrashAwareCachingDiskJournal::State::internal_alloc(
             pre.journal,
@@ -1669,7 +1649,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
         let journal_lbl = CrashAwareCachingDiskJournal::Label::Internal;
         let branch_lbl = CrashAwareCachingDiskBranch::Label::Internal;
         CrashAwareCachingDiskJournal::State::inv_next(pre.journal, new_journal, journal_lbl);
-        Self::journal_next_preserves_refinement_inv(pre.journal, new_journal, journal_lbl);
         CrashAwareCachingDiskBranch::State::inv_next(pre.branch, new_branch, branch_lbl);
         Self::journal_next_knownness(pre.journal, new_journal, journal_lbl);
         Self::branch_next_knownness(pre.branch, new_branch, branch_lbl);
@@ -1955,7 +1934,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
         let journal_lbl = CrashAwareCachingDiskJournal::Label::LoadEphemeral;
         CrashAwareCachingDiskBranch::State::inv_next(pre.branch, new_branch, branch_lbl);
         CrashAwareCachingDiskJournal::State::inv_next(pre.journal, new_journal, journal_lbl);
-        Self::journal_next_preserves_refinement_inv(pre.journal, new_journal, journal_lbl);
         Self::branch_next_knownness(pre.branch, new_branch, branch_lbl);
         Self::journal_next_knownness(pre.journal, new_journal, journal_lbl);
         assert(CrashAwareCachingDiskJournal::State::load_ephemeral(pre.journal, new_journal, journal_lbl)) by {
@@ -2103,7 +2081,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
         let journal_lbl = CrashAwareCachingDiskJournal::Label::ReadForRecovery{records};
         let branch_lbl = CrashAwareCachingDiskBranch::Label::Append{keys, msgs};
         CrashAwareCachingDiskJournal::State::inv_next(pre.journal, new_journal, journal_lbl);
-        Self::journal_next_preserves_refinement_inv(pre.journal, new_journal, journal_lbl);
         CrashAwareCachingDiskBranch::State::inv_next(pre.branch, new_branch, branch_lbl);
         Self::journal_next_knownness(pre.journal, new_journal, journal_lbl);
         Self::branch_next_knownness(pre.branch, new_branch, branch_lbl);
@@ -2168,7 +2145,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
             sealed_roots: superblock_image.branch_roots,
         };
         CrashAwareCachingDiskJournal::State::inv_next(pre.journal, new_journal, journal_lbl);
-        Self::journal_next_preserves_refinement_inv(pre.journal, new_journal, journal_lbl);
         CrashAwareCachingDiskBranch::State::inv_next(pre.branch, new_branch, branch_lbl);
         Self::journal_next_knownness(pre.journal, new_journal, journal_lbl);
         Self::branch_next_knownness(pre.branch, new_branch, branch_lbl);
@@ -2248,7 +2224,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
         let journal_lbl = CrashAwareCachingDiskJournal::Label::CommitPrepared;
         let branch_lbl = CrashAwareCachingDiskBranch::Label::FreezePrepared;
         CrashAwareCachingDiskJournal::State::inv_next(pre.journal, new_journal, journal_lbl);
-        Self::journal_next_preserves_refinement_inv(pre.journal, new_journal, journal_lbl);
         CrashAwareCachingDiskBranch::State::inv_next(pre.branch, new_branch, branch_lbl);
         Self::journal_next_knownness(pre.journal, new_journal, journal_lbl);
         Self::branch_next_knownness(pre.branch, new_branch, branch_lbl);
@@ -2382,7 +2357,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
         };
         let branch_lbl = CrashAwareCachingDiskBranch::Label::CommitComplete;
         CrashAwareCachingDiskJournal::State::inv_next(pre.journal, new_journal, journal_lbl);
-        Self::journal_next_preserves_refinement_inv(pre.journal, new_journal, journal_lbl);
         CrashAwareCachingDiskBranch::State::inv_next(pre.branch, new_branch, branch_lbl);
         SuperblockStore::State::inv_next(pre.superblockstore, new_superblock, SuperblockStore::Label::Complete);
         Self::journal_next_knownness(pre.journal, new_journal, journal_lbl);
@@ -2495,7 +2469,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
         let journal_lbl = CrashAwareCachingDiskJournal::Label::Crash{keep_in_flight};
         let branch_lbl = CrashAwareCachingDiskBranch::Label::Crash{keep_in_flight};
         CrashAwareCachingDiskJournal::State::inv_next(pre.journal, new_journal, journal_lbl);
-        Self::journal_next_preserves_refinement_inv(pre.journal, new_journal, journal_lbl);
         CrashAwareCachingDiskBranch::State::inv_next(pre.branch, new_branch, branch_lbl);
         SuperblockStore::State::inv_next(pre.superblockstore, new_superblock, SuperblockStore::Label::Crash);
         Self::journal_next_knownness(pre.journal, new_journal, journal_lbl);
@@ -2551,27 +2524,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
             }
         };
         assert(post.free_aus == new_free_aus - Self::reserved_aus());
-        if pre.journal.ephemeral is Known {
-            let frozen = if keep_in_flight {
-                pre.journal.frozen.unwrap()
-            } else {
-                pre.journal.persistent.metadata()
-            };
-            if keep_in_flight || pre.journal.ephemeral->v.journal.status is Some {
-                if keep_in_flight {
-                    assert(pre.journal.prepared);
-                    assert(pre.journal.frozen is Some);
-                    assert(materialization_certificate(pre.journal.ephemeral->v, frozen));
-                } else {
-                    assert(pre.journal.ephemeral->v.journal.status is Some);
-                    assert(materialization_certificate(pre.journal.ephemeral->v, frozen));
-                }
-                CrashAwareCachingDiskJournal::State::materialization_certificate_implies_materialized_accessible_aus(
-                    pre.journal.ephemeral->v,
-                    frozen,
-                );
-            }
-        }
         CrashAwareCachingDiskJournal::State::crash_persistent_image_accessible_aus(
             pre.journal,
             new_journal,

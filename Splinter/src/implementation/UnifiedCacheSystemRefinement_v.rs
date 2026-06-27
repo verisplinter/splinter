@@ -13402,14 +13402,14 @@ pub proof fn crash_refines(
     let branch_pre = UnifiedCacheBranchRefinement::unified_cache_branch_source(pre);
     let branch_post = UnifiedCacheBranchRefinement::unified_cache_branch_source(post);
     let journal_crash_image = if keep_in_flight {
-        CachingDiskJournalImage::materialized_from_persistent(
+        CachingDiskJournalImage::materialized_from_loaded_index(
             src.journal.ephemeral->v,
             src.journal.frozen.unwrap(),
         )
     } else if src.journal.ephemeral is Unknown {
         src.journal.persistent->image
     } else {
-        CachingDiskJournalImage::materialized_from_persistent(
+        CachingDiskJournalImage::materialized_from_loaded_index(
             src.journal.ephemeral->v,
             src.journal.persistent.metadata(),
         )

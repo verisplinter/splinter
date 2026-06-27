@@ -320,6 +320,27 @@ impl CrashAwareCachingDiskJournal::State {
         );
     }
 
+    pub proof fn materialized_loaded_index_matches_persistent_when_domains_match(
+        state: CachingDiskJournal::State,
+        frozen: CachingDiskJournalFrozenMetadata,
+    )
+        requires
+            state.persistent_frozen_loose_domain(frozen)
+                =~= state.frozen_loose_domain(frozen.snapshot),
+        ensures
+            CachingDiskJournalImage::materialized_from_loaded_index(state, frozen)
+                == CachingDiskJournalImage::materialized_from_persistent(state, frozen),
+    {
+        assert(state.disk.persistent.restrict(state.frozen_loose_domain(frozen.snapshot))
+            == state.disk.persistent.restrict(state.persistent_frozen_loose_domain(frozen))) by {
+            assert_maps_equal!(
+                state.disk.persistent.restrict(state.frozen_loose_domain(frozen.snapshot)),
+                state.disk.persistent.restrict(state.persistent_frozen_loose_domain(frozen)),
+                addr => {}
+            );
+        }
+    }
+
     pub proof fn materialization_certificate_implies_materialized_image_refines(
         state: CachingDiskJournal::State,
         frozen: CachingDiskJournalFrozenMetadata,
@@ -332,9 +353,20 @@ impl CrashAwareCachingDiskJournal::State {
                 state,
                 frozen,
             ).wf(),
+            CachingDiskJournalImage::materialized_from_loaded_index(
+                state,
+                frozen,
+            ).wf(),
             state.i().acceptable_frozen_image(
                 frozen_image_metadata_i(frozen),
                 CachingDiskJournalImage::materialized_from_persistent(
+                    state,
+                    frozen,
+                ).i(),
+            ),
+            state.i().acceptable_frozen_image(
+                frozen_image_metadata_i(frozen),
+                CachingDiskJournalImage::materialized_from_loaded_index(
                     state,
                     frozen,
                 ).i(),
@@ -579,6 +611,10 @@ impl CrashAwareCachingDiskJournal::State {
         assert(image.i().tj.seq_end() == meta.seq_end);
         assert(image.seq_end == meta.seq_end);
         image.i_valid_image_seq_end_implies_wf();
+        assert(state.persistent_frozen_loose_domain(frozen)
+            =~= state.frozen_loose_domain(frozen.snapshot));
+        Self::materialized_loaded_index_matches_persistent_when_domains_match(state, frozen);
+        assert(CachingDiskJournalImage::materialized_from_loaded_index(state, frozen) == image);
     }
 
     pub proof fn materialization_certificate_implies_materialized_accessible_aus(
@@ -976,9 +1012,15 @@ impl CrashAwareCachingDiskJournal::State {
                     state,
                     frozen,
                 );
+                let loaded_index_materialized = CachingDiskJournalImage::materialized_from_loaded_index(
+                    state,
+                    frozen,
+                );
                 let meta = frozen_image_metadata_i(frozen);
                 &&& materialized.wf()
+                &&& loaded_index_materialized.wf()
                 &&& state.i().acceptable_frozen_image(meta, materialized.i())
+                &&& state.i().acceptable_frozen_image(meta, loaded_index_materialized.i())
             }),
     {
         let materialized = CachingDiskJournalImage::materialized_from_persistent(
@@ -1083,6 +1125,7 @@ impl CrashAwareCachingDiskJournal::State {
                 lsn => {}
             );
         }
+        Self::materialized_loaded_index_matches_persistent_when_domains_match(state, frozen);
         to_journal_records_restrict(state.disk.persistent, domain);
         to_journal_records_restrict(state.disk.visible(), domain);
         assert(materialized.i().tj.disk_view.entries
@@ -1582,14 +1625,14 @@ impl CrashAwareCachingDiskJournal::State {
     {
         reveal(CrashAwareCachingDiskJournal::State::crash);
         let prepared_image = if lbl.arrow_Crash_keep_in_flight() {
-            CachingDiskJournalImage::materialized_from_persistent(
+            CachingDiskJournalImage::materialized_from_loaded_index(
                 self.ephemeral->v,
                 self.frozen.unwrap(),
             )
         } else if self.ephemeral is Unknown {
             self.persistent->image
         } else {
-            CachingDiskJournalImage::materialized_from_persistent(
+            CachingDiskJournalImage::materialized_from_loaded_index(
                 self.ephemeral->v,
                 self.persistent.metadata(),
             )
