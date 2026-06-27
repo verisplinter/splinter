@@ -1,19 +1,9 @@
-// Temporarily keep the root crate off the AtomicState/SM1 adapter path so
-// AtomicState_v.rs can evolve independently of the CrashAwareCachingDiskSystem refinement proof.
-// pub mod ConcreteProgramModel_v;
 // Temporarily disabled while AllocationJournal_v is refactored away from
 // the old embedded LinkedJournal state shape.
-// pub mod ModelRefinement_v;
 // pub mod Implementation_v;
 pub mod MultisetMapRelation_v;
-// pub mod AtomicState_v;
 pub mod AtomicJournalState_v;
 pub mod AtomicBranchState_v;
-pub mod AnotherAtomicState_v;
-// pub mod AnotherAtomicJournalRefinement_v;
-// pub mod AnotherAtomicBranchRefinement_v;
-// pub mod AnotherAtomicCachingDiskSystemRefinement_v;
-// pub mod AnotherProgramModel_v;
 pub mod UnifiedCacheSystem_v;
 pub mod UnifiedCacheProgramModel_v;
 pub mod UnifiedCacheSystemRefinement_v;
@@ -44,7 +34,6 @@ pub mod CrashAwareAllocationBranchStack_v;
 pub mod CrashAwareAllocationBranchStackRefinement_v;
 pub mod IBranchNode_v;
 pub mod CrashAwareCachingDiskSystem_v;
-// pub mod BracketRefinement_v;
 pub mod CrashAwareCachingDiskSystemRefinement_v;
 pub mod VecMap_v;
 pub mod JournalTypes_v;

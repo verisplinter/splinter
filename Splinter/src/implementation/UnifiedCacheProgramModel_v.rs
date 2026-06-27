@@ -12,7 +12,8 @@ use crate::implementation::AbstractSuperblock_v::{
     AbstractSuperblockImage, abstract_superblock_raw_wf, empty_abstract_superblock_image,
     parse_abstract_superblock,
 };
-use crate::implementation::AnotherAtomicState_v::{AtomicBranchState, AtomicJournalState};
+use crate::implementation::AtomicBranchState_v::AtomicBranchState;
+use crate::implementation::AtomicJournalState_v::AtomicJournalState;
 use crate::implementation::Cache_v::Cache;
 use crate::implementation::DiskLayout_v::DiskLayout;
 use crate::implementation::DiskLayout_v::spec_superblock_addr;

@@ -16,7 +16,7 @@ use crate::implementation::AbstractSuperblock_v::{
     AbstractSuperblockImage, abstract_superblock_raw_wf, empty_abstract_superblock_image,
     parse_abstract_superblock,
 };
-use crate::implementation::AnotherAtomicState_v::AtomicJournalState;
+use crate::implementation::AtomicJournalState_v::AtomicJournalState;
 use crate::implementation::Cache_v::Cache;
 use crate::implementation::CachedJournal_v::{
     au_walk_addrs_in_entries_subset, CachedJournal, JournalSnapshot,

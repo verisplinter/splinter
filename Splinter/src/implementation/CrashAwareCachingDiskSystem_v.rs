@@ -2332,7 +2332,7 @@ state_machine!{ CrashAwareCachingDiskSystem {
                     CachingDiskBranch::Step::freeze_prepared(),
                 ));
             };
-            pre.branch.ephemeral->v.materialized_image_matches_visible_prefix(persistent_meta);
+            pre.branch.ephemeral->v.prepared_image_matches_visible_prefix(prepared_branch_image);
             assert(summary_aus(prepared_branch_image.branch_summary())
                 <= pre.branch.ephemeral->v.semantic_owned_aus()) by {
                 assert(summary_aus(prepared_branch_image.branch_summary())

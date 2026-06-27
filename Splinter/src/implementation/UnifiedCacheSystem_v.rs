@@ -22,10 +22,10 @@ use crate::implementation::AbstractSuperblock_v::{
 };
 use crate::implementation::AllocationBranchStack_v::normalize_value;
 use crate::implementation::AllocationBranchStackRefinement_v::append_puts;
-use crate::implementation::AnotherAtomicState_v::{
-    AtomicBranchImage, AtomicBranchState, AtomicJournalState,
-    query_receipts_read_addrs, to_branch_nodes, valid_request_reply_pair,
+use crate::implementation::AtomicBranchState_v::{
+    AtomicBranchImage, AtomicBranchState, query_receipts_read_addrs, to_branch_nodes,
 };
+use crate::implementation::AtomicJournalState_v::AtomicJournalState;
 use crate::implementation::Cache_v::Cache;
 use crate::implementation::CachedBranch_v::LoadedPathReceipt;
 use crate::implementation::CachingDiskBranch_v::sealed_summary_aus_between;
@@ -48,6 +48,14 @@ pub open spec fn singleton_key_seq(key: Key) -> Seq<Key>
 pub open spec fn singleton_message_seq(msg: Message) -> Seq<Message>
 {
     seq![msg]
+}
+
+pub open spec fn valid_request_reply_pair(req: Request, reply: Reply) -> bool
+{
+    &&& req.id == reply.id
+    &&& req.input is QueryInput <==> reply.output is QueryOutput
+    &&& req.input is PutInput <==> reply.output is PutOutput
+    &&& req.input is NoopInput <==> reply.output is NoopOutput
 }
 
 pub open spec fn cache_read_requests_disk_backed(

@@ -25,7 +25,8 @@ use crate::implementation::AbstractSuperblock_v::{
     marshalled_abstract_superblock_raw_wf,
     parse_abstract_superblock, superblock_matches,
 };
-use crate::implementation::AnotherAtomicState_v::{AtomicBranchState, AtomicJournalState};
+use crate::implementation::AtomicBranchState_v::{AtomicBranchImage, AtomicBranchState};
+use crate::implementation::AtomicJournalState_v::AtomicJournalState;
 use crate::implementation::Cache_v::{addr_maps_to_req, Cache, Entry, Slot, Status};
 use crate::implementation::CrashAwareCachingDiskBranch_v::CrashAwareCachingDiskBranch;
 use crate::implementation::CrashAwareCachingDiskJournal_v::CrashAwareCachingDiskJournal;
@@ -5130,7 +5131,7 @@ pub proof fn program_execute_query_refines(
     );
     assert(UnifiedCacheJournalRefinement::inv(journal_post));
 
-    assert(reads.dom() == crate::implementation::AnotherAtomicState_v::query_receipts_read_addrs(
+    assert(reads.dom() == crate::implementation::AtomicBranchState_v::query_receipts_read_addrs(
         receipts,
         receipts.len() as nat,
     ));
@@ -6485,7 +6486,7 @@ pub proof fn program_disk_execute_sync_begin_refines(
         seq_end: image.journal_seq_end,
         reads: crate::implementation::JournalTypes_v::to_journal_records(journal_reads),
     };
-    let branch_image = crate::implementation::AnotherAtomicState_v::AtomicBranchImage{
+    let branch_image = AtomicBranchImage{
         sealed_roots: image.branch_roots,
         seq_end: image.branch_seq_end,
     };

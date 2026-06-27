@@ -32,7 +32,7 @@ use crate::implementation::AbstractSuperblock_v::{
 use crate::implementation::AllocationBranchStack_v::{
     mini_allocator_add_aus_preserves_all_aus, normalize_value,
 };
-use crate::implementation::AnotherAtomicState_v::{
+use crate::implementation::AtomicBranchState_v::{
     AtomicBranchImage, AtomicBranchState, query_receipts_read_addrs,
 };
 use crate::implementation::Cache_v::Cache;
@@ -1845,7 +1845,7 @@ pub proof fn query_from_receipts_up_to_equiv(
     requires
         end <= receipts.len(),
     ensures
-        crate::implementation::AnotherAtomicState_v::query_from_receipts_up_to(receipts, end)
+        crate::implementation::AtomicBranchState_v::query_from_receipts_up_to(receipts, end)
             == crate::implementation::CachingDiskBranch_v::query_from_receipts_up_to(receipts, end),
     decreases end
 {
@@ -1861,7 +1861,7 @@ pub proof fn query_receipts_valid_equiv(
     key: Key,
 )
     requires
-        crate::implementation::AnotherAtomicState_v::query_receipts_valid(
+        crate::implementation::AtomicBranchState_v::query_receipts_valid(
             roots,
             receipts,
             read_nodes,
@@ -2133,8 +2133,8 @@ proof fn query_receipt_needed_addr_in_branch_projection(
         inv(src),
         src.superblock_loaded(),
         src.branch.metadata_loaded(),
-        crate::implementation::AnotherAtomicState_v::query_receipts_valid(
-            crate::implementation::AnotherAtomicState_v::query_roots(
+        crate::implementation::AtomicBranchState_v::query_receipts_valid(
+            crate::implementation::AtomicBranchState_v::query_roots(
                 src.branch.image.sealed_roots,
                 src.branch.active_branch,
             ),
@@ -2150,7 +2150,7 @@ proof fn query_receipt_needed_addr_in_branch_projection(
         addresses_in_aus(src.branch_projection_aus()).contains(addr),
 {
     let cdb = src.branch_caching_disk_state_i();
-    let roots = crate::implementation::AnotherAtomicState_v::query_roots(
+    let roots = crate::implementation::AtomicBranchState_v::query_roots(
         src.branch.image.sealed_roots,
         src.branch.active_branch,
     );
@@ -3060,11 +3060,11 @@ pub proof fn query_refines(
                 assert(AtomicBranchState::State::query(pre.branch, pre.branch, atomic_lbl)) by {
                     reveal(AtomicBranchState::State::query);
                 }
-                let roots = crate::implementation::AnotherAtomicState_v::query_roots(
+                let roots = crate::implementation::AtomicBranchState_v::query_roots(
                     pre.branch.image.sealed_roots,
                     pre.branch.active_branch,
                 );
-                assert(crate::implementation::AnotherAtomicState_v::query_receipts_valid(
+                assert(crate::implementation::AtomicBranchState_v::query_receipts_valid(
                     roots,
                     receipts,
                     read_nodes,
@@ -3113,7 +3113,7 @@ pub proof fn query_refines(
                 &&& 0 <= i < receipts.len()
                 &&& #[trigger] receipts[i].needed_addrs().contains(addr)
             };
-            let roots = crate::implementation::AnotherAtomicState_v::query_roots(
+            let roots = crate::implementation::AtomicBranchState_v::query_roots(
                 pre.branch.image.sealed_roots,
                 pre.branch.active_branch,
             );
@@ -3185,7 +3185,7 @@ pub proof fn query_refines(
     assert(CachingDisk::State::next(pre.branch_caching_disk_i(), post.branch_caching_disk_i(), cd_lbl));
     assert(CachingDisk::State::next(pre.branch_caching_disk_i(), pre.branch_caching_disk_i(), cd_lbl));
 
-    assert(crate::implementation::AnotherAtomicState_v::query_roots(
+    assert(crate::implementation::AtomicBranchState_v::query_roots(
         pre.branch.image.sealed_roots,
         pre.branch.active_branch,
     ) == crate::implementation::CachingDiskBranch_v::query_roots(
