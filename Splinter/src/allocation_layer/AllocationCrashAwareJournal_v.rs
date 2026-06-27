@@ -67,7 +67,7 @@ state_machine!{AllocationCrashAwareJournal{
         Crash{ keep_in_flight: bool },
     }
 
-    pub open spec(checked) fn image_matches_metadata(image: JournalImage, metadata: JournalMetadata) -> bool
+    pub open spec fn image_matches_metadata(image: JournalImage, metadata: JournalMetadata) -> bool
     {
         &&& image.first == metadata.first
         &&& image.tj.freshest_rec == metadata.freshest_rec

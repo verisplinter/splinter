@@ -28,7 +28,9 @@ use crate::implementation::CachedBranch_v::{
     root_summary_from_read, root_summary_read_valid,
 };
 use crate::implementation::CachedJournal_v::{CachedJournal, JournalSnapshot};
-use crate::implementation::CachingDiskBranch_v::{sealed_summary_aus_between, split_read_addrs};
+use crate::implementation::CachingDiskBranch_v::{
+    root_aus_up_to, sealed_summary_aus_between, split_read_addrs,
+};
 use crate::implementation::CachingDisk_v::addresses_in_aus;
 use crate::implementation::AbstractSuperblock_v::{
     AbstractSuperblockImage, empty_abstract_superblock_image, marshal_abstract_superblock,
@@ -421,9 +423,8 @@ impl AtomicBranchState::State {
 
     pub open spec fn metadata_loaded(self) -> bool
     {
-        forall |i: int| #![trigger self.image.sealed_roots[i]]
-            0 <= i < self.image.sealed_roots.len()
-            ==> self.branch_summary.contains_key(self.image.sealed_roots[i].au)
+        root_aus_up_to(self.image.sealed_roots, self.image.sealed_roots.len() as nat)
+            <= self.branch_summary.dom()
     }
 
     pub open spec fn seq_end(self) -> nat
@@ -578,7 +579,7 @@ impl AtomicBranchState::State {
                 assert(post.persistent_image == pre.persistent_image);
                 assert(post.image.sealed_roots == pre.image.sealed_roots.push(pre.active_branch.root.unwrap()));
                 assert(n <= pre.image.sealed_roots.len());
-                assert forall |i: int| 0 <= i < n implies
+                assert forall |i: int| #![auto] 0 <= i < n implies
                     post.image.sealed_roots[i] == pre.image.sealed_roots[i]
                 by {
                     assert(post.image.sealed_roots[i] == pre.image.sealed_roots.push(pre.active_branch.root.unwrap())[i]);
@@ -614,7 +615,7 @@ impl AtomicBranchState::State {
                     assert(branch_image.sealed_roots == pre.image.sealed_roots);
                     assert(branch_image.seq_end == pre.seq_end);
                     assert(branch_image.sealed_roots.len() == post.image.sealed_roots.len());
-                    assert forall |i: int| 0 <= i < branch_image.sealed_roots.len() implies
+                    assert forall |i: int| #![auto] 0 <= i < branch_image.sealed_roots.len() implies
                         post.image.sealed_roots.take(branch_image.sealed_roots.len() as int)[i]
                             == branch_image.sealed_roots[i]
                     by {
@@ -690,7 +691,7 @@ impl AtomicBranchState::State {
                     assert(n <= pre.image.sealed_roots.len());
                     assert(pre.image.sealed_roots.take(n as int) == image.sealed_roots);
                     assert(post.image.sealed_roots == pre.image.sealed_roots.push(pre.active_branch.root.unwrap()));
-                    assert forall |i: int| 0 <= i < n implies
+                    assert forall |i: int| #![auto] 0 <= i < n implies
                         post.image.sealed_roots[i] == pre.image.sealed_roots[i]
                     by {
                         assert(post.image.sealed_roots[i] == pre.image.sealed_roots.push(pre.active_branch.root.unwrap())[i]);

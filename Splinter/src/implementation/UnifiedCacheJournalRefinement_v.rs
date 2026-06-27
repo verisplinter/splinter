@@ -1084,6 +1084,13 @@ impl UnifiedCacheJournalSource {
             =~= addresses_in_aus(self.journal_image_projection_aus_i(image))) by {
             assert(self.journal_projection_aus() =~= self.journal_image_projection_aus_i(image));
             assert(state.visible_lsn_au_index() == source_index) by {
+                assert(self.i().semantic_inv());
+                assert(state.disk.addrs_clean_or_evictable(state.disk.cache.dom()));
+                state.disk.clean_cache_visible_eq_persistent();
+                assert(state.disk.visible() == state.disk.persistent);
+                assert(state.journal_disk_view().entries
+                    == state.persistent_journal_disk_view(frozen.snapshot).entries);
+                assert(state.persistent_journal_disk_view(frozen.snapshot) == source_tj.disk_view);
                 assert(state.journal_disk_view() == source_tj.disk_view);
             }
             assert(state.lsn_au_index_or_empty() == source_index);
@@ -1619,6 +1626,7 @@ pub proof fn init_refines(pre: SystemModel::State<UnifiedCacheProgramModel>)
                     }
                 );
             }
+            src.journal_caching_disk_i().empty_status_clean_pages_agree();
             assert(src.journal_caching_disk_i().inv());
 
             assert(src.persistent_journal_image_i() == CachingDiskJournalImage::empty()) by {
@@ -1970,11 +1978,14 @@ pub proof fn load_index_refines(
             pre.journal_caching_disk_i().cache.dom(),
         ));
         assert(pre.journal_caching_disk_i().cache.dom().contains(addr));
+        pre.journal_caching_disk_i().addr_clean_or_evictable(
+            pre.journal_caching_disk_i().cache.dom(),
+            addr,
+        );
         assert(pre.journal_caching_disk_i().status.contains_key(addr));
         assert(pre.journal_caching_disk_i().status[addr] == PageStatus::Clean);
-        assert(pre.journal_caching_disk_i().persistent.contains_key(addr));
-        assert(pre.journal_caching_disk_i().persistent[addr]
-            == pre.journal_caching_disk_i().cache[addr]);
+        assert(pre.journal_caching_disk_i().inv());
+        pre.journal_caching_disk_i().clean_page_agrees(addr);
         assert(pre.journal_caching_disk_i().persistent[addr] == pre.disk.content[addr]);
         assert(journal_reads[addr] == cache_reads[addr]);
         assert(source_reads[addr] == image_entries[addr]);
@@ -2006,7 +2017,7 @@ pub proof fn load_index_refines(
             implies aus.contains(au) by {
             assert(loose_index.values().contains(au));
             assert(tight_index.values().contains(au));
-            let lsn = choose |lsn: nat| tight_index.contains_key(lsn) && tight_index[lsn] == au;
+            let lsn = choose |lsn: nat| #![auto] tight_index.contains_key(lsn) && tight_index[lsn] == au;
             assert(tight_index.contains_key(lsn));
             assert(tight_index[lsn] == au);
             assert(tight_dv.build_lsn_au_index_page_walk(root).contains_key(lsn));

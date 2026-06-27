@@ -90,7 +90,7 @@ impl UnifiedCacheProgramModel {
 
     pub open spec fn valid_disk_transition(pre: Self, post: Self, info: ProgramDiskInfo) -> bool
     {
-        exists |step: UnifiedCacheSystem::Step| {
+        exists |step: UnifiedCacheSystem::Step| #![auto] {
             &&& UnifiedCacheSystem::State::next_by(
                 pre.state,
                 post.state,

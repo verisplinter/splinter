@@ -455,6 +455,7 @@ state_machine!{ CrashAwareCachingDiskJournal {
     #[inductive(load_ephemeral)]
     fn load_ephemeral_inductive(pre: Self, post: Self, lbl: Label) {
         let image = pre.persistent->image;
+        CachingDisk::State::persistent_only_inv(image.persistent);
         let loaded = CachingDiskJournal::State::load_from_persistent(
             image.snapshot,
             image.persistent,

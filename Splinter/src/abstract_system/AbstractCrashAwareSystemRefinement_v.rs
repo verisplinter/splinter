@@ -249,7 +249,7 @@ verus! {
     {
     }
 
-    pub closed spec(checked) fn journal_overlaps_agree(j0: Journal, j1: Journal) -> bool
+    pub closed spec fn journal_overlaps_agree(j0: Journal, j1: Journal) -> bool
     recommends
         j0.wf(),
         j1.wf(),
@@ -300,7 +300,7 @@ verus! {
             &&& self.journal.persistent.seq_end <= self.ephemeral_seq_end()
         }
 
-        pub open spec(checked) fn inv_ephemeral_value_agreement(self) -> bool
+        pub open spec fn inv_ephemeral_value_agreement(self) -> bool
             recommends
                 self.wf(),
                 self.components_loaded(),
@@ -331,7 +331,7 @@ verus! {
             self.journal.frozen is Some
         }
 
-        pub open spec(checked) fn inv_frozen_journal_value_agreement(self) -> bool
+        pub open spec fn inv_frozen_journal_value_agreement(self) -> bool
             recommends
                 self.wf(),
                 self.components_loaded(),
@@ -400,7 +400,7 @@ verus! {
             &&& if_journal.seq_end <= self.ephemeral_seq_end()
         }
 
-        pub open spec(checked) fn inv_commit_started_value_agreement(self) -> bool
+        pub open spec fn inv_commit_started_value_agreement(self) -> bool
             recommends
                 self.commit_started(),
                 self.wf(),

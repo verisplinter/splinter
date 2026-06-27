@@ -1445,7 +1445,7 @@ pub proof fn build_lsn_au_index_from_reads_au_walk_values_in_entries(
     full_dv.build_lsn_au_index_page_walk_exist_valid_entries(root);
     assert(full_dv.index_keys_exist_valid_entries(full_dv.build_lsn_au_index_page_walk(root)));
     assert(full_dv.index_keys_exist_valid_entries(full_index));
-    let lsn = choose |lsn: LSN| full_index.contains_key(lsn) && full_index[lsn] == au;
+    let lsn = choose |lsn: LSN| #![auto] full_index.contains_key(lsn) && full_index[lsn] == au;
     let addr = full_dv.instantiate_index_keys_exist_valid_entries(full_index, lsn);
     assert(full_dv.addr_supports_lsn(addr, lsn));
     assert(entries.dom().contains(addr));

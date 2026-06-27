@@ -338,7 +338,7 @@ impl DiskView {
                 assert(index[prior_lsn] == prior);
             }
         } else {
-            let witness_lsn: LSN = choose |lsn: LSN| index.contains_key(lsn) && index[lsn] == addr;
+            let witness_lsn: LSN = choose |lsn: LSN| #![auto] index.contains_key(lsn) && index[lsn] == addr;
             assert(root_update.contains_key(witness_lsn) ==> index[witness_lsn] == root_addr);
             assert(!root_update.contains_key(witness_lsn));
             assert(sub_index.contains_key(witness_lsn));

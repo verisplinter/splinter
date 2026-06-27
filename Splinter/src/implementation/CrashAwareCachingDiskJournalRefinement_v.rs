@@ -209,6 +209,7 @@ impl CrashAwareCachingDiskJournal::State {
         assert(AllocationJournal::State::next(state.i(), state.i(), freeze_lbl)) by {
             reveal(AllocationJournal::State::next);
         }
+        state.semantic_inv_implies_i_inv();
         AllocationJournal::State::frozen_journal_is_valid_image(
             state.i(),
             state.i(),
@@ -391,6 +392,7 @@ impl CrashAwareCachingDiskJournal::State {
         assert(AllocationJournal::State::next(state.i(), state.i(), freeze_lbl)) by {
             reveal(AllocationJournal::State::next);
         }
+        state.semantic_inv_implies_i_inv();
         AllocationJournal::State::frozen_journal_is_valid_image(
             state.i(),
             state.i(),
@@ -542,6 +544,7 @@ impl CrashAwareCachingDiskJournal::State {
                     == state.i().disk_view.entries.restrict(allocation_prefix));
                 assert(state.i().disk_view.entries.contains_key(addr));
                 assert(state.i().disk_view.entries[addr] == state.i().tj().disk_view.entries[addr]) by {
+                    state.semantic_inv_implies_i_inv();
                     assert(state.i().tj().disk_view.is_sub_disk(state.i().disk_view));
                 }
                 assert(state.i().disk_view.entries.restrict(allocation_prefix).contains_key(addr));
@@ -729,6 +732,7 @@ impl CrashAwareCachingDiskJournal::State {
         assert(AllocationJournal::State::next(state.i(), state.i(), freeze_lbl)) by {
             reveal(AllocationJournal::State::next);
         }
+        state.semantic_inv_implies_i_inv();
         AllocationJournal::State::frozen_journal_is_valid_image(
             state.i(),
             state.i(),
@@ -845,6 +849,7 @@ impl CrashAwareCachingDiskJournal::State {
                 let meta = frozen_image_metadata_i(frozen);
                 &&& materialized == image
                 &&& materialized.wf()
+                &&& loaded.i().frozen_metadata_valid(meta)
                 &&& loaded.i().acceptable_frozen_image(meta, materialized.i())
             }),
     {
@@ -925,6 +930,8 @@ impl CrashAwareCachingDiskJournal::State {
         assert(AllocationJournal::State::next(loaded.i(), loaded.i(), freeze_lbl)) by {
             reveal(AllocationJournal::State::next);
         }
+        assert(loaded.i().frozen_metadata_valid(meta));
+        loaded.semantic_inv_implies_i_inv();
         AllocationJournal::State::frozen_journal_is_valid_image(
             loaded.i(),
             loaded.i(),
@@ -1313,6 +1320,8 @@ impl CrashAwareCachingDiskJournal::State {
                 addr => {}
             );
         }
+        loaded.disk.addrs_clean_or_evictable_from_forall(loaded.disk.cache.dom());
+        assert(loaded.i().frozen_metadata_valid(frozen_image_metadata_i(image.metadata())));
         assert(AllocationCrashAwareJournal::State::next_by(
             self.i(),
             post.i(),

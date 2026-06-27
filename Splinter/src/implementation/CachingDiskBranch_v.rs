@@ -226,7 +226,7 @@ pub proof fn root_aus_up_to_full(
             assert(sealed_roots.to_set().contains(sealed_roots[idx]));
             crate::disk::GenericDisk_v::to_aus_domain(sealed_roots.to_set());
         } else if to_aus(sealed_roots.to_set()).contains(au) {
-            let root = choose |root: Address| sealed_roots.to_set().contains(root) && root.au == au;
+            let root = choose |root: Address| #![auto] sealed_roots.to_set().contains(root) && root.au == au;
             let idx = choose |i: int| 0 <= i < sealed_roots.len() && sealed_roots[i] == root;
             root_aus_up_to_contains(sealed_roots, sealed_roots.len() as nat, idx);
         }
@@ -320,7 +320,8 @@ pub proof fn sealed_summary_aus_up_to_push_insert_unchanged(
     requires
         end <= sealed_roots.len(),
         !branch_summary.contains_key(new_root.au),
-        forall |i: int| 0 <= i < end ==> branch_summary.contains_key(sealed_roots[i].au),
+        forall |i: int| #![trigger branch_summary.contains_key(sealed_roots[i].au)]
+            0 <= i < end ==> branch_summary.contains_key(sealed_roots[i].au),
     ensures
         sealed_summary_aus_up_to(
             sealed_roots.push(new_root),
@@ -433,14 +434,38 @@ pub proof fn clean_aus_persistent_visible_eq(disk: CachingDisk::State, aus: Set<
             if addresses_in_aus(aus).contains(addr) {
                 if disk.cache.contains_key(addr) {
                     assert(disk.aus_clean_or_evictable(aus));
+                    disk.au_clean_or_evictable(aus, addr);
                     assert(disk.status.contains_key(addr));
                     assert(disk.status[addr] == PageStatus::Clean);
-                    assert(disk.persistent.contains_key(addr));
-                    assert(disk.persistent[addr] == disk.cache[addr]);
+                    disk.clean_page_agrees(addr);
                 }
             }
         }
     );
+}
+
+pub proof fn clean_aus_to_branch_nodes_eq(
+    disk: CachingDisk::State,
+    aus: Set<AU>,
+    addr: Address,
+)
+    requires
+        disk.inv(),
+        disk.aus_clean_or_evictable(aus),
+        addresses_in_aus(aus).contains(addr),
+        disk.persistent.contains_key(addr),
+        disk.visible().contains_key(addr),
+    ensures
+        to_branch_nodes(disk.visible())[addr] == to_branch_nodes(disk.persistent)[addr],
+{
+    clean_aus_persistent_visible_eq(disk, aus);
+    assert(disk.persistent.restrict(addresses_in_aus(aus))
+        == disk.visible().restrict(addresses_in_aus(aus)));
+    assert(disk.persistent.restrict(addresses_in_aus(aus)).contains_key(addr));
+    assert(disk.visible().restrict(addresses_in_aus(aus)).contains_key(addr));
+    assert(disk.persistent.restrict(addresses_in_aus(aus))[addr] == disk.persistent[addr]);
+    assert(disk.visible().restrict(addresses_in_aus(aus))[addr] == disk.visible()[addr]);
+    assert(disk.visible()[addr] == disk.persistent[addr]);
 }
 
 pub proof fn disk_growth_visible_preserves_outside_aus(
@@ -454,12 +479,14 @@ pub proof fn disk_growth_visible_preserves_outside_aus(
         post_disk.cache.dom() - pre_disk.cache.dom() <= addresses_in_aus(aus),
         post_disk.persistent.dom() - pre_disk.persistent.dom() <= addresses_in_aus(aus),
     ensures
-        forall |addr: Address| !addresses_in_aus(aus).contains(addr) ==> {
+        forall |addr: Address| #![trigger addresses_in_aus(aus).contains(addr)]
+            !addresses_in_aus(aus).contains(addr) ==> {
             &&& post_disk.visible().contains_key(addr) <==> pre_disk.visible().contains_key(addr)
             &&& post_disk.visible().contains_key(addr) ==> post_disk.visible()[addr] == pre_disk.visible()[addr]
         },
 {
-    assert forall |addr: Address| !addresses_in_aus(aus).contains(addr) implies {
+    assert forall |addr: Address| #![trigger addresses_in_aus(aus).contains(addr)]
+        !addresses_in_aus(aus).contains(addr) implies {
         &&& post_disk.visible().contains_key(addr) <==> pre_disk.visible().contains_key(addr)
         &&& post_disk.visible().contains_key(addr) ==> post_disk.visible()[addr] == pre_disk.visible()[addr]
     } by {
@@ -524,7 +551,7 @@ pub proof fn disk_growth_visible_aus_subset(
     disk_growth_visible_preserves_outside_aus(pre_disk, post_disk, aus);
     assert forall |au: AU| #[trigger] to_aus(post_disk.visible().dom()).contains(au)
         implies (to_aus(pre_disk.visible().dom()) + aus).contains(au) by {
-        let addr = choose |addr: Address| post_disk.visible().dom().contains(addr) && addr.au == au;
+        let addr = choose |addr: Address| #![auto] post_disk.visible().dom().contains(addr) && addr.au == au;
         if addresses_in_aus(aus).contains(addr) {
             assert(aus.contains(au));
         } else {
@@ -569,15 +596,16 @@ pub proof fn disk_growth_preserves_aus_clean_or_evictable(
             assert(false);
         }
         assert(pre_disk.status.contains_key(addr));
+        pre_disk.au_clean_or_evictable(clean_aus, addr);
         assert(pre_disk.status[addr] == PageStatus::Clean);
-        assert(pre_disk.persistent.contains_key(addr));
-        assert(pre_disk.persistent[addr] == pre_disk.cache[addr]);
+        pre_disk.clean_page_agrees(addr);
         assert(post_disk.status.contains_key(addr));
         assert(post_disk.status[addr] == pre_disk.status[addr]);
         assert(post_disk.persistent.contains_key(addr));
         assert(post_disk.persistent[addr] == pre_disk.persistent[addr]);
         assert(post_disk.cache[addr] == pre_disk.cache[addr]);
     }
+    post_disk.aus_clean_or_evictable_from_forall(clean_aus);
 }
 
 pub proof fn disk_growth_preserves_sealed_nodes(
@@ -748,7 +776,8 @@ pub proof fn disk_growth_preserves_loaded_metadata(
             }
         }
     };
-    assert forall |i: int| 0 <= i < pre.sealed_roots.len() implies {
+    assert forall |i: int| #![trigger pre.branch_summary.contains_key(pre.sealed_roots[i].au)]
+        0 <= i < pre.sealed_roots.len() implies {
         &&& pre.branch_summary.contains_key(pre.sealed_roots[i].au)
         &&& root_summary_from_read(pre.sealed_roots[i], to_branch_nodes(post_disk.visible()))
             == pre.branch_summary[pre.sealed_roots[i].au]
@@ -831,6 +860,11 @@ pub proof fn disk_growth_preserves_loaded_metadata(
             }
         by {
         }
+        loaded_branch_summary_agrees_from_forall(
+            pre.sealed_roots,
+            to_branch_nodes(post_disk.visible()),
+            pre.branch_summary,
+        );
     };
 }
 
@@ -962,7 +996,8 @@ pub proof fn access_preserves_loaded_metadata(
             }
         }
     };
-    assert forall |i: int| 0 <= i < pre.sealed_roots.len() implies {
+    assert forall |i: int| #![trigger pre.branch_summary.contains_key(pre.sealed_roots[i].au)]
+        0 <= i < pre.sealed_roots.len() implies {
         &&& pre.branch_summary.contains_key(pre.sealed_roots[i].au)
         &&& root_summary_from_read(pre.sealed_roots[i], to_branch_nodes(post_disk.visible()))
             == pre.branch_summary[pre.sealed_roots[i].au]
@@ -1045,6 +1080,11 @@ pub proof fn access_preserves_loaded_metadata(
             }
         by {
         }
+        loaded_branch_summary_agrees_from_forall(
+            pre.sealed_roots,
+            to_branch_nodes(post_disk.visible()),
+            pre.branch_summary,
+        );
     };
 }
 
@@ -1694,6 +1734,7 @@ pub open spec fn completed_branch_summary_from_reads(
     branch_summary_from_reads_up_to(sealed_roots, read_nodes, sealed_roots.len() as nat)
 }
 
+#[verifier(opaque)]
 pub open spec fn loaded_branch_summary_agrees(
     sealed_roots: Seq<Address>,
     read_nodes: LoadedBranch,
@@ -1710,6 +1751,59 @@ pub open spec fn loaded_branch_summary_agrees(
         }
 }
 
+pub proof fn loaded_branch_summary_agrees_domain_contains(
+    sealed_roots: Seq<Address>,
+    read_nodes: LoadedBranch,
+    branch_summary: Map<AU, Summary>,
+    au: AU,
+)
+    requires
+        loaded_branch_summary_agrees(sealed_roots, read_nodes, branch_summary),
+        branch_summary.dom().contains(au),
+    ensures
+        root_aus_up_to(sealed_roots, sealed_roots.len() as nat).contains(au),
+{
+    reveal(loaded_branch_summary_agrees);
+}
+
+pub proof fn loaded_branch_summary_agrees_at(
+    sealed_roots: Seq<Address>,
+    read_nodes: LoadedBranch,
+    branch_summary: Map<AU, Summary>,
+    i: int,
+)
+    requires
+        loaded_branch_summary_agrees(sealed_roots, read_nodes, branch_summary),
+        0 <= i < sealed_roots.len(),
+        branch_summary.contains_key(sealed_roots[i].au),
+    ensures
+        root_summary_read_valid(sealed_roots[i], read_nodes),
+        branch_summary[sealed_roots[i].au]
+            == root_summary_from_read(sealed_roots[i], read_nodes),
+{
+    reveal(loaded_branch_summary_agrees);
+}
+
+pub proof fn loaded_branch_summary_agrees_from_forall(
+    sealed_roots: Seq<Address>,
+    read_nodes: LoadedBranch,
+    branch_summary: Map<AU, Summary>,
+)
+    requires
+        branch_summary.dom() <= root_aus_up_to(sealed_roots, sealed_roots.len() as nat),
+        forall |i: int| #![trigger sealed_roots[i]]
+            0 <= i < sealed_roots.len() && branch_summary.contains_key(sealed_roots[i].au)
+            ==> {
+                &&& root_summary_read_valid(sealed_roots[i], read_nodes)
+                &&& branch_summary[sealed_roots[i].au]
+                    == root_summary_from_read(sealed_roots[i], read_nodes)
+            },
+    ensures
+        loaded_branch_summary_agrees(sealed_roots, read_nodes, branch_summary),
+{
+    reveal(loaded_branch_summary_agrees);
+}
+
 pub proof fn branch_summary_from_reads_up_to_ensures(
     sealed_roots: Seq<Address>,
     read_nodes: LoadedBranch,
@@ -1720,7 +1814,8 @@ pub proof fn branch_summary_from_reads_up_to_ensures(
         end <= sealed_roots.len(),
         crate::disk::GenericDisk_v::set_addrs_disjoint_aus(sealed_roots.to_set()),
         branch_summary_reads_valid(sealed_roots, read_nodes),
-        forall |i: int| 0 <= i < end ==> {
+        forall |i: int| #![trigger branch_summary.contains_key(sealed_roots[i].au)]
+            0 <= i < end ==> {
             &&& branch_summary.contains_key(sealed_roots[i].au)
             &&& root_summary_from_read(sealed_roots[i], read_nodes)
                 == branch_summary[sealed_roots[i].au]
@@ -1777,8 +1872,15 @@ pub proof fn branch_summary_from_reads_up_to_ensures(
                 [sealed_roots[i].au] == branch_summary[sealed_roots[i].au]
         by {
             if i == idx {
+                assert(branch_summary.contains_key(root.au));
+                assert(root == sealed_roots[idx]);
+                assert(sealed_roots[i] == root);
+                assert(sealed_roots[i].au == root.au);
+                assert(root_summary_from_read(root, read_nodes) == branch_summary[root.au]);
                 assert(branch_summary_from_reads_up_to(sealed_roots, read_nodes, end)[root.au]
                     == root_summary_from_read(root, read_nodes));
+                assert(branch_summary_from_reads_up_to(sealed_roots, read_nodes, end)[sealed_roots[i].au]
+                    == branch_summary[sealed_roots[i].au]);
             } else {
                 assert(0 <= i < end - 1);
                 if sealed_roots[i].au == root.au {
@@ -1791,9 +1893,15 @@ pub proof fn branch_summary_from_reads_up_to_ensures(
                     }
                     assert(root_summary_from_read(sealed_roots[i], read_nodes)
                         == root_summary_from_read(root, read_nodes));
+                    assert(branch_summary.contains_key(root.au));
+                    assert(root_summary_from_read(root, read_nodes) == branch_summary[root.au]);
+                    assert(branch_summary_from_reads_up_to(sealed_roots, read_nodes, end)[sealed_roots[i].au]
+                        == branch_summary[sealed_roots[i].au]);
                 } else {
                     assert(branch_summary_from_reads_up_to(sealed_roots, read_nodes, end)[sealed_roots[i].au]
                         == branch_summary_from_reads_up_to(sealed_roots, read_nodes, (end - 1) as nat)[sealed_roots[i].au]);
+                    assert(branch_summary_from_reads_up_to(sealed_roots, read_nodes, end)[sealed_roots[i].au]
+                        == branch_summary[sealed_roots[i].au]);
                 }
             }
         };
@@ -2472,7 +2580,7 @@ pub proof fn empty_caching_disk_branch_image_summary_aus_empty()
     assert(branch_summary.values() =~= Set::<Set<AU>>::empty()) by {
         assert forall |s: Set<AU>| #[trigger] branch_summary.values().contains(s)
             implies Set::<Set<AU>>::empty().contains(s) by {
-            let au = choose |au: AU| branch_summary.contains_key(au) && branch_summary[au] == s;
+            let au = choose |au: AU| #![auto] branch_summary.contains_key(au) && branch_summary[au] == s;
             assert(false);
         }
     }
@@ -2882,8 +2990,9 @@ state_machine!{ CachingDiskBranch {
         assert(post.loaded_branch_summary_agrees()) by {
             assert(post.branch_summary.dom() =~= Set::<AU>::empty());
             assert(post.branch_summary.dom() <= root_aus_up_to(post.sealed_roots, post.sealed_roots.len() as nat));
-            assert forall |i: int| #![trigger post.sealed_roots[i]]
-                0 <= i < post.sealed_roots.len() && post.branch_summary.contains_key(post.sealed_roots[i].au)
+            assert forall |i: int|
+                0 <= i < post.sealed_roots.len()
+                    && #[trigger] post.branch_summary.contains_key(post.sealed_roots[i].au)
                 implies {
                     &&& root_summary_read_valid(post.sealed_roots[i], post.visible_branch_nodes())
                     &&& post.branch_summary[post.sealed_roots[i].au]
@@ -2892,6 +3001,11 @@ state_machine!{ CachingDiskBranch {
             by {
                 assert(false);
             }
+            loaded_branch_summary_agrees_from_forall(
+                post.sealed_roots,
+                post.visible_branch_nodes(),
+                post.branch_summary,
+            );
         };
         assert(post.visible_branch_nodes() == image.persistent_branch_nodes()) by {
             assert_maps_equal!(post.visible_branch_nodes(), image.persistent_branch_nodes(), addr => {
@@ -2958,6 +3072,11 @@ state_machine!{ CachingDiskBranch {
             by {
                 assert(false);
             }
+            post.disk.aus_clean_or_evictable_from_forall(sealed_summary_aus_up_to(
+                post.sealed_roots,
+                post.interpreted_branch_summary(),
+                post.persisted_root_count,
+            ));
         };
         assert(active_loaded_nodes_of(post.disk, post.mini_allocator) == Map::<Address, BranchNode>::empty()) by {
             assert_maps_equal!(
@@ -3057,11 +3176,14 @@ state_machine!{ CachingDiskBranch {
             by {
                 if old_aus.contains(addr.au) {
                     assert(pre.disk.aus_clean_or_evictable(old_aus));
+                    pre.disk.au_clean_or_evictable(old_aus, addr);
                 } else {
                     assert(observed_aus.contains(addr.au));
                     assert(post.disk.aus_clean_or_evictable(observed_aus));
+                    post.disk.au_clean_or_evictable(observed_aus, addr);
                 }
             }
+            post.disk.aus_clean_or_evictable_from_forall(new_aus);
         };
     }
 
@@ -3138,6 +3260,12 @@ state_machine!{ CachingDiskBranch {
                     by {
                         if pre.branch_summary.dom().contains(au) {
                             assert(pre.loaded_branch_summary_agrees());
+                            loaded_branch_summary_agrees_domain_contains(
+                                pre.sealed_roots,
+                                pre.visible_branch_nodes(),
+                                pre.branch_summary,
+                                au,
+                            );
                         } else {
                             assert(au == root.au);
                             let idx = choose |i: int| 0 <= i < pre.sealed_roots.len()
@@ -3145,9 +3273,9 @@ state_machine!{ CachingDiskBranch {
                             root_aus_up_to_contains(pre.sealed_roots, pre.sealed_roots.len() as nat, idx);
                         }
                     }
-                    assert forall |i: int| #![trigger post.sealed_roots[i]]
+                    assert forall |i: int|
                         0 <= i < post.sealed_roots.len()
-                            && post.branch_summary.contains_key(post.sealed_roots[i].au)
+                            && #[trigger] post.branch_summary.contains_key(post.sealed_roots[i].au)
                         implies {
                             &&& root_summary_read_valid(post.sealed_roots[i], post.visible_branch_nodes())
                             &&& post.branch_summary[post.sealed_roots[i].au]
@@ -3155,9 +3283,45 @@ state_machine!{ CachingDiskBranch {
                         }
                     by {
                         assert(branch_summary_reads_valid(pre.sealed_roots, pre.visible_branch_nodes()));
-                        if pre.branch_summary.contains_key(post.sealed_roots[i].au) {
-                            assert(pre.loaded_branch_summary_agrees());
-                        } else {
+	                        if pre.branch_summary.contains_key(post.sealed_roots[i].au) {
+	                            assert(pre.loaded_branch_summary_agrees());
+	                            loaded_branch_summary_agrees_at(
+	                                pre.sealed_roots,
+	                                pre.visible_branch_nodes(),
+	                                pre.branch_summary,
+	                                i,
+	                            );
+	                            assert(pre.sealed_roots[i] == post.sealed_roots[i]);
+	                            if post.sealed_roots[i].au == root.au {
+	                                assert(pre.sealed_roots.to_set().contains(post.sealed_roots[i]));
+	                                assert(pre.sealed_roots.to_set().contains(root));
+	                                if post.sealed_roots[i] != root {
+	                                    assert(addrs_with_different_au(post.sealed_roots[i], root));
+	                                    assert(false);
+	                                }
+	                                assert(read_nodes[root] == post.visible_branch_nodes()[root]) by {
+	                                    assert(reads.contains_key(root));
+	                                    assert(reads <= pre.disk.cache);
+	                                    query_read_node_matches_visible(pre.disk, reads, root);
+	                                }
+	                                if read_nodes[root] is Index {
+	                                    let aux = read_nodes[root]->aux_ptr.unwrap();
+	                                    assert(read_nodes.contains_key(aux));
+	                                    assert(reads.contains_key(aux));
+	                                    assert(reads <= pre.disk.cache);
+	                                    query_read_node_matches_visible(pre.disk, reads, aux);
+	                                    assert(read_nodes[aux] == post.visible_branch_nodes()[aux]);
+	                                }
+	                                assert(root_summary_from_read(root, read_nodes)
+	                                    == root_summary_from_read(root, post.visible_branch_nodes()));
+	                                assert(discovered_aus
+	                                    == root_summary_from_read(root, post.visible_branch_nodes()));
+	                                assert(post.branch_summary[post.sealed_roots[i].au] == discovered_aus);
+	                            } else {
+	                                assert(post.branch_summary[post.sealed_roots[i].au]
+	                                    == pre.branch_summary[post.sealed_roots[i].au]);
+	                            }
+	                        } else {
                             assert(post.sealed_roots[i].au == root.au);
                             assert(post.sealed_roots.to_set().contains(post.sealed_roots[i]));
                             assert(pre.sealed_roots.to_set().contains(root));
@@ -3169,11 +3333,27 @@ state_machine!{ CachingDiskBranch {
                             assert(read_nodes[root] == post.visible_branch_nodes()[root]) by {
                                 assert(reads.contains_key(root));
                                 assert(reads <= pre.disk.cache);
-                                assert(pre.disk.cache.contains_key(root));
-                                assert(pre.disk.visible()[root] == pre.disk.cache[root]);
+                                query_read_node_matches_visible(pre.disk, reads, root);
                             }
-	                        }
-	                    }
+                            if read_nodes[root] is Index {
+                                let aux = read_nodes[root]->aux_ptr.unwrap();
+                                assert(read_nodes.contains_key(aux));
+                                assert(reads.contains_key(aux));
+                                assert(reads <= pre.disk.cache);
+                                query_read_node_matches_visible(pre.disk, reads, aux);
+                                assert(read_nodes[aux] == post.visible_branch_nodes()[aux]);
+                            }
+                            assert(root_summary_from_read(root, read_nodes)
+                                == root_summary_from_read(root, post.visible_branch_nodes()));
+                            assert(discovered_aus
+                                == root_summary_from_read(root, post.visible_branch_nodes()));
+		                        }
+		                    }
+	                    loaded_branch_summary_agrees_from_forall(
+	                        post.sealed_roots,
+	                        post.visible_branch_nodes(),
+	                        post.branch_summary,
+	                    );
 	                };
 	                if post.metadata_loaded {
 	                    assert(root_aus_up_to(post.sealed_roots, post.sealed_roots.len() as nat)
@@ -3199,36 +3379,56 @@ state_machine!{ CachingDiskBranch {
 	                                        post.sealed_roots,
 	                                        post.sealed_roots.len() as nat,
 	                                        au,
-	                                    );
-	                                    assert(post.sealed_roots[idx].au == au);
-	                                    assert(post.branch_summary.contains_key(post.sealed_roots[idx].au));
-	                                    assert(post.branch_summary[au]
-	                                        == root_summary_from_read(
-	                                            post.sealed_roots[idx],
-	                                            post.visible_branch_nodes(),
+		                                    );
+		                                    assert(post.sealed_roots[idx].au == au);
+		                                    assert(post.branch_summary.contains_key(post.sealed_roots[idx].au));
+		                                    assert(post.loaded_branch_summary_agrees());
+		                                    loaded_branch_summary_agrees_at(
+		                                        post.sealed_roots,
+		                                        post.visible_branch_nodes(),
+		                                        post.branch_summary,
+		                                        idx,
+		                                    );
+		                                    assert(post.branch_summary[au]
+		                                        == root_summary_from_read(
+		                                            post.sealed_roots[idx],
+		                                            post.visible_branch_nodes(),
 	                                        ));
 	                                    assert(post.interpreted_branch_summary()[au]
 	                                        == root_summary_from_read(
 	                                            post.sealed_roots[idx],
 	                                            post.visible_branch_nodes(),
 	                                        ));
-	                                }
-	                                if post.branch_summary.contains_key(au) {
-	                                    assert(post.branch_summary.dom().contains(au));
-	                                    assert(root_aus_up_to(
-	                                        post.sealed_roots,
-	                                        post.sealed_roots.len() as nat,
-	                                    ).contains(au));
+		                                }
+		                                if post.branch_summary.contains_key(au) {
+		                                    assert(post.branch_summary.dom().contains(au));
+		                                    assert(post.loaded_branch_summary_agrees());
+		                                    loaded_branch_summary_agrees_domain_contains(
+		                                        post.sealed_roots,
+		                                        post.visible_branch_nodes(),
+		                                        post.branch_summary,
+		                                        au,
+		                                    );
+		                                    assert(root_aus_up_to(
+		                                        post.sealed_roots,
+		                                        post.sealed_roots.len() as nat,
+		                                    ).contains(au));
 	                                    let idx = root_aus_up_to_member_has_index(
 	                                        post.sealed_roots,
 	                                        post.sealed_roots.len() as nat,
 	                                        au,
-	                                    );
-	                                    assert(post.sealed_roots[idx].au == au);
-	                                    assert(post.interpreted_branch_summary().contains_key(au));
-	                                    assert(post.branch_summary[au]
-	                                        == root_summary_from_read(
-	                                            post.sealed_roots[idx],
+		                                    );
+		                                    assert(post.sealed_roots[idx].au == au);
+		                                    assert(post.interpreted_branch_summary().contains_key(au));
+		                                    loaded_branch_summary_agrees_at(
+		                                        post.sealed_roots,
+		                                        post.visible_branch_nodes(),
+		                                        post.branch_summary,
+		                                        idx,
+		                                    );
+		                                    assert(post.branch_summary[au]
+		                                        == root_summary_from_read(
+		                                            post.sealed_roots[idx],
 	                                            post.visible_branch_nodes(),
 	                                        ));
 	                                    assert(post.interpreted_branch_summary()[au]
@@ -4197,11 +4397,11 @@ state_machine!{ CachingDiskBranch {
             }
         };
         access_preserves_loaded_metadata(pre, post.disk, reads, writes);
-        assert(branch_summary_reads_valid(post.sealed_roots, post.visible_branch_nodes())) by {
-            assert forall |i: int| #![trigger post.sealed_roots[i]]
-                0 <= i < post.sealed_roots.len()
-                implies root_summary_read_valid(post.sealed_roots[i], post.visible_branch_nodes())
-            by {
+	        assert(branch_summary_reads_valid(post.sealed_roots, post.visible_branch_nodes())) by {
+	            assert forall |i: int|
+	                0 <= i < post.sealed_roots.len()
+	                implies #[trigger] root_summary_read_valid(post.sealed_roots[i], post.visible_branch_nodes())
+	            by {
                 if i < pre.sealed_roots.len() {
                     assert(post.sealed_roots[i] == pre.sealed_roots[i]);
                     assert(branch_summary_reads_valid(pre.sealed_roots, post.visible_branch_nodes()));
@@ -4218,12 +4418,105 @@ state_machine!{ CachingDiskBranch {
                     } else {
                         assert(post.visible_branch_nodes()[root] is Leaf);
                     }
-                }
-            }
-        };
-        branch_summary_from_reads_up_to_self_ensures(
-            post.sealed_roots,
-            post.visible_branch_nodes(),
+	                }
+	            }
+	        };
+	        assert(post.loaded_branch_summary_agrees()) by {
+	            assert forall |au: AU| #[trigger] post.branch_summary.dom().contains(au)
+	                implies root_aus_up_to(post.sealed_roots, post.sealed_roots.len() as nat).contains(au)
+	            by {
+	                if pre.branch_summary.dom().contains(au) {
+	                    assert(loaded_branch_summary_agrees(
+	                        pre.sealed_roots,
+	                        post.visible_branch_nodes(),
+	                        pre.branch_summary,
+	                    ));
+	                    loaded_branch_summary_agrees_domain_contains(
+	                        pre.sealed_roots,
+	                        post.visible_branch_nodes(),
+	                        pre.branch_summary,
+	                        au,
+	                    );
+	                    let old_idx = root_aus_up_to_member_has_index(
+	                        pre.sealed_roots,
+	                        pre.sealed_roots.len() as nat,
+	                        au,
+	                    );
+	                    root_aus_up_to_contains(post.sealed_roots, post.sealed_roots.len() as nat, old_idx);
+	                } else {
+	                    assert(au == root.au);
+	                    root_aus_up_to_contains(
+	                        post.sealed_roots,
+	                        post.sealed_roots.len() as nat,
+	                        pre.sealed_roots.len() as int,
+	                    );
+	                }
+	            }
+	            assert forall |i: int|
+	                0 <= i < post.sealed_roots.len()
+	                    && #[trigger] post.branch_summary.contains_key(post.sealed_roots[i].au)
+	                implies {
+	                    &&& root_summary_read_valid(post.sealed_roots[i], post.visible_branch_nodes())
+	                    &&& post.branch_summary[post.sealed_roots[i].au]
+	                        == root_summary_from_read(post.sealed_roots[i], post.visible_branch_nodes())
+	                }
+	            by {
+	                if i < pre.sealed_roots.len() {
+	                    assert(post.sealed_roots[i] == pre.sealed_roots[i]);
+	                    assert(loaded_branch_summary_agrees(
+	                        pre.sealed_roots,
+	                        post.visible_branch_nodes(),
+	                        pre.branch_summary,
+	                    ));
+	                    assert(pre.branch_summary.contains_key(pre.sealed_roots[i].au)) by {
+	                        if !pre.branch_summary.contains_key(pre.sealed_roots[i].au) {
+	                            assert(post.branch_summary[post.sealed_roots[i].au] == sealed_summary);
+	                            assert(post.sealed_roots[i].au == root.au);
+	                            assert(pre.sealed_roots.to_set().contains(pre.sealed_roots[i]));
+	                            if pre.sealed_roots[i] != root {
+	                                assert(addrs_with_different_au(pre.sealed_roots[i], root));
+	                                assert(false);
+	                            }
+	                            assert(false);
+	                        }
+	                    }
+	                    loaded_branch_summary_agrees_at(
+	                        pre.sealed_roots,
+	                        post.visible_branch_nodes(),
+	                        pre.branch_summary,
+	                        i,
+	                    );
+	                    assert(post.branch_summary[post.sealed_roots[i].au]
+	                        == pre.branch_summary[pre.sealed_roots[i].au]);
+	                } else {
+	                    assert(i == pre.sealed_roots.len());
+	                    assert(post.sealed_roots[i] == root);
+	                    assert(post.branch_summary[root.au] == sealed_summary);
+	                    if post.visible_branch_nodes()[root] is Index {
+	                        assert(aux_ptr is Some);
+	                        let aux = aux_ptr.unwrap();
+	                        assert(post.visible_branch_nodes()[root]->aux_ptr == Some(aux));
+	                        assert(post.visible_branch_nodes()[aux] == BranchNode::Auxiliary(sealed_summary));
+	                    } else {
+	                        assert(root_summary_from_read(root, post.visible_branch_nodes()) == set![root.au]);
+	                        assert(sealed_summary == set![root.au]) by {
+	                            assert(sealed_branch.get_summary() == sealed_summary);
+	                            assert(sealed_branch.root == root);
+	                            assert(sealed_branch.root() is Leaf);
+	                            assert(sealed_branch.get_summary() == set![root.au]);
+	                        }
+	                    }
+	                }
+	            }
+	            loaded_branch_summary_agrees_from_forall(
+	                post.sealed_roots,
+	                post.visible_branch_nodes(),
+	                post.branch_summary,
+	            );
+	        };
+	        branch_summary_from_reads_up_to_self_ensures(
+	            post.sealed_roots,
+	            post.visible_branch_nodes(),
             post.sealed_roots.len() as nat,
         );
         assert(post.interpreted_branch_summary() == post.branch_summary) by {
@@ -4237,11 +4530,17 @@ state_machine!{ CachingDiskBranch {
                             post.visible_branch_nodes(),
                             pre.branch_summary,
                         ));
-                        root_aus_up_to_contains(pre.sealed_roots, pre.sealed_roots.len() as nat, idx);
-                        assert(pre.branch_summary.dom().contains(pre.sealed_roots[idx].au));
-                        assert(pre.branch_summary.contains_key(pre.sealed_roots[idx].au));
-                        assert(pre.branch_summary[pre.sealed_roots[idx].au]
-                            == root_summary_from_read(pre.sealed_roots[idx], post.visible_branch_nodes()));
+	                        root_aus_up_to_contains(pre.sealed_roots, pre.sealed_roots.len() as nat, idx);
+	                        assert(pre.branch_summary.dom().contains(pre.sealed_roots[idx].au));
+	                        assert(pre.branch_summary.contains_key(pre.sealed_roots[idx].au));
+	                        loaded_branch_summary_agrees_at(
+	                            pre.sealed_roots,
+	                            post.visible_branch_nodes(),
+	                            pre.branch_summary,
+	                            idx,
+	                        );
+	                        assert(pre.branch_summary[pre.sealed_roots[idx].au]
+	                            == root_summary_from_read(pre.sealed_roots[idx], post.visible_branch_nodes()));
                         assert(post.interpreted_branch_summary()[au]
                             == root_summary_from_read(post.sealed_roots[idx], post.visible_branch_nodes()));
                         assert(pre.branch_summary[au]
@@ -4306,7 +4605,7 @@ state_machine!{ CachingDiskBranch {
                 by {
                     if summary_aus(loose_active_summary).contains(au) {
                         let summary = lemma_union_set_of_sets_contains(loose_active_summary.values(), au);
-                        let root_au = choose |root_au: AU|
+                        let root_au = choose |root_au: AU| #![auto]
                             loose_active_summary.contains_key(root_au)
                             && loose_active_summary[root_au] == summary;
                         assert(root_au == sealed_branch.root.au);
@@ -4428,8 +4727,9 @@ state_machine!{ CachingDiskBranch {
             }
         };
         access_preserves_persisted_prefix_clean(pre, post.disk, reads, writes);
-        assert forall |i: int| 0 <= i < pre.persisted_root_count
-            implies pre.branch_summary.contains_key(pre.sealed_roots[i].au)
+        assert forall |i: int|
+            0 <= i < pre.persisted_root_count
+            implies #[trigger] pre.branch_summary.contains_key(pre.sealed_roots[i].au)
         by {
             assert(pre.sealed_roots.to_set().contains(pre.sealed_roots[i]));
             pre.i().sealed_stack.root_au_in_summary(pre.i().branch_summary, pre.sealed_roots[i]);
@@ -4775,10 +5075,16 @@ impl CachingDiskBranch::State {
         assert forall |au: AU| #[trigger] summary_aus(self.branch_summary).contains(au)
             implies summary_aus(self.interpreted_branch_summary()).contains(au) by {
             let summary = lemma_union_set_of_sets_contains(self.branch_summary.values(), au);
-            let root_au = choose |root_au: AU|
+            let root_au = choose |root_au: AU| #![auto]
                 self.branch_summary.contains_key(root_au)
                     && self.branch_summary[root_au] == summary;
             assert(self.branch_summary.dom().contains(root_au));
+            loaded_branch_summary_agrees_domain_contains(
+                self.sealed_roots,
+                self.visible_branch_nodes(),
+                self.branch_summary,
+                root_au,
+            );
             assert(root_aus_up_to(self.sealed_roots, self.sealed_roots.len() as nat).contains(root_au));
             let idx = root_aus_up_to_member_has_index(
                 self.sealed_roots,
@@ -4787,6 +5093,12 @@ impl CachingDiskBranch::State {
             );
             assert(self.sealed_roots[idx].au == root_au);
             assert(self.loaded_branch_summary_agrees());
+            loaded_branch_summary_agrees_at(
+                self.sealed_roots,
+                self.visible_branch_nodes(),
+                self.branch_summary,
+                idx,
+            );
             assert(self.branch_summary[root_au]
                 == root_summary_from_read(self.sealed_roots[idx], self.visible_branch_nodes()));
             assert(self.interpreted_branch_summary()[root_au]
@@ -4971,7 +5283,7 @@ impl CachingDiskBranch::State {
         CachingDisk::State::access_visible_effect(pre.disk, post_disk, reads, writes);
         assert forall |au: AU| #[trigger] to_aus(post_disk.visible().dom()).contains(au)
             implies pre.accessible_aus().contains(au) by {
-            let addr = choose |addr: Address|
+            let addr = choose |addr: Address| #![auto]
                 post_disk.visible().dom().contains(addr) && addr.au == au;
             if pre.disk.visible().dom().contains(addr) {
                 crate::disk::GenericDisk_v::to_aus_domain(pre.disk.visible().dom());
@@ -5071,7 +5383,7 @@ impl CachingDiskBranch::State {
                 assert(to_aus(writes.dom()) <= pre.accessible_aus()) by {
                     assert forall |au: AU| #[trigger] to_aus(writes.dom()).contains(au)
                         implies pre.accessible_aus().contains(au) by {
-                        let addr = choose |addr: Address| writes.dom().contains(addr) && addr.au == au;
+                        let addr = choose |addr: Address| #![auto] writes.dom().contains(addr) && addr.au == au;
                         if pre.active_branch.root is Some {
                             let read_nodes = to_branch_nodes(reads);
                             let write_nodes = to_branch_nodes(writes);
@@ -5358,7 +5670,7 @@ impl CachingDiskBranch::State {
                 assert(to_aus(writes.dom()) <= pre.accessible_aus()) by {
                     assert forall |au: AU| #[trigger] to_aus(writes.dom()).contains(au)
                         implies pre.accessible_aus().contains(au) by {
-                        let addr = choose |addr: Address| writes.dom().contains(addr) && addr.au == au;
+                        let addr = choose |addr: Address| #![auto] writes.dom().contains(addr) && addr.au == au;
                         assert(write_nodes == loaded_grow_write_nodes(pre.active_branch.root.unwrap(), new_root_addr));
                         assert(write_nodes.contains_key(addr));
                         assert(addr == new_root_addr);
@@ -5402,7 +5714,7 @@ impl CachingDiskBranch::State {
                 assert(to_aus(writes.dom()) <= pre.accessible_aus()) by {
                     assert forall |au: AU| #[trigger] to_aus(writes.dom()).contains(au)
                         implies pre.accessible_aus().contains(au) by {
-                        let addr = choose |addr: Address| writes.dom().contains(addr) && addr.au == au;
+                        let addr = choose |addr: Address| #![auto] writes.dom().contains(addr) && addr.au == au;
                         assert(write_nodes == loaded_split_write_nodes(receipt, read_nodes, split_arg, new_child_addr));
                         assert(write_nodes.contains_key(addr));
                         if addr == new_child_addr {
@@ -5491,7 +5803,7 @@ impl CachingDiskBranch::State {
                 assert(to_aus(writes.dom()) <= pre.accessible_aus()) by {
                     assert forall |au: AU| #[trigger] to_aus(writes.dom()).contains(au)
                         implies pre.accessible_aus().contains(au) by {
-                        let addr = choose |addr: Address| writes.dom().contains(addr) && addr.au == au;
+                        let addr = choose |addr: Address| #![auto] writes.dom().contains(addr) && addr.au == au;
                         assert(write_nodes == loaded_seal_write_nodes(
                             pre.active_branch.root.unwrap(),
                             read_nodes,
@@ -6006,6 +6318,12 @@ impl CachingDiskBranch::State {
                 assert(post.branch_summary.contains_key(root.au));
                 assert(post.branch_summary[root.au] == discovered_aus);
                 assert(post.loaded_branch_summary_agrees());
+                loaded_branch_summary_agrees_at(
+                    post.sealed_roots,
+                    post.visible_branch_nodes(),
+                    post.branch_summary,
+                    idx,
+                );
                 assert(discovered_aus == root_summary_from_read(
                     root,
                     post.visible_branch_nodes(),
@@ -6294,7 +6612,7 @@ impl CachingDiskBranch::State {
                 assert(false);
             } else {
                 assert(to_aus(loaded.disk.visible().dom()).contains(au));
-                let addr = choose |addr: Address|
+                let addr = choose |addr: Address| #![auto]
                     loaded.disk.visible().dom().contains(addr) && addr.au == au;
                 assert(image.persistent.dom().contains(addr));
                 crate::disk::GenericDisk_v::to_aus_domain(image.persistent.dom());
@@ -6328,7 +6646,7 @@ impl CachingDiskBranch::State {
                     assert(false);
                 } else {
                     assert(to_aus(loaded.disk.visible().dom()).contains(au));
-                    let addr = choose |addr: Address|
+                    let addr = choose |addr: Address| #![auto]
                         loaded.disk.visible().dom().contains(addr) && addr.au == au;
                     assert(image.persistent.dom().contains(addr));
                     crate::disk::GenericDisk_v::to_aus_domain(image.persistent.dom());
@@ -6435,7 +6753,8 @@ impl CachingDiskBranch::State {
                 assert(branch_summary_reads_valid(self.sealed_roots, self.visible_branch_nodes()));
             }
         };
-        assert forall |i: int| 0 <= i < frozen.sealed_roots.len() implies {
+        assert forall |i: int| #![trigger full_summary.contains_key(frozen.sealed_roots[i].au)]
+            0 <= i < frozen.sealed_roots.len() implies {
             &&& full_summary.contains_key(frozen.sealed_roots[i].au)
             &&& root_summary_from_read(frozen.sealed_roots[i], image_nodes)
                 == full_summary[frozen.sealed_roots[i].au]
@@ -6502,7 +6821,7 @@ impl CachingDiskBranch::State {
                         assert(full_summary.dom() == to_aus(full_roots));
                     };
                     crate::disk::GenericDisk_v::to_aus_domain(full_roots);
-                    let root = choose |root: Address| full_roots.contains(root) && root.au == au;
+                    let root = choose |root: Address| #![auto] full_roots.contains(root) && root.au == au;
                     assert(full_roots.contains(root));
                     assert(root.au == au);
                     assert(!(full_roots - frozen_roots).contains(root)) by {
@@ -6547,7 +6866,7 @@ impl CachingDiskBranch::State {
                     au,
                 );
                 assert(image.branch_summary().values().contains(summary));
-                let root_au = choose |root_au: AU|
+                let root_au = choose |root_au: AU| #![auto]
                     image.branch_summary().contains_key(root_au)
                         && image.branch_summary()[root_au] == summary;
                 assert(prefix_summary.contains_key(root_au));
@@ -6667,7 +6986,11 @@ impl CachingDiskBranch::State {
                         }
                     };
                 };
-                assert(image.sealed_stack_i().root_has_tight_branch(root, image.branch_summary()[root.au]));
+                image.sealed_stack_i().root_has_tight_branch_from_witness(
+                    root,
+                    image.branch_summary()[root.au],
+                    branch,
+                );
             }
         };
         assert(image.stack_wf());
@@ -6684,7 +7007,7 @@ impl CachingDiskBranch::State {
                 assert forall |au: AU| #[trigger] to_aus(full_roots - frozen_roots).contains(au)
                     implies false by {
                     crate::disk::GenericDisk_v::to_aus_domain(full_roots - frozen_roots);
-                    let root = choose |root: Address|
+                    let root = choose |root: Address| #![auto]
                         (full_roots - frozen_roots).contains(root) && root.au == au;
                     assert(false);
                 }
@@ -6808,7 +7131,7 @@ impl CachingDiskBranch::State {
                 implies persisted_aus.contains(au)
             by {
                 let summary = lemma_union_set_of_sets_contains(prefix_summary.values(), au);
-                let root_au = choose |root_au: AU|
+                let root_au = choose |root_au: AU| #![auto]
                     prefix_summary.contains_key(root_au)
                     && prefix_summary[root_au] == summary;
                 assert(prefix_summary.contains_key(root_au));
@@ -6858,7 +7181,9 @@ impl CachingDiskBranch::State {
             by {
                 assert(persisted_aus.contains(addr.au));
                 assert(self.disk.aus_clean_or_evictable(persisted_aus));
+                self.disk.au_clean_or_evictable(persisted_aus, addr);
             }
+            self.disk.aus_clean_or_evictable_from_forall(prefix_aus);
         };
         clean_aus_persistent_visible_eq(self.disk, prefix_aus);
         assert(image.persistent == self.disk.persistent);
@@ -7015,10 +7340,11 @@ impl CachingDiskBranch::State {
             self.freeze_image().branch_summary() == self.interpreted_branch_summary(),
 	    {
 	        assert(self.branch_metadata_loaded());
-	        let image = self.freeze_image();
-        let roots = self.sealed_roots.to_set();
-        let branch_summary = self.interpreted_branch_summary();
-        let aus = summary_aus(branch_summary);
+		        let image = self.freeze_image();
+	        let roots = self.sealed_roots.to_set();
+	        let branch_summary = self.interpreted_branch_summary();
+	        let aus = summary_aus(branch_summary);
+	        assert(branch_summary == self.branch_summary);
 
         self.sealed_stack_i().sealed_disk.build_branch_domain(roots);
         assert(branch_summary.dom() =~= to_aus(roots));
@@ -7030,7 +7356,7 @@ impl CachingDiskBranch::State {
                 implies sealed_summary_aus_up_to(self.sealed_roots, branch_summary, self.sealed_roots.len() as nat).contains(au)
             by {
                 let summary = lemma_union_set_of_sets_contains(branch_summary.values(), au);
-                let root_au = choose |root_au: AU|
+                let root_au = choose |root_au: AU| #![auto]
                     branch_summary.contains_key(root_au)
                     && branch_summary[root_au] == summary;
                 assert(branch_summary.contains_key(root_au));
@@ -7081,6 +7407,7 @@ impl CachingDiskBranch::State {
                     assert(self.disk.visible().restrict(addresses_in_aus(aus)).contains_key(root));
                     assert(self.disk.persistent.restrict(addresses_in_aus(aus)).contains_key(root));
                     assert(image.persistent_branch_nodes().contains_key(root));
+                    clean_aus_to_branch_nodes_eq(self.disk, aus, root);
                     assert(to_branch_nodes(self.disk.visible())[root]
                         == image.persistent_branch_nodes()[root]);
                     if image.persistent_branch_nodes()[root] is Index {
@@ -7104,6 +7431,7 @@ impl CachingDiskBranch::State {
                         assert(self.disk.visible().restrict(addresses_in_aus(aus)).contains_key(aux));
                         assert(self.disk.persistent.restrict(addresses_in_aus(aus)).contains_key(aux));
                         assert(image.persistent_branch_nodes().contains_key(aux));
+                        clean_aus_to_branch_nodes_eq(self.disk, aus, aux);
                         assert(image.persistent_branch_nodes()[aux] is Auxiliary);
                     } else {
                         assert(to_branch_nodes(self.disk.visible())[root]
@@ -7112,7 +7440,8 @@ impl CachingDiskBranch::State {
                     }
                 }
             };
-            assert forall |i: int| 0 <= i < self.sealed_roots.len() implies {
+            assert forall |i: int| #![trigger branch_summary.contains_key(self.sealed_roots[i].au)]
+                0 <= i < self.sealed_roots.len() implies {
                 &&& branch_summary.contains_key(self.sealed_roots[i].au)
                 &&& root_summary_from_read(self.sealed_roots[i], image.persistent_branch_nodes())
                     == branch_summary[self.sealed_roots[i].au]
@@ -7120,9 +7449,21 @@ impl CachingDiskBranch::State {
                 let root = self.sealed_roots[i];
                 assert(self.sealed_roots.to_set().contains(root));
                 self.sealed_stack_i().root_au_in_summary(branch_summary, root);
-                assert(to_branch_nodes(self.disk.visible())[root] == image.persistent_branch_nodes()[root]);
-                assert(root_summary_read_valid(root, self.visible_branch_nodes()));
-                assert(root_summary_from_read(root, self.visible_branch_nodes()) == branch_summary[root.au]);
+                assert(aus.contains(root.au));
+                assert(self.disk.visible().restrict(addresses_in_aus(aus)).contains_key(root));
+                assert(self.disk.persistent.restrict(addresses_in_aus(aus)).contains_key(root));
+	                clean_aus_to_branch_nodes_eq(self.disk, aus, root);
+	                assert(to_branch_nodes(self.disk.visible())[root] == image.persistent_branch_nodes()[root]);
+	                assert(root_summary_read_valid(root, self.visible_branch_nodes()));
+	                assert(self.loaded_branch_summary_agrees());
+	                loaded_branch_summary_agrees_at(
+	                    self.sealed_roots,
+	                    self.visible_branch_nodes(),
+	                    self.branch_summary,
+	                    i,
+	                );
+	                assert(self.branch_summary[root.au] == branch_summary[root.au]);
+	                assert(root_summary_from_read(root, self.visible_branch_nodes()) == branch_summary[root.au]);
                 if image.persistent_branch_nodes()[root] is Index {
                     let aux = image.persistent_branch_nodes()[root]->aux_ptr.unwrap();
                     assert(image.persistent_branch_nodes()[root] is Index);
@@ -7134,6 +7475,9 @@ impl CachingDiskBranch::State {
                         assert(branch_summary.values().contains(branch_summary[root.au]));
                         lemma_union_set_of_sets_subset(branch_summary.values(), branch_summary[root.au]);
                     }
+                    assert(self.disk.visible().restrict(addresses_in_aus(aus)).contains_key(aux));
+                    assert(self.disk.persistent.restrict(addresses_in_aus(aus)).contains_key(aux));
+                    clean_aus_to_branch_nodes_eq(self.disk, aus, aux);
                     assert(image.persistent_branch_nodes()[aux] == to_branch_nodes(self.disk.visible())[aux]);
                     assert(root_summary_from_read(root, image.persistent_branch_nodes())
                         == root_summary_from_read(root, self.visible_branch_nodes()));

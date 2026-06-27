@@ -1284,7 +1284,7 @@ impl CachingDiskBranch::State {
                                     assert(self.interpreted_branch_summary().contains_key(au));
                                     assert(!pre_removed.contains(au)) by {
                                         if pre_removed.contains(au) {
-                                            let old_root = choose |root: Address|
+                                            let old_root = choose |root: Address| #![auto]
                                                 (pre_roots - frozen_roots).contains(root) && root.au == au;
                                             assert(post_roots.contains(old_root));
                                             assert((post_roots - frozen_roots).contains(old_root));
@@ -1303,7 +1303,7 @@ impl CachingDiskBranch::State {
                                     assert(post.interpreted_branch_summary().contains_key(au));
                                     assert(!post_removed.contains(au)) by {
                                         if post_removed.contains(au) {
-                                            let old_root = choose |root: Address|
+                                            let old_root = choose |root: Address| #![auto]
                                                 (post_roots - frozen_roots).contains(root) && root.au == au;
                                             if old_root == sealed_root {
                                                 assert(au == sealed_root.au);
@@ -1350,7 +1350,7 @@ impl CachingDiskBranch::State {
                                     assert forall |summary: Set<AU>|
                                         #[trigger] pre_img.branch_summary().values().contains(summary)
                                         implies self.branch_summary.values().contains(summary) by {
-                                        let root_au = choose |root_au: AU|
+                                        let root_au = choose |root_au: AU| #![auto]
                                             pre_img.branch_summary().contains_key(root_au)
                                             && pre_img.branch_summary()[root_au] == summary;
                                         assert(self.branch_summary.remove_keys(pre_removed).contains_key(root_au));
@@ -2869,7 +2869,7 @@ impl CachingDiskBranch::State {
                         by {
                             if summary_aus(loose_active_summary).contains(au) {
                                 let summary = lemma_union_set_of_sets_contains(loose_active_summary.values(), au);
-                                let root_au = choose |root_au: AU|
+                                let root_au = choose |root_au: AU| #![auto]
                                     loose_active_summary.contains_key(root_au)
                                     && loose_active_summary[root_au] == summary;
                                 assert(root_au == sealed_branch.root.au);

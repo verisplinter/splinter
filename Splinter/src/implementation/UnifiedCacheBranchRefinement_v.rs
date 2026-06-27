@@ -60,7 +60,8 @@ use crate::implementation::CachingDiskBranch_v::{
     branch_summary_from_reads_up_to_self_ensures,
     completed_branch_summary_from_reads, empty_caching_disk_branch_image,
     empty_caching_disk_branch_image_wf,
-    loaded_branch_summary_agrees,
+	    loaded_branch_summary_agrees, loaded_branch_summary_agrees_at,
+	    loaded_branch_summary_agrees_domain_contains,
     mini_allocator_allocated_addrs_subset_all_aus, sealed_nodes_of,
     sealed_summary_aus_between,
     split_read_addrs, to_branch_nodes, root_aus_up_to, root_aus_up_to_contains,
@@ -165,7 +166,7 @@ pub proof fn to_aus_addresses_in_aus(aus: Set<AU>)
 {
     assert forall |au: AU| #[trigger] to_aus(addresses_in_aus(aus)).contains(au)
         implies aus.contains(au) by {
-        let addr = choose |addr: Address| addresses_in_aus(aus).contains(addr) && addr.au == au;
+        let addr = choose |addr: Address| #![auto] addresses_in_aus(aus).contains(addr) && addr.au == au;
         assert(aus.contains(addr.au));
     }
     assert forall |au: AU| #[trigger] aus.contains(au)
@@ -234,23 +235,29 @@ pub proof fn recovery_branch_projection_aus_matches_image_summary(
             assert_maps_equal!(
                 src.branch.branch_summary,
                 completed,
-                au => {
-                    if src.branch.branch_summary.contains_key(au) {
-                        assert(root_aus_up_to(roots, roots.len() as nat).contains(au)) by {
-                            assert(loaded_branch_summary_agrees(
-                                roots,
-                                nodes,
-                                src.branch.branch_summary,
-                            ));
-                        }
-                        let idx = root_aus_up_to_member_has_index(
-                            roots,
-                            roots.len() as nat,
-                            au,
-                        );
-                        assert(roots[idx].au == au);
-                        assert(completed[au] == crate::implementation::CachedBranch_v::root_summary_from_read(
-                            roots[idx],
+	                au => {
+	                    if src.branch.branch_summary.contains_key(au) {
+	                        loaded_branch_summary_agrees_domain_contains(
+	                            roots,
+	                            nodes,
+	                            src.branch.branch_summary,
+	                            au,
+	                        );
+	                        assert(root_aus_up_to(roots, roots.len() as nat).contains(au));
+	                        let idx = root_aus_up_to_member_has_index(
+	                            roots,
+	                            roots.len() as nat,
+	                            au,
+	                        );
+	                        assert(roots[idx].au == au);
+	                        loaded_branch_summary_agrees_at(
+	                            roots,
+	                            nodes,
+	                            src.branch.branch_summary,
+	                            idx,
+	                        );
+	                        assert(completed[au] == crate::implementation::CachedBranch_v::root_summary_from_read(
+	                            roots[idx],
                             nodes,
                         ));
                         assert(src.branch.branch_summary[au]
@@ -897,7 +904,7 @@ impl UnifiedCacheBranchSource {
             let full_nodes = to_branch_nodes(self.disk.content);
             assert(branch_summary_reads_valid(frozen.sealed_roots, mat_nodes));
             assert(branch_summary_reads_valid(frozen.sealed_roots, full_nodes)) by {
-                assert forall |i: int| #![trigger frozen.sealed_roots[i]]
+                assert forall |i: int| #![auto]
                     0 <= i < frozen.sealed_roots.len()
                     implies root_summary_read_valid(frozen.sealed_roots[i], full_nodes)
                 by {
@@ -948,7 +955,7 @@ impl UnifiedCacheBranchSource {
                     materialized.branch_summary().values(),
                     au,
                 );
-                let root_au = choose |root_au: AU| {
+                let root_au = choose |root_au: AU| #![auto] {
                     &&& materialized.branch_summary().contains_key(root_au)
                     &&& materialized.branch_summary()[root_au] == summary
                 };
@@ -1677,37 +1684,6 @@ proof fn atomic_branch_metadata_loaded_equiv_root_aus(
                 <= branch.branch_summary.dom()),
 {
     let root_aus = root_aus_up_to(branch.image.sealed_roots, branch.image.sealed_roots.len() as nat);
-    if branch.metadata_loaded() {
-        assert forall |au: AU| #[trigger] root_aus_up_to(
-            branch.image.sealed_roots,
-            branch.image.sealed_roots.len() as nat,
-        ).contains(au)
-            implies branch.branch_summary.dom().contains(au) by {
-            let idx = root_aus_up_to_member_has_index(
-                branch.image.sealed_roots,
-                branch.image.sealed_roots.len() as nat,
-                au,
-            );
-            assert(branch.image.sealed_roots[idx].au == au);
-            assert(branch.metadata_loaded());
-            assert(branch.branch_summary.contains_key(branch.image.sealed_roots[idx].au));
-        }
-    }
-    if root_aus <= branch.branch_summary.dom() {
-        assert forall |i: int| #![trigger branch.image.sealed_roots[i]]
-            0 <= i < branch.image.sealed_roots.len()
-            implies branch.branch_summary.contains_key(branch.image.sealed_roots[i].au) by {
-            root_aus_up_to_contains(
-                branch.image.sealed_roots,
-                branch.image.sealed_roots.len() as nat,
-                i,
-            );
-            assert(root_aus_up_to(
-                branch.image.sealed_roots,
-                branch.image.sealed_roots.len() as nat,
-            ).contains(branch.image.sealed_roots[i].au));
-        }
-    }
     assert(branch.metadata_loaded() ==> root_aus <= branch.branch_summary.dom());
     assert(root_aus <= branch.branch_summary.dom() ==> branch.metadata_loaded());
 }
@@ -1773,7 +1749,7 @@ pub proof fn init_refines(pre: SystemModel::State<UnifiedCacheProgramModel>)
                 let roots = src.persistent_superblock_image_i().branch_roots;
                 assert(roots == Seq::<Address>::empty());
                 assert(branch_summary_reads_valid(roots, to_branch_nodes(src.disk.content))) by {
-                    assert forall |i: int| #![trigger roots[i]]
+                    assert forall |i: int| #![auto]
                         0 <= i < roots.len()
                         implies crate::implementation::CachedBranch_v::root_summary_read_valid(
                             roots[i],
@@ -1876,6 +1852,7 @@ pub proof fn init_refines(pre: SystemModel::State<UnifiedCacheProgramModel>)
                     }
                 );
             }
+            src.branch_caching_disk_i().empty_status_clean_pages_agree();
             assert(src.branch_caching_disk_i().inv());
 
             assert(src.persistent_branch_image_i() == empty_caching_disk_branch_image()) by {
@@ -2011,6 +1988,16 @@ pub proof fn load_ephemeral_refines(
         if post.branch.metadata_loaded() {
             if image.branch_roots.len() > 0 {
                 assert(0 <= 0 < image.branch_roots.len());
+                assert(post.branch.image.sealed_roots == image.branch_roots);
+                root_aus_up_to_contains(
+                    post.branch.image.sealed_roots,
+                    post.branch.image.sealed_roots.len() as nat,
+                    0,
+                );
+                assert(root_aus_up_to(
+                    post.branch.image.sealed_roots,
+                    post.branch.image.sealed_roots.len() as nat,
+                ).contains(image.branch_roots[0].au));
                 assert(post.branch.branch_summary.contains_key(image.branch_roots[0].au));
                 assert(false);
             }
@@ -2150,6 +2137,7 @@ pub proof fn load_ephemeral_refines(
     }
     assert(post.branch_caching_disk_i()
         == CachingDiskBranch::State::disk_from_persistent(persistent_image.persistent));
+    CachingDisk::State::persistent_only_inv(persistent_image.persistent);
     assert(CachingDiskBranch::State::disk_from_persistent(persistent_image.persistent).inv()) by {
         assert(post.branch_caching_disk_i().inv());
     }
@@ -2164,6 +2152,36 @@ pub proof fn load_ephemeral_refines(
     assert(persistent_image.stack_wf());
     assert(persistent_image.loadable());
     assert(CachingDiskBranch::State::can_load_from_persistent(persistent_image));
+    assert(post.branch_caching_disk_state_i().metadata_loaded
+        == CachingDiskBranch::State::load_from_persistent(persistent_image).metadata_loaded) by {
+        assert(post.branch_caching_disk_state_i().metadata_loaded == post.branch.metadata_loaded());
+        assert(post.branch.image.sealed_roots == image.branch_roots);
+        assert(persistent_image.sealed_roots == image.branch_roots);
+        assert(post.branch.branch_summary == Map::<AU, Summary>::empty());
+        if image.branch_roots.len() == 0 {
+            assert(root_aus_up_to(
+                post.branch.image.sealed_roots,
+                post.branch.image.sealed_roots.len() as nat,
+            ) =~= Set::<AU>::empty());
+            assert(post.branch.metadata_loaded());
+        } else {
+            assert(!post.branch.metadata_loaded()) by {
+                if post.branch.metadata_loaded() {
+                    root_aus_up_to_contains(
+                        post.branch.image.sealed_roots,
+                        post.branch.image.sealed_roots.len() as nat,
+                        0,
+                    );
+                    assert(root_aus_up_to(
+                        post.branch.image.sealed_roots,
+                        post.branch.image.sealed_roots.len() as nat,
+                    ).contains(image.branch_roots[0].au));
+                    assert(post.branch.branch_summary.contains_key(image.branch_roots[0].au));
+                    assert(false);
+                }
+            }
+        }
+    }
     assert(post.branch_caching_disk_state_i()
         == CachingDiskBranch::State::load_from_persistent(persistent_image));
 
@@ -2257,9 +2275,9 @@ pub proof fn query_receipts_read_addrs_member_has_receipt(
         end <= receipts.len(),
         query_receipts_read_addrs(receipts, end).contains(addr),
     ensures
-        exists |i: int| {
+        exists |i: int| #![auto] {
             &&& 0 <= i < end
-            &&& #[trigger] receipts[i].needed_addrs().contains(addr)
+            &&& receipts[i].needed_addrs().contains(addr)
         },
     decreases end
 {
@@ -2353,8 +2371,8 @@ proof fn receipt_needed_addr_in_linked_branch_internal(
     } else {
         assert(receipt.lines.len() > 1) by {
             if receipt.lines.len() <= 1 {
-                let i = choose |i: int| 0 <= i < receipt.lines.len()
-                    && #[trigger] receipt.lines[i].addr == addr;
+                let i = choose |i: int| #![auto] 0 <= i < receipt.lines.len()
+                    && receipt.lines[i].addr == addr;
                 assert(i == 0);
                 assert(receipt.lines[0].addr == branch.root);
                 assert(false);
@@ -2376,8 +2394,8 @@ proof fn receipt_needed_addr_in_linked_branch_internal(
             assert(child_receipt.root == receipt.lines[1].addr);
         }
         assert(child_receipt.needed_addrs().contains(addr)) by {
-            let i = choose |i: int| 0 <= i < receipt.lines.len()
-                && #[trigger] receipt.lines[i].addr == addr;
+            let i = choose |i: int| #![auto] 0 <= i < receipt.lines.len()
+                && receipt.lines[i].addr == addr;
             assert(i != 0);
             assert(child_receipt.lines[i - 1] == receipt.lines[i]);
         }
@@ -2796,7 +2814,7 @@ proof fn active_root_not_in_branch_summary(
         assert(cdb.branch_summary.dom() == to_aus(cdb.sealed_roots.to_set()));
         assert(to_aus(cdb.sealed_roots.to_set()).contains(root.au));
         to_aus_domain(cdb.sealed_roots.to_set());
-        let sealed_root = choose |sealed_root: Address|
+        let sealed_root = choose |sealed_root: Address| #![auto]
             cdb.sealed_roots.to_set().contains(sealed_root) && sealed_root.au == root.au;
         cdb.sealed_stack_i().root_au_in_summary(cdb.branch_summary, sealed_root);
         assert(summary_aus(cdb.branch_summary).contains(root.au));
@@ -2884,6 +2902,138 @@ proof fn active_split_child_in_branch_projection(
     assert(addresses_in_aus(src.branch_projection_aus()).contains(child));
 }
 
+proof fn split_projection_preserves_loaded_split(
+    src: UnifiedCacheBranchSource,
+    reads: Map<Address, RawPage>,
+    receipt: LoadedPathReceipt,
+    split_arg: SplitArg,
+    new_child_addr: Address,
+)
+    requires
+        inv(src),
+        src.superblock_loaded(),
+        src.branch.metadata_loaded(),
+        src.branch.active_branch.root is Some,
+        receipt.valid_for(src.branch.active_branch.root.unwrap(), to_branch_nodes(reads)),
+        crate::implementation::CachedBranch_v::loaded_split_ready(
+            receipt,
+            to_branch_nodes(reads),
+            split_arg,
+        ),
+        forall |read_addr: Address| #[trigger] reads.contains_key(read_addr)
+            ==> src.cache.valid_read(read_addr, reads[read_addr]),
+    ensures
+        split_read_addrs(receipt)
+            <= reads.restrict(addresses_in_aus(src.branch_projection_aus())).dom(),
+        receipt.valid_for(
+            src.branch.active_branch.root.unwrap(),
+            to_branch_nodes(reads.restrict(addresses_in_aus(src.branch_projection_aus()))),
+        ),
+        crate::implementation::CachedBranch_v::loaded_split_ready(
+            receipt,
+            to_branch_nodes(reads.restrict(addresses_in_aus(src.branch_projection_aus()))),
+            split_arg,
+        ),
+        loaded_split_write_nodes(
+            receipt,
+            to_branch_nodes(reads.restrict(addresses_in_aus(src.branch_projection_aus()))),
+            split_arg,
+            new_child_addr,
+        ) == loaded_split_write_nodes(
+            receipt,
+            to_branch_nodes(reads),
+            split_arg,
+            new_child_addr,
+        ),
+{
+    let read_nodes = to_branch_nodes(reads);
+    let addrs = addresses_in_aus(src.branch_projection_aus());
+    let projected_reads = reads.restrict(addrs);
+    let projected_nodes = to_branch_nodes(projected_reads);
+
+    assert(split_read_addrs(receipt) <= projected_reads.dom()) by {
+        assert forall |addr: Address| #[trigger] split_read_addrs(receipt).contains(addr)
+            implies projected_reads.dom().contains(addr) by {
+            if addr == receipt.child_addr() {
+                assert(read_nodes.contains_key(addr)) by {
+                    assert(crate::implementation::CachedBranch_v::loaded_split_ready(
+                        receipt,
+                        read_nodes,
+                        split_arg,
+                    ));
+                    assert(crate::implementation::CachedBranch_v::loaded_line_wf(
+                        read_nodes,
+                        receipt.child_addr(),
+                    ));
+                }
+                assert(reads.contains_key(addr));
+                active_split_child_in_branch_projection(src, reads, receipt, split_arg);
+                assert(addrs.contains(addr));
+            } else {
+                assert(receipt.needed_addrs().contains(addr));
+                assert(reads.contains_key(addr)) by {
+                    assert(receipt.valid_for(src.branch.active_branch.root.unwrap(), read_nodes));
+                }
+                active_receipt_needed_addr_in_branch_projection(src, reads, receipt, addr);
+                assert(addrs.contains(addr));
+            }
+        }
+    }
+
+    assert(receipt.valid_for(src.branch.active_branch.root.unwrap(), projected_nodes)) by {
+        assert(receipt.wf());
+        assert(receipt.root == src.branch.active_branch.root.unwrap());
+        assert(receipt.needed_addrs() <= projected_nodes.dom()) by {
+            assert forall |addr: Address| #[trigger] receipt.needed_addrs().contains(addr)
+                implies projected_nodes.dom().contains(addr) by {
+                assert(split_read_addrs(receipt).contains(addr));
+                assert(projected_reads.contains_key(addr));
+            }
+        }
+        assert forall |i: int| #![auto] 0 <= i < receipt.lines.len()
+            implies {
+                &&& projected_nodes.contains_key(receipt.lines[i].addr)
+                &&& projected_nodes[receipt.lines[i].addr] == receipt.lines[i].node
+            } by {
+            let addr = receipt.lines[i].addr;
+            assert(receipt.needed_addrs().contains(addr));
+            assert(projected_reads.contains_key(addr));
+            assert(projected_reads[addr] == reads[addr]);
+            assert(read_nodes[addr] == receipt.lines[i].node);
+        }
+    }
+
+    assert(projected_reads.contains_key(receipt.child_addr())) by {
+        assert(split_read_addrs(receipt).contains(receipt.child_addr()));
+    }
+    assert(projected_nodes[receipt.child_addr()] == read_nodes[receipt.child_addr()]) by {
+        assert(projected_reads[receipt.child_addr()] == reads[receipt.child_addr()]);
+    }
+    assert(crate::implementation::CachedBranch_v::loaded_split_ready(
+        receipt,
+        projected_nodes,
+        split_arg,
+    )) by {
+        assert(receipt.valid_for(receipt.root, projected_nodes));
+        assert(receipt.target().node is Index);
+        assert(receipt.key == split_arg.get_pivot());
+        assert(crate::implementation::CachedBranch_v::loaded_line_wf(
+            projected_nodes,
+            receipt.child_addr(),
+        ));
+        assert(projected_nodes[receipt.child_addr()] == read_nodes[receipt.child_addr()]);
+        assert(crate::implementation::CachedBranch_v::split_arg_matches_child(
+            read_nodes[receipt.child_addr()],
+            split_arg,
+        ));
+    }
+    assert(loaded_split_write_nodes(receipt, projected_nodes, split_arg, new_child_addr)
+        == loaded_split_write_nodes(receipt, read_nodes, split_arg, new_child_addr)) by {
+        assert(projected_nodes[receipt.target().addr] == read_nodes[receipt.target().addr]);
+        assert(projected_nodes[receipt.child_addr()] == read_nodes[receipt.child_addr()]);
+    }
+}
+
 proof fn summary_aus_insert_fresh(
     branch_summary: Map<AU, Summary>,
     root_au: AU,
@@ -2903,7 +3053,7 @@ proof fn summary_aus_insert_fresh(
         implies (summary_aus(branch_summary) + new_summary).contains(au) by {
         let witness = lemma_union_set_of_sets_contains(post_summary.values(), au);
         assert(witness.contains(au));
-        let key = choose |key: AU| post_summary.contains_key(key) && post_summary[key] == witness;
+        let key = choose |key: AU| #![auto] post_summary.contains_key(key) && post_summary[key] == witness;
         if key == root_au {
             assert(witness == new_summary);
         } else {
@@ -2918,7 +3068,7 @@ proof fn summary_aus_insert_fresh(
         if summary_aus(branch_summary).contains(au) {
             let witness = lemma_union_set_of_sets_contains(branch_summary.values(), au);
             assert(witness.contains(au));
-            let key = choose |key: AU|
+            let key = choose |key: AU| #![auto]
                 branch_summary.contains_key(key) && branch_summary[key] == witness;
             assert(key != root_au);
             assert(post_summary.contains_key(key));
@@ -3477,9 +3627,9 @@ pub proof fn query_refines(
                 receipts.len() as nat,
                 addr,
             );
-            let receipt_idx = choose |i: int| {
+            let receipt_idx = choose |i: int| #![auto] {
                 &&& 0 <= i < receipts.len()
-                &&& #[trigger] receipts[i].needed_addrs().contains(addr)
+                &&& receipts[i].needed_addrs().contains(addr)
             };
             let roots = crate::implementation::AtomicBranchState_v::query_roots(
                 pre.branch.image.sealed_roots,
@@ -4435,10 +4585,10 @@ pub proof fn append_refines_with_extra_reads(
                             assert(tight_read_nodes.contains_key(addr));
                         }
                     }
-                    assert forall |i: int| 0 <= i < receipt.lines.len()
+                    assert forall |i: int| #![auto] 0 <= i < receipt.lines.len()
                         implies {
                             &&& tight_read_nodes.contains_key(receipt.lines[i].addr)
-                            &&& #[trigger] tight_read_nodes[receipt.lines[i].addr]
+                            &&& tight_read_nodes[receipt.lines[i].addr]
                                 == receipt.lines[i].node
                         } by {
                         let addr = receipt.lines[i].addr;
@@ -5102,86 +5252,24 @@ pub proof fn split_refines(
         assert(cache_lbl->reads.contains_key(read_addr));
     }
 
-    assert(split_read_addrs(receipt) <= projected_reads.dom()) by {
-        assert forall |addr: Address| #[trigger] split_read_addrs(receipt).contains(addr)
-            implies projected_reads.dom().contains(addr) by {
-            if addr == receipt.child_addr() {
-                assert(read_nodes.contains_key(addr)) by {
-                    assert(crate::implementation::CachedBranch_v::loaded_split_ready(
-                        receipt,
-                        read_nodes,
-                        split_arg,
-                    ));
-                    assert(crate::implementation::CachedBranch_v::loaded_line_wf(
-                        read_nodes,
-                        receipt.child_addr(),
-                    ));
-                }
-                assert(reads.contains_key(addr));
-                active_split_child_in_branch_projection(pre, reads, receipt, split_arg);
-                assert(addrs.contains(addr));
-            } else {
-                assert(receipt.needed_addrs().contains(addr));
-                assert(reads.contains_key(addr)) by {
-                    assert(receipt.valid_for(pre.branch.active_branch.root.unwrap(), read_nodes));
-                }
-                active_receipt_needed_addr_in_branch_projection(pre, reads, receipt, addr);
-                assert(addrs.contains(addr));
-            }
-        }
-    }
-
-    assert(receipt.valid_for(pre.branch.active_branch.root.unwrap(), projected_nodes)) by {
-        assert(receipt.wf());
-        assert(receipt.root == pre.branch.active_branch.root.unwrap());
-        assert(receipt.needed_addrs() <= projected_nodes.dom()) by {
-            assert forall |addr: Address| #[trigger] receipt.needed_addrs().contains(addr)
-                implies projected_nodes.dom().contains(addr) by {
-                assert(split_read_addrs(receipt).contains(addr));
-                assert(projected_reads.contains_key(addr));
-            }
-        }
-        assert forall |i: int| 0 <= i < receipt.lines.len()
-            implies {
-                &&& projected_nodes.contains_key(receipt.lines[i].addr)
-                &&& #[trigger] projected_nodes[receipt.lines[i].addr] == receipt.lines[i].node
-            } by {
-            let addr = receipt.lines[i].addr;
-            assert(receipt.needed_addrs().contains(addr));
-            assert(projected_reads.contains_key(addr));
-            assert(projected_reads[addr] == reads[addr]);
-            assert(read_nodes[addr] == receipt.lines[i].node);
-        }
-    }
-
-    assert(projected_reads.contains_key(receipt.child_addr())) by {
-        assert(split_read_addrs(receipt).contains(receipt.child_addr()));
-    }
-    assert(projected_nodes[receipt.child_addr()] == read_nodes[receipt.child_addr()]) by {
-        assert(projected_reads[receipt.child_addr()] == reads[receipt.child_addr()]);
-    }
+    split_projection_preserves_loaded_split(pre, reads, receipt, split_arg, new_child_addr);
+    assert(split_read_addrs(receipt) <= projected_reads.dom());
+    assert(receipt.valid_for(pre.branch.active_branch.root.unwrap(), projected_nodes));
     assert(crate::implementation::CachedBranch_v::loaded_split_ready(
         receipt,
         projected_nodes,
         split_arg,
-    )) by {
-        assert(receipt.valid_for(receipt.root, projected_nodes));
-        assert(receipt.target().node is Index);
-        assert(receipt.key == split_arg.get_pivot());
-        assert(crate::implementation::CachedBranch_v::loaded_line_wf(
-            projected_nodes,
-            receipt.child_addr(),
-        ));
-        assert(projected_nodes[receipt.child_addr()] == read_nodes[receipt.child_addr()]);
-        assert(crate::implementation::CachedBranch_v::split_arg_matches_child(
-            read_nodes[receipt.child_addr()],
-            split_arg,
-        ));
-    }
+    ));
     assert(loaded_split_write_nodes(receipt, projected_nodes, split_arg, new_child_addr)
         == write_nodes) by {
-        assert(projected_nodes[receipt.target().addr] == read_nodes[receipt.target().addr]);
-        assert(projected_nodes[receipt.child_addr()] == read_nodes[receipt.child_addr()]);
+        assert(loaded_split_write_nodes(receipt, projected_nodes, split_arg, new_child_addr)
+            == loaded_split_write_nodes(receipt, read_nodes, split_arg, new_child_addr));
+        assert(write_nodes == loaded_split_write_nodes(
+            receipt,
+            read_nodes,
+            split_arg,
+            new_child_addr,
+        ));
     }
 
     assert(writes.dom() <= addrs) by {
@@ -5551,23 +5639,26 @@ pub proof fn seal_refines(
         }
     }
     assert(post.branch.metadata_loaded()) by {
-        assert forall |i: int| #![trigger post.branch.image.sealed_roots[i]]
-            0 <= i < post.branch.image.sealed_roots.len()
-            implies post.branch.branch_summary.contains_key(post.branch.image.sealed_roots[i].au)
+        let post_roots = post.branch.image.sealed_roots;
+        let pre_roots = pre.branch.image.sealed_roots;
+        let post_root_aus = root_aus_up_to(post_roots, post_roots.len() as nat);
+        assert forall |au: AU| #[trigger] post_root_aus.contains(au)
+            implies post.branch.branch_summary.dom().contains(au)
         by {
-            if i < pre.branch.image.sealed_roots.len() {
-                assert(post.branch.image.sealed_roots[i] == pre.branch.image.sealed_roots[i]);
+            let i = root_aus_up_to_member_has_index(post_roots, post_roots.len() as nat, au);
+            assert(post_roots[i].au == au);
+            if i < pre_roots.len() {
+                assert(post_roots[i] == pre_roots[i]);
                 assert(pre.branch.metadata_loaded());
-                assert(pre.branch.branch_summary.contains_key(
-                    pre.branch.image.sealed_roots[i].au,
-                ));
-                assert(post.branch.branch_summary.contains_key(
-                    pre.branch.image.sealed_roots[i].au,
-                ));
+                root_aus_up_to_contains(pre_roots, pre_roots.len() as nat, i);
+                assert(root_aus_up_to(pre_roots, pre_roots.len() as nat).contains(au));
+                assert(pre.branch.branch_summary.dom().contains(au));
+                assert(post.branch.branch_summary.contains_key(au));
             } else {
-                assert(i == pre.branch.image.sealed_roots.len());
-                assert(post.branch.image.sealed_roots[i] == root);
-                assert(post.branch.branch_summary.contains_key(root.au));
+                assert(i == pre_roots.len());
+                assert(post_roots[i] == root);
+                assert(au == root.au);
+                assert(post.branch.branch_summary.contains_key(au));
             }
         }
     }

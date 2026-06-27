@@ -48,7 +48,7 @@ impl JournalImage {
         to_aus(self.tj.disk_view.entries.dom())
     }
 
-    pub open spec(checked) fn tight_tj(self) -> TruncatedJournal {
+    pub open spec fn tight_tj(self) -> TruncatedJournal {
         TruncatedJournal{
             freshest_rec: self.tj.freshest_rec,
             disk_view: self.tj.disk_view.path_build_tight(self.tj.freshest_rec),
@@ -59,7 +59,7 @@ impl JournalImage {
         Self { tj: TruncatedJournal::mkfs(), first: 0 }
     }
 
-    pub open spec(checked) fn indexed_witnesses_are_tight(self) -> bool {
+    pub open spec fn indexed_witnesses_are_tight(self) -> bool {
         let tight = self.tight_tj();
         let tight_index = tight.build_lsn_au_index_from_first(self.first);
         let tight_bounds = tight.disk_view.build_au_page_bounds_au_walk(tight.freshest_rec, self.first);
@@ -77,7 +77,7 @@ impl JournalImage {
         } ==> tight.disk_view.entries.contains_key(addr)
     }
 
-    pub open spec(checked) fn bounded_live_entries_are_tight(self) -> bool {
+    pub open spec fn bounded_live_entries_are_tight(self) -> bool {
         let tight = self.tight_tj();
         let tight_bounds = tight.disk_view.build_au_page_bounds_au_walk(tight.freshest_rec, self.first);
         forall |addr: Address|
@@ -90,7 +90,7 @@ impl JournalImage {
         } ==> tight.disk_view.entries.contains_key(addr)
     }
 
-    pub open spec(checked) fn valid_image(self) -> bool {
+    pub open spec fn valid_image(self) -> bool {
         let tight = self.tight_tj();
         // AU: mini allocator
         &&& self.tj.disk_view.wf_addrs()
@@ -2390,7 +2390,7 @@ impl DiskView {
             self.pointer_is_upstream(root, first),
         ensures
             forall |au: AU| #[trigger] self.build_au_page_bounds_page_walk(root).dom().contains(au) ==>
-                exists |addr: Address| {
+                exists |addr: Address| #![auto] {
                     &&& self.entries_bounded_by_au_page_bounds(self.build_au_page_bounds_page_walk(root)).contains_key(addr)
                     &&& addr.au == au
                 },
@@ -2412,7 +2412,7 @@ impl DiskView {
             assert(self.pointer_is_upstream(self.next(root), first));
             self.build_au_page_bounds_page_walk_dom_has_entry(self.next(root), first);
             assert forall |au: AU| #[trigger] self.build_au_page_bounds_page_walk(root).dom().contains(au)
-                implies exists |addr: Address| {
+                implies exists |addr: Address| #![auto] {
                     &&& self.entries_bounded_by_au_page_bounds(self.build_au_page_bounds_page_walk(root)).contains_key(addr)
                     &&& addr.au == au
                 } by {
@@ -2420,7 +2420,7 @@ impl DiskView {
                     assert(self.entries_bounded_by_au_page_bounds(
                         self.build_au_page_bounds_page_walk(root)).contains_key(root_addr));
                 } else {
-                    let witness = choose |addr: Address| {
+                    let witness = choose |addr: Address| #![auto] {
                         &&& self.entries_bounded_by_au_page_bounds(
                             self.build_au_page_bounds_page_walk(self.next(root))).contains_key(addr)
                         &&& addr.au == au
@@ -2512,7 +2512,7 @@ impl DiskView {
         if root_addr.page == 0 {
             if self.build_au_page_bounds_page_walk(self.next(root)).contains_key(root_addr.au) {
                 self.build_au_page_bounds_page_walk_dom_has_entry(self.next(root), first);
-                let witness = choose |addr: Address| {
+                let witness = choose |addr: Address| #![auto] {
                     &&& self.entries_bounded_by_au_page_bounds(
                         self.build_au_page_bounds_page_walk(self.next(root))).contains_key(addr)
                     &&& addr.au == root_addr.au
@@ -4103,7 +4103,7 @@ state_machine!{ AllocationJournal {
             ==> lsn < self.unmarshalled_tail.seq_start
     }
 
-    pub open spec(checked) fn tj(self) -> TruncatedJournal
+    pub open spec fn tj(self) -> TruncatedJournal
     {
         TruncatedJournal{
             freshest_rec: self.freshest_rec,
@@ -4179,7 +4179,7 @@ state_machine!{ AllocationJournal {
         } ==> self.tj().disk_view.entries.contains_key(addr)
     }
 
-    pub open spec(checked) fn indexed_lsn_witnesses_are_semantic(self) -> bool
+    pub open spec fn indexed_lsn_witnesses_are_semantic(self) -> bool
     {
         forall |addr: Address, lsn: LSN|
             #![trigger self.disk_view.entries.contains_key(addr), self.lsn_au_index.contains_key(lsn)]
@@ -4291,7 +4291,7 @@ state_machine!{ AllocationJournal {
         assert(post.tj() == pre.tj());
     }
 
-    pub open spec(checked) fn semantic_journal_structure(
+    pub open spec fn semantic_journal_structure(
         disk_view: DiskView,
         freshest_rec: Pointer,
         lsn_au_index: LsnAUIndex,
@@ -4407,7 +4407,7 @@ state_machine!{ AllocationJournal {
         )
     }
 
-    pub open spec(checked) fn semantic_inv(self) -> bool {
+    pub open spec fn semantic_inv(self) -> bool {
         let semantic_dv = self.tj().disk_view;
         let first = if self.freshest_rec is Some {
             self.lsn_au_index[self.seq_start()]

@@ -404,7 +404,7 @@ impl TruncatedJournal {
         self.disk_view.seq_start()
     }
 
-    pub open spec(checked) fn seq_end(self) -> LSN
+    pub open spec fn seq_end(self) -> LSN
     recommends
         self.disk_view.is_nondangling_pointer(self.freshest_rec),   // why not just wf()?
     {

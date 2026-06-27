@@ -85,6 +85,7 @@ impl CachingDiskJournal::State {
         )
     }
 
+    #[verifier(opaque)]
     pub open spec fn allocation_view_semantic_inv(self) -> bool {
         let disk_view = self.journal_disk_view();
         let semantic_dv = self.journal_tj().disk_view;
@@ -143,6 +144,46 @@ impl CachingDiskJournal::State {
         }
     }
 
+    pub proof fn allocation_view_semantic_inv_implies_live_bounds_domain(self)
+        requires
+            self.allocation_view_semantic_inv(),
+        ensures
+            self.au_page_bounds_i().dom() =~= self.lsn_au_index_or_empty().values(),
+    {
+        reveal(CachingDiskJournal::State::allocation_view_semantic_inv);
+    }
+
+    pub proof fn allocation_view_semantic_inv_semantic_contains(
+        self,
+        addr: Address,
+    )
+        requires
+            self.allocation_view_semantic_inv(),
+            self.journal_disk_view().entries.contains_key(addr),
+            self.au_page_bounds_i().contains_key(addr.au),
+            addr.page <= self.au_page_bounds_i()[addr.au],
+            self.journal_disk_view().boundary_lsn
+                < self.journal_disk_view().entries[addr].message_seq.seq_end,
+        ensures
+            self.journal_tj().disk_view.entries.contains_key(addr),
+    {
+        reveal(CachingDiskJournal::State::allocation_view_semantic_inv);
+    }
+
+    pub proof fn allocation_view_semantic_inv_bounds_semantic_addr(
+        self,
+        addr: Address,
+    )
+        requires
+            self.allocation_view_semantic_inv(),
+            self.journal_tj().disk_view.entries.contains_key(addr),
+        ensures
+            self.au_page_bounds_i().contains_key(addr.au),
+            addr.page <= self.au_page_bounds_i()[addr.au],
+    {
+        reveal(CachingDiskJournal::State::allocation_view_semantic_inv);
+    }
+
     pub open spec(checked) fn semantic_inv(self) -> bool {
         &&& self.allocation_view_inv()
         &&& self.allocation_view_semantic_inv()
@@ -163,6 +204,7 @@ impl CachingDiskJournal::State {
             self.i().semantic_inv(),
             self.unloaded_backing_image_valid(),
     {
+        reveal(CachingDiskJournal::State::allocation_view_semantic_inv);
     }
 
     pub proof fn persistent_dom_wf(self)
@@ -261,6 +303,7 @@ impl CachingDiskJournal::State {
         ensures
             self.semantic_inv(),
     {
+        reveal(CachingDiskJournal::State::allocation_view_semantic_inv);
     }
 
     pub proof fn loaded_i_view_facts(self)
@@ -386,7 +429,7 @@ impl CachingDiskJournal::State {
             assert(self.i().au_page_bounds.contains_key(root.au));
             assert(root.page <= self.i().au_page_bounds[root.au]);
             assert(self.journal_tj().disk_view.entries.contains_key(root)) by {
-                assert(self.allocation_view_semantic_inv());
+                self.allocation_view_semantic_inv_semantic_contains(root);
                 assert(self.journal_disk_view().entries.contains_key(root));
                 assert(self.au_page_bounds_i().contains_key(root.au));
                 assert(root.page <= self.au_page_bounds_i()[root.au]);
@@ -696,6 +739,7 @@ impl CachingDiskJournal::State {
         assert(AllocationJournal::State::next(self.i(), self.i(), freeze_lbl)) by {
             reveal(AllocationJournal::State::next);
         }
+        self.semantic_inv_implies_i_inv();
         AllocationJournal::State::frozen_journal_is_valid_image(
             self.i(),
             self.i(),
@@ -765,6 +809,7 @@ impl CachingDiskJournal::State {
                 &&& self.journal_tj().disk_view.boundary_lsn < record.message_seq.seq_end
                 &&& record.message_seq.seq_end <= self.journal.clean_watermark()
             });
+            self.clean_watermark_record_bounded_by_clean_au_page_bounds(bound_addr);
             assert(self.clean_watermark_au_page_bounds_i().contains_key(bound_addr.au));
             assert(bound_addr.page <= self.clean_watermark_au_page_bounds_i()[bound_addr.au]);
             assert(self.clean_watermark_au_page_bounds_i().contains_key(addr.au));
@@ -884,10 +929,11 @@ impl CachingDiskJournal::State {
                 assert(!self.mini_allocator.allocs[addr.au].all_pages_free()) by {
                     assert(self.indexed_aus_not_all_pages_free());
                 }
-            } else {
-                assert(AllocationJournal::State::mini_allocator_follows_freshest_rec(
-                    cj_freshest_rec(self.journal),
-                    self.mini_allocator,
+	        } else {
+                reveal(CachingDiskJournal::State::allocation_view_semantic_inv);
+	            assert(AllocationJournal::State::mini_allocator_follows_freshest_rec(
+	                cj_freshest_rec(self.journal),
+	                self.mini_allocator,
                 ));
                 assert(self.journal.snapshot.freshest_rec() is Some);
                 let root = self.journal.snapshot.freshest_rec().unwrap();
@@ -923,10 +969,11 @@ impl CachingDiskJournal::State {
             &&& self.clean_watermark_au_page_bounds_i().contains_key(addr.au)
             &&& addr.page <= self.clean_watermark_au_page_bounds_i()[addr.au]
         } by {
-            assert(self.allocation_view_semantic_inv());
+            self.allocation_view_semantic_inv_bounds_semantic_addr(addr);
             assert(self.au_page_bounds_i().contains_key(addr.au));
             assert(addr.page <= self.au_page_bounds_i()[addr.au]);
         };
+        self.clean_watermark_records_bounded_by_clean_au_page_bounds_from_forall();
     }
 
     pub proof fn same_clean_view_preserves_clean_watermark_records_bounded(
@@ -957,7 +1004,9 @@ impl CachingDiskJournal::State {
             assert(self.journal_tj().disk_view.entries[addr]
                 == post.journal_tj().disk_view.entries[addr]);
             assert(self.clean_watermark_records_bounded_by_clean_au_page_bounds());
+            self.clean_watermark_record_bounded_by_clean_au_page_bounds(addr);
         };
+        post.clean_watermark_records_bounded_by_clean_au_page_bounds_from_forall();
     }
 
     pub proof fn semantic_record_last_lsn_maps_to_addr_au(
@@ -1182,8 +1231,9 @@ impl CachingDiskJournal::State {
             assert(self.journal_tj().disk_view.boundary_lsn < record.message_seq.seq_end);
             if record.message_seq.seq_end <= self.journal.clean_watermark() {
                 assert(self.clean_watermark_records_bounded_by_clean_au_page_bounds());
+                self.clean_watermark_record_bounded_by_clean_au_page_bounds(addr);
                 if aus.contains(addr.au) {
-                    assert(post.allocation_view_semantic_inv());
+                    post.allocation_view_semantic_inv_bounds_semantic_addr(addr);
                     assert(post.au_page_bounds_i().contains_key(addr.au));
                     assert(addr.page <= post.au_page_bounds_i()[addr.au]);
                 } else {
@@ -1207,11 +1257,12 @@ impl CachingDiskJournal::State {
                 assert(self.journal.status.unwrap().lsn_au_index
                     .restrict(flushed_lsns).values().contains(addr.au));
                 assert(aus.contains(addr.au));
-                assert(post.allocation_view_semantic_inv());
+                post.allocation_view_semantic_inv_bounds_semantic_addr(addr);
                 assert(post.au_page_bounds_i().contains_key(addr.au));
                 assert(addr.page <= post.au_page_bounds_i()[addr.au]);
             }
         };
+        post.clean_watermark_records_bounded_by_clean_au_page_bounds_from_forall();
     }
 
     pub proof fn discard_old_preserves_clean_watermark_records_bounded(
@@ -1239,6 +1290,7 @@ impl CachingDiskJournal::State {
             reveal(AllocationJournal::State::next);
             reveal(AllocationJournal::State::next_by);
         }
+        self.semantic_inv_implies_i_inv();
         AllocationJournal::State::discard_old_tj_is_newer_subdisk(
             self.i(),
             post.i(),
@@ -1304,15 +1356,18 @@ impl CachingDiskJournal::State {
                 assert(self.journal_tj().disk_view.boundary_lsn <= post.journal_tj().disk_view.boundary_lsn);
                 assert(self.journal_tj().disk_view.boundary_lsn < record.message_seq.seq_end);
                 assert(self.clean_watermark_records_bounded_by_clean_au_page_bounds());
+                self.clean_watermark_record_bounded_by_clean_au_page_bounds(addr);
                 assert(self.clean_watermark_au_page_bounds_i().contains_key(addr.au));
                 assert(addr.page <= self.clean_watermark_au_page_bounds_i()[addr.au]);
-                assert(post.allocation_view_semantic_inv());
+                post.allocation_view_semantic_inv_bounds_semantic_addr(addr);
+                post.allocation_view_semantic_inv_implies_live_bounds_domain();
                 assert(post.au_page_bounds_i().contains_key(addr.au));
                 assert(post.au_page_bounds_i().dom() =~= post.lsn_au_index_or_empty().values());
                 assert(post.lsn_au_index_or_empty().values().contains(addr.au));
                 assert(new_au_index.values().contains(addr.au));
             }
         };
+        post.clean_watermark_records_bounded_by_clean_au_page_bounds_from_forall();
     }
 
     pub proof fn internal_alloc_preserves_clean_watermark_records_bounded(
@@ -1527,8 +1582,19 @@ impl CachingDiskJournal::State {
                     lsn => {
                     }
                 );
-                assert(post.i().au_page_bounds
-                    == self.i().au_page_bounds.insert(addr.au, addr.page));
+	                reveal(CachingDiskJournal::State::allocation_view_semantic_inv);
+	                assert(self.i().au_page_bounds == self.au_page_bounds_i());
+	                assert(post.i().au_page_bounds == post.au_page_bounds_i());
+	                assert(post.i().au_page_bounds
+	                    == au_page_bounds_observe_addr(self.i().au_page_bounds, addr));
+	                assert(au_page_bounds_observe_addr(self.i().au_page_bounds, addr)
+	                    == self.i().au_page_bounds.insert(addr.au, addr.page)) by {
+	                    if self.i().au_page_bounds.contains_key(addr.au) {
+	                        assert(self.i().au_page_bounds[addr.au] < addr.page);
+	                    }
+	                }
+	                assert(post.i().au_page_bounds
+	                    == self.i().au_page_bounds.insert(addr.au, addr.page));
                 assert(post.i().mini_allocator
                     == self.i().mini_allocator.allocate(addr).observe(addr));
                 assert(self.i().mini_allocator.tight_next_addr(self.i().freshest_rec, addr));
@@ -1601,8 +1667,10 @@ impl CachingDiskJournal::State {
                             < record.message_seq.seq_end);
                         assert(record.message_seq.seq_end <= self.journal.clean_watermark());
                         assert(self.clean_watermark_records_bounded_by_clean_au_page_bounds());
+                        self.clean_watermark_record_bounded_by_clean_au_page_bounds(x);
                     }
                 };
+                post.clean_watermark_records_bounded_by_clean_au_page_bounds_from_forall();
             },
             CachingDiskJournal::Step::internal_noop() => {
                 reveal(CachingDiskJournal::State::internal_noop);
@@ -1773,6 +1841,7 @@ impl CachingDiskJournal::State {
         AllocationJournal::State::initialize_inductive(self.i(), image);
         AllocationJournal::State::initialize_semantic_inv(self.i(), image);
         assert(self.unloaded_backing_image_valid());
+        reveal(CachingDiskJournal::State::allocation_view_semantic_inv);
         assert(self.semantic_inv());
         assert(self.refinement_inv());
     }
@@ -1804,6 +1873,7 @@ impl CachingDiskJournal::State {
     {
         let loaded = CachingDiskJournal::State::load_from_persistent(snapshot, persistent);
         let disk = CachingDiskJournal::State::disk_from_persistent(persistent);
+        CachingDisk::State::persistent_only_inv(persistent);
         assert(loaded.disk == disk);
         assert(loaded.disk.visible() =~= persistent) by {
             assert forall |addr: Address| #[trigger] loaded.disk.visible().contains_key(addr)
@@ -1890,6 +1960,7 @@ impl CachingDiskJournal::State {
         AllocationJournal::State::initialize_inductive(loaded.i(), image);
         AllocationJournal::State::initialize_semantic_inv(loaded.i(), image);
         assert(loaded.unloaded_backing_image_valid());
+        reveal(CachingDiskJournal::State::allocation_view_semantic_inv);
         assert(loaded.semantic_inv());
         assert(loaded.refinement_inv());
     }
@@ -2104,6 +2175,7 @@ impl CachingDiskJournal::State {
             assert(self.disk.visible().contains_key(root));
             assert(self.journal_disk_view().entries.contains_key(root));
             assert(to_journal_records(reads)[root] == self.journal_disk_view().entries[root]);
+            self.allocation_view_semantic_inv_semantic_contains(root);
             assert(self.i().tj().disk_view.entries.contains_key(root));
             assert(frozen_seq_end == self.frozen_seq_end(frozen));
             assert(frozen.boundary_lsn < to_journal_records(reads)[root].message_seq.seq_end);
@@ -2605,6 +2677,17 @@ impl CachingDiskJournal::State {
             lsn => {
             }
         );
+        reveal(CachingDiskJournal::State::allocation_view_semantic_inv);
+        assert(self.i().au_page_bounds == self.au_page_bounds_i());
+        assert(post.i().au_page_bounds == post.au_page_bounds_i());
+        assert(post.i().au_page_bounds
+            == au_page_bounds_observe_addr(self.i().au_page_bounds, addr));
+        assert(au_page_bounds_observe_addr(self.i().au_page_bounds, addr)
+            == self.i().au_page_bounds.insert(addr.au, addr.page)) by {
+            if self.i().au_page_bounds.contains_key(addr.au) {
+                assert(self.i().au_page_bounds[addr.au] < addr.page);
+            }
+        }
         assert(post.i().au_page_bounds == self.i().au_page_bounds.insert(addr.au, addr.page));
         assert(post.i().mini_allocator == self.i().mini_allocator.allocate(addr).observe(addr));
         assert(self.i().mini_allocator.tight_next_addr(self.i().freshest_rec, addr));
@@ -3275,10 +3358,12 @@ impl CachingDiskJournal::State {
             _ => {
                 assert(false);
             },
-        }
-        AllocationJournal::State::internal_allocations_preserves_frozen_metadata_tight(
-            self.i(),
-            post.i(),
+	        }
+	        self.semantic_inv_implies_i_inv();
+	        post.semantic_inv_implies_i_inv();
+	        AllocationJournal::State::internal_allocations_preserves_frozen_metadata_tight(
+	            self.i(),
+	            post.i(),
             lbl.i(self),
             meta,
         );
@@ -3376,12 +3461,14 @@ impl CachingDiskJournal::State {
         };
 
         self.next_refines(post, lbl);
-        assert(self.journal.status is Some);
-        CachingDiskJournal::State::internal_loaded_status_and_clean_watermark_monotonic(self, post);
-        self.frozen_snapshot_valid_implies_i_metadata_valid(frozen, seq_end);
-        AllocationJournal::State::internal_allocations_preserves_frozen_metadata_tight(
-            self.i(),
-            post.i(),
+	        assert(self.journal.status is Some);
+	        CachingDiskJournal::State::internal_loaded_status_and_clean_watermark_monotonic(self, post);
+	        self.frozen_snapshot_valid_implies_i_metadata_valid(frozen, seq_end);
+	        self.semantic_inv_implies_i_inv();
+	        post.semantic_inv_implies_i_inv();
+	        AllocationJournal::State::internal_allocations_preserves_frozen_metadata_tight(
+	            self.i(),
+	            post.i(),
             lbl.i(self),
             meta,
         );
@@ -3517,12 +3604,14 @@ impl CachingDiskJournal::State {
         };
 
         self.next_refines(post, lbl);
-        assert(self.journal.status is Some);
-        CachingDiskJournal::State::internal_loaded_status_and_clean_watermark_monotonic(self, post);
-        self.frozen_snapshot_valid_implies_i_metadata_valid(frozen, seq_end);
-        AllocationJournal::State::internal_allocations_preserves_frozen_metadata_tight(
-            self.i(),
-            post.i(),
+	        assert(self.journal.status is Some);
+	        CachingDiskJournal::State::internal_loaded_status_and_clean_watermark_monotonic(self, post);
+	        self.frozen_snapshot_valid_implies_i_metadata_valid(frozen, seq_end);
+	        self.semantic_inv_implies_i_inv();
+	        post.semantic_inv_implies_i_inv();
+	        AllocationJournal::State::internal_allocations_preserves_frozen_metadata_tight(
+	            self.i(),
+	            post.i(),
             lbl.i(self),
             meta,
         );
@@ -3696,11 +3785,13 @@ impl CachingDiskJournal::State {
             allocs,
             deallocs,
             prune_aus,
-        );
-        self.frozen_snapshot_valid_implies_i_metadata_valid(frozen, seq_end);
-        AllocationJournal::State::internal_allocations_preserves_frozen_metadata_tight(
-            self.i(),
-            post.i(),
+	        );
+	        self.frozen_snapshot_valid_implies_i_metadata_valid(frozen, seq_end);
+	        self.semantic_inv_implies_i_inv();
+	        post.semantic_inv_implies_i_inv();
+	        AllocationJournal::State::internal_allocations_preserves_frozen_metadata_tight(
+	            self.i(),
+	            post.i(),
             lbl.i(self),
             meta,
         );
@@ -3849,11 +3940,13 @@ impl CachingDiskJournal::State {
             allocs,
             deallocs,
             prune_aus,
-        );
-        self.frozen_snapshot_valid_implies_i_metadata_valid(frozen, seq_end);
-        AllocationJournal::State::internal_allocations_preserves_frozen_metadata_tight(
-            self.i(),
-            post.i(),
+	        );
+	        self.frozen_snapshot_valid_implies_i_metadata_valid(frozen, seq_end);
+	        self.semantic_inv_implies_i_inv();
+	        post.semantic_inv_implies_i_inv();
+	        AllocationJournal::State::internal_allocations_preserves_frozen_metadata_tight(
+	            self.i(),
+	            post.i(),
             lbl.i(self),
             meta,
         );
@@ -4058,12 +4151,14 @@ impl CachingDiskJournal::State {
             aus,
             frozen,
             seq_end,
-        );
-        self.next_refines(post, lbl);
-        self.frozen_snapshot_valid_implies_i_metadata_valid(frozen, seq_end);
-        AllocationJournal::State::internal_allocations_preserves_frozen_metadata_tight(
-            self.i(),
-            post.i(),
+	        );
+	        self.next_refines(post, lbl);
+	        self.frozen_snapshot_valid_implies_i_metadata_valid(frozen, seq_end);
+	        self.semantic_inv_implies_i_inv();
+	        post.semantic_inv_implies_i_inv();
+	        AllocationJournal::State::internal_allocations_preserves_frozen_metadata_tight(
+	            self.i(),
+	            post.i(),
             lbl.i(self),
             meta,
         );
@@ -4125,11 +4220,13 @@ impl CachingDiskJournal::State {
             discovered_aus,
             frozen,
             seq_end,
-        );
-        self.next_refines(post, lbl);
-        AllocationJournal::State::internal_allocations_preserves_frozen_metadata_tight(
-            self.i(),
-            post.i(),
+	        );
+	        self.next_refines(post, lbl);
+	        self.semantic_inv_implies_i_inv();
+	        post.semantic_inv_implies_i_inv();
+	        AllocationJournal::State::internal_allocations_preserves_frozen_metadata_tight(
+	            self.i(),
+	            post.i(),
             lbl.i(self),
             meta,
         );
@@ -4179,12 +4276,14 @@ impl CachingDiskJournal::State {
             freshest_rec: frozen.freshest_rec(),
             first: frozen.first(),
         };
-        self.internal_preserves_frozen_snapshot_and_prefix(post, frozen, seq_end);
-        self.next_refines(post, lbl);
-        self.frozen_snapshot_valid_implies_i_metadata_valid(frozen, seq_end);
-        AllocationJournal::State::internal_allocations_preserves_frozen_metadata_tight(
-            self.i(),
-            post.i(),
+	        self.internal_preserves_frozen_snapshot_and_prefix(post, frozen, seq_end);
+	        self.next_refines(post, lbl);
+	        self.frozen_snapshot_valid_implies_i_metadata_valid(frozen, seq_end);
+	        self.semantic_inv_implies_i_inv();
+	        post.semantic_inv_implies_i_inv();
+	        AllocationJournal::State::internal_allocations_preserves_frozen_metadata_tight(
+	            self.i(),
+	            post.i(),
             lbl.i(self),
             meta,
         );
@@ -4353,12 +4452,14 @@ impl CachingDiskJournal::State {
             seq_end,
             freshest_rec: frozen.freshest_rec(),
             first: frozen.first(),
-        };
-        self.internal_unloaded_preserves_frozen_loose_agreement(post, frozen);
-        self.next_refines(post, lbl);
-        AllocationJournal::State::internal_allocations_preserves_frozen_metadata_tight(
-            self.i(),
-            post.i(),
+	        };
+	        self.internal_unloaded_preserves_frozen_loose_agreement(post, frozen);
+	        self.next_refines(post, lbl);
+	        self.semantic_inv_implies_i_inv();
+	        post.semantic_inv_implies_i_inv();
+	        AllocationJournal::State::internal_allocations_preserves_frozen_metadata_tight(
+	            self.i(),
+	            post.i(),
             lbl.i(self),
             meta,
         );
@@ -4417,12 +4518,14 @@ impl CachingDiskJournal::State {
             prune_aus,
             frozen,
             seq_end,
-        );
-        self.next_refines(post, lbl);
-        self.frozen_snapshot_valid_implies_i_metadata_valid(frozen, seq_end);
-        AllocationJournal::State::internal_allocations_preserves_frozen_metadata_tight(
-            self.i(),
-            post.i(),
+	        );
+	        self.next_refines(post, lbl);
+	        self.frozen_snapshot_valid_implies_i_metadata_valid(frozen, seq_end);
+	        self.semantic_inv_implies_i_inv();
+	        post.semantic_inv_implies_i_inv();
+	        AllocationJournal::State::internal_allocations_preserves_frozen_metadata_tight(
+	            self.i(),
+	            post.i(),
             lbl.i(self),
             meta,
         );

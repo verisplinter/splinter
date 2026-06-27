@@ -250,6 +250,7 @@ pub proof fn caching_disk_i_by_domains_inv_from_clean_cache_coupling(
         assert(cd.persistent[addr] == disk.content[addr]);
         assert(cd.cache[addr] == cache_filled_page(cache, addr));
     }
+    cd.clean_pages_agree_from_forall();
 }
 
 pub proof fn caching_disk_i_inv_from_clean_cache_coupling(
@@ -1488,7 +1489,7 @@ pub proof fn cache_internal_refines_caching_disk_internal_by_domains(
                 &&& pre_cd.status[addr] == CachingDiskPageStatus::Clean
             } by {
                 assert(evicted_addrs.contains(addr));
-                let slot = choose |slot: Slot| evicted_map.contains_key(slot) && evicted_map[slot] == addr;
+                let slot = choose |slot: Slot| #![auto] evicted_map.contains_key(slot) && evicted_map[slot] == addr;
                 assert(evicted_slots.contains(slot));
                 assert(pre_cache.entries[slot] is Filled);
                 assert(pre_cache.status_map[slot] is Clean);
@@ -1815,7 +1816,7 @@ pub proof fn cache_internal_preserves_protected_entries(
                             |slot: Slot| evicted_slots.contains(slot),
                             |slot: Slot| pre_cache.entries[slot].get_addr(),
                         );
-                        let slot = choose |slot: Slot| {
+                        let slot = choose |slot: Slot| #![auto] {
                             &&& evicted_map.contains_key(slot)
                             &&& evicted_map[slot] == addr
                         };
@@ -3198,6 +3199,7 @@ pub proof fn cache_evictable_refines_observe_clean_aus(
         assert(cache_status_i(cache, addr) == CachingDiskPageStatus::Clean);
         assert(cd.status[addr] == CachingDiskPageStatus::Clean);
     }
+    cd.aus_clean_or_evictable_from_forall(aus);
     assert(CachingDisk::State::next_by(
         cd,
         cd,
@@ -3256,6 +3258,7 @@ pub proof fn cache_evictable_refines_observe_clean_aus_by_domains(
         assert(cache_status_i(cache, addr) == CachingDiskPageStatus::Clean);
         assert(cd.status[addr] == CachingDiskPageStatus::Clean);
     }
+    cd.aus_clean_or_evictable_from_forall(aus);
     assert(CachingDisk::State::next_by(
         cd,
         cd,
@@ -3311,6 +3314,7 @@ pub proof fn cache_evictable_refines_observe_clean_aus_by_tight_domains(
         assert(cache_status_i(cache, addr) == CachingDiskPageStatus::Clean);
         assert(cd.status[addr] == CachingDiskPageStatus::Clean);
     }
+    cd.aus_clean_or_evictable_from_forall(aus);
     assert(CachingDisk::State::next_by(
         cd,
         cd,

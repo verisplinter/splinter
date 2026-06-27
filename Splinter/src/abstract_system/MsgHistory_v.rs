@@ -175,7 +175,7 @@ impl MsgHistory {
   }
 
   /// Returns this[start, lsn). (Slice off right side).
-  pub open spec(checked) fn discard_recent(self, lsn: LSN) -> MsgHistory 
+  pub open spec fn discard_recent(self, lsn: LSN) -> MsgHistory
     recommends self.can_discard_to(lsn)
   {
     let keepMap = Map::new(
@@ -346,7 +346,7 @@ impl MsgHistory {
 
   // Returns `true` iff the given MsgHistory is an exact slice of MsgHistory
   // within self (values must match at each LSN).
-  pub open spec(checked) fn includes_subseq(self, subseq: MsgHistory) -> bool
+  pub open spec fn includes_subseq(self, subseq: MsgHistory) -> bool
   recommends
       self.wf(),
       subseq.wf(),

@@ -123,6 +123,7 @@ pub struct SealedAllocationBranchStack {
 }
 
 impl SealedAllocationBranchStack {
+    #[verifier(opaque)]
     pub open spec fn root_has_tight_branch(
         self,
         root: Address,
@@ -141,6 +142,20 @@ impl SealedAllocationBranchStack {
     {
         choose |branch: LinkedBranch<Summary>|
             tight_branch_in_loose_disk(self.sealed_disk, root, summary, branch)
+    }
+
+    pub proof fn root_has_tight_branch_from_witness(
+        self,
+        root: Address,
+        summary: Summary,
+        branch: LinkedBranch<Summary>,
+    )
+        requires
+            tight_branch_in_loose_disk(self.sealed_disk, root, summary, branch),
+        ensures
+            self.root_has_tight_branch(root, summary),
+    {
+        reveal(SealedAllocationBranchStack::root_has_tight_branch);
     }
 
     pub open spec fn wf(self, branch_summary: Map<AU, Summary>) -> bool
@@ -234,6 +249,7 @@ impl SealedAllocationBranchStack {
             self.tight_branch(root, branch_summary[root.au]).get_summary() == branch_summary[root.au],
             self.tight_branch(root, branch_summary[root.au]).disk_view.entries <= self.sealed_disk.entries,
     {
+        reveal(SealedAllocationBranchStack::root_has_tight_branch);
         self.root_au_in_summary(branch_summary, root);
         assert(self.root_has_tight_branch(root, branch_summary[root.au]));
     }
@@ -368,11 +384,15 @@ impl SealedAllocationBranchStack {
                     assert(loose_active_disk.is_sub_disk(post.sealed_disk));
                     assert(sealed_branch.disk_view.entries <= loose_active_disk.entries);
                 }
-                assert(exists |branch: LinkedBranch<Summary>|
-                    tight_branch_in_loose_disk(post.sealed_disk, root, post_summary[root.au], branch));
+                post.root_has_tight_branch_from_witness(
+                    root,
+                    post_summary[root.au],
+                    sealed_branch,
+                );
             } else {
                 assert(roots.contains(root));
                 assert(post_summary[root.au] == pre_summary[root.au]);
+                self.tight_branch_facts(pre_summary, root);
                 let old_branch = self.tight_branch(root, pre_summary[root.au]);
                 assert(tight_branch_in_loose_disk(
                     self.sealed_disk,
@@ -389,8 +409,7 @@ impl SealedAllocationBranchStack {
                     assert(self.sealed_disk.is_sub_disk(post.sealed_disk));
                     assert(old_branch.disk_view.entries <= self.sealed_disk.entries);
                 }
-                assert(exists |branch: LinkedBranch<Summary>|
-                    tight_branch_in_loose_disk(post.sealed_disk, root, post_summary[root.au], branch));
+                post.root_has_tight_branch_from_witness(root, post_summary[root.au], old_branch);
             }
         }
 

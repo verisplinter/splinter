@@ -378,7 +378,7 @@ impl AllocationCrashAwareJournal::State{
                     implies new_journal.frozen_loose_domain(post.persistent).contains(addr) by {
                     assert(tight_index.values().contains(addr.au));
                     assert(new_journal.lsn_au_index.values().contains(addr.au));
-                    let lsn = choose |lsn: nat| {
+                    let lsn = choose |lsn: nat| #![auto] {
                         &&& new_journal.lsn_au_index.contains_key(lsn)
                         &&& new_journal.lsn_au_index[lsn] == addr.au
                     };

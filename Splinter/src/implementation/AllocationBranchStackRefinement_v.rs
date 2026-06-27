@@ -328,7 +328,7 @@ pub proof fn append_puts_up_to_apply_to_sparse_buffer(
                         append_sparse_map_up_to_contains_iff(keys, msgs, prev_end, last_key);
                         assert(!prev_sparse.contains_key(last_key)) by {
                             if prev_sparse.contains_key(last_key) {
-                                let prev_idx = choose |i: int| 0 <= i < prev_end
+                                let prev_idx = choose |i: int| #![auto] 0 <= i < prev_end
                                     && keys[i] == last_key
                                     && !is_nop_message(msgs[i]);
                                 Key::strictly_sorted_implies_unique(keys);
@@ -1701,9 +1701,7 @@ impl SealedAllocationBranchStack {
         let root = self.sealed_roots[idx as int];
         assert(self.sealed_roots.to_set().contains(root));
         assert(branch_summary.contains_key(root.au));
-        assert(self.root_has_tight_branch(root, branch_summary[root.au]));
-        assert(exists |branch: LinkedBranch<Summary>|
-            tight_branch_in_loose_disk(self.sealed_disk, root, branch_summary[root.au], branch));
+        self.tight_branch_facts(branch_summary, root);
     }
 
     pub open spec fn sparse_map(self, branch_summary: Map<AU, Summary>) -> Map<Key, Message>

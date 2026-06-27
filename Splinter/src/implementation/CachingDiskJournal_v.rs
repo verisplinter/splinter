@@ -1369,6 +1369,7 @@ impl CachingDiskJournal::State {
         self.disk.addrs_clean_or_evictable(self.clean_watermark_au_page_bounds_domain())
     }
 
+    #[verifier(opaque)]
     pub open spec fn clean_watermark_records_bounded_by_clean_au_page_bounds(self) -> bool {
         if self.journal.status is Some {
             forall |addr: Address| {
@@ -1383,6 +1384,45 @@ impl CachingDiskJournal::State {
         } else {
             true
         }
+    }
+
+    pub proof fn clean_watermark_record_bounded_by_clean_au_page_bounds(
+        self,
+        addr: Address,
+    )
+        requires
+            self.clean_watermark_records_bounded_by_clean_au_page_bounds(),
+            self.journal.status is Some,
+            ({
+                let record = self.journal_tj().disk_view.entries[addr];
+                &&& self.journal_tj().disk_view.entries.contains_key(addr)
+                &&& self.journal_tj().disk_view.boundary_lsn < record.message_seq.seq_end
+                &&& record.message_seq.seq_end <= self.journal.clean_watermark()
+            }),
+        ensures
+            self.clean_watermark_au_page_bounds_i().contains_key(addr.au),
+            addr.page <= self.clean_watermark_au_page_bounds_i()[addr.au],
+    {
+        reveal(CachingDiskJournal::State::clean_watermark_records_bounded_by_clean_au_page_bounds);
+    }
+
+    pub proof fn clean_watermark_records_bounded_by_clean_au_page_bounds_from_forall(
+        self,
+    )
+        requires
+            self.journal.status is Some ==> forall |addr: Address| {
+                let record = self.journal_tj().disk_view.entries[addr];
+                &&& #[trigger] self.journal_tj().disk_view.entries.contains_key(addr)
+                &&& self.journal_tj().disk_view.boundary_lsn < record.message_seq.seq_end
+                &&& record.message_seq.seq_end <= self.journal.clean_watermark()
+            } ==> {
+                &&& self.clean_watermark_au_page_bounds_i().contains_key(addr.au)
+                &&& addr.page <= self.clean_watermark_au_page_bounds_i()[addr.au]
+            },
+        ensures
+            self.clean_watermark_records_bounded_by_clean_au_page_bounds(),
+    {
+        reveal(CachingDiskJournal::State::clean_watermark_records_bounded_by_clean_au_page_bounds);
     }
 
     pub open spec fn frozen_domain(self, snapshot: JournalSnapshot) -> Set<Address> {
@@ -1433,10 +1473,10 @@ impl CachingDiskJournal::State {
                 if addrs.contains(addr) {
                     if self.disk.cache.contains_key(addr) {
                         assert(self.disk.addrs_clean_or_evictable(addrs));
+                        self.disk.addr_clean_or_evictable(addrs, addr);
                         assert(self.disk.status.contains_key(addr));
                         assert(self.disk.status[addr] == PageStatus::Clean);
-                        assert(self.disk.persistent.contains_key(addr));
-                        assert(self.disk.persistent[addr] == self.disk.cache[addr]);
+                        self.disk.clean_page_agrees(addr);
                     }
                 }
             }
@@ -2461,7 +2501,9 @@ impl CachingDiskJournal::State {
         } by {
             assert(pre.disk.cache.dom().contains(addr));
             assert(pre.disk.addrs_clean_or_evictable(pre.disk.cache.dom()));
+            pre.disk.addr_clean_or_evictable(pre.disk.cache.dom(), addr);
         }
+        post.disk.addrs_clean_or_evictable_from_forall(post.clean_watermark_au_page_bounds_domain());
     }
 
     pub proof fn observe_clean_aus_preserves_clean_watermark_au_page_bounds_clean(
@@ -2580,16 +2622,23 @@ impl CachingDiskJournal::State {
             assert(pre.lsn_au_index_or_empty()[lsn] == addr.au);
             if aus.contains(addr.au) {
                 assert(pre.disk.aus_clean_or_evictable(aus));
+                pre.disk.au_clean_or_evictable(aus, addr);
             } else if lsn < pre.journal.clean_watermark() {
                 assert(pre.clean_watermark_au_page_bounds_i().contains_key(addr.au));
                 assert(addr.page <= pre.clean_watermark_au_page_bounds_i()[addr.au]);
                 assert(pre.clean_watermark_au_page_bounds_domain().contains(addr));
                 assert(pre.clean_watermark_au_page_bounds_clean_or_evictable());
+                pre.disk.addr_clean_or_evictable(
+                    pre.clean_watermark_au_page_bounds_domain(),
+                    addr,
+                );
             } else {
                 assert(aus.contains(addr.au));
                 assert(pre.disk.aus_clean_or_evictable(aus));
+                pre.disk.au_clean_or_evictable(aus, addr);
             }
         }
+        post.disk.addrs_clean_or_evictable_from_forall(post.clean_watermark_au_page_bounds_domain());
     }
 
     pub proof fn put_preserves_clean_watermark_au_page_bounds_clean(
@@ -2654,7 +2703,12 @@ impl CachingDiskJournal::State {
         } by {
             assert(pre.clean_watermark_au_page_bounds_domain().contains(addr));
             assert(pre.clean_watermark_au_page_bounds_clean_or_evictable());
+            pre.disk.addr_clean_or_evictable(
+                pre.clean_watermark_au_page_bounds_domain(),
+                addr,
+            );
         }
+        post.disk.addrs_clean_or_evictable_from_forall(post.clean_watermark_au_page_bounds_domain());
     }
 
     pub proof fn discard_old_preserves_clean_watermark_au_page_bounds_clean(
@@ -2948,6 +3002,10 @@ impl CachingDiskJournal::State {
                     if pre.disk.cache.contains_key(addr) {
                         assert(pre.clean_watermark_au_page_bounds_domain().contains(addr));
                         assert(pre.clean_watermark_au_page_bounds_clean_or_evictable());
+                        pre.disk.addr_clean_or_evictable(
+                            pre.clean_watermark_au_page_bounds_domain(),
+                            addr,
+                        );
                         assert(pre.disk.status.contains_key(addr));
                         assert(pre.disk.status[addr] == PageStatus::Clean);
                     } else {
@@ -2969,6 +3027,9 @@ impl CachingDiskJournal::State {
                         assert(false);
                     }
                 };
+                post.disk.addrs_clean_or_evictable_from_forall(
+                    post.clean_watermark_au_page_bounds_domain(),
+                );
             },
             CachingDiskJournal::Step::mini_allocator_prune(new_disk) => {
                 reveal(CachingDiskJournal::State::mini_allocator_prune);
