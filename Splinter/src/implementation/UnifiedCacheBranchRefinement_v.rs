@@ -325,7 +325,7 @@ impl UnifiedCacheBranchSource {
         }
     }
 
-    pub open spec fn branch_image_summary_i(
+    pub closed spec fn branch_image_summary_i(
         disk_content: Map<Address, RawPage>,
         roots: Seq<Address>,
     ) -> Map<AU, crate::allocation_layer::AllocationBranch_v::Summary>
@@ -338,7 +338,7 @@ impl UnifiedCacheBranchSource {
         }
     }
 
-    pub open spec fn branch_image_summary_aus_i(
+    pub closed spec fn branch_image_summary_aus_i(
         disk_content: Map<Address, RawPage>,
         roots: Seq<Address>,
     ) -> Set<AU>
@@ -346,7 +346,7 @@ impl UnifiedCacheBranchSource {
         summary_aus(Self::branch_image_summary_i(disk_content, roots))
     }
 
-    pub open spec fn branch_image_projection_addrs_i(
+    pub closed spec fn branch_image_projection_addrs_i(
         disk_content: Map<Address, RawPage>,
         roots: Seq<Address>,
     ) -> Set<Address>

@@ -94,7 +94,7 @@ use crate::trusted::SystemModel_t::SystemModel;
 
 verus! {
 
-pub open spec fn system_multiset_to_set_i<V>(m: Multiset<V>) -> Set<V>
+pub closed spec fn system_multiset_to_set_i<V>(m: Multiset<V>) -> Set<V>
 {
     Set::new(|v| m.contains(v))
 }
@@ -110,7 +110,7 @@ pub open spec fn unified_cache_progress_i(
     }
 }
 
-pub open spec fn system_model_progress_history_inv(
+pub closed spec fn system_model_progress_history_inv(
     model: SystemModel::State<UnifiedCacheProgramModel>,
 ) -> bool
 {
@@ -120,7 +120,7 @@ pub open spec fn system_model_progress_history_inv(
         ==> model.id_history.contains(reply.id)
 }
 
-pub open spec fn system_model_progress_unique_inv(
+pub closed spec fn system_model_progress_unique_inv(
     model: SystemModel::State<UnifiedCacheProgramModel>,
 ) -> bool
 {
@@ -128,7 +128,7 @@ pub open spec fn system_model_progress_unique_inv(
     &&& forall |reply: Reply| #[trigger] model.replies.count(reply) <= 1
 }
 
-pub open spec fn system_model_request_id_unique_inv(
+pub closed spec fn system_model_request_id_unique_inv(
     model: SystemModel::State<UnifiedCacheProgramModel>,
 ) -> bool
 {
@@ -139,7 +139,7 @@ pub open spec fn system_model_request_id_unique_inv(
     } ==> req1 == req2
 }
 
-pub open spec fn system_model_request_reply_disjoint_inv(
+pub closed spec fn system_model_request_reply_disjoint_inv(
     model: SystemModel::State<UnifiedCacheProgramModel>,
 ) -> bool
 {
@@ -149,7 +149,7 @@ pub open spec fn system_model_request_reply_disjoint_inv(
     } ==> req.id != reply.id
 }
 
-pub open spec fn unified_cache_superblock_write_pending(
+pub closed spec fn unified_cache_superblock_write_pending(
     model: SystemModel::State<UnifiedCacheProgramModel>,
 ) -> bool
 {
@@ -160,7 +160,7 @@ pub open spec fn unified_cache_superblock_write_pending(
     &&& model.disk.requests[phase->req_id]->to == spec_superblock_addr()
 }
 
-pub open spec fn unified_cache_cache_disk_response_inv(
+pub closed spec fn unified_cache_cache_disk_response_inv(
     model: SystemModel::State<UnifiedCacheProgramModel>,
 ) -> bool
 {
@@ -181,7 +181,7 @@ pub open spec fn unified_cache_cache_disk_response_inv(
     }
 }
 
-pub open spec fn unified_cache_shared_cache_disk_inv(
+pub closed spec fn unified_cache_shared_cache_disk_inv(
     model: SystemModel::State<UnifiedCacheProgramModel>,
 ) -> bool
 {
@@ -201,7 +201,7 @@ pub open spec fn unified_cache_shared_cache_disk_inv(
     }
 }
 
-pub open spec fn unified_cache_cache_request_wf(
+pub closed spec fn unified_cache_cache_request_wf(
     model: SystemModel::State<UnifiedCacheProgramModel>,
 ) -> bool
 {
@@ -221,7 +221,7 @@ pub open spec fn unified_cache_cache_request_wf(
     }
 }
 
-pub open spec fn unified_cache_outstanding_cache_reqs_disk_backed_inv(
+pub closed spec fn unified_cache_outstanding_cache_reqs_disk_backed_inv(
     model: SystemModel::State<UnifiedCacheProgramModel>,
 ) -> bool
 {
@@ -245,7 +245,7 @@ pub open spec fn unified_cache_outstanding_cache_reqs_disk_backed_inv(
     }
 }
 
-pub open spec fn unified_cache_disk_backed_addrs_inv(
+pub closed spec fn unified_cache_disk_backed_addrs_inv(
     model: SystemModel::State<UnifiedCacheProgramModel>,
 ) -> bool
 {
@@ -255,7 +255,7 @@ pub open spec fn unified_cache_disk_backed_addrs_inv(
         ==> model.disk.content.contains_key(addr)
 }
 
-pub open spec fn unified_cache_recovery_superblock_io_inv(
+pub closed spec fn unified_cache_recovery_superblock_io_inv(
     model: SystemModel::State<UnifiedCacheProgramModel>,
 ) -> bool
 {
@@ -306,7 +306,7 @@ pub open spec fn unified_cache_recovery_superblock_io_inv(
     }
 }
 
-pub open spec fn unified_cache_in_flight_superblock_landed(
+pub closed spec fn unified_cache_in_flight_superblock_landed(
     state: UnifiedCacheSystem::State,
     disk: crate::trusted::ProgramModelTrait_t::DiskModel,
 ) -> bool
@@ -412,7 +412,7 @@ pub open spec fn unified_cache_system_i_lbl(
     }
 }
 
-pub open spec fn unified_cache_component_refinement_inv(
+pub closed spec fn unified_cache_component_refinement_inv(
     model: SystemModel::State<UnifiedCacheProgramModel>,
 ) -> bool
 {
@@ -424,14 +424,14 @@ pub open spec fn unified_cache_component_refinement_inv(
     )
 }
 
-pub open spec fn unified_cache_superblockstore_refinement_inv(
+pub closed spec fn unified_cache_superblockstore_refinement_inv(
     model: SystemModel::State<UnifiedCacheProgramModel>,
 ) -> bool
 {
     unified_cache_superblockstore_i(model).inv()
 }
 
-pub open spec fn unified_cache_ready_inv(
+pub closed spec fn unified_cache_ready_inv(
     model: SystemModel::State<UnifiedCacheProgramModel>,
 ) -> bool
 {
@@ -444,7 +444,7 @@ pub open spec fn unified_cache_ready_inv(
     }
 }
 
-pub open spec fn unified_cache_recovery_branch_metadata_agrees(
+pub closed spec fn unified_cache_recovery_branch_metadata_agrees(
     model: SystemModel::State<UnifiedCacheProgramModel>,
 ) -> bool
 {
@@ -457,7 +457,7 @@ pub open spec fn unified_cache_recovery_branch_metadata_agrees(
     &&& loaded_branch_summary_agrees(roots, nodes, state.branch.branch_summary)
 }
 
-pub open spec fn unified_cache_before_metadata_load_complete(
+pub closed spec fn unified_cache_before_metadata_load_complete(
     state: UnifiedCacheSystem::State,
 ) -> bool
 {
@@ -466,13 +466,13 @@ pub open spec fn unified_cache_before_metadata_load_complete(
     ||| state.recovery_state is SuperblockAvailable
 }
 
-pub open spec fn cache_all_filled_clean(cache: Cache::State) -> bool
+pub closed spec fn cache_all_filled_clean(cache: Cache::State) -> bool
 {
     forall |addr: Address| #[trigger] filled_cache_status(cache).contains_key(addr)
         ==> filled_cache_status(cache)[addr] == PageStatus::Clean
 }
 
-pub open spec fn unified_cache_recovery_cache_quiescent_inv(
+pub closed spec fn unified_cache_recovery_cache_quiescent_inv(
     model: SystemModel::State<UnifiedCacheProgramModel>,
 ) -> bool
 {
@@ -596,7 +596,7 @@ pub proof fn loaded_branch_summary_agrees_insert_root(
     loaded_branch_summary_agrees_from_forall(roots, disk_nodes, post_summary);
 }
 
-pub open spec fn unified_cache_recovery_metadata_inv(
+pub closed spec fn unified_cache_recovery_metadata_inv(
     model: SystemModel::State<UnifiedCacheProgramModel>,
 ) -> bool
 {
@@ -622,7 +622,7 @@ pub open spec fn unified_cache_recovery_metadata_inv(
     }
 }
 
-pub open spec fn unified_cache_durable_image_inv(
+pub closed spec fn unified_cache_durable_image_inv(
     model: SystemModel::State<UnifiedCacheProgramModel>,
 ) -> bool
 {
@@ -634,7 +634,7 @@ pub open spec fn unified_cache_durable_image_inv(
     }
 }
 
-pub open spec fn unified_cache_sync_phase_inv(
+pub closed spec fn unified_cache_sync_phase_inv(
     model: SystemModel::State<UnifiedCacheProgramModel>,
 ) -> bool
 {
@@ -653,7 +653,7 @@ pub open spec fn unified_cache_sync_phase_inv(
     }
 }
 
-pub open spec fn unified_cache_non_cache_write_request_inv(
+pub closed spec fn unified_cache_non_cache_write_request_inv(
     model: SystemModel::State<UnifiedCacheProgramModel>,
 ) -> bool
 {
@@ -670,7 +670,7 @@ pub open spec fn unified_cache_non_cache_write_request_inv(
     }
 }
 
-pub open spec fn unified_cache_superblock_write_request_inv(
+pub closed spec fn unified_cache_superblock_write_request_inv(
     model: SystemModel::State<UnifiedCacheProgramModel>,
 ) -> bool
 {
@@ -684,7 +684,7 @@ pub open spec fn unified_cache_superblock_write_request_inv(
         }
 }
 
-pub open spec fn unified_cache_superblock_image_inv(
+pub closed spec fn unified_cache_superblock_image_inv(
     model: SystemModel::State<UnifiedCacheProgramModel>,
 ) -> bool
 {

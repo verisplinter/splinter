@@ -811,8 +811,10 @@ proof fn mini_allocator_all_minus_removable_is_reserved(mini_allocator: MiniAllo
     assert(mini_allocator.all_aus().difference(mini_allocator.removable_aus())
         =~= mini_allocator.reserved_aus()) by {
         assert forall |au: AU|
-            #[trigger] mini_allocator.all_aus().difference(mini_allocator.removable_aus()).contains(au)
-            <==> mini_allocator.reserved_aus().contains(au)
+            #![trigger mini_allocator.all_aus().contains(au)]
+            #![trigger mini_allocator.reserved_aus().contains(au)]
+            mini_allocator.all_aus().difference(mini_allocator.removable_aus()).contains(au)
+                <==> mini_allocator.reserved_aus().contains(au)
         by {
             if mini_allocator.all_aus().difference(mini_allocator.removable_aus()).contains(au) {
                 assert(mini_allocator.allocs.contains_key(au));

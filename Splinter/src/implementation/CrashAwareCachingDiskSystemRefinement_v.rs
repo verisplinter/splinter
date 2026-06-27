@@ -53,7 +53,7 @@ pub closed spec fn caching_disk_system_i(model: CrashAwareCachingDiskSystem::Sta
     caching_disk_system_coordination_i(model).i()
 }
 
-pub open spec fn refinement_inv(model: CrashAwareCachingDiskSystem::State) -> bool
+pub closed spec fn refinement_inv(model: CrashAwareCachingDiskSystem::State) -> bool
 {
     &&& model.inv()
     &&& model.journal.refinement_inv()
