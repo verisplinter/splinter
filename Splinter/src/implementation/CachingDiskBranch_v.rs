@@ -2521,6 +2521,7 @@ pub proof fn empty_caching_disk_branch_image_wf()
         assert_maps_equal!(sealed_disk.entries, Map::<Address, BranchNode>::empty());
     }
     assert(sealed_disk.sealed_branch_roots(image.sealed_roots.to_set())) by {
+        reveal(BufferDisk::<_>::sealed_branch_roots);
         assert forall |root: Address| #[trigger] image.sealed_roots.to_set().contains(root)
             implies sealed_disk.get_branch(root).valid_sealed_branch()
         by {

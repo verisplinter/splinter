@@ -39,10 +39,35 @@ impl BufferDisk<BranchNode> {
     //     LinkedBranch{root, disk_view: self.to_branch_disk()}
     // }
 
+    #[verifier(opaque)]
     pub open spec fn sealed_branch_roots(self, branch_roots: Set<Address>) -> bool
     {
         &&& forall |root| branch_roots.contains(root) 
             ==> (#[trigger] self.get_branch(root)).valid_sealed_branch()
+    }
+
+    pub proof fn sealed_branch_roots_contains(self, branch_roots: Set<Address>, root: Address)
+        requires
+            self.sealed_branch_roots(branch_roots),
+            branch_roots.contains(root),
+        ensures
+            self.get_branch(root).valid_sealed_branch(),
+    {
+        reveal(BufferDisk::<_>::sealed_branch_roots);
+    }
+
+    pub proof fn sealed_branch_roots_subset(self, branch_roots: Set<Address>, sub_roots: Set<Address>)
+        requires
+            self.sealed_branch_roots(branch_roots),
+            sub_roots <= branch_roots,
+        ensures
+            self.sealed_branch_roots(sub_roots),
+    {
+        assert forall |root| #[trigger] sub_roots.contains(root)
+        implies self.get_branch(root).valid_sealed_branch() by {
+            self.sealed_branch_roots_contains(branch_roots, root);
+        }
+        reveal(BufferDisk::<_>::sealed_branch_roots);
     }
 
     pub open spec fn build_branch_summary(self, branch_roots: Set<Address>) -> Map<AU, Set<AU>>
@@ -605,10 +630,18 @@ state_machine!{ AllocationBranchBetree {
                 assert(!branch_likes.dom().is_empty());
                 assert(exists |root| branch_likes.dom().contains(root));
                 let root = choose |root| branch_likes.dom().contains(root);
+                self.betree.linked.buffer_dv.sealed_branch_roots_contains(
+                    branch_likes.dom() + compactor_roots,
+                    root,
+                );
                 assert(self.betree.linked.buffer_dv.get_branch(root).inv());
             } else {
                 assert(exists |root| compactor_roots.contains(root));
                 let root = choose |root| compactor_roots.contains(root);
+                self.betree.linked.buffer_dv.sealed_branch_roots_contains(
+                    branch_likes.dom() + compactor_roots,
+                    root,
+                );
                 assert(self.betree.linked.buffer_dv.get_branch(root).inv());
             }
         }
@@ -644,6 +677,15 @@ state_machine!{ AllocationBranchBetree {
         implies summary_aus(self.branch_summary).contains(au) by {
             assert(self.branch_summary.contains_key(au)); // trigger
             assert(self.branch_summary.contains_value(self.branch_summary[au])); // trigger
+            lemma_union_set_of_sets_subset(self.branch_summary.values(), self.branch_summary[au]);
+        }
+        assert forall |au| #[trigger] self.branch_summary.dom().contains(au)
+        implies summary_aus(self.branch_summary).contains(au) by {
+            let built_summary = buffer_dv.build_branch_summary(branch_roots);
+            assert(built_summary.contains_key(au));
+            assert(built_summary[au].contains(au));
+            assert(self.branch_summary[au] == built_summary[au]);
+            assert(self.branch_summary.contains_value(self.branch_summary[au]));
             lemma_union_set_of_sets_subset(self.branch_summary.values(), self.branch_summary[au]);
         }
     }
@@ -689,6 +731,7 @@ state_machine!{ AllocationBranchBetree {
             assert forall |addr| pre_branch_roots.contains(addr)
             implies addr.au != new_branch.root.au
             by {
+                pre_buffer_dv.sealed_branch_roots_contains(pre_branch_roots, addr);
                 assert(pre_buffer_dv.get_branch(addr).valid_sealed_branch()); // trigger
                 assert(pre_buffer_dv.entries.contains_key(addr));
             }
@@ -699,6 +742,7 @@ state_machine!{ AllocationBranchBetree {
         pre_buffer_dv.build_branch_summary_finite(pre_branch_roots);
         if pre.branch_summary.contains_key(new_branch.root.au) {
             let addr = pre_buffer_dv.build_branch_summary_get_addr(pre_branch_roots, new_branch.root.au);
+            pre_buffer_dv.sealed_branch_roots_contains(pre_branch_roots, addr);
             assert(pre_buffer_dv.get_branch(addr).valid_sealed_branch()); // trigger
             assert(false);
         }
@@ -1041,6 +1085,7 @@ state_machine!{ AllocationBranchBetree {
             assert forall |addr| pre_branch_roots.contains(addr)
             implies addr.au != new_branch.root.au
             by {
+                pre_buffer_dv.sealed_branch_roots_contains(pre_branch_roots, addr);
                 assert(pre_buffer_dv.get_branch(addr).valid_sealed_branch()); // trigger
                 assert(pre_buffer_dv.entries.contains_key(addr));
             }
@@ -1072,6 +1117,7 @@ state_machine!{ AllocationBranchBetree {
         pre_buffer_dv.build_branch_summary_finite(pre_branch_roots);
         if pre.branch_summary.contains_key(new_branch.root.au) {
             let addr = pre_buffer_dv.build_branch_summary_get_addr(pre_branch_roots, new_branch.root.au);
+            pre_buffer_dv.sealed_branch_roots_contains(pre_branch_roots, addr);
             assert(pre_buffer_dv.get_branch(addr).valid_sealed_branch()); // trigger
             assert(false);
         }
@@ -1091,6 +1137,8 @@ state_machine!{ AllocationBranchBetree {
             post.betree.linked.buffer_likes_domain(post_betree_likes);
             assert forall |addr| #[trigger] post_branch_likes.dom() .contains(addr)
             implies post_buffer_dv.entries.contains_key(addr) by {
+                assert(post_branch_roots.contains(addr));
+                post_buffer_dv.sealed_branch_roots_contains(post_branch_roots, addr);
                 assert(post_buffer_dv.get_branch(addr).valid_sealed_branch()); // trigger
             }
         }
@@ -1220,6 +1268,7 @@ impl BufferDisk<BranchNode> {
         implies branch_summary[au].contains(au) by {
             let addr = self.build_branch_summary_get_addr(branch_roots, au);
             let branch = self.get_branch(addr);
+            self.sealed_branch_roots_contains(branch_roots, addr);
             assert(branch.valid_sealed_branch()); // trigger
             assert(branch.full_repr().contains(addr)); // trigger
         }
@@ -1273,6 +1322,7 @@ impl BufferDisk<BranchNode> {
                 } else {
                     let addr = self.build_branch_summary_get_addr(branch_roots, au);
                     post.build_branch_summary_contains(post_branch_roots, addr);
+                    self.sealed_branch_roots_contains(branch_roots, addr);
                     assert(self.get_branch(addr).valid_sealed_branch());
                     assert(post.get_branch(addr).get_summary() == self.get_branch(addr).get_summary());
                 }
@@ -1290,11 +1340,15 @@ impl BufferDisk<BranchNode> {
                     branch.valid_subdisk_preserves_valid_sealed_branch(post_branch, branch.get_summary());
                 } else {
                     let pre_branch = self.get_branch(root);
+                    self.sealed_branch_roots_contains(branch_roots, root);
                     self.build_branch_summary_ensures(branch_roots);
                     assert(branch_roots.contains(root)); // trigger
                     pre_branch.valid_subdisk_preserves_valid_sealed_branch(post_branch, summary_aus(pre_summary));
                 }
             }
+        }
+        assert(post.sealed_branch_roots(post_branch_roots)) by {
+            reveal(BufferDisk::<_>::sealed_branch_roots);
         }
     }
 
@@ -1355,6 +1409,7 @@ impl BufferDisk<BranchNode> {
 
                 // get branch containing this subtree node
                 let branch = self.get_branch(root_addr);
+                self.sealed_branch_roots_contains(branch_roots, root_addr);
                 assert(branch.valid_sealed_branch());
                 assert(branch.full_repr().contains(addr));
                 branch.reachable_node_closed_children(branch.the_ranking(), addr);
@@ -1389,6 +1444,8 @@ impl BufferDisk<BranchNode> {
             let post_branch = post_dv.get_branch(root);
             let ranking = branch.the_ranking();
 
+            self.sealed_branch_roots_contains(branch_roots, root);
+            assert(branch.valid_sealed_branch());
             assert(addrs_closed(branch.full_repr(), branch.get_summary()));
             self.build_branch_summary_contains(branch_roots, root);
             assert(!to_aus(branch_roots - post_branch_roots).contains(root.au)) by {
@@ -1415,7 +1472,9 @@ impl BufferDisk<BranchNode> {
             lemma_union_set_of_sets_subset(post_branch_summary.values(), branch.get_summary());
             branch.valid_subdisk_preserves_valid_sealed_branch(post_branch, summary_aus(branch_summary));
         }
-        assert(post_dv.sealed_branch_roots(post_branch_roots));
+        assert(post_dv.sealed_branch_roots(post_branch_roots)) by {
+            reveal(BufferDisk::<_>::sealed_branch_roots);
+        }
         assert(set_addrs_disjoint_aus(post_branch_roots)) by {
             assert forall |a: Address, b: Address|
                 post_branch_roots.contains(a) && post_branch_roots.contains(b) && a != b
