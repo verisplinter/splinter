@@ -4781,6 +4781,11 @@ impl CachingDiskBranch::State {
             + to_aus(self.disk.visible().dom())
     }
 
+    pub open spec fn semantic_owned_aus(self) -> Set<AU> {
+        summary_aus(self.interpreted_branch_summary())
+            + self.mini_allocator.all_aus()
+    }
+
 	    pub proof fn metadata_loaded_full_accessible_eq(self)
 	        requires
 	            self.inv(),
@@ -5041,6 +5046,80 @@ impl CachingDiskBranch::State {
                         assert(to_aus(post.disk.visible().dom()).contains(au));
                     }
                 }
+            },
+            _ => {
+                assert(false);
+            },
+        }
+    }
+
+    pub proof fn append_preserves_owned_aus(
+        pre: Self,
+        post: Self,
+        lbl: CachingDiskBranch::Label,
+    )
+        requires
+            pre.inv(),
+            CachingDiskBranch::State::next(pre, post, lbl),
+            lbl is AppendLabel,
+        ensures
+            pre.metadata_loaded,
+            post.metadata_loaded,
+            post.semantic_owned_aus() <= pre.semantic_owned_aus(),
+    {
+        reveal(CachingDiskBranch::State::next);
+        reveal(CachingDiskBranch::State::next_by);
+        let step = choose |step: CachingDiskBranch::Step|
+            CachingDiskBranch::State::next_by(pre, post, lbl, step);
+        match step {
+            CachingDiskBranch::Step::append(new_disk, new_active_branch, receipt, init_root, reads, writes) => {
+                assert(CachingDiskBranch::State::append(
+                    pre, post, lbl, new_disk, new_active_branch, receipt, init_root, reads, writes,
+                )) by {
+                    reveal(CachingDiskBranch::State::append);
+                }
+                assert(post.branch_summary == pre.branch_summary);
+                if pre.active_branch.root is Some {
+                    assert(post.mini_allocator == pre.mini_allocator);
+                } else {
+                    assert(init_root is Some);
+                    match lbl {
+                        CachingDiskBranch::Label::AppendLabel{keys, msgs} => {
+                            let write_nodes = to_branch_nodes(writes);
+                            let branch_lbl = CachedBranch::Label::Initialize{
+                                mini_allocator: pre.mini_allocator,
+                                init_root: init_root.unwrap(),
+                                keys,
+                                msgs,
+                                write_nodes,
+                            };
+                            assert(CachedBranch::State::next(pre.active_branch, new_active_branch, branch_lbl));
+                            reveal(CachedBranch::State::next);
+                            reveal(CachedBranch::State::next_by);
+                            let cb_step = choose |step: CachedBranch::Step|
+                                CachedBranch::State::next_by(pre.active_branch, new_active_branch, branch_lbl, step);
+                            match cb_step {
+                                CachedBranch::Step::initialize_branch() => {
+                                    assert(CachedBranch::State::initialize_branch(
+                                        pre.active_branch,
+                                        new_active_branch,
+                                        branch_lbl,
+                                    )) by {
+                                        reveal(CachedBranch::State::initialize_branch);
+                                    }
+                                },
+                                _ => { assert(false); },
+                            }
+                            assert(pre.mini_allocator.can_allocate(init_root.unwrap()));
+                        },
+                        _ => { assert(false); },
+                    }
+                    mini_allocator_allocate_preserves_all_aus(pre.mini_allocator, init_root.unwrap());
+                }
+                assert(post.mini_allocator.all_aus() <= pre.mini_allocator.all_aus());
+                CachingDiskBranch::State::inv_next(pre, post, lbl);
+                assert(pre.interpreted_branch_summary() == pre.branch_summary);
+                assert(post.interpreted_branch_summary() == post.branch_summary);
             },
             _ => {
                 assert(false);
@@ -5309,6 +5388,189 @@ impl CachingDiskBranch::State {
         }
     }
 
+    pub proof fn internal_preserves_owned_aus(pre: Self, post: Self)
+        requires
+            pre.inv(),
+            CachingDiskBranch::State::next(pre, post, CachingDiskBranch::Label::Internal),
+        ensures
+            post.semantic_owned_aus() <= pre.semantic_owned_aus(),
+    {
+        reveal(CachingDiskBranch::State::next);
+        reveal(CachingDiskBranch::State::next_by);
+        let lbl = CachingDiskBranch::Label::Internal;
+        let step = choose |step: CachingDiskBranch::Step|
+            CachingDiskBranch::State::next_by(pre, post, lbl, step);
+        match step {
+            CachingDiskBranch::Step::disk_internal(new_disk) => {
+                assert(CachingDiskBranch::State::disk_internal(pre, post, lbl, new_disk)) by {
+                    reveal(CachingDiskBranch::State::disk_internal);
+                }
+                CachingDisk::State::internal_visible_unchanged(pre.disk, post.disk);
+                assert(post.branch_summary == pre.branch_summary);
+                assert(post.mini_allocator == pre.mini_allocator);
+                assert(post.visible_branch_nodes() == pre.visible_branch_nodes()) by {
+                    assert_maps_equal!(post.visible_branch_nodes(), pre.visible_branch_nodes(), addr => {
+                        if post.visible_branch_nodes().contains_key(addr) {
+                            assert(post.disk.visible().contains_key(addr));
+                            assert(pre.disk.visible().contains_key(addr));
+                        }
+                        if pre.visible_branch_nodes().contains_key(addr) {
+                            assert(pre.disk.visible().contains_key(addr));
+                            assert(post.disk.visible().contains_key(addr));
+                        }
+                    });
+                };
+                assert(post.interpreted_branch_summary() == pre.interpreted_branch_summary());
+            },
+            CachingDiskBranch::Step::observe_persisted_roots(target_count) => {
+                assert(CachingDiskBranch::State::observe_persisted_roots(pre, post, lbl, target_count)) by {
+                    reveal(CachingDiskBranch::State::observe_persisted_roots);
+                }
+                assert(post.branch_summary == pre.branch_summary);
+                assert(post.mini_allocator == pre.mini_allocator);
+                assert(post.disk == pre.disk);
+                assert(post.interpreted_branch_summary() == pre.interpreted_branch_summary());
+            },
+            CachingDiskBranch::Step::freeze_as() => {
+                assert(CachingDiskBranch::State::freeze_as(pre, post, lbl)) by {
+                    reveal(CachingDiskBranch::State::freeze_as);
+                }
+                assert(post == pre);
+            },
+            CachingDiskBranch::Step::internal_noop() => {
+                assert(CachingDiskBranch::State::internal_noop(pre, post, lbl)) by {
+                    reveal(CachingDiskBranch::State::internal_noop);
+                }
+                assert(post == pre);
+            },
+            CachingDiskBranch::Step::internal_grow(new_disk, new_root_addr, reads, writes) => {
+                assert(CachingDiskBranch::State::internal_grow(pre, post, lbl, new_disk, new_root_addr, reads, writes)) by {
+                    reveal(CachingDiskBranch::State::internal_grow);
+                }
+                let read_nodes = to_branch_nodes(reads);
+                let write_nodes = to_branch_nodes(writes);
+                let branch_lbl = CachedBranch::Label::Grow{
+                    mini_allocator: pre.mini_allocator,
+                    new_root_addr,
+                    read_nodes,
+                    write_nodes,
+                };
+                assert(CachedBranch::State::next(
+                    pre.active_branch,
+                    CachedBranch::State{root: Some(new_root_addr)},
+                    branch_lbl,
+                ));
+                reveal(CachedBranch::State::next);
+                reveal(CachedBranch::State::next_by);
+                let cb_step = choose |step: CachedBranch::Step|
+                    CachedBranch::State::next_by(
+                        pre.active_branch,
+                        CachedBranch::State{root: Some(new_root_addr)},
+                        branch_lbl,
+                        step,
+                    );
+                match cb_step {
+                    CachedBranch::Step::grow_step() => {
+                        assert(CachedBranch::State::grow_step(
+                            pre.active_branch,
+                            CachedBranch::State{root: Some(new_root_addr)},
+                            branch_lbl,
+                        )) by {
+                            reveal(CachedBranch::State::grow_step);
+                        }
+                    },
+                    _ => { assert(false); },
+                }
+                assert(pre.mini_allocator.can_allocate(new_root_addr));
+                mini_allocator_allocate_preserves_all_aus(pre.mini_allocator, new_root_addr);
+                assert(post.branch_summary == pre.branch_summary);
+                assert(post.mini_allocator.all_aus() == pre.mini_allocator.all_aus());
+                CachingDiskBranch::State::inv_next(pre, post, lbl);
+                assert(pre.interpreted_branch_summary() == pre.branch_summary);
+                assert(post.interpreted_branch_summary() == post.branch_summary);
+            },
+            CachingDiskBranch::Step::internal_split(new_disk, new_child_addr, receipt, split_arg, reads, writes) => {
+                assert(CachingDiskBranch::State::internal_split(pre, post, lbl, new_disk, new_child_addr, receipt, split_arg, reads, writes)) by {
+                    reveal(CachingDiskBranch::State::internal_split);
+                }
+                let read_nodes = to_branch_nodes(reads);
+                let write_nodes = to_branch_nodes(writes);
+                let branch_lbl = CachedBranch::Label::Split{
+                    mini_allocator: pre.mini_allocator,
+                    new_child_addr,
+                    receipt,
+                    split_arg,
+                    read_nodes,
+                    write_nodes,
+                };
+                assert(CachedBranch::State::next(pre.active_branch, pre.active_branch, branch_lbl));
+                reveal(CachedBranch::State::next);
+                reveal(CachedBranch::State::next_by);
+                let cb_step = choose |step: CachedBranch::Step|
+                    CachedBranch::State::next_by(pre.active_branch, pre.active_branch, branch_lbl, step);
+                match cb_step {
+                    CachedBranch::Step::split_step() => {
+                        assert(CachedBranch::State::split_step(pre.active_branch, pre.active_branch, branch_lbl)) by {
+                            reveal(CachedBranch::State::split_step);
+                        }
+                    },
+                    _ => { assert(false); },
+                }
+                assert(pre.mini_allocator.can_allocate(new_child_addr));
+                mini_allocator_allocate_preserves_all_aus(pre.mini_allocator, new_child_addr);
+                assert(post.branch_summary == pre.branch_summary);
+                assert(post.mini_allocator.all_aus() == pre.mini_allocator.all_aus());
+                CachingDiskBranch::State::inv_next(pre, post, lbl);
+                assert(pre.interpreted_branch_summary() == pre.branch_summary);
+                assert(post.interpreted_branch_summary() == post.branch_summary);
+            },
+            CachingDiskBranch::Step::internal_seal(written_disk, aux_ptr, reads, writes) => {
+                assert(CachingDiskBranch::State::internal_seal(pre, post, lbl, written_disk, aux_ptr, reads, writes)) by {
+                    reveal(CachingDiskBranch::State::internal_seal);
+                }
+                let sealed_summary = pre.mini_allocator.reserved_aus();
+                pre.mini_allocator.prune_preserves_wf(sealed_summary);
+                assert(post.mini_allocator.all_aus()
+                    == pre.mini_allocator.all_aus().difference(sealed_summary));
+                assert(summary_aus(post.branch_summary) <= summary_aus(pre.branch_summary) + pre.mini_allocator.all_aus()) by {
+                    pre.i().sealed_stack.sealed_disk.build_branch_summary_finite(
+                        pre.i().sealed_stack.sealed_roots.to_set(),
+                    );
+                    assert(pre.branch_summary.values().finite());
+                    assert(post.branch_summary.values().finite()) by {
+                        assert(post.branch_summary == pre.branch_summary.insert(
+                            pre.active_branch.root.unwrap().au,
+                            sealed_summary,
+                        ));
+                        lemma_values_finite(post.branch_summary);
+                    }
+                    assert forall |au: AU| #[trigger] summary_aus(post.branch_summary).contains(au)
+                        implies (summary_aus(pre.branch_summary) + pre.mini_allocator.all_aus()).contains(au) by {
+                        if !summary_aus(pre.branch_summary).contains(au) {
+                            assert(post.branch_summary == pre.branch_summary.insert(
+                                pre.active_branch.root.unwrap().au,
+                                sealed_summary,
+                            ));
+                            let summary = lemma_union_set_of_sets_contains(post.branch_summary.values(), au);
+                            if summary != sealed_summary {
+                                assert(pre.branch_summary.values().contains(summary));
+                                lemma_union_set_of_sets_subset(pre.branch_summary.values(), summary);
+                                assert(false);
+                            }
+                            assert(pre.mini_allocator.all_aus().contains(au));
+                        }
+                    }
+                };
+                CachingDiskBranch::State::inv_next(pre, post, lbl);
+                assert(pre.interpreted_branch_summary() == pre.branch_summary);
+                assert(post.interpreted_branch_summary() == post.branch_summary);
+            },
+            _ => {
+                assert(false);
+            },
+        }
+    }
+
     pub proof fn internal_preserves_full_accessible_aus(pre: Self, post: Self)
         requires
             pre.inv(),
@@ -5556,6 +5818,46 @@ impl CachingDiskBranch::State {
         }
     }
 
+    pub proof fn internal_alloc_owned_aus_growth(
+        pre: Self,
+        post: Self,
+        allocs: Set<AU>,
+        deallocs: Set<AU>,
+    )
+        requires
+            pre.inv(),
+            CachingDiskBranch::State::next(
+                pre,
+                post,
+                CachingDiskBranch::Label::InternalAlloc{allocs, deallocs},
+            ),
+        ensures
+            deallocs == Set::<AU>::empty(),
+            post.semantic_owned_aus() <= pre.semantic_owned_aus() + allocs,
+    {
+        let lbl = CachingDiskBranch::Label::InternalAlloc{allocs, deallocs};
+        reveal(CachingDiskBranch::State::next);
+        reveal(CachingDiskBranch::State::next_by);
+        let step = choose |step: CachingDiskBranch::Step|
+            CachingDiskBranch::State::next_by(pre, post, lbl, step);
+        match step {
+            CachingDiskBranch::Step::internal_fill_au(aus, new_disk) => {
+                assert(CachingDiskBranch::State::internal_fill_au(pre, post, lbl, aus, new_disk)) by {
+                    reveal(CachingDiskBranch::State::internal_fill_au);
+                }
+                mini_allocator_add_aus_preserves_all_aus(pre.mini_allocator, allocs);
+                assert(post.branch_summary == pre.branch_summary);
+                assert(post.mini_allocator.all_aus() == pre.mini_allocator.all_aus() + allocs);
+                CachingDiskBranch::State::inv_next(pre, post, lbl);
+                assert(pre.interpreted_branch_summary() == pre.branch_summary);
+                assert(post.interpreted_branch_summary() == post.branch_summary);
+            },
+            _ => {
+                assert(false);
+            },
+        }
+    }
+
     pub proof fn internal_alloc_accessible_aus(
         pre: Self,
         post: Self,
@@ -5675,6 +5977,9 @@ impl CachingDiskBranch::State {
         requires
             Self::can_load_from_persistent(image),
         ensures
+            Self::load_from_persistent(image).mini_allocator.all_aus() =~= Set::<AU>::empty(),
+            Self::load_from_persistent(image).interpreted_branch_summary()
+                == image.branch_summary(),
             Self::load_from_persistent(image).accessible_aus()
                 <= to_aus(image.persistent.dom()) + summary_aus(image.branch_summary()),
             Self::load_from_persistent(image).full_accessible_aus()

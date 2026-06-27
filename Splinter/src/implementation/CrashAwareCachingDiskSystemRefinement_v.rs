@@ -989,6 +989,7 @@ proof fn crash_refines_coordination(
     new_journal: CrashAwareCachingDiskJournal::State,
     new_branch: CrashAwareCachingDiskBranch::State,
     new_superblock: SuperblockStore::State,
+    new_free_aus: Set<AU>,
     keep_in_flight: bool,
 )
     requires
@@ -1000,6 +1001,7 @@ proof fn crash_refines_coordination(
             new_journal,
             new_branch,
             new_superblock,
+            new_free_aus,
             keep_in_flight,
         ),
     ensures
@@ -2961,6 +2963,7 @@ pub proof fn next_refines_coordination(
             new_journal,
             new_branch,
             new_superblock,
+            new_free_aus,
             keep_in_flight,
         ) => {
             assert(CrashAwareCachingDiskSystem::State::crash(
@@ -2970,6 +2973,7 @@ pub proof fn next_refines_coordination(
                 new_journal,
                 new_branch,
                 new_superblock,
+                new_free_aus,
                 keep_in_flight,
             )) by {
                 reveal(CrashAwareCachingDiskSystem::State::crash);
@@ -2981,6 +2985,7 @@ pub proof fn next_refines_coordination(
                 new_journal,
                 new_branch,
                 new_superblock,
+                new_free_aus,
                 keep_in_flight,
             );
         },

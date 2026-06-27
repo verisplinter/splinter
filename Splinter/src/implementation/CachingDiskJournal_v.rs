@@ -1289,6 +1289,29 @@ impl CachingDiskJournal::State {
         }
     }
 
+    pub open spec fn persistent_journal_disk_view(self, snapshot: JournalSnapshot) -> DiskView {
+        DiskView{
+            boundary_lsn: snapshot.boundary_lsn,
+            entries: to_journal_records(self.disk.persistent),
+        }
+    }
+
+    pub open spec fn persistent_lsn_au_index(self, snapshot: JournalSnapshot) -> LsnAUIndex {
+        self.persistent_journal_disk_view(snapshot).loose_build_lsn_au_index_au_walk(
+            snapshot.freshest_rec(),
+            snapshot.first(),
+        )
+    }
+
+    pub open spec fn persistent_frozen_loose_domain(
+        self,
+        frozen: crate::implementation::CrashAwareCachingDiskJournal_v::CachingDiskJournalFrozenMetadata,
+    ) -> Set<Address> {
+        let frozen_lsns = Set::new(|lsn: LSN| frozen.snapshot.boundary_lsn <= lsn < frozen.seq_end);
+        let frozen_index = self.persistent_lsn_au_index(frozen.snapshot).restrict(frozen_lsns);
+        addresses_in_aus(frozen_index.values())
+    }
+
     pub open spec fn journal_backing_tj(self) -> TruncatedJournal {
         TruncatedJournal{
             freshest_rec: cj_freshest_rec(self.journal),
