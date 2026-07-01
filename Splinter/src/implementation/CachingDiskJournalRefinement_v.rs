@@ -1817,10 +1817,6 @@ impl CachingDiskJournal::State {
                     == self.clean_watermark_au_page_bounds_i());
                 assert(post.journal.clean_watermark() == self.journal.clean_watermark());
                 self.loaded_i_view_facts();
-                // Old shortcut kept for reference; this helper is proving
-                // post.live_bounded_pages_visible(), so calling
-                // post.loaded_i_view_facts() here would be circular.
-                // post.loaded_i_view_facts();
                 assert(post.journal_tj() == post.i().tj());
                 assert(self.journal_tj() == self.i().tj());
                 assert(AllocationJournal::State::next_by(
@@ -1907,12 +1903,6 @@ impl CachingDiskJournal::State {
             ),
         ensures
             reads <= self.disk.cache,
-            // Old visible-view postconditions kept for reference. These no
-            // longer follow from CachingDisk::access now that clean cache reads
-            // are allowed to be outside the visible journal image.
-            // reads <= self.disk.visible(),
-            // forall |addr: Address| #[trigger] reads.contains_key(addr)
-            //     ==> to_journal_records(reads)[addr] == self.journal_disk_view().entries[addr],
     {
         CachingDisk::State::access_effect(self.disk, self.disk, reads, Map::empty());
     }
@@ -5158,10 +5148,6 @@ impl CachingDiskJournal::State {
                     writes,
                 );
                 self.loaded_i_view_facts();
-                // Old shortcut kept for reference; this helper is proving
-                // post.live_bounded_pages_visible(), so calling
-                // post.loaded_i_view_facts() here would be circular.
-                // post.loaded_i_view_facts();
                 reveal(CachingDiskJournal::State::allocation_view_semantic_inv);
                 assert(post.i().au_page_bounds == post.au_page_bounds_i());
                 assert(self.i().au_page_bounds == self.au_page_bounds_i());
@@ -5291,10 +5277,6 @@ impl CachingDiskJournal::State {
                 assert(post.au_page_bounds_i() == self.au_page_bounds_i().restrict(new_index.values()));
                 CachingDisk::State::forget_effect(self.disk, post.disk, deallocs);
                 self.loaded_i_view_facts();
-                // Old shortcut kept for reference; this helper is proving
-                // post.live_bounded_pages_visible(), so calling
-                // post.loaded_i_view_facts() here would be circular.
-                // post.loaded_i_view_facts();
                 assert(post.i().au_page_bounds == post.au_page_bounds_i());
                 assert(self.i().au_page_bounds == self.au_page_bounds_i());
                 assert(post.i().lsn_au_index == post.lsn_au_index_or_empty());
@@ -5376,10 +5358,6 @@ impl CachingDiskJournal::State {
                 );
                 CachingDisk::State::forget_effect(self.disk, post.disk, deallocs);
                 self.loaded_i_view_facts();
-                // Old shortcut kept for reference; this helper is proving
-                // post.live_bounded_pages_visible(), so calling
-                // post.loaded_i_view_facts() here would be circular.
-                // post.loaded_i_view_facts();
                 assert(post.i().au_page_bounds == post.au_page_bounds_i());
                 assert(self.i().au_page_bounds == self.au_page_bounds_i());
                 assert(post.i().lsn_au_index == post.lsn_au_index_or_empty());

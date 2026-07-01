@@ -52,13 +52,6 @@ pub open spec fn active_loaded_nodes_of(
 ) -> LoadedBranch
 {
     let nodes = to_branch_nodes(disk.visible());
-    // Experimental readable/reserved projection kept for reference. It made
-    // arbitrary clean loads semantic, which is exactly what the visible-tight
-    // active branch is meant to avoid:
-    // let nodes = to_branch_nodes(disk.readable());
-    // nodes.restrict(Set::new(|addr: Address|
-    //     nodes.contains_key(addr) && mini_allocator.page_is_reserved(addr)
-    // ))
     nodes.restrict(Set::new(|addr: Address|
         nodes.contains_key(addr) && mini_allocator_allocated_addrs(mini_allocator).contains(addr)
     ))
@@ -510,8 +503,6 @@ pub open spec fn active_branch_i_of(
         branch: if active_branch.root is Some {
             Some(LinkedBranch{
                 root: active_branch.root.unwrap(),
-                // Old loose active projection:
-                // disk_view: DiskView{entries: active_loaded_nodes_of(disk, mini_allocator)},
                 disk_view: semantic_active_branch_of(
                     active_branch.root.unwrap(),
                     visible_nodes,
@@ -1753,26 +1744,6 @@ proof fn root_summary_from_read_matches_visible(
         assert(read_nodes[root] is Leaf);
         assert(visible_nodes[root] is Leaf);
     }
-}
-
-// Old readable-based helper kept for reference. It is still useful for
-// debugging, but branch semantic proofs should go through visible().
-proof fn query_read_node_matches_readable(
-    disk: CachingDisk::State,
-    reads: Map<Address, RawPage>,
-    addr: Address,
-)
-    requires
-        reads <= disk.cache,
-        reads.contains_key(addr),
-    ensures
-        to_branch_nodes(disk.readable()).contains_key(addr),
-        to_branch_nodes(reads)[addr] == to_branch_nodes(disk.readable())[addr],
-{
-    assert(disk.cache.contains_key(addr));
-    assert(disk.readable().contains_key(addr));
-    assert(reads[addr] == disk.cache[addr]);
-    assert(disk.readable()[addr] == disk.cache[addr]);
 }
 
 proof fn child_branch_inv_internal_from_parent(
@@ -3533,9 +3504,6 @@ state_machine!{ CachingDiskBranch {
                 self.visible_branch_nodes(),
                 self.mini_allocator,
             )
-        // Old loose active projection required no loose active nodes when inactive.
-        // &&& self.active_branch.root is None ==>
-        //     active_loaded_nodes_of(self.disk, self.mini_allocator) == Map::<Address, BranchNode>::empty()
     }
 
     #[inductive(initialize)]
@@ -3649,8 +3617,6 @@ state_machine!{ CachingDiskBranch {
                 post.persisted_root_count,
             ));
         };
-        // Old readable-derived active view proof kept for reference:
-        // assert(active_loaded_nodes_of(post.disk, post.mini_allocator) == Map::<Address, BranchNode>::empty()) by { ... };
         assert(post.freeze_image() == image);
     }
 
@@ -3857,14 +3823,7 @@ state_machine!{ CachingDiskBranch {
 	                                    assert(addrs_with_different_au(post.sealed_roots[i], root));
 	                                    assert(false);
 	                                }
-	                                // Old pointwise bridge kept for reference. The transition now
-	                                // carries the component-level summary receipt directly:
-	                                // assert(read_nodes[root] == post.visible_branch_nodes()[root]);
-	                                // if read_nodes[root] is Index {
-	                                //     let aux = read_nodes[root]->aux_ptr.unwrap();
-	                                //     assert(read_nodes[aux] == post.visible_branch_nodes()[aux]);
-	                                // }
-                                    assert(reads <= pre.disk.cache);
+	                                    assert(reads <= pre.disk.cache);
                                     assert(root_summary_read_valid(root, pre.visible_branch_nodes()));
                                     root_summary_from_read_matches_visible(pre.disk, reads, root);
 	                                assert(root_summary_from_read(root, read_nodes)
@@ -3887,13 +3846,6 @@ state_machine!{ CachingDiskBranch {
                                 assert(post.sealed_roots[i].au != root.au);
                                 assert(false);
                             }
-                            // Old pointwise bridge kept for reference. The transition now
-                            // carries the component-level summary receipt directly:
-                            // assert(read_nodes[root] == post.visible_branch_nodes()[root]);
-                            // if read_nodes[root] is Index {
-                            //     let aux = read_nodes[root]->aux_ptr.unwrap();
-                            //     assert(read_nodes[aux] == post.visible_branch_nodes()[aux]);
-                            // }
                             assert(reads <= pre.disk.cache);
                             assert(root_summary_read_valid(root, pre.visible_branch_nodes()));
                             root_summary_from_read_matches_visible(pre.disk, reads, root);
@@ -4987,9 +4939,7 @@ state_machine!{ CachingDiskBranch {
                         assert(loose_active_summary.values().contains(sealed_branch.get_summary()));
                         lemma_union_set_of_sets_subset(loose_active_summary.values(), sealed_branch.get_summary());
                     }
-                    // Old proof rebuilt visibility from active entries. Seal now
-                    // carries the visible handoff as a direct submap contract.
-                    assert(to_branch_nodes(post.disk.visible()).contains_key(addr));
+	                    assert(to_branch_nodes(post.disk.visible()).contains_key(addr));
                     assert(to_branch_nodes(post.disk.visible())[addr] == sealed_branch.disk_view.entries[addr]);
                     assert(post.disk.visible().contains_key(addr));
                     assert(sealed_nodes_of(post.disk.visible(), loose_active_summary).contains_key(addr));
@@ -5413,9 +5363,6 @@ state_machine!{ CachingDiskBranch {
             post.branch_summary,
             post.persisted_root_count,
         )));
-        // Old readable-derived active-empty proof kept for reference:
-        // assert(active_loaded_nodes_of(post.disk, post.mini_allocator)
-        //     == Map::<Address, BranchNode>::empty()) by { ... };
     }
 
     #[inductive(internal_fill_au)]
@@ -6568,10 +6515,7 @@ impl CachingDiskBranch::State {
                         } else {
                             assert(addr == pre.active_branch.root.unwrap());
                             assert(reads.contains_key(addr));
-                            // Old proof routed active write ownership through
-                            // disk.visible(); the transition now carries the
-                            // write-AU ownership contract directly.
-                            assert(pre.accessible_aus().contains(au));
+	                            assert(pre.accessible_aus().contains(au));
                         }
                     }
                 }

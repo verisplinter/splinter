@@ -1405,8 +1405,6 @@ impl UnifiedCacheJournalSource {
                 &&& #[trigger] responses.contains_key(addr)
                 &&& addresses_in_aus(self.journal_projection_aus()).contains(addr)
             } ==> {
-                // Old read-response coupling:
-                // &&& self.disk.content.contains_key(addr)
                 &&& responses[addr] is ReadResp ==> {
                     self.disk.content.contains_key(addr) ==> responses[addr]->data
                         == self.disk.content[addr]
@@ -2338,12 +2336,6 @@ pub proof fn read_for_recovery_refines(
         post.in_flight_image == pre.in_flight_image,
         journal_reads.contains_key(addr),
         journal_reads <= cache_reads,
-        // Old caller-supplied whole-map CachingDisk access requirements:
-        // journal_reads <= pre.journal_caching_disk_i().cache,
-        // journal_reads <= pre.journal_caching_disk_i().visible(),
-        // Old CachingDiskJournal read-view requirement kept for reference:
-        // journal_reads.restrict(addresses_in_aus(pre.journal_projection_aus()))
-        //     <= pre.journal_caching_disk_i().visible(),
         writes.dom().disjoint(addresses_in_aus(pre.journal_projection_aus())),
         Cache::State::next(
             pre.cache,
@@ -2478,8 +2470,6 @@ pub proof fn read_for_recovery_refines(
                         messages: records,
                         reads: restricted_reads,
                     };
-                    // Old CachingDiskJournal read-view bridge kept for reference:
-                    // assert(raw_journal_reads <= pre.journal_caching_disk_i().visible());
                     let disk_lbl = CachingDisk::Label::Access{
                         reads: raw_journal_reads,
                         writes: Map::<Address, RawPage>::empty(),
@@ -2553,8 +2543,6 @@ pub proof fn read_for_recovery_refines(
                     let inner = src.ephemeral->v;
                     assert(src.ephemeral is Known);
                     assert(inner == pre.journal_caching_disk_state_i());
-                    // Old CachingDiskJournal read-view bridge kept for reference:
-                    // assert(to_journal_records(raw_journal_reads) <= inner.journal_disk_view().entries);
                     assert forall |read: Address| #[trigger] raw_journal_reads.contains_key(read) implies {
                         &&& inner.au_page_bounds_i().contains_key(read.au)
                         &&& read.page <= inner.au_page_bounds_i()[read.au]
@@ -3879,14 +3867,6 @@ pub proof fn commit_start_refines(
             post.cache,
             Cache::Label::Access{reads, writes: Map::empty()},
         ),
-        // Old cache-only CachingDisk access requirement:
-        // reads.restrict(Set::new(|addr: Address| {
-        //     snapshot.freshest_rec() is Some && addr == snapshot.freshest_rec().unwrap()
-        // })) <= pre.journal_caching_disk_i().cache,
-        // Old CachingDiskJournal read-view requirement kept for reference:
-        // reads.restrict(Set::new(|addr: Address| {
-        //     snapshot.freshest_rec() is Some && addr == snapshot.freshest_rec().unwrap()
-        // })) <= pre.journal_caching_disk_i().visible(),
         AtomicJournalState::State::next(
             pre.journal,
             post.journal,

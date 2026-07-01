@@ -120,18 +120,6 @@ state_machine!{ CachingDisk {
         init status = Map::<Address, PageStatus>::empty();
     }}
 
-    // Old persistent-only load kept for reference:
-    // transition!{ load(lbl: Label, addrs: Set<Address>) {
-    //     require lbl is Internal;
-    //     require addrs.disjoint(pre.cache.dom());
-    //
-    //     let loaded = pre.persistent.restrict(addrs);
-    //     let status_updates = status_map(loaded.dom(), PageStatus::Clean);
-    //
-    //     update cache = pre.cache.union_prefer_right(loaded);
-    //     update status = pre.status.union_prefer_right(status_updates);
-    // }}
-
     transition!{ load(lbl: Label, loads: Map<Address, RawPage>) {
         require lbl is Internal;
         require loads.dom().disjoint(pre.cache.dom());
@@ -306,50 +294,6 @@ state_machine!{ CachingDisk {
     fn initialize_inductive(post: Self) {
         post.empty_status_clean_pages_agree();
     }
-
-    // Old persistent-only load inductive kept for reference:
-    // #[inductive(load)]
-    // fn load_inductive(pre: Self, post: Self, lbl: Label, addrs: Set<Address>) {
-    //     reveal(CachingDisk::State::load);
-    //     assert(lbl is Internal);
-    //     let loaded = pre.persistent.restrict(addrs);
-    //     assert(post.status.dom() =~= post.cache.dom()) by {
-    //         assert forall |addr: Address| #[trigger] post.status.dom().contains(addr)
-    //             implies post.cache.dom().contains(addr) by {
-    //             if loaded.contains_key(addr) {
-    //                 assert(pre.persistent.contains_key(addr));
-    //                 assert(post.cache.contains_key(addr));
-    //             } else {
-    //                 assert(pre.status.dom().contains(addr));
-    //                 assert(pre.cache.dom().contains(addr));
-    //             }
-    //         }
-    //         assert forall |addr: Address| #[trigger] post.cache.dom().contains(addr)
-    //             implies post.status.dom().contains(addr) by {
-    //             if loaded.contains_key(addr) {
-    //                 assert(status_map(loaded.dom(), PageStatus::Clean).contains_key(addr));
-    //             } else {
-    //                 assert(pre.cache.dom().contains(addr));
-    //                 assert(pre.status.dom().contains(addr));
-    //             }
-    //         }
-    //     };
-    //     assert forall |addr: Address| #[trigger] post.status.contains_key(addr)
-    //         && post.status[addr] == PageStatus::Clean implies {
-    //             post.persistent.contains_key(addr) ==> post.persistent[addr] == post.cache[addr]
-    //         } by {
-    //         if loaded.contains_key(addr) {
-    //             assert(pre.persistent.contains_key(addr));
-    //             assert(loaded[addr] == pre.persistent[addr]);
-    //             assert(post.persistent[addr] == post.cache[addr]);
-    //         } else {
-    //             assert(pre.status.contains_key(addr));
-    //             assert(pre.status[addr] == PageStatus::Clean);
-    //             pre.clean_page_agrees(addr);
-    //         }
-    //     }
-    //     post.clean_pages_agree_from_forall();
-    // }
 
     #[inductive(load)]
     fn load_inductive(pre: Self, post: Self, lbl: Label, loads: Map<Address, RawPage>) {
@@ -672,29 +616,6 @@ impl CachingDisk::State {
         disk.empty_status_clean_pages_agree();
     }
 
-    // Old persistent-only load effect kept for reference:
-    // pub proof fn load_effect(pre: Self, post: Self, addrs: Set<Address>)
-    //     requires
-    //         CachingDisk::State::next_by(
-    //             pre,
-    //             post,
-    //             CachingDisk::Label::Internal{},
-    //             CachingDisk::Step::load(addrs),
-    //         ),
-    //     ensures
-    //         addrs.disjoint(pre.cache.dom()),
-    //         post.cache == pre.cache.union_prefer_right(pre.persistent.restrict(addrs)),
-    //         post.persistent == pre.persistent,
-    //         post.status == pre.status.union_prefer_right(
-    //             status_map(pre.persistent.restrict(addrs).dom(), PageStatus::Clean),
-    //         ),
-    // {
-    //     reveal(CachingDisk::State::next);
-    //     reveal(CachingDisk::State::next_by);
-    //     let lbl = CachingDisk::Label::Internal{};
-    //     assert(CachingDisk::State::load(pre, post, lbl, addrs));
-    // }
-
     pub proof fn load_effect(pre: Self, post: Self, loads: Map<Address, RawPage>)
         requires
             CachingDisk::State::next_by(
@@ -729,8 +650,6 @@ impl CachingDisk::State {
             ),
         ensures
             reads <= pre.cache,
-            // Old access precondition-derived postcondition kept for reference:
-            // reads <= pre.visible(),
             post.cache == pre.cache.union_prefer_right(writes),
             post.persistent == pre.persistent,
             post.status == pre.status.union_prefer_right(status_map(writes.dom(), PageStatus::Dirty)),
@@ -745,45 +664,6 @@ impl CachingDisk::State {
                 assert(CachingDisk::State::access(pre, post, lbl));
             },
             _ => { assert(false); },
-        }
-    }
-
-    pub proof fn access_read_matches_visible_when_persistent_backed(
-        pre: Self,
-        post: Self,
-        reads: Map<Address, RawPage>,
-        writes: Map<Address, RawPage>,
-        addr: Address,
-    )
-        requires
-            pre.inv(),
-            CachingDisk::State::next(
-                pre,
-                post,
-                CachingDisk::Label::Access{reads, writes},
-            ),
-            reads.contains_key(addr),
-            pre.persistent.contains_key(addr),
-            pre.visible().contains_key(addr),
-            pre.persistent[addr] == pre.visible()[addr],
-        ensures
-            reads[addr] == pre.visible()[addr],
-    {
-        Self::access_effect(pre, post, reads, writes);
-        assert(reads <= pre.cache);
-        assert(pre.cache.contains_key(addr));
-        assert(reads[addr] == pre.cache[addr]);
-        assert(pre.status.contains_key(addr)) by {
-            assert(pre.status.dom() =~= pre.cache.dom());
-        }
-        if pre.status[addr] == PageStatus::Clean {
-            pre.clean_page_agrees(addr);
-            assert(pre.persistent[addr] == pre.cache[addr]);
-            assert(reads[addr] == pre.visible()[addr]);
-        } else {
-            assert(pre.visible_cache().contains_key(addr));
-            assert(pre.visible()[addr] == pre.cache[addr]);
-            assert(reads[addr] == pre.visible()[addr]);
         }
     }
 
@@ -839,8 +719,6 @@ impl CachingDisk::State {
             ),
         ensures
             reads <= pre.cache,
-            // Old access precondition-derived postcondition kept for reference:
-            // reads <= pre.visible(),
             post.visible() == pre.visible().union_prefer_right(writes),
     {
         Self::access_effect(pre, post, reads, writes);
@@ -1041,27 +919,6 @@ impl CachingDisk::State {
             }
         });
     }
-
-    // Old persistent-only visible proof kept for reference:
-    // pub proof fn load_visible_unchanged(pre: Self, post: Self, addrs: Set<Address>)
-    //     requires
-    //         CachingDisk::State::next_by(
-    //             pre,
-    //             post,
-    //             CachingDisk::Label::Internal{},
-    //             CachingDisk::Step::load(addrs),
-    //         ),
-    //     ensures
-    //         post.visible() == pre.visible(),
-    // {
-    //     Self::load_effect(pre, post, addrs);
-    //     assert_maps_equal!(post.visible(), pre.visible(), addr => {
-    //         if pre.persistent.restrict(addrs).contains_key(addr) {
-    //             assert(!pre.cache.contains_key(addr));
-    //             assert(pre.persistent.contains_key(addr));
-    //         }
-    //     });
-    // }
 
     pub proof fn load_visible_unchanged(pre: Self, post: Self, loads: Map<Address, RawPage>)
         requires

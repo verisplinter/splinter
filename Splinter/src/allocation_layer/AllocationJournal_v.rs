@@ -263,8 +263,6 @@ impl JournalImage {
                 assert(tight.disk_view.entries.contains_key(addr));
             }
         }
-        // Old closure proof kept for reference:
-        //     assert(tight_image.valid_image());
         // `valid_image` now includes physical AU-prefix coverage, which is a
         // backing-image property. A cropped tight image remains semantically
         // valid, but it is not necessarily a standalone physical image.

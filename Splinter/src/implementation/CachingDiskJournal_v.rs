@@ -591,10 +591,6 @@ state_machine!{ CachingDiskJournal {
             pre.disk,
             CachingDisk::Label::Access{reads, writes: Map::empty()},
         );
-        // Old component-facing read-view requirement kept for reference.
-        // Read labels are justified by the journal/cache refinement now, not
-        // by CachingDiskJournal's visible disk view.
-        // require to_journal_records(reads) <= pre.journal_disk_view().entries;
         require CachedJournal::State::next(
             pre.journal,
             pre.journal,
@@ -617,8 +613,6 @@ state_machine!{ CachingDiskJournal {
             let root = frozen.freshest_rec().unwrap();
             &&& to_journal_records(reads).contains_key(root)
             &&& pre.journal_disk_view().entries.contains_key(root)
-            // Old component-facing read-view equality kept for reference:
-            // &&& to_journal_records(reads)[root] == pre.journal_disk_view().entries[root]
             &&& frozen.boundary_lsn < seq_end
             &&& pre.journal_disk_view().entries[root].message_seq.seq_end == seq_end
             &&& pre.journal.status.unwrap().au_page_bounds.contains_key(root.au)

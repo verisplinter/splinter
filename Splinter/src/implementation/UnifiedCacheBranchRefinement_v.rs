@@ -1485,16 +1485,6 @@ impl UnifiedCacheBranchSource {
             post.disk.content == self.disk.content,
             post.disk.inv(),
             Cache::State::next(self.cache, post.cache, Cache::Label::Internal{}),
-            // Old active-readable preservation precondition kept for reference.
-            // forall |addr: Address| {
-            //     &&& #[trigger] mini_allocator_allocated_addrs(
-            //         self.branch_caching_disk_state_i().mini_allocator,
-            //     ).contains(addr)
-            //     &&& cache_filled_addr(self.cache, addr)
-            // } ==> {
-            //     &&& cache_filled_addr(post.cache, addr)
-            //     &&& cache_filled_page(post.cache, addr) == cache_filled_page(self.cache, addr)
-            // },
         ensures
             CrashAwareCachingDiskBranch::State::next(
                 self.i(),
@@ -1534,61 +1524,6 @@ impl UnifiedCacheBranchSource {
                 }
             );
         }
-        // Old active-readable preservation proof kept for reference.
-        // let active_addrs = mini_allocator_allocated_addrs(
-        //     self.branch_caching_disk_state_i().mini_allocator,
-        // );
-        // let projected_active_addrs = active_addrs * addresses_in_aus(aus);
-        // cache_internal_preserves_readable_on_preserved_filled_addrs(
-        //     self.cache,
-        //     post.cache,
-        //     self.disk,
-        //     aus,
-        //     projected_active_addrs,
-        // );
-        // assert forall |addr: Address| #[trigger] active_addrs.contains(addr) implies {
-        //     &&& post.branch_caching_disk_i().readable().contains_key(addr)
-        //         == self.branch_caching_disk_i().readable().contains_key(addr)
-        //     &&& post.branch_caching_disk_i().readable().contains_key(addr) ==>
-        //         post.branch_caching_disk_i().readable()[addr]
-        //             == self.branch_caching_disk_i().readable()[addr]
-        // } by {
-        //     if projected_active_addrs.contains(addr) {
-        //         assert(addresses_in_aus(aus).contains(addr));
-        //     } else {
-        //         assert(!addresses_in_aus(aus).contains(addr));
-        //         assert(!self.branch_caching_disk_i().readable().contains_key(addr)) by {
-        //             if self.branch_caching_disk_i().readable().contains_key(addr) {
-        //                 if self.branch_caching_disk_i().cache.contains_key(addr) {
-        //                     assert(project_cache_pages(self.cache, aus).contains_key(addr));
-        //                     assert(addresses_in_aus(aus).contains(addr));
-        //                 } else {
-        //                     assert(self.branch_caching_disk_i().persistent.contains_key(addr));
-        //                     assert(self.disk.content.restrict(addresses_in_aus(aus)).contains_key(addr));
-        //                     assert(addresses_in_aus(aus).contains(addr));
-        //                 }
-        //             }
-        //         }
-        //         assert(!post.branch_caching_disk_i().readable().contains_key(addr)) by {
-        //             if post.branch_caching_disk_i().readable().contains_key(addr) {
-        //                 if post.branch_caching_disk_i().cache.contains_key(addr) {
-        //                     assert(project_cache_pages(post.cache, aus).contains_key(addr));
-        //                     assert(addresses_in_aus(aus).contains(addr));
-        //                 } else {
-        //                     assert(post.branch_caching_disk_i().persistent.contains_key(addr));
-        //                     assert(projected_post.persistent.contains_key(addr));
-        //                     assert(self.disk.content.restrict(addresses_in_aus(aus)).contains_key(addr));
-        //                     assert(addresses_in_aus(aus).contains(addr));
-        //                 }
-        //             }
-        //         }
-        //     }
-        // }
-        // active_loaded_nodes_preserved_by_readable_agreement(
-        //     self.branch_caching_disk_state_i().disk,
-        //     post.branch_caching_disk_i(),
-        //     self.branch_caching_disk_state_i().mini_allocator,
-        // );
         assert(CachingDisk::State::next(
             self.branch_caching_disk_i(),
             post.branch_caching_disk_i(),
@@ -1664,20 +1599,10 @@ impl UnifiedCacheBranchSource {
                 post.cache,
                 Cache::Label::DiskOps{requests: Set::empty(), responses},
             ),
-            // Old active read-response exclusion kept for reference.
-            // forall |addr: Address| {
-            //     &&& #[trigger] responses.contains_key(addr)
-            //     &&& mini_allocator_allocated_addrs(
-            //         self.branch_caching_disk_state_i().mini_allocator,
-            //     ).contains(addr)
-            //     &&& responses[addr] is ReadResp
-            // } ==> false,
             forall |addr: Address| {
                 &&& #[trigger] responses.contains_key(addr)
                 &&& addresses_in_aus(self.branch_projection_aus()).contains(addr)
             } ==> {
-                // Old read-response coupling:
-                // &&& self.disk.content.contains_key(addr)
                 &&& responses[addr] is ReadResp ==> {
                     self.disk.content.contains_key(addr) ==> responses[addr]->data
                         == self.disk.content[addr]
@@ -1733,64 +1658,6 @@ impl UnifiedCacheBranchSource {
                 }
             );
         }
-        // Old active-readable preservation proof kept for reference. Read
-        // completions are no longer filtered out of active branch AUs here.
-        //
-        // let active_addrs = mini_allocator_allocated_addrs(
-        //     self.branch_caching_disk_state_i().mini_allocator,
-        // );
-        // let projected_active_addrs = active_addrs * addresses_in_aus(aus);
-        // cache_disk_ops_end_preserves_readable_on_addrs(
-        //     self.cache,
-        //     post.cache,
-        //     self.disk,
-        //     aus,
-        //     responses,
-        //     projected_active_addrs,
-        // );
-        // assert forall |addr: Address| #[trigger] active_addrs.contains(addr) implies {
-        //     &&& post.branch_caching_disk_i().readable().contains_key(addr)
-        //         == self.branch_caching_disk_i().readable().contains_key(addr)
-        //     &&& post.branch_caching_disk_i().readable().contains_key(addr) ==>
-        //         post.branch_caching_disk_i().readable()[addr]
-        //             == self.branch_caching_disk_i().readable()[addr]
-        // } by {
-        //     if projected_active_addrs.contains(addr) {
-        //         assert(addresses_in_aus(aus).contains(addr));
-        //     } else {
-        //         assert(!addresses_in_aus(aus).contains(addr));
-        //         assert(!self.branch_caching_disk_i().readable().contains_key(addr)) by {
-        //             if self.branch_caching_disk_i().readable().contains_key(addr) {
-        //                 if self.branch_caching_disk_i().cache.contains_key(addr) {
-        //                     assert(project_cache_pages(self.cache, aus).contains_key(addr));
-        //                     assert(addresses_in_aus(aus).contains(addr));
-        //                 } else {
-        //                     assert(self.branch_caching_disk_i().persistent.contains_key(addr));
-        //                     assert(self.disk.content.restrict(addresses_in_aus(aus)).contains_key(addr));
-        //                     assert(addresses_in_aus(aus).contains(addr));
-        //                 }
-        //             }
-        //         }
-        //         assert(!post.branch_caching_disk_i().readable().contains_key(addr)) by {
-        //             if post.branch_caching_disk_i().readable().contains_key(addr) {
-        //                 if post.branch_caching_disk_i().cache.contains_key(addr) {
-        //                     assert(project_cache_pages(post.cache, aus).contains_key(addr));
-        //                     assert(addresses_in_aus(aus).contains(addr));
-        //                 } else {
-        //                     assert(post.branch_caching_disk_i().persistent.contains_key(addr));
-        //                     assert(projected_post.persistent.contains_key(addr));
-        //                     assert(self.disk.content.restrict(addresses_in_aus(aus)).contains_key(addr));
-        //                     assert(addresses_in_aus(aus).contains(addr));
-        //                 }
-        //             }
-        //         }
-        //     }
-        // }
-        // active_loaded_nodes_preserved_by_readable_agreement(
-        //     self.branch_caching_disk_state_i().disk,
-        //     post.branch_caching_disk_i(),
-        //     self.branch_caching_disk_state_i().mini_allocator,
-        // );
         assert(CachingDisk::State::next(
             self.branch_caching_disk_i(),
             post.branch_caching_disk_i(),
@@ -2638,11 +2505,6 @@ proof fn projected_read_node_matches_branch_entry(
         forall |branch_addr: Address|
             #[trigger] branch.disk_view.entries.contains_key(branch_addr)
                 && reads.contains_key(branch_addr)
-            // Old live-read view:
-            // ==> branch.disk_view.entries[branch_addr]
-            //     == to_branch_nodes(src.branch_caching_disk_i().visible())[branch_addr],
-            // ==> branch.disk_view.entries[branch_addr]
-            //     == to_branch_nodes(src.branch_caching_disk_i().readable())[branch_addr],
             ==> branch.disk_view.entries[branch_addr] == to_branch_nodes(reads)[branch_addr],
     ensures
         to_branch_nodes(reads)[addr] == branch.disk_view.entries[addr],
@@ -2725,11 +2587,6 @@ proof fn receipt_needed_addr_in_linked_branch(
         forall |branch_addr: Address|
             #[trigger] branch.disk_view.entries.contains_key(branch_addr)
                 && reads.contains_key(branch_addr)
-            // Old live-read view:
-            // ==> branch.disk_view.entries[branch_addr]
-            //     == to_branch_nodes(src.branch_caching_disk_i().visible())[branch_addr],
-            // ==> branch.disk_view.entries[branch_addr]
-            //     == to_branch_nodes(src.branch_caching_disk_i().readable())[branch_addr],
             ==> branch.disk_view.entries[branch_addr] == to_branch_nodes(reads)[branch_addr],
         forall |read_addr: Address| #[trigger] reads.contains_key(read_addr)
             ==> src.cache.valid_read(read_addr, reads[read_addr]),
@@ -2902,8 +2759,6 @@ proof fn query_receipt_needed_addr_in_branch_projection(
             branch,
         ));
         assert(branch.disk_view.entries <= cdb.visible_branch_nodes());
-        // Old loaded-node equality:
-        // assert(branch.disk_view.entries == active_loaded_nodes_of(cdb.disk, cdb.mini_allocator));
         assert forall |read_addr: Address|
             #[trigger] branch.disk_view.entries.contains_key(read_addr)
                 && reads.contains_key(read_addr)
@@ -2988,8 +2843,6 @@ proof fn active_receipt_needed_addr_in_branch_projection(
         branch,
     ));
     assert(branch.disk_view.entries <= cdb.visible_branch_nodes());
-    // Old loaded-node equality:
-    // assert(branch.disk_view.entries == active_loaded_nodes_of(cdb.disk, cdb.mini_allocator));
     assert forall |read_addr: Address|
         #[trigger] branch.disk_view.entries.contains_key(read_addr)
             && reads.contains_key(read_addr)
@@ -3175,8 +3028,6 @@ proof fn active_split_child_in_branch_projection(
         branch,
     ));
     assert(branch.disk_view.entries <= cdb.visible_branch_nodes());
-    // Old loaded-node equality:
-    // assert(branch.disk_view.entries == active_loaded_nodes_of(cdb.disk, cdb.mini_allocator));
     assert forall |branch_addr: Address|
         #[trigger] branch.disk_view.entries.contains_key(branch_addr)
             && reads.contains_key(branch_addr)
@@ -3518,8 +3369,6 @@ proof fn load_metadata_projected_reads_valid(
     assert(crate::implementation::CachedBranch_v::root_summary_read_valid(root, visible_nodes));
     assert(visible_nodes.contains_key(root));
     assert(cdb.disk.visible().contains_key(root));
-    // Old proof reconstructed the projected receipt point-by-point from
-    // visible(). The refinement boundary now carries that receipt explicitly.
     assert(crate::implementation::CachedBranch_v::root_summary_read_valid(
         root,
         projected_nodes,

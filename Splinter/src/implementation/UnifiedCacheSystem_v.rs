@@ -60,19 +60,6 @@ pub open spec fn valid_request_reply_pair(req: Request, reply: Reply) -> bool
     &&& req.input is NoopInput <==> reply.output is NoopOutput
 }
 
-// Old cache_io_begin guard kept for reference. Cache reads are now allowed to
-// issue against any non-superblock address; components are responsible for only
-// requesting addresses they know how to interpret.
-//
-// pub open spec fn cache_read_requests_disk_backed(
-//     requests: Set<DiskRequest>,
-//     disk_backed_addrs: Set<Address>,
-// ) -> bool
-// {
-//     forall |req: DiskRequest| #[trigger] requests.contains(req) && req is ReadReq
-//         ==> disk_backed_addrs.contains(req->from)
-// }
-
 pub open spec fn cache_write_response_addrs(
     responses: Map<Address, DiskResponse>,
 ) -> Set<Address>
@@ -446,14 +433,6 @@ state_machine!{ UnifiedCacheSystem {
         require updated.is_injective();
         require !updated.contains_value(spec_superblock_addr());
         require updated.values() <= Set::new(|addr: Address| addr.wf());
-        // Old active-branch read exclusion kept for reference. Cache I/O may
-        // load arbitrary bytes; branch semantics are taken from
-        // active_branch.known, not from every readable active address.
-        //
-        // require forall |id: ID| {
-        //     &&& #[trigger] req_map.contains_key(id)
-        //     &&& req_map[id] is ReadReq
-        // } ==> !mini_allocator_allocated_addrs(pre.branch.mini_allocator).contains(req_map[id]->from);
         require multiset_to_map(reqs) == req_map;
         require resps.is_empty();
         require Cache::State::next(
@@ -491,21 +470,6 @@ state_machine!{ UnifiedCacheSystem {
             new_cache,
             Cache::Label::DiskOps{requests: Set::empty(), responses: cache_resps},
         );
-        // Rejected disk-backed guard kept for reference. We should not require
-        // the cache layer to know whether an arbitrary read target is backed by
-        // persistent disk content.
-        //
-        // require forall |addr: Address| {
-        //     &&& #[trigger] cache_resps.contains_key(addr)
-        //     &&& cache_resps[addr] is ReadResp
-        //     &&& mini_allocator_allocated_addrs(pre.branch.mini_allocator).contains(addr)
-        // } ==> pre.disk_backed_addrs.contains(addr);
-        // Old active-branch read-response exclusion kept for reference.
-        //
-        // require forall |addr: Address| {
-        //     &&& #[trigger] cache_resps.contains_key(addr)
-        //     &&& cache_resps[addr] is ReadResp
-        // } ==> !mini_allocator_allocated_addrs(pre.branch.mini_allocator).contains(addr);
         update cache = new_cache;
         update outstanding_cache_reqs = new_outstanding;
         update disk_backed_addrs = pre.disk_backed_addrs + write_resp_addrs;
@@ -514,27 +478,6 @@ state_machine!{ UnifiedCacheSystem {
     transition!{ cache_internal(lbl: Label, new_cache: Cache::State) {
         require lbl is Internal;
         require Cache::State::next(pre.cache, new_cache, Cache::Label::Internal{});
-        // Rejected disk-backed guard kept for reference. Internal cache work
-        // should preserve active branch cache entries directly; it should not
-        // need to know whether a clean page is backed by persistent disk.
-        //
-        // require forall |addr: Address| {
-        //     &&& #[trigger] mini_allocator_allocated_addrs(pre.branch.mini_allocator).contains(addr)
-        //     &&& cache_clean_filled_addr(pre.cache, addr)
-        // } ==> {
-        //     &&& pre.disk_backed_addrs.contains(addr)
-        //     &&& addr != spec_superblock_addr()
-        // };
-        // Old active-branch filled-entry preservation kept for reference.
-        // Branch semantics are no longer projected from cache-readable bytes.
-        //
-        // require forall |addr: Address| {
-        //     &&& #[trigger] mini_allocator_allocated_addrs(pre.branch.mini_allocator).contains(addr)
-        //     &&& cache_filled_addr_raw(pre.cache, addr)
-        // } ==> {
-        //     &&& cache_filled_addr_raw(new_cache, addr)
-        //     &&& cache_filled_page_raw(new_cache, addr) == cache_filled_page_raw(pre.cache, addr)
-        // };
         update cache = new_cache;
     }}
 
@@ -806,17 +749,6 @@ state_machine!{ UnifiedCacheSystem {
         require pre.client_ready();
         require Cache::State::next(pre.cache, new_cache, cache_lbl);
         require AtomicBranchState::State::next(pre.branch, new_branch, branch_lbl);
-        // Rejected disk-backed guard kept for reference. Seal should not need
-        // to know whether a clean active page is backed by persistent disk; if
-        // a clean active page is part of the seal handoff, seal must rewrite it.
-        //
-        // require forall |addr: Address| {
-        //     &&& #[trigger] mini_allocator_allocated_addrs(pre.branch.mini_allocator).contains(addr)
-        //     &&& cache_clean_filled_addr(pre.cache, addr)
-        // } ==> {
-        //     &&& pre.disk_backed_addrs.contains(addr)
-        //     &&& addr != spec_superblock_addr()
-        // };
         require forall |addr: Address| {
             &&& #[trigger] mini_allocator_allocated_addrs(pre.branch.mini_allocator).contains(addr)
             &&& cache_clean_filled_addr(pre.cache, addr)

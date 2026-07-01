@@ -883,8 +883,6 @@ pub proof fn cache_access_refines_caching_disk_access(
     requires
         pre_cache.inv(),
         Cache::State::next(pre_cache, post_cache, Cache::Label::Access{reads, writes}),
-        // Old CachingDisk::access precondition kept for reference:
-        // reads <= caching_disk_i(pre_cache, disk, owned_aus).visible(),
         reads.dom() <= addresses_in_aus(owned_aus),
         writes.dom() <= addresses_in_aus(owned_aus),
     ensures
@@ -917,8 +915,6 @@ pub proof fn cache_access_refines_caching_disk_access_by_domains(
     requires
         pre_cache.inv(),
         Cache::State::next(pre_cache, post_cache, Cache::Label::Access{reads, writes}),
-        // Old CachingDisk::access precondition kept for reference:
-        // reads <= caching_disk_i_by_domains(pre_cache, disk, cache_addrs, persistent_addrs).visible(),
         reads.dom() <= cache_addrs,
         writes.dom() <= cache_addrs,
     ensures
@@ -1120,13 +1116,6 @@ pub proof fn cache_access_refines_caching_disk_access_by_growing_domains(
     requires
         pre_cache.inv(),
         Cache::State::next(pre_cache, post_cache, Cache::Label::Access{reads, writes}),
-        // Old CachingDisk::access precondition kept for reference:
-        // reads <= caching_disk_i_by_domains(
-        //     pre_cache,
-        //     disk,
-        //     pre_cache_addrs,
-        //     pre_persistent_addrs,
-        // ).visible(),
         reads.dom() <= pre_cache_addrs,
         pre_cache_addrs <= post_cache_addrs,
         post_cache_addrs <= pre_cache_addrs + writes.dom(),
@@ -1314,13 +1303,6 @@ pub proof fn cache_access_refines_caching_disk_access_by_growing_domains_with_co
     requires
         pre_cache.inv(),
         Cache::State::next(pre_cache, post_cache, Cache::Label::Access{reads: cache_reads, writes}),
-        // Old CachingDisk::access precondition kept for reference:
-        // component_reads <= caching_disk_i_by_domains(
-        //     pre_cache,
-        //     disk,
-        //     pre_cache_addrs,
-        //     pre_persistent_addrs,
-        // ).visible(),
         component_reads.dom() <= pre_cache_addrs,
         forall |addr: Address| #[trigger] component_reads.contains_key(addr)
             ==> pre_cache.valid_read(addr, component_reads[addr]),
@@ -1498,8 +1480,6 @@ pub proof fn cache_access_refines_caching_disk_access_by_addrs(
     requires
         pre_cache.inv(),
         Cache::State::next(pre_cache, post_cache, Cache::Label::Access{reads, writes}),
-        // Old CachingDisk::access precondition kept for reference:
-        // reads <= caching_disk_i_by_addrs(pre_cache, disk, addrs).visible(),
         reads.dom() <= addrs,
         writes.dom() <= addrs,
     ensures
@@ -2765,28 +2745,6 @@ pub proof fn cache_internal_preserves_readable_on_preserved_filled_addrs(
                     assert(!post_cache.lookup_map.contains_key(addr));
                     assert(cache_filled_addr(post_cache, addr));
                     assert(false);
-                    /*
-                    Old disk-backed preservation path kept for reference. This
-                    required proving a clean evicted protected page was backed by
-                    persistent disk content, which is not an operational fact the
-                    unified cache layer should need.
-
-                    assert(filled_cache_status(pre_cache).contains_key(addr));
-                    assert(filled_cache_status(pre_cache)[addr] == CachingDiskPageStatus::Clean);
-                    assert(pre_cd.cache.contains_key(addr));
-                    assert(pre_cd.cache[addr] == cache_filled_page(pre_cache, addr));
-                    assert(disk.content.contains_key(addr));
-                    assert(disk.content[addr] == cache_filled_page(pre_cache, addr));
-                    assert(pre_cd.persistent.contains_key(addr));
-                    assert(pre_cd.persistent[addr] == cache_filled_page(pre_cache, addr));
-                    assert(!post_cd.cache.contains_key(addr));
-                    assert(post_cd.persistent.contains_key(addr));
-                    assert(post_cd.persistent[addr] == pre_cd.persistent[addr]);
-                    assert(pre_cd.readable().contains_key(addr));
-                    assert(post_cd.readable().contains_key(addr));
-                    assert(pre_cd.readable()[addr] == pre_cd.cache[addr]);
-                    assert(post_cd.readable()[addr] == post_cd.persistent[addr]);
-                    */
                 } else {
                     if post_cd.cache.contains_key(addr) {
                         assert(cache_filled_addr(post_cache, addr));
@@ -3616,8 +3574,6 @@ pub proof fn cache_disk_ops_end_refines_caching_disk_internal(
                     addr => {}
                 );
             }
-            // Old persistent-only refinement used:
-            // CachingDisk::Step::load(addrs), with loaded == pre_cd.persistent.restrict(addrs).
             assert forall |addr: Address| #[trigger] loaded.contains_key(addr)
                 && pre_cd.persistent.contains_key(addr)
                 implies loaded[addr] == pre_cd.persistent[addr] by {
