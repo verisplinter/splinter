@@ -60,6 +60,16 @@ pub closed spec fn refinement_inv(model: CrashAwareCachingDiskSystem::State) -> 
     &&& model.branch.refinement_inv()
 }
 
+pub proof fn refinement_inv_from_parts(model: CrashAwareCachingDiskSystem::State)
+    requires
+        model.inv(),
+        model.journal.refinement_inv(),
+        model.branch.refinement_inv(),
+    ensures
+        refinement_inv(model),
+{
+}
+
 proof fn caching_disk_system_commit_flags_unchanged(pre: CrashAwareCachingDiskSystem::State, post: CrashAwareCachingDiskSystem::State)
     requires
         post.journal.frozen == pre.journal.frozen,
@@ -2608,6 +2618,7 @@ pub proof fn init_refines_ctam(model: CrashAwareCachingDiskSystem::State)
     ensures
         model.inv(),
         refinement_inv(model),
+        caching_disk_system_coordination_i(model).inv(),
         CrashTolerantAsyncMap::State::init(caching_disk_system_i(model)),
 {
     reveal(CrashAwareCachingDiskSystem::State::init);
@@ -3017,6 +3028,7 @@ pub proof fn next_refines_ctam(
         caching_disk_system_coordination_i(pre).inv(),
         CrashAwareCachingDiskSystem::State::next(pre, post, lbl),
     ensures
+        caching_disk_system_coordination_i(post).inv(),
         CrashTolerantAsyncMap::State::next(caching_disk_system_i(pre), caching_disk_system_i(post), caching_disk_system_i_lbl(pre, post, lbl)),
 {
     let cpre = caching_disk_system_coordination_i(pre);

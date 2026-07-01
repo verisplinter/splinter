@@ -5803,22 +5803,79 @@ ensures
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
 
-// Unified-cache implementation placeholder.
+// Unified-cache implementation scaffold.
 //
-// The active code below keeps only the unified model aliases needed by
-// downstream code that still names Implementation_v. The old executable body is
-// preserved above as a guide for rebuilding the implementation against the
-// unified model.
+// The old executable body is preserved above as a commented reference. The
+// active code below rebuilds the entry shape against UnifiedCacheProgramModel
+// and keeps the component transition bodies as explicit stubs.
 
 #![allow(unused_imports)]
+#![allow(unused_variables)]
 
 use vstd::prelude::*;
+use vstd::assert_maps_equal;
+use vstd::hash_map::HashMapWithView;
+use vstd::modes::tracked_swap;
+use vstd::multiset::Multiset;
 use vstd::tokens::InstanceId;
 
+use crate::allocation_layer::MiniAllocator_v::MiniAllocator;
+use crate::disk::GenericDisk_v::{Address, AU};
+use crate::implementation::MultisetMapRelation_v::{
+    multiset_map_singleton, multiset_map_singleton_ensures, multiset_to_map,
+};
+use crate::implementation::AbstractSuperblock_v::{
+    abstract_superblock_raw_wf, superblock_matches,
+};
+use crate::implementation::AtomicBranchState_v::AtomicBranchState;
+use crate::implementation::AtomicJournalState_v::AtomicJournalState;
+use crate::implementation::AuPoolImpl_v::{
+    initial_free_aus as au_pool_initial_free_aus, AuPoolImpl,
+};
+use crate::implementation::Cache_v::Cache;
+use crate::implementation::CachedBranch_v::CachedBranch;
+use crate::implementation::CachedJournal_v::CachedJournal;
+use crate::implementation::CrashAwareCachingDiskSystemRefinement_v as CachingDiskSystemRefinement;
+use crate::implementation::DiskLayout_v::{DiskLayout, spec_superblock_addr, superblock_addr};
+use crate::implementation::FracCacheImpl_v::{
+    FetchErrorCode, FracCacheImpl, MutHandle, WritebackAcquireResult, WritebackHandle,
+    PAGE_SIZE_BYTES,
+};
+use crate::implementation::JournalImpl_v::{IJournalSnapshot, JournalImpl};
+use crate::implementation::JournalTypes_v::to_journal_records;
+use crate::implementation::RecoveryState_v::RecoveryState;
 use crate::implementation::UnifiedCacheProgramModel_v::UnifiedCacheProgramModel;
+use crate::implementation::UnifiedCacheSystemRefinement_v as UnifiedCacheSystemRefinement;
+use crate::implementation::UnifiedCacheSystem_v::{
+    AtomicSyncPhase, UnifiedCacheSystem, cache_write_response_addrs,
+};
+use crate::spec::AsyncDisk_t::{DiskRequest, DiskResponse};
+use crate::spec::ImplDisk_t::{IAddress, IAU, IDiskRequest, IDiskResponse};
+use crate::spec::MapSpec_t::{CrashTolerantAsyncMap, ID, SyncReqId};
+use crate::trusted::ClientAPI_t::{ClientAPI, DiskResponseRecord};
+use crate::trusted::KVStoreTrait_t::{KVStoreTrait, open_system_invariant_disk_response_singleton};
 use crate::trusted::KVStoreTokenized_t::KVStoreTokenized;
+use crate::trusted::ProgramModelTrait_t::{ProgramDiskInfo, ProgramLabel, ProgramModelTrait};
+use crate::trusted::RefinementObligation_t::RefinementObligation;
+use crate::trusted::ReqReply_t::{Input, Request};
+use crate::trusted::SystemModel_t::SystemModel;
 
 verus! {
+
+pub const TOTAL_AUS: IAU = 100;
+
+pub open spec fn initial_free_aus() -> Set<AU>
+{
+    au_pool_initial_free_aus(TOTAL_AUS)
+}
+
+pub fn bootstrap_alloc_au() -> (out: IAU)
+    ensures
+        0 < (out as nat),
+        (out as nat) < (TOTAL_AUS as nat),
+{
+    1
+}
 
 pub type ModelShard = KVStoreTokenized::model<UnifiedCacheProgramModel>;
 pub type RequestShard = KVStoreTokenized::requests<UnifiedCacheProgramModel>;
@@ -5826,17 +5883,2190 @@ pub type ReplyShard = KVStoreTokenized::replies<UnifiedCacheProgramModel>;
 pub type DiskRespShard = KVStoreTokenized::disk_responses_multiset<UnifiedCacheProgramModel>;
 pub type DiskReqShard = KVStoreTokenized::disk_requests_multiset<UnifiedCacheProgramModel>;
 
+pub struct UnifiedCacheRefinementProof;
+
+#[derive(Debug, Copy, Clone)]
+pub enum RecoveryPhase {
+    FetchingSuperblock,
+    LoadingJournal,
+    LoadingBranch,
+    ReadyForUserOperation,
+}
+
+pub enum OutstandingReqInfo {
+    CacheRead{addr: IAddress, load_handle: MutHandle},
+    CacheWrite{addr: IAddress, write_handle: WritebackHandle},
+    SuperblockWrite,
+}
+
 pub struct Implementation {
-    pub instance_id: InstanceId,
+    pub recovery_phase: RecoveryPhase,
+    pub cache: FracCacheImpl,
+    pub journal: JournalImpl,
+    pub au_pool: AuPoolImpl,
+    pub branch_loaded: bool,
+    pub sync_requests: Vec<SyncReqId>,
+    pub outstanding_requests: HashMapWithView<ID, OutstandingReqInfo>,
+    pub should_retry_sync_launch: bool,
+
+    pub model: Tracked<ModelShard>,
+    pub instance: Tracked<KVStoreTokenized::Instance<UnifiedCacheProgramModel>>,
 }
 
 impl Implementation {
-    pub closed spec fn wf_init(self) -> bool {
-        true
+    pub closed spec fn state(&self) -> UnifiedCacheSystem::State
+    {
+        self.model@.value().state
     }
 
-    pub closed spec fn instance_id(self) -> InstanceId {
-        self.instance_id
+    pub closed spec fn instance_id(&self) -> InstanceId
+    {
+        self.instance@.id()
+    }
+
+    pub closed spec fn inv(&self) -> bool
+    {
+        &&& self.model@.instance_id() == self.instance@.id()
+        &&& self.cache.wf()
+        &&& self.journal.basic_wf()
+        &&& self.au_pool.wf(TOTAL_AUS)
+        &&& self.au_pool.canonical_wf(TOTAL_AUS)
+        &&& self.state().cache == self.cache@
+        &&& self.state().free_aus =~= self.au_pool@
+        &&& self.outstanding_requests_wf()
+        &&& self.outstanding_cache_reqs_match_model()
+        &&& self.outstanding_requests_single_flight()
+        &&& self.outstanding_requests@.dom().len() > 0 ==> {
+            &&& !(self.state().recovery_state is Begin)
+            &&& !(self.state().recovery_state is AwaitingSuperblock)
+        }
+        &&& self.recovery_phase is LoadingJournal ==> {
+            self.state().journal.journal == self.journal@
+        }
+        &&& self.recovery_phase is ReadyForUserOperation ==> {
+            self.state().recovery_state is RecoveryComplete
+        }
+    }
+
+    pub closed spec fn wf_init(&self) -> bool
+    {
+        &&& self.inv()
+        &&& self.recovery_phase is FetchingSuperblock
+        &&& self.state().recovery_state is Begin
+        &&& self.outstanding_requests@ == Map::<ID, OutstandingReqInfo>::empty()
+    }
+
+    pub closed spec fn inv_api(&self, api: &ClientAPI<UnifiedCacheProgramModel>) -> bool
+    {
+        &&& self.inv()
+        &&& self.instance_id() == api.instance_id()
+    }
+
+    pub closed spec fn outstanding_cache_reqs_match_model(&self) -> bool
+    {
+        &&& self.state().outstanding_cache_reqs.dom() == self.outstanding_requests@.dom()
+        &&& self.state().outstanding_cache_reqs.is_injective()
+        &&& forall |id: ID| #[trigger] self.outstanding_requests@.contains_key(id) ==> {
+            match self.outstanding_requests@[id] {
+                OutstandingReqInfo::CacheRead{addr, ..}
+                | OutstandingReqInfo::CacheWrite{addr, ..} => {
+                    &&& self.state().outstanding_cache_reqs.contains_key(id)
+                    &&& self.state().outstanding_cache_reqs[id] == addr@
+                },
+                OutstandingReqInfo::SuperblockWrite => {
+                    !self.state().outstanding_cache_reqs.contains_key(id)
+                },
+            }
+        }
+    }
+
+    pub closed spec fn outstanding_requests_wf(&self) -> bool
+    {
+        forall |id: ID| #[trigger] self.outstanding_requests@.contains_key(id) ==> {
+            match self.outstanding_requests@[id] {
+                OutstandingReqInfo::CacheRead{addr, load_handle} => {
+                    &&& self.cache.entry_fetched(&addr)
+                    &&& self.cache.valid_load_handle(&addr, load_handle)
+                },
+                OutstandingReqInfo::CacheWrite{addr, write_handle} => {
+                    &&& self.cache.entry_fetched(&addr)
+                    &&& self.cache.valid_writeback_handle(&addr, write_handle)
+                },
+                OutstandingReqInfo::SuperblockWrite => true,
+            }
+        }
+    }
+
+    pub closed spec fn no_outstanding_cache_io_for_addr(&self, addr: IAddress) -> bool
+    {
+        forall |id: ID| #[trigger] self.outstanding_requests@.contains_key(id) ==> {
+            match self.outstanding_requests@[id] {
+                OutstandingReqInfo::CacheRead{addr: other, ..}
+                | OutstandingReqInfo::CacheWrite{addr: other, ..} => other@ != addr@,
+                OutstandingReqInfo::SuperblockWrite => true,
+            }
+        }
+    }
+
+    pub closed spec fn outstanding_requests_single_flight(&self) -> bool
+    {
+        forall |id1: ID, id2: ID| {
+            &&& #[trigger] self.outstanding_requests@.contains_key(id1)
+            &&& #[trigger] self.outstanding_requests@.contains_key(id2)
+        } ==> id1 == id2
+    }
+
+    fn issue_cache_read_io(
+        &mut self,
+        addr: IAddress,
+        api: &mut ClientAPI<UnifiedCacheProgramModel>,
+    ) -> (started: bool)
+        requires
+            old(self).inv_api(old(api)),
+            !(old(self).state().recovery_state is Begin),
+            !(old(self).state().recovery_state is AwaitingSuperblock),
+            addr@.wf(),
+            addr@ != spec_superblock_addr(),
+            old(self).outstanding_requests@ == Map::<ID, OutstandingReqInfo>::empty(),
+        ensures
+            self.inv_api(api),
+    {
+        let ghost pre_state = self.model@.value();
+        let ghost pre_outstanding = self.outstanding_requests@;
+        let ghost pre_cache = self.cache;
+
+        match self.cache.fetch(&addr, true) {
+            FetchErrorCode::LoadInitiate{slot_handle} => {
+                let tracked mut model = KVStoreTokenized::model::arbitrary();
+                proof {
+                    tracked_swap(self.model.borrow_mut(), &mut model);
+                }
+
+                let req_id_perm = Tracked(api.send_disk_request_predict_id());
+                let disk_req = IDiskRequest::ReadReq{from: addr};
+                let ghost req_map = map![req_id_perm@ => disk_req@];
+                let ghost updated = map![req_id_perm@ => addr@];
+                let ghost disk_request_tuples =
+                    multiset_map_singleton(req_id_perm@, disk_req@);
+                let ghost disk_response_tuples = Multiset::empty();
+                let ghost post_state = UnifiedCacheProgramModel{
+                    state: UnifiedCacheSystem::State{
+                        cache: self.cache@,
+                        outstanding_cache_reqs:
+                            pre_state.state.outstanding_cache_reqs.union_prefer_right(updated),
+                        ..pre_state.state
+                    }
+                };
+
+                proof {
+                    multiset_map_singleton_ensures(req_id_perm@, disk_req@);
+                    assert(multiset_to_map(disk_request_tuples) == req_map);
+                    Self::singleton_updated_addr_map(req_id_perm@, disk_req@, addr@);
+                    assert(updated.is_injective());
+                    assert(!updated.contains_value(spec_superblock_addr()));
+                    Self::singleton_req_map_values(req_id_perm@, disk_req@);
+                    Self::singleton_addr_map_values_wf(req_id_perm@, addr@);
+                    assert(updated.values() <= Set::new(|addr: Address| addr.wf()));
+                    assert(UnifiedCacheSystem::State::cache_io_begin(
+                        pre_state.state,
+                        post_state.state,
+                        UnifiedCacheSystem::Label::Disk,
+                        req_map,
+                        self.cache@,
+                        disk_request_tuples,
+                        disk_response_tuples,
+                    )) by {
+                    }
+                    assert(UnifiedCacheSystem::State::next_by(
+                        pre_state.state,
+                        post_state.state,
+                        UnifiedCacheSystem::Label::Disk,
+                        UnifiedCacheSystem::Step::cache_io_begin(
+                            req_map,
+                            self.cache@,
+                            disk_request_tuples,
+                            disk_response_tuples,
+                        ),
+                    )) by {
+                        reveal(UnifiedCacheSystem::State::next_by);
+                    }
+                    assert(UnifiedCacheSystem::State::next(
+                        pre_state.state,
+                        post_state.state,
+                        UnifiedCacheSystem::Label::Disk,
+                    )) by {
+                        reveal(UnifiedCacheSystem::State::next);
+                    }
+                    let info = ProgramDiskInfo{
+                        reqs: disk_request_tuples,
+                        resps: disk_response_tuples,
+                    };
+                    assert(UnifiedCacheProgramModel::disk_step_matches_info(
+                        pre_state.state,
+                        UnifiedCacheSystem::Step::cache_io_begin(
+                            req_map,
+                            self.cache@,
+                            disk_request_tuples,
+                            disk_response_tuples,
+                        ),
+                        info,
+                    ));
+                    assert(exists |step: UnifiedCacheSystem::Step| {
+                        &&& UnifiedCacheSystem::State::next_by(
+                            pre_state.state,
+                            post_state.state,
+                            UnifiedCacheSystem::Label::Disk,
+                            step,
+                        )
+                        &&& UnifiedCacheProgramModel::disk_step_matches_info(
+                            pre_state.state,
+                            step,
+                            info,
+                        )
+                    }) by {
+                        let step = UnifiedCacheSystem::Step::cache_io_begin(
+                            req_map,
+                            self.cache@,
+                            disk_request_tuples,
+                            disk_response_tuples,
+                        );
+                        assert(UnifiedCacheSystem::State::next_by(
+                            pre_state.state,
+                            post_state.state,
+                            UnifiedCacheSystem::Label::Disk,
+                            step,
+                        ));
+                        assert(UnifiedCacheProgramModel::disk_step_matches_info(
+                            pre_state.state,
+                            step,
+                            info,
+                        ));
+                    }
+                    assert(UnifiedCacheProgramModel::valid_disk_transition(
+                        pre_state,
+                        post_state,
+                        info,
+                    )) by {
+                        reveal(UnifiedCacheProgramModel::valid_disk_transition);
+                    }
+                    assert(ProgramModelTrait::next(
+                        pre_state,
+                        post_state,
+                        ProgramLabel::DiskIO{info},
+                    ));
+                }
+
+                let tracked empty_disk_responses = DiskRespShard::empty(self.instance_id());
+                let tracked new_disk_req_token = self.instance.borrow().disk_transitions(
+                    KVStoreTokenized::Label::DiskOp{
+                        disk_request_tuples,
+                        disk_response_tuples,
+                    },
+                    post_state,
+                    &mut model,
+                    empty_disk_responses,
+                );
+                self.model = Tracked(model);
+
+                let id = api.send_disk_request(disk_req, req_id_perm, Tracked(new_disk_req_token));
+                self.outstanding_requests.insert(id, OutstandingReqInfo::CacheRead{
+                    addr,
+                    load_handle: slot_handle,
+                });
+
+                proof {
+                    assert(self.outstanding_requests_wf()) by {
+                        assert forall |id2: ID| #[trigger] self.outstanding_requests@.contains_key(id2)
+                            implies {
+                                match self.outstanding_requests@[id2] {
+                                    OutstandingReqInfo::CacheRead{addr, load_handle} => {
+                                        &&& self.cache.entry_fetched(&addr)
+                                        &&& self.cache.valid_load_handle(&addr, load_handle)
+                                    },
+                                    OutstandingReqInfo::CacheWrite{addr, write_handle} => {
+                                        &&& self.cache.entry_fetched(&addr)
+                                        &&& self.cache.valid_writeback_handle(&addr, write_handle)
+                                    },
+                                    OutstandingReqInfo::SuperblockWrite => true,
+                                }
+                            } by {
+                            if id2 == id {
+                            } else {
+                                assert(pre_outstanding == Map::<ID, OutstandingReqInfo>::empty());
+                                assert(!pre_outstanding.contains_key(id2));
+                                assert(false);
+                            }
+                        }
+                    }
+                    assert(self.outstanding_requests@.dom() =~= set![id]);
+                    assert(pre_state.state.outstanding_cache_reqs == Map::<ID, Address>::empty()) by {
+                        assert(old(self).outstanding_cache_reqs_match_model());
+                        assert(pre_state.state.outstanding_cache_reqs.dom()
+                            == pre_outstanding.dom());
+                        assert(pre_outstanding == Map::<ID, OutstandingReqInfo>::empty());
+                        assert_maps_equal!(
+                            pre_state.state.outstanding_cache_reqs,
+                            Map::<ID, Address>::empty(),
+                            k => {
+                                if pre_state.state.outstanding_cache_reqs.contains_key(k) {
+                                    assert(pre_state.state.outstanding_cache_reqs.dom().contains(k));
+                                    assert(pre_outstanding.dom().contains(k));
+                                    assert(false);
+                                }
+                            }
+                        );
+                    }
+                    assert(self.state().outstanding_cache_reqs == map![id => addr@]) by {
+                        assert(post_state.state.outstanding_cache_reqs
+                            == pre_state.state.outstanding_cache_reqs.union_prefer_right(updated));
+                        assert(pre_state.state.outstanding_cache_reqs == Map::<ID, Address>::empty());
+                        assert(updated == map![req_id_perm@ => addr@]);
+                        assert(id == req_id_perm@);
+                        assert_maps_equal!(self.state().outstanding_cache_reqs, map![id => addr@], k => {
+                            if k == id {
+                                assert(updated.contains_key(k));
+                            } else {
+                                assert(!updated.contains_key(k));
+                            }
+                        });
+                    }
+                    assert(self.outstanding_cache_reqs_match_model());
+                    assert(self.outstanding_requests_single_flight());
+                }
+                true
+            },
+            FetchErrorCode::Success{slot_handle} => {
+                self.cache.handle_release(&addr, slot_handle);
+                proof {
+                    assert(self.cache@ == pre_cache@) by {
+                        assert(self.cache@.lookup_map == pre_cache@.lookup_map);
+                        assert(self.cache@.status_map == pre_cache@.status_map);
+                        assert(self.cache@.entries == pre_cache@.entries);
+                    }
+                    assert(self.outstanding_requests_wf());
+                }
+                false
+            },
+            FetchErrorCode::Awaiting
+            | FetchErrorCode::CacheFull
+            | FetchErrorCode::NotPresent => {
+                proof {
+                    assert(self.outstanding_requests_wf());
+                }
+                false
+            },
+        }
+    }
+
+    fn issue_cache_writeback_io(
+        &mut self,
+        addr: IAddress,
+        api: &mut ClientAPI<UnifiedCacheProgramModel>,
+    ) -> (started: bool)
+        requires
+            old(self).inv_api(old(api)),
+            !(old(self).state().recovery_state is Begin),
+            !(old(self).state().recovery_state is AwaitingSuperblock),
+            addr@.wf(),
+            addr@ != spec_superblock_addr(),
+            old(self).outstanding_requests@ == Map::<ID, OutstandingReqInfo>::empty(),
+        ensures
+            self.inv_api(api),
+    {
+        let ghost pre_state = self.model@.value();
+        let ghost pre_outstanding = self.outstanding_requests@;
+        let ghost pre_cache = self.cache;
+
+        match self.cache.begin_writeback(&addr) {
+            WritebackAcquireResult::Acquired{handle} => {
+                let write_data = handle.rec.clone();
+                proof {
+                    assert(self.cache.valid_writeback_handle(&addr, handle));
+                    FracCacheImpl::valid_writeback_handle_has_inv(&self.cache, &addr, handle);
+                    assert(handle.inv());
+                    assert(handle.rec.len() == PAGE_SIZE_BYTES);
+                    assert(write_data@ == handle.rec@);
+                    assert(write_data.len() == PAGE_SIZE_BYTES);
+                }
+
+                let tracked mut model = KVStoreTokenized::model::arbitrary();
+                proof {
+                    tracked_swap(self.model.borrow_mut(), &mut model);
+                }
+
+                let req_id_perm = Tracked(api.send_disk_request_predict_id());
+                let disk_req = IDiskRequest::WriteReq{to: addr, data: write_data};
+                let ghost req_map = map![req_id_perm@ => disk_req@];
+                let ghost updated = map![req_id_perm@ => addr@];
+                let ghost disk_request_tuples =
+                    multiset_map_singleton(req_id_perm@, disk_req@);
+                let ghost disk_response_tuples = Multiset::empty();
+                let ghost post_state = UnifiedCacheProgramModel{
+                    state: UnifiedCacheSystem::State{
+                        cache: self.cache@,
+                        outstanding_cache_reqs:
+                            pre_state.state.outstanding_cache_reqs.union_prefer_right(updated),
+                        ..pre_state.state
+                    }
+                };
+
+                proof {
+                    multiset_map_singleton_ensures(req_id_perm@, disk_req@);
+                    assert(multiset_to_map(disk_request_tuples) == req_map);
+                    Self::singleton_updated_addr_map(req_id_perm@, disk_req@, addr@);
+                    assert(updated.is_injective());
+                    assert(!updated.contains_value(spec_superblock_addr()));
+                    Self::singleton_req_map_values(req_id_perm@, disk_req@);
+                    Self::singleton_addr_map_values_wf(req_id_perm@, addr@);
+                    assert(updated.values() <= Set::new(|addr: Address| addr.wf()));
+                    assert(UnifiedCacheSystem::State::cache_io_begin(
+                        pre_state.state,
+                        post_state.state,
+                        UnifiedCacheSystem::Label::Disk,
+                        req_map,
+                        self.cache@,
+                        disk_request_tuples,
+                        disk_response_tuples,
+                    )) by {
+                    }
+                    assert(UnifiedCacheSystem::State::next_by(
+                        pre_state.state,
+                        post_state.state,
+                        UnifiedCacheSystem::Label::Disk,
+                        UnifiedCacheSystem::Step::cache_io_begin(
+                            req_map,
+                            self.cache@,
+                            disk_request_tuples,
+                            disk_response_tuples,
+                        ),
+                    )) by {
+                        reveal(UnifiedCacheSystem::State::next_by);
+                    }
+                    assert(UnifiedCacheSystem::State::next(
+                        pre_state.state,
+                        post_state.state,
+                        UnifiedCacheSystem::Label::Disk,
+                    )) by {
+                        reveal(UnifiedCacheSystem::State::next);
+                    }
+                    let info = ProgramDiskInfo{
+                        reqs: disk_request_tuples,
+                        resps: disk_response_tuples,
+                    };
+                    assert(UnifiedCacheProgramModel::disk_step_matches_info(
+                        pre_state.state,
+                        UnifiedCacheSystem::Step::cache_io_begin(
+                            req_map,
+                            self.cache@,
+                            disk_request_tuples,
+                            disk_response_tuples,
+                        ),
+                        info,
+                    ));
+                    assert(exists |step: UnifiedCacheSystem::Step| {
+                        &&& UnifiedCacheSystem::State::next_by(
+                            pre_state.state,
+                            post_state.state,
+                            UnifiedCacheSystem::Label::Disk,
+                            step,
+                        )
+                        &&& UnifiedCacheProgramModel::disk_step_matches_info(
+                            pre_state.state,
+                            step,
+                            info,
+                        )
+                    }) by {
+                        let step = UnifiedCacheSystem::Step::cache_io_begin(
+                            req_map,
+                            self.cache@,
+                            disk_request_tuples,
+                            disk_response_tuples,
+                        );
+                        assert(UnifiedCacheSystem::State::next_by(
+                            pre_state.state,
+                            post_state.state,
+                            UnifiedCacheSystem::Label::Disk,
+                            step,
+                        ));
+                        assert(UnifiedCacheProgramModel::disk_step_matches_info(
+                            pre_state.state,
+                            step,
+                            info,
+                        ));
+                    }
+                    assert(UnifiedCacheProgramModel::valid_disk_transition(
+                        pre_state,
+                        post_state,
+                        info,
+                    )) by {
+                        reveal(UnifiedCacheProgramModel::valid_disk_transition);
+                    }
+                    assert(ProgramModelTrait::next(
+                        pre_state,
+                        post_state,
+                        ProgramLabel::DiskIO{info},
+                    ));
+                }
+
+                let tracked empty_disk_responses = DiskRespShard::empty(self.instance_id());
+                let tracked new_disk_req_token = self.instance.borrow().disk_transitions(
+                    KVStoreTokenized::Label::DiskOp{
+                        disk_request_tuples,
+                        disk_response_tuples,
+                    },
+                    post_state,
+                    &mut model,
+                    empty_disk_responses,
+                );
+                self.model = Tracked(model);
+
+                let id = api.send_disk_request(disk_req, req_id_perm, Tracked(new_disk_req_token));
+                self.outstanding_requests.insert(id, OutstandingReqInfo::CacheWrite{
+                    addr,
+                    write_handle: handle,
+                });
+
+                proof {
+                    assert(pre_state.state.outstanding_cache_reqs == Map::<ID, Address>::empty()) by {
+                        assert(old(self).outstanding_cache_reqs_match_model());
+                        assert(pre_state.state.outstanding_cache_reqs.dom()
+                            == pre_outstanding.dom());
+                        assert(pre_outstanding == Map::<ID, OutstandingReqInfo>::empty());
+                        assert_maps_equal!(
+                            pre_state.state.outstanding_cache_reqs,
+                            Map::<ID, Address>::empty(),
+                            k => {
+                                if pre_state.state.outstanding_cache_reqs.contains_key(k) {
+                                    assert(pre_state.state.outstanding_cache_reqs.dom().contains(k));
+                                    assert(pre_outstanding.dom().contains(k));
+                                    assert(false);
+                                }
+                            }
+                        );
+                    }
+                    assert(self.state().outstanding_cache_reqs == map![id => addr@]) by {
+                        assert(post_state.state.outstanding_cache_reqs
+                            == pre_state.state.outstanding_cache_reqs.union_prefer_right(updated));
+                        assert(pre_state.state.outstanding_cache_reqs == Map::<ID, Address>::empty());
+                        assert(updated == map![req_id_perm@ => addr@]);
+                        assert(id == req_id_perm@);
+                        assert_maps_equal!(self.state().outstanding_cache_reqs, map![id => addr@], k => {
+                            if k == id {
+                                assert(updated.contains_key(k));
+                            } else {
+                                assert(!updated.contains_key(k));
+                            }
+                        });
+                    }
+                    assert(self.outstanding_requests_wf()) by {
+                        assert forall |id2: ID| #[trigger] self.outstanding_requests@.contains_key(id2)
+                            implies {
+                                match self.outstanding_requests@[id2] {
+                                    OutstandingReqInfo::CacheRead{addr, load_handle} => {
+                                        &&& self.cache.entry_fetched(&addr)
+                                        &&& self.cache.valid_load_handle(&addr, load_handle)
+                                    },
+                                    OutstandingReqInfo::CacheWrite{addr, write_handle} => {
+                                        &&& self.cache.entry_fetched(&addr)
+                                        &&& self.cache.valid_writeback_handle(&addr, write_handle)
+                                    },
+                                    OutstandingReqInfo::SuperblockWrite => true,
+                                }
+                            } by {
+                            if id2 == id {
+                            } else {
+                                assert(pre_outstanding == Map::<ID, OutstandingReqInfo>::empty());
+                                assert(!pre_outstanding.contains_key(id2));
+                                assert(false);
+                            }
+                        }
+                    }
+                    assert(self.outstanding_requests@.dom() =~= set![id]);
+                    assert(self.outstanding_cache_reqs_match_model());
+                    assert(self.outstanding_requests_single_flight());
+                }
+                true
+            },
+            WritebackAcquireResult::NotPresent
+            | WritebackAcquireResult::NotDirty
+            | WritebackAcquireResult::Busy => {
+                proof {
+                    assert(self.cache@ == pre_cache@);
+                    assert(self.outstanding_requests_wf());
+                    assert(self.outstanding_cache_reqs_match_model());
+                    assert(self.outstanding_requests_single_flight());
+                }
+                false
+            },
+        }
+    }
+
+    fn recover_begin(&mut self, api: &mut ClientAPI<UnifiedCacheProgramModel>)
+        requires
+            old(self).inv_api(old(api)),
+            old(self).recovery_phase is FetchingSuperblock,
+            old(self).state().recovery_state is Begin,
+            old(self).outstanding_requests@ == Map::<ID, OutstandingReqInfo>::empty(),
+        ensures
+            self.inv_api(api),
+            self.recovery_phase is FetchingSuperblock,
+            self.state().recovery_state is AwaitingSuperblock,
+    {
+        // api.log("unified-cache recovery begins");
+        api.log("unified-cache recovery begins");
+
+        let ghost pre_state = self.model@.value();
+        let tracked mut model = KVStoreTokenized::model::arbitrary();
+        proof {
+            tracked_swap(self.model.borrow_mut(), &mut model);
+        }
+
+        let req_id_perm = Tracked(api.send_disk_request_predict_id());
+        let disk_req = IDiskRequest::ReadReq{from: superblock_addr()};
+        let ghost read_req = DiskRequest::ReadReq{from: spec_superblock_addr()};
+        let ghost disk_request_tuples = multiset_map_singleton(req_id_perm@, disk_req@);
+        let ghost disk_response_tuples = Multiset::empty();
+        let ghost post_state = UnifiedCacheProgramModel{
+            state: UnifiedCacheSystem::State{
+                recovery_state: RecoveryState::AwaitingSuperblock,
+                ..pre_state.state
+            }
+        };
+
+        proof {
+            multiset_map_singleton_ensures(req_id_perm@, disk_req@);
+            assert(disk_req@ == read_req);
+            assert(disk_request_tuples == Multiset::empty().insert((req_id_perm@, read_req)));
+            assert(UnifiedCacheSystem::State::initiate_recovery(
+                pre_state.state,
+                post_state.state,
+                UnifiedCacheSystem::Label::Disk,
+                req_id_perm@,
+                disk_request_tuples,
+                disk_response_tuples,
+            )) by {
+            }
+            assert(UnifiedCacheSystem::State::next_by(
+                pre_state.state,
+                post_state.state,
+                UnifiedCacheSystem::Label::Disk,
+                UnifiedCacheSystem::Step::initiate_recovery(
+                    req_id_perm@,
+                    disk_request_tuples,
+                    disk_response_tuples,
+                ),
+            )) by {
+                reveal(UnifiedCacheSystem::State::next_by);
+            }
+            assert(UnifiedCacheSystem::State::next(
+                pre_state.state,
+                post_state.state,
+                UnifiedCacheSystem::Label::Disk,
+            )) by {
+                reveal(UnifiedCacheSystem::State::next);
+            }
+            let info = ProgramDiskInfo{
+                reqs: disk_request_tuples,
+                resps: disk_response_tuples,
+            };
+            assert(UnifiedCacheProgramModel::disk_step_matches_info(
+                pre_state.state,
+                UnifiedCacheSystem::Step::initiate_recovery(
+                    req_id_perm@,
+                    disk_request_tuples,
+                    disk_response_tuples,
+                ),
+                info,
+            ));
+            assert(exists |step: UnifiedCacheSystem::Step| {
+                &&& UnifiedCacheSystem::State::next_by(
+                    pre_state.state,
+                    post_state.state,
+                    UnifiedCacheSystem::Label::Disk,
+                    step,
+                )
+                &&& UnifiedCacheProgramModel::disk_step_matches_info(
+                    pre_state.state,
+                    step,
+                    info,
+                )
+            }) by {
+                let step = UnifiedCacheSystem::Step::initiate_recovery(
+                    req_id_perm@,
+                    disk_request_tuples,
+                    disk_response_tuples,
+                );
+                assert(UnifiedCacheSystem::State::next_by(
+                    pre_state.state,
+                    post_state.state,
+                    UnifiedCacheSystem::Label::Disk,
+                    step,
+                ));
+                assert(UnifiedCacheProgramModel::disk_step_matches_info(
+                    pre_state.state,
+                    step,
+                    info,
+                ));
+            }
+            assert(UnifiedCacheProgramModel::valid_disk_transition(
+                pre_state,
+                post_state,
+                info,
+            )) by {
+                reveal(UnifiedCacheProgramModel::valid_disk_transition);
+            }
+            assert(ProgramModelTrait::next(
+                pre_state,
+                post_state,
+                ProgramLabel::DiskIO{info},
+            ));
+        }
+
+        let tracked empty_disk_responses = DiskRespShard::empty(self.instance_id());
+        let tracked new_disk_req_token = self.instance.borrow().disk_transitions(
+            KVStoreTokenized::Label::DiskOp{
+                disk_request_tuples,
+                disk_response_tuples,
+            },
+            post_state,
+            &mut model,
+            empty_disk_responses,
+        );
+        self.model = Tracked(model);
+
+        let _id = api.send_disk_request(disk_req, req_id_perm, Tracked(new_disk_req_token));
+
+        proof {
+            assert(pre_state.state.outstanding_cache_reqs == Map::<ID, Address>::empty()) by {
+                assert(old(self).outstanding_cache_reqs_match_model());
+                assert(pre_state.state.outstanding_cache_reqs.dom()
+                    == old(self).outstanding_requests@.dom());
+                assert(old(self).outstanding_requests@ == Map::<ID, OutstandingReqInfo>::empty());
+                assert_maps_equal!(
+                    pre_state.state.outstanding_cache_reqs,
+                    Map::<ID, Address>::empty(),
+                    k => {
+                        if pre_state.state.outstanding_cache_reqs.contains_key(k) {
+                            assert(pre_state.state.outstanding_cache_reqs.dom().contains(k));
+                            assert(old(self).outstanding_requests@.dom().contains(k));
+                            assert(!old(self).outstanding_requests@.contains_key(k));
+                            assert(false);
+                        }
+                    }
+                );
+            }
+            assert(self.state().cache == self.cache@);
+            assert(self.state().outstanding_cache_reqs == Map::<ID, Address>::empty());
+            assert(self.outstanding_requests@ == old(self).outstanding_requests@);
+            assert(self.outstanding_requests_wf());
+            assert(self.outstanding_cache_reqs_match_model());
+            assert(self.outstanding_requests_single_flight());
+        }
+    }
+
+    fn recover_step(&mut self, api: &mut ClientAPI<UnifiedCacheProgramModel>) -> (progress: bool)
+        requires
+            old(self).inv_api(old(api)),
+            old(self).recovery_phase is FetchingSuperblock ==> old(self).state().recovery_state is AwaitingSuperblock,
+            old(self).recovery_phase is LoadingJournal ==> old(self).state().recovery_state is SuperblockAvailable,
+            old(self).recovery_phase is LoadingJournal ==> old(self).state().journal.journal == old(self).journal@,
+        ensures
+            self.inv_api(api),
+            !(self.recovery_phase is FetchingSuperblock),
+            self.recovery_phase is LoadingJournal ==> self.state().recovery_state is SuperblockAvailable,
+            self.recovery_phase is LoadingJournal ==> self.state().journal.journal == self.journal@,
+    {
+        // api.log("unified-cache recovery skeleton step");
+        // self.recovery_phase = RecoveryPhase::ReadyForUserOperation;
+        // true
+        match self.recovery_phase {
+            RecoveryPhase::FetchingSuperblock => {
+                api.log("await unified-cache superblock response");
+
+                let ghost pre_state = self.model@.value();
+                let DiskResponseRecord{
+                    id: disk_req_id,
+                    disk_response: i_disk_response,
+                    token: disk_response_token,
+                } = api.blocking_receive_disk_response();
+
+                proof {
+                    let sys_model =
+                        open_system_invariant_disk_response_singleton::<
+                            UnifiedCacheProgramModel,
+                            UnifiedCacheRefinementProof,
+                        >(
+                            self.model,
+                            disk_response_token,
+                            disk_req_id,
+                            i_disk_response@,
+                        );
+                    assert(UnifiedCacheRefinementProof::inv(sys_model));
+                    assert(sys_model.program == pre_state);
+                    assert(UnifiedCacheSystemRefinement::inv(sys_model));
+                    UnifiedCacheSystemRefinement::recovery_superblock_response_facts(
+                        sys_model,
+                        disk_req_id,
+                        i_disk_response@,
+                    );
+                    assert(sys_model.program.state.recovery_state is AwaitingSuperblock);
+                    assert(pre_state.state.outstanding_cache_reqs == Map::<ID, Address>::empty());
+                    assert(!sys_model.program.state.outstanding_cache_reqs.contains_key(disk_req_id)) by {
+                        assert(sys_model.program.state.outstanding_cache_reqs == Map::<ID, Address>::empty());
+                    }
+                    assert(sys_model.disk.responses.contains_key(disk_req_id));
+                    assert(sys_model.disk.responses[disk_req_id] == i_disk_response@);
+                    assert(i_disk_response@ is ReadResp);
+                    assert(sys_model.disk.responses[disk_req_id]->data
+                        == sys_model.disk.content[spec_superblock_addr()]);
+                    assert(abstract_superblock_raw_wf(i_disk_response@->data));
+                }
+
+                let raw_page = match i_disk_response {
+                    IDiskResponse::ReadResp{data} => data,
+                    IDiskResponse::WriteResp{} => {
+                        unreached()
+                    },
+                };
+
+                let layout = DiskLayout::new();
+                let superblock = layout.parse(&raw_page);
+                let bootstrap_au = bootstrap_alloc_au();
+                self.journal = JournalImpl::new(superblock.journal.snapshot, bootstrap_au);
+                self.branch_loaded = false;
+
+                let ghost image = layout.spec_parse(raw_page@);
+                let ghost branch_image = crate::implementation::AtomicBranchState_v::AtomicBranchImage{
+                    sealed_roots: image.branch_roots,
+                    seq_end: image.branch_seq_end,
+                };
+                let ghost new_journal = AtomicJournalState::State{
+                    journal: CachedJournal::State{
+                        snapshot: image.journal_snapshot,
+                        status: None,
+                    },
+                    mini_allocator: MiniAllocator::empty(),
+                    persistent_seq_end: image.journal_seq_end,
+                    in_flight: None,
+                    prepared: false,
+                };
+                let ghost new_branch = AtomicBranchState::State{
+                    image: branch_image,
+                    persistent_image: branch_image,
+                    in_flight: None,
+                    prepared: false,
+                    branch_summary: Map::empty(),
+                    persisted_root_count: image.branch_roots.len() as nat,
+                    active_branch: CachedBranch::State::empty_active(),
+                    mini_allocator: MiniAllocator::empty(),
+                    seq_end: image.branch_seq_end,
+                };
+                let ghost disk_request_tuples = Multiset::empty();
+                let ghost disk_response_tuples = multiset_map_singleton(disk_req_id, i_disk_response@);
+                let ghost post_state = UnifiedCacheProgramModel{
+                    state: UnifiedCacheSystem::State{
+                        recovery_state: RecoveryState::SuperblockAvailable,
+                        journal: new_journal,
+                        branch: new_branch,
+                        persistent_image: Some(image),
+                        sync_phase: AtomicSyncPhase::None,
+                        sync_req_map: Map::empty(),
+                        ..pre_state.state
+                    }
+                };
+
+                let tracked mut model = KVStoreTokenized::model::arbitrary();
+                proof {
+                    tracked_swap(self.model.borrow_mut(), &mut model);
+                }
+
+                proof {
+                    assert(i_disk_response@ is ReadResp);
+                    assert(i_disk_response@->data == raw_page@);
+                    assert(abstract_superblock_raw_wf(raw_page@));
+                    assert(image.wf());
+                    assert(superblock_matches(raw_page@, image));
+                    assert(AtomicJournalState::State::initialize(
+                        new_journal,
+                        image.journal_snapshot,
+                        image.journal_seq_end,
+                    )) by {
+                        reveal(AtomicJournalState::State::initialize);
+                    }
+                    assert(AtomicBranchState::State::initialize(
+                        new_branch,
+                        branch_image,
+                        image.branch_roots.len() as nat,
+                    )) by {
+                        reveal(AtomicBranchState::State::initialize);
+                    }
+                    multiset_map_singleton_ensures(disk_req_id, i_disk_response@);
+                    assert(disk_response_tuples == Multiset::empty().insert((
+                        disk_req_id,
+                        DiskResponse::ReadResp{data: raw_page@},
+                    )));
+                    assert(UnifiedCacheSystem::State::superblock_recovery(
+                        pre_state.state,
+                        post_state.state,
+                        UnifiedCacheSystem::Label::Disk,
+                        disk_req_id,
+                        raw_page@,
+                        image,
+                        new_journal,
+                        new_branch,
+                        disk_request_tuples,
+                        disk_response_tuples,
+                    )) by {
+                    }
+                    assert(UnifiedCacheSystem::State::next_by(
+                        pre_state.state,
+                        post_state.state,
+                        UnifiedCacheSystem::Label::Disk,
+                        UnifiedCacheSystem::Step::superblock_recovery(
+                            disk_req_id,
+                            raw_page@,
+                            image,
+                            new_journal,
+                            new_branch,
+                            disk_request_tuples,
+                            disk_response_tuples,
+                        ),
+                    )) by {
+                        reveal(UnifiedCacheSystem::State::next_by);
+                    }
+                    assert(UnifiedCacheSystem::State::next(
+                        pre_state.state,
+                        post_state.state,
+                        UnifiedCacheSystem::Label::Disk,
+                    )) by {
+                        reveal(UnifiedCacheSystem::State::next);
+                    }
+                    let info = ProgramDiskInfo{
+                        reqs: disk_request_tuples,
+                        resps: disk_response_tuples,
+                    };
+                    assert(UnifiedCacheProgramModel::disk_step_matches_info(
+                        pre_state.state,
+                        UnifiedCacheSystem::Step::superblock_recovery(
+                            disk_req_id,
+                            raw_page@,
+                            image,
+                            new_journal,
+                            new_branch,
+                            disk_request_tuples,
+                            disk_response_tuples,
+                        ),
+                        info,
+                    ));
+                    assert(exists |step: UnifiedCacheSystem::Step| {
+                        &&& UnifiedCacheSystem::State::next_by(
+                            pre_state.state,
+                            post_state.state,
+                            UnifiedCacheSystem::Label::Disk,
+                            step,
+                        )
+                        &&& UnifiedCacheProgramModel::disk_step_matches_info(
+                            pre_state.state,
+                            step,
+                            info,
+                        )
+                    }) by {
+                        let step = UnifiedCacheSystem::Step::superblock_recovery(
+                            disk_req_id,
+                            raw_page@,
+                            image,
+                            new_journal,
+                            new_branch,
+                            disk_request_tuples,
+                            disk_response_tuples,
+                        );
+                        assert(UnifiedCacheSystem::State::next_by(
+                            pre_state.state,
+                            post_state.state,
+                            UnifiedCacheSystem::Label::Disk,
+                            step,
+                        ));
+                        assert(UnifiedCacheProgramModel::disk_step_matches_info(
+                            pre_state.state,
+                            step,
+                            info,
+                        ));
+                    }
+                    assert(UnifiedCacheProgramModel::valid_disk_transition(
+                        pre_state,
+                        post_state,
+                        info,
+                    )) by {
+                        reveal(UnifiedCacheProgramModel::valid_disk_transition);
+                    }
+                    assert(ProgramModelTrait::next(
+                        pre_state,
+                        post_state,
+                        ProgramLabel::DiskIO{info},
+                    ));
+                }
+
+                let tracked _disk_req_token = self.instance.borrow().disk_transitions(
+                    KVStoreTokenized::Label::DiskOp{
+                        disk_request_tuples,
+                        disk_response_tuples,
+                    },
+                    post_state,
+                    &mut model,
+                    disk_response_token.get(),
+                );
+                self.model = Tracked(model);
+
+                self.recovery_phase = RecoveryPhase::LoadingJournal;
+
+                proof {
+                    assert(self.state().cache == self.cache@);
+                    assert(superblock@ == layout.spec_parse_inner(raw_page@));
+                    assert(superblock@@ == image);
+                    assert(self.journal@.snapshot == image.journal_snapshot);
+                    self.journal.view_ensures();
+                    assert(!self.journal.index_ready());
+                    assert(self.journal@.status is None);
+                    assert(self.state().journal.journal == self.journal@);
+                    assert(post_state.state.outstanding_cache_reqs == pre_state.state.outstanding_cache_reqs);
+                    assert(pre_state.state.outstanding_cache_reqs == Map::<ID, Address>::empty());
+                    assert(self.state().outstanding_cache_reqs == Map::<ID, Address>::empty());
+                    assert(self.outstanding_requests@ == old(self).outstanding_requests@);
+                    assert(self.outstanding_requests_wf());
+                    assert(self.outstanding_cache_reqs_match_model());
+                    assert(self.outstanding_requests_single_flight());
+                }
+                true
+            },
+            RecoveryPhase::LoadingJournal => {
+                let index_ready = self.journal.exec_index_ready();
+                if index_ready {
+                    api.log("unified-cache journal model transition pending");
+                    false
+                } else {
+                    match self.journal.exec_freshest_rec() {
+                        None => {
+                            let ghost pre_state = self.model@.value();
+                            let ghost pre_journal_view = self.journal@;
+                            let reads = self.journal.recover_empty_index();
+                            let ghost journal_reads = to_journal_records(reads@);
+                            let ghost discovered_aus = Set::<AU>::empty();
+                            let ghost new_atomic_journal = AtomicJournalState::State{
+                                journal: self.journal@,
+                                ..pre_state.state.journal
+                            };
+                            let ghost post_state = UnifiedCacheProgramModel{
+                                state: UnifiedCacheSystem::State{
+                                    cache: self.cache@,
+                                    journal: new_atomic_journal,
+                                    free_aus: pre_state.state.free_aus - discovered_aus,
+                                    ..pre_state.state
+                                }
+                            };
+
+                            let tracked mut model = KVStoreTokenized::model::arbitrary();
+                            proof {
+                                tracked_swap(self.model.borrow_mut(), &mut model);
+                            }
+
+                            proof {
+                                assert(pre_state.state.recovery_state is SuperblockAvailable);
+                                assert(pre_state.state.journal.journal == pre_journal_view);
+                                assert(pre_state.state.cache == self.cache@);
+                                assert(reads@ == Map::<Address, crate::spec::AsyncDisk_t::RawPage>::empty());
+                                assert(journal_reads =~= Map::<Address, crate::journal::LinkedJournal_v::JournalRecord>::empty()) by {
+                                    assert_maps_equal!(
+                                        journal_reads,
+                                        Map::<Address, crate::journal::LinkedJournal_v::JournalRecord>::empty(),
+                                        addr => {
+                                        }
+                                    );
+                                }
+
+                                let cache_lbl = Cache::Label::Access{
+                                    reads: reads@,
+                                    writes: Map::empty(),
+                                };
+                                assert forall |addr| #[trigger] cache_lbl->reads.contains_key(addr)
+                                    implies pre_state.state.cache.valid_read(addr, cache_lbl->reads[addr]) by {
+                                    assert(reads@ == Map::<Address, crate::spec::AsyncDisk_t::RawPage>::empty());
+                                }
+                                assert forall |addr| #[trigger] cache_lbl->writes.contains_key(addr)
+                                    implies pre_state.state.cache.valid_write(addr) by {
+                                }
+                                let updated_entries = pre_state.state.cache.write_updated_entries(cache_lbl->writes);
+                                let updated_status_map = pre_state.state.cache.write_updated_status(cache_lbl->writes);
+                                assert(cache_lbl->writes == Map::<Address, crate::spec::AsyncDisk_t::RawPage>::empty());
+                                assert(pre_state.state.cache.entries.union_prefer_right(updated_entries)
+                                    =~= pre_state.state.cache.entries);
+                                assert(pre_state.state.cache.status_map.union_prefer_right(updated_status_map)
+                                    =~= pre_state.state.cache.status_map);
+                                assert(Cache::State::next_by(
+                                    pre_state.state.cache,
+                                    self.cache@,
+                                    cache_lbl,
+                                    Cache::Step::access{},
+                                )) by {
+                                    reveal(Cache::State::next_by);
+                                }
+                                assert(Cache::State::next(
+                                    pre_state.state.cache,
+                                    self.cache@,
+                                    cache_lbl,
+                                )) by {
+                                    reveal(Cache::State::next);
+                                }
+
+                                let atomic_lbl = AtomicJournalState::Label::LoadIndex{
+                                    reads: journal_reads,
+                                    discovered_aus,
+                                };
+                                assert(AtomicJournalState::State::load_index(
+                                    pre_state.state.journal,
+                                    new_atomic_journal,
+                                    atomic_lbl,
+                                    self.journal@,
+                                    0,
+                                    0,
+                                )) by {
+                                    reveal(AtomicJournalState::State::load_index);
+                                }
+                                assert(AtomicJournalState::State::next_by(
+                                    pre_state.state.journal,
+                                    new_atomic_journal,
+                                    atomic_lbl,
+                                    AtomicJournalState::Step::load_index(self.journal@, 0, 0),
+                                )) by {
+                                    reveal(AtomicJournalState::State::next_by);
+                                }
+                                assert(AtomicJournalState::State::next(
+                                    pre_state.state.journal,
+                                    new_atomic_journal,
+                                    atomic_lbl,
+                                )) by {
+                                    reveal(AtomicJournalState::State::next);
+                                }
+
+                                assert(UnifiedCacheSystem::State::journal_load_index(
+                                    pre_state.state,
+                                    post_state.state,
+                                    UnifiedCacheSystem::Label::Internal,
+                                    reads@,
+                                    reads@,
+                                    discovered_aus,
+                                    self.cache@,
+                                    new_atomic_journal,
+                                )) by {
+                                }
+                                assert(UnifiedCacheSystem::State::next_by(
+                                    pre_state.state,
+                                    post_state.state,
+                                    UnifiedCacheSystem::Label::Internal,
+                                    UnifiedCacheSystem::Step::journal_load_index(
+                                        reads@,
+                                        reads@,
+                                        discovered_aus,
+                                        self.cache@,
+                                        new_atomic_journal,
+                                    ),
+                                )) by {
+                                    reveal(UnifiedCacheSystem::State::next_by);
+                                }
+                                assert(UnifiedCacheSystem::State::next(
+                                    pre_state.state,
+                                    post_state.state,
+                                    UnifiedCacheSystem::Label::Internal,
+                                )) by {
+                                    reveal(UnifiedCacheSystem::State::next);
+                                }
+                                assert(ProgramModelTrait::next(
+                                    pre_state,
+                                    post_state,
+                                    ProgramLabel::Internal{},
+                                ));
+                            }
+
+                            let tracked _internal_token = self.instance.borrow().internal(
+                                KVStoreTokenized::Label::InternalOp{},
+                                post_state,
+                                &mut model,
+                            );
+                            self.model = Tracked(model);
+                            self.recovery_phase = RecoveryPhase::LoadingBranch;
+                            api.log("unified-cache empty journal index recovered");
+                            true
+                        },
+                        Some(_) => {
+                            api.log("unified-cache nonempty journal recovery pending");
+                            false
+                        },
+                    }
+                }
+            },
+            RecoveryPhase::LoadingBranch => {
+                api.log("unified-cache branch recovery pending");
+                false
+            },
+            RecoveryPhase::ReadyForUserOperation => {
+                false
+            },
+        }
+    }
+
+    fn handle_disk_response(
+        &mut self,
+        rec: DiskResponseRecord<UnifiedCacheProgramModel>,
+        api: &mut ClientAPI<UnifiedCacheProgramModel>,
+    )
+        requires
+            old(self).inv_api(old(api)),
+            rec.token@.instance_id() == old(self).instance_id(),
+            rec.token@.multiset() == multiset_map_singleton(rec.id, rec.disk_response@),
+            rec.disk_response is ReadResp ==> rec.disk_response->data.len() == PAGE_SIZE_BYTES,
+        ensures
+            self.inv_api(api),
+            self.recovery_phase == old(self).recovery_phase,
+    {
+        let DiskResponseRecord{id, disk_response, token} = rec;
+        let ghost response = disk_response@;
+        let ghost pre_outstanding = self.outstanding_requests@;
+
+        let req_info = self.outstanding_requests.remove(&id);
+        match req_info {
+            None => {
+                api.log("unified-cache unexpected disk response");
+            },
+            Some(OutstandingReqInfo::CacheRead{addr, load_handle}) => {
+                match disk_response {
+                    IDiskResponse::ReadResp{data} => {
+                        let mut load_handle = load_handle;
+                        load_handle.rec = data;
+
+                        proof {
+                            assert(load_handle.rec.len() == PAGE_SIZE_BYTES);
+                            assert(pre_outstanding.contains_key(id));
+                            assert(old(self).outstanding_requests_wf());
+                            assert(old(self).cache.entry_fetched(&addr));
+                            assert(old(self).cache.valid_load_handle(&addr, load_handle));
+                        }
+
+                        let ghost pre_state = self.model@.value();
+                        let ghost pre_cache_reqs = pre_state.state.outstanding_cache_reqs;
+                        self.cache.load_release(&addr, load_handle);
+
+                        let ghost resp_map = map![id => response];
+                        let ghost disk_request_tuples = Multiset::empty();
+                        let ghost disk_response_tuples = multiset_map_singleton(id, response);
+                        let ghost finished_cache_reqs =
+                            pre_state.state.outstanding_cache_reqs.restrict(resp_map.dom()).invert();
+                        let ghost cache_resps = Map::new(
+                            |a| finished_cache_reqs.contains_key(a),
+                            |a| resp_map[finished_cache_reqs[a]],
+                        );
+                        let ghost post_state = UnifiedCacheProgramModel{
+                            state: UnifiedCacheSystem::State{
+                                cache: self.cache@,
+                                outstanding_cache_reqs:
+                                    pre_state.state.outstanding_cache_reqs.remove_keys(resp_map.dom()),
+                                disk_backed_addrs:
+                                    pre_state.state.disk_backed_addrs + cache_write_response_addrs(cache_resps),
+                                ..pre_state.state
+                            }
+                        };
+
+                        let tracked mut model = KVStoreTokenized::model::arbitrary();
+                        proof {
+                            tracked_swap(self.model.borrow_mut(), &mut model);
+                        }
+
+                        proof {
+                            assert(pre_state.state.outstanding_cache_reqs == map![id => addr@]) by {
+                                assert(pre_state.state.outstanding_cache_reqs.contains_key(id));
+                                assert(pre_state.state.outstanding_cache_reqs[id] == addr@);
+                                assert_maps_equal!(pre_state.state.outstanding_cache_reqs, map![id => addr@], k => {
+                                    if k == id {
+                                    } else {
+                                        if pre_state.state.outstanding_cache_reqs.contains_key(k) {
+                                            assert(old(self).outstanding_requests@.contains_key(k));
+                                            assert(old(self).outstanding_requests@.contains_key(id));
+                                            assert(old(self).outstanding_requests_single_flight());
+                                            assert(k == id);
+                                            assert(false);
+                                        }
+                                    }
+                                });
+                            }
+                            multiset_map_singleton_ensures(id, response);
+                            assert(multiset_to_map(disk_response_tuples) == resp_map);
+                            Self::cache_resps_singleton(pre_cache_reqs, id, addr@, response);
+                            assert(cache_resps == map![addr@ => response]);
+                            assert(UnifiedCacheSystem::State::cache_io_end(
+                                pre_state.state,
+                                post_state.state,
+                                UnifiedCacheSystem::Label::Disk,
+                                resp_map,
+                                self.cache@,
+                                disk_request_tuples,
+                                disk_response_tuples,
+                            )) by {
+                            }
+                            assert(UnifiedCacheSystem::State::next_by(
+                                pre_state.state,
+                                post_state.state,
+                                UnifiedCacheSystem::Label::Disk,
+                                UnifiedCacheSystem::Step::cache_io_end(
+                                    resp_map,
+                                    self.cache@,
+                                    disk_request_tuples,
+                                    disk_response_tuples,
+                                ),
+                            )) by {
+                                reveal(UnifiedCacheSystem::State::next_by);
+                            }
+                            assert(UnifiedCacheSystem::State::next(
+                                pre_state.state,
+                                post_state.state,
+                                UnifiedCacheSystem::Label::Disk,
+                            )) by {
+                                reveal(UnifiedCacheSystem::State::next);
+                            }
+                            let info = ProgramDiskInfo{
+                                reqs: disk_request_tuples,
+                                resps: disk_response_tuples,
+                            };
+                            assert(UnifiedCacheProgramModel::disk_step_matches_info(
+                                pre_state.state,
+                                UnifiedCacheSystem::Step::cache_io_end(
+                                    resp_map,
+                                    self.cache@,
+                                    disk_request_tuples,
+                                    disk_response_tuples,
+                                ),
+                                info,
+                            ));
+                            assert(exists |step: UnifiedCacheSystem::Step| {
+                                &&& UnifiedCacheSystem::State::next_by(
+                                    pre_state.state,
+                                    post_state.state,
+                                    UnifiedCacheSystem::Label::Disk,
+                                    step,
+                                )
+                                &&& UnifiedCacheProgramModel::disk_step_matches_info(
+                                    pre_state.state,
+                                    step,
+                                    info,
+                                )
+                            }) by {
+                                let step = UnifiedCacheSystem::Step::cache_io_end(
+                                    resp_map,
+                                    self.cache@,
+                                    disk_request_tuples,
+                                    disk_response_tuples,
+                                );
+                                assert(UnifiedCacheSystem::State::next_by(
+                                    pre_state.state,
+                                    post_state.state,
+                                    UnifiedCacheSystem::Label::Disk,
+                                    step,
+                                ));
+                                assert(UnifiedCacheProgramModel::disk_step_matches_info(
+                                    pre_state.state,
+                                    step,
+                                    info,
+                                ));
+                            }
+                            assert(UnifiedCacheProgramModel::valid_disk_transition(
+                                pre_state,
+                                post_state,
+                                info,
+                            )) by {
+                                reveal(UnifiedCacheProgramModel::valid_disk_transition);
+                            }
+                            assert(ProgramModelTrait::next(
+                                pre_state,
+                                post_state,
+                                ProgramLabel::DiskIO{info},
+                            ));
+                            assert(post_state.state.outstanding_cache_reqs == Map::<ID, Address>::empty()) by {
+                                assert(pre_state.state.outstanding_cache_reqs == map![id => addr@]);
+                                assert(resp_map.dom() == set![id]);
+                                assert_maps_equal!(
+                                    post_state.state.outstanding_cache_reqs,
+                                    Map::<ID, Address>::empty(),
+                                    k => {
+                                        if post_state.state.outstanding_cache_reqs.contains_key(k) {
+                                            assert(!resp_map.dom().contains(k));
+                                            assert(pre_state.state.outstanding_cache_reqs.contains_key(k));
+                                            assert(k == id);
+                                            assert(false);
+                                        }
+                                    }
+                                );
+                            }
+                        }
+
+                        let tracked _disk_req_token = self.instance.borrow().disk_transitions(
+                            KVStoreTokenized::Label::DiskOp{
+                                disk_request_tuples,
+                                disk_response_tuples,
+                            },
+                            post_state,
+                            &mut model,
+                            token.get(),
+                        );
+                        self.model = Tracked(model);
+
+                        proof {
+                            assert(self.outstanding_requests@ == Map::<ID, OutstandingReqInfo>::empty());
+                            assert(self.state().outstanding_cache_reqs == Map::<ID, Address>::empty());
+                            assert(self.outstanding_requests_wf());
+                            assert(self.outstanding_cache_reqs_match_model());
+                            assert(self.outstanding_requests_single_flight());
+                        }
+                    },
+                    IDiskResponse::WriteResp{} => {
+                        self.outstanding_requests.insert(id, OutstandingReqInfo::CacheRead{
+                            addr,
+                            load_handle,
+                        });
+                        api.log("unified-cache read got write response");
+                    },
+                }
+            },
+            Some(OutstandingReqInfo::CacheWrite{addr, write_handle}) => {
+                match disk_response {
+                    IDiskResponse::WriteResp{} => {
+                        proof {
+                            assert(pre_outstanding.contains_key(id));
+                            assert(old(self).outstanding_requests_wf());
+                            assert(old(self).cache.entry_fetched(&addr));
+                            assert(old(self).cache.valid_writeback_handle(&addr, write_handle));
+                        }
+
+                        let ghost pre_state = self.model@.value();
+                        let ghost pre_cache_reqs = pre_state.state.outstanding_cache_reqs;
+                        self.cache.complete_writeback(&addr, write_handle);
+
+                        let ghost resp_map = map![id => response];
+                        let ghost disk_request_tuples = Multiset::empty();
+                        let ghost disk_response_tuples = multiset_map_singleton(id, response);
+                        let ghost finished_cache_reqs =
+                            pre_state.state.outstanding_cache_reqs.restrict(resp_map.dom()).invert();
+                        let ghost cache_resps = Map::new(
+                            |a| finished_cache_reqs.contains_key(a),
+                            |a| resp_map[finished_cache_reqs[a]],
+                        );
+                        let ghost post_state = UnifiedCacheProgramModel{
+                            state: UnifiedCacheSystem::State{
+                                cache: self.cache@,
+                                outstanding_cache_reqs:
+                                    pre_state.state.outstanding_cache_reqs.remove_keys(resp_map.dom()),
+                                disk_backed_addrs:
+                                    pre_state.state.disk_backed_addrs + cache_write_response_addrs(cache_resps),
+                                ..pre_state.state
+                            }
+                        };
+
+                        let tracked mut model = KVStoreTokenized::model::arbitrary();
+                        proof {
+                            tracked_swap(self.model.borrow_mut(), &mut model);
+                        }
+
+                        proof {
+                            assert(pre_state.state.outstanding_cache_reqs == map![id => addr@]) by {
+                                assert(pre_state.state.outstanding_cache_reqs.contains_key(id));
+                                assert(pre_state.state.outstanding_cache_reqs[id] == addr@);
+                                assert_maps_equal!(pre_state.state.outstanding_cache_reqs, map![id => addr@], k => {
+                                    if k == id {
+                                    } else {
+                                        if pre_state.state.outstanding_cache_reqs.contains_key(k) {
+                                            assert(old(self).outstanding_requests@.contains_key(k));
+                                            assert(old(self).outstanding_requests@.contains_key(id));
+                                            assert(old(self).outstanding_requests_single_flight());
+                                            assert(k == id);
+                                            assert(false);
+                                        }
+                                    }
+                                });
+                            }
+                            multiset_map_singleton_ensures(id, response);
+                            assert(multiset_to_map(disk_response_tuples) == resp_map);
+                            Self::cache_resps_singleton(pre_cache_reqs, id, addr@, response);
+                            assert(cache_resps == map![addr@ => response]);
+                            assert(UnifiedCacheSystem::State::cache_io_end(
+                                pre_state.state,
+                                post_state.state,
+                                UnifiedCacheSystem::Label::Disk,
+                                resp_map,
+                                self.cache@,
+                                disk_request_tuples,
+                                disk_response_tuples,
+                            )) by {
+                            }
+                            assert(UnifiedCacheSystem::State::next_by(
+                                pre_state.state,
+                                post_state.state,
+                                UnifiedCacheSystem::Label::Disk,
+                                UnifiedCacheSystem::Step::cache_io_end(
+                                    resp_map,
+                                    self.cache@,
+                                    disk_request_tuples,
+                                    disk_response_tuples,
+                                ),
+                            )) by {
+                                reveal(UnifiedCacheSystem::State::next_by);
+                            }
+                            assert(UnifiedCacheSystem::State::next(
+                                pre_state.state,
+                                post_state.state,
+                                UnifiedCacheSystem::Label::Disk,
+                            )) by {
+                                reveal(UnifiedCacheSystem::State::next);
+                            }
+                            let info = ProgramDiskInfo{
+                                reqs: disk_request_tuples,
+                                resps: disk_response_tuples,
+                            };
+                            assert(UnifiedCacheProgramModel::disk_step_matches_info(
+                                pre_state.state,
+                                UnifiedCacheSystem::Step::cache_io_end(
+                                    resp_map,
+                                    self.cache@,
+                                    disk_request_tuples,
+                                    disk_response_tuples,
+                                ),
+                                info,
+                            ));
+                            assert(exists |step: UnifiedCacheSystem::Step| {
+                                &&& UnifiedCacheSystem::State::next_by(
+                                    pre_state.state,
+                                    post_state.state,
+                                    UnifiedCacheSystem::Label::Disk,
+                                    step,
+                                )
+                                &&& UnifiedCacheProgramModel::disk_step_matches_info(
+                                    pre_state.state,
+                                    step,
+                                    info,
+                                )
+                            }) by {
+                                let step = UnifiedCacheSystem::Step::cache_io_end(
+                                    resp_map,
+                                    self.cache@,
+                                    disk_request_tuples,
+                                    disk_response_tuples,
+                                );
+                                assert(UnifiedCacheSystem::State::next_by(
+                                    pre_state.state,
+                                    post_state.state,
+                                    UnifiedCacheSystem::Label::Disk,
+                                    step,
+                                ));
+                                assert(UnifiedCacheProgramModel::disk_step_matches_info(
+                                    pre_state.state,
+                                    step,
+                                    info,
+                                ));
+                            }
+                            assert(UnifiedCacheProgramModel::valid_disk_transition(
+                                pre_state,
+                                post_state,
+                                info,
+                            )) by {
+                                reveal(UnifiedCacheProgramModel::valid_disk_transition);
+                            }
+                            assert(ProgramModelTrait::next(
+                                pre_state,
+                                post_state,
+                                ProgramLabel::DiskIO{info},
+                            ));
+                            assert(post_state.state.outstanding_cache_reqs == Map::<ID, Address>::empty()) by {
+                                assert(pre_state.state.outstanding_cache_reqs == map![id => addr@]);
+                                assert(resp_map.dom() == set![id]);
+                                assert_maps_equal!(
+                                    post_state.state.outstanding_cache_reqs,
+                                    Map::<ID, Address>::empty(),
+                                    k => {
+                                        if post_state.state.outstanding_cache_reqs.contains_key(k) {
+                                            assert(!resp_map.dom().contains(k));
+                                            assert(pre_state.state.outstanding_cache_reqs.contains_key(k));
+                                            assert(k == id);
+                                            assert(false);
+                                        }
+                                    }
+                                );
+                            }
+                        }
+
+                        let tracked _disk_req_token = self.instance.borrow().disk_transitions(
+                            KVStoreTokenized::Label::DiskOp{
+                                disk_request_tuples,
+                                disk_response_tuples,
+                            },
+                            post_state,
+                            &mut model,
+                            token.get(),
+                        );
+                        self.model = Tracked(model);
+
+                        proof {
+                            assert(self.outstanding_requests@ == Map::<ID, OutstandingReqInfo>::empty());
+                            assert(self.state().outstanding_cache_reqs == Map::<ID, Address>::empty());
+                            assert(self.outstanding_requests_wf());
+                            assert(self.outstanding_cache_reqs_match_model());
+                            assert(self.outstanding_requests_single_flight());
+                        }
+                    },
+                    IDiskResponse::ReadResp{..} => {
+                        self.outstanding_requests.insert(id, OutstandingReqInfo::CacheWrite{
+                            addr,
+                            write_handle,
+                        });
+                        api.log("unified-cache write got read response");
+                    },
+                }
+            },
+            Some(OutstandingReqInfo::SuperblockWrite) => {
+                self.outstanding_requests.insert(id, OutstandingReqInfo::SuperblockWrite);
+                api.log("unified-cache superblock response path pending");
+            },
+        }
+    }
+
+    fn handle_user_request(
+        &mut self,
+        req: Request,
+        req_shard: Tracked<RequestShard>,
+        api: &mut ClientAPI<UnifiedCacheProgramModel>,
+    )
+        requires
+            old(self).inv_api(old(api)),
+            req_shard@.instance_id() == old(self).instance_id(),
+            req_shard@.element() == req,
+        ensures
+            self.inv_api(api),
+            self.recovery_phase == old(self).recovery_phase,
+    {
+        match req.input {
+            Input::NoopInput => {
+                api.log("noop skeleton");
+            },
+            Input::PutInput{..} => {
+                api.log("put skeleton");
+            },
+            Input::QueryInput{..} => {
+                api.log("query skeleton");
+            },
+            Input::SyncInput => {
+                api.log("sync skeleton");
+            },
+            Input::SimulateCrash => {
+                api.log("simulate crash skeleton");
+            },
+        }
+    }
+
+    fn do_background_work(&mut self, api: &mut ClientAPI<UnifiedCacheProgramModel>) -> (progress: bool)
+        requires
+            old(self).inv_api(old(api)),
+        ensures
+            self.inv_api(api),
+            self.recovery_phase == old(self).recovery_phase,
+    {
+        match self.recovery_phase {
+            RecoveryPhase::ReadyForUserOperation => {
+                if self.journal.free_aus_below_threshold() {
+                    let ghost pre_state = self.model@.value();
+                    let ghost pre_pool = self.au_pool@;
+                    let refill = self.journal.background_refill_aus(&mut self.au_pool, TOTAL_AUS);
+                    match refill {
+                        None => {
+                            proof {
+                                assert(self.journal.basic_wf());
+                                assert(self.journal@ == old(self).journal@);
+                                assert(self.au_pool@ =~= pre_pool);
+                                assert(self.au_pool@ =~= old(self).au_pool@);
+                                assert(self.state().free_aus =~= self.au_pool@);
+                                assert(self.outstanding_requests_wf());
+                                assert(self.outstanding_cache_reqs_match_model());
+                                assert(self.outstanding_requests_single_flight());
+                            }
+                            false
+                        },
+                        Some(allocation) => {
+                            let ghost aus = allocation.as_set();
+                            let ghost new_journal = AtomicJournalState::State{
+                                mini_allocator: pre_state.state.journal.mini_allocator.add_aus(aus),
+                                ..pre_state.state.journal
+                            };
+                            let ghost post_state = UnifiedCacheProgramModel{
+                                state: UnifiedCacheSystem::State{
+                                    free_aus: pre_state.state.free_aus - aus,
+                                    journal: new_journal,
+                                    ..pre_state.state
+                                }
+                            };
+
+                            let tracked mut model = KVStoreTokenized::model::arbitrary();
+                            proof {
+                                tracked_swap(self.model.borrow_mut(), &mut model);
+                            }
+
+                            proof {
+                                assert(pre_state.state.client_ready());
+                                assert(aus <= pre_state.state.free_aus) by {
+                                    assert(aus <= pre_pool);
+                                    assert(pre_state.state.free_aus =~= pre_pool);
+                                }
+                                assert(AtomicJournalState::State::fill_aus(
+                                    pre_state.state.journal,
+                                    new_journal,
+                                    AtomicJournalState::Label::FillAUs{aus},
+                                )) by {
+                                    reveal(AtomicJournalState::State::fill_aus);
+                                }
+                                assert(AtomicJournalState::State::next_by(
+                                    pre_state.state.journal,
+                                    new_journal,
+                                    AtomicJournalState::Label::FillAUs{aus},
+                                    AtomicJournalState::Step::fill_aus(),
+                                )) by {
+                                    reveal(AtomicJournalState::State::next_by);
+                                }
+                                assert(AtomicJournalState::State::next(
+                                    pre_state.state.journal,
+                                    new_journal,
+                                    AtomicJournalState::Label::FillAUs{aus},
+                                )) by {
+                                    reveal(AtomicJournalState::State::next);
+                                }
+                                assert(UnifiedCacheSystem::State::journal_fill_aus(
+                                    pre_state.state,
+                                    post_state.state,
+                                    UnifiedCacheSystem::Label::Internal,
+                                    aus,
+                                    new_journal,
+                                )) by {
+                                }
+                                assert(UnifiedCacheSystem::State::next_by(
+                                    pre_state.state,
+                                    post_state.state,
+                                    UnifiedCacheSystem::Label::Internal,
+                                    UnifiedCacheSystem::Step::journal_fill_aus(aus, new_journal),
+                                )) by {
+                                    reveal(UnifiedCacheSystem::State::next_by);
+                                }
+                                assert(UnifiedCacheSystem::State::next(
+                                    pre_state.state,
+                                    post_state.state,
+                                    UnifiedCacheSystem::Label::Internal,
+                                )) by {
+                                    reveal(UnifiedCacheSystem::State::next);
+                                }
+                                assert(ProgramModelTrait::next(
+                                    pre_state,
+                                    post_state,
+                                    ProgramLabel::Internal{},
+                                ));
+                            }
+
+                            let tracked _internal_token = self.instance.borrow().internal(
+                                KVStoreTokenized::Label::InternalOp{},
+                                post_state,
+                                &mut model,
+                            );
+                            self.model = Tracked(model);
+                            api.log("unified-cache journal au refill");
+
+                            proof {
+                                assert(self.state().free_aus =~= self.au_pool@) by {
+                                    assert(self.state().free_aus =~= pre_state.state.free_aus - aus);
+                                    assert(self.au_pool@ =~= pre_pool - aus);
+                                    assert(pre_state.state.free_aus =~= pre_pool);
+                                }
+                                assert(self.state().cache == self.cache@);
+                                assert(self.outstanding_requests@ == old(self).outstanding_requests@);
+                                assert(self.outstanding_requests_wf());
+                                assert(self.outstanding_cache_reqs_match_model());
+                                assert(self.outstanding_requests_single_flight());
+                            }
+                            true
+                        },
+                    }
+                } else {
+                    false
+                }
+            },
+            _ => {
+                false
+            },
+        }
+    }
+}
+
+impl KVStoreTrait for Implementation {
+    type ProgramModel = UnifiedCacheProgramModel;
+    type Proof = UnifiedCacheRefinementProof;
+
+    closed spec fn wf_init(self) -> bool
+    {
+        Implementation::wf_init(&self)
+    }
+
+    closed spec fn instance_id(self) -> InstanceId
+    {
+        Implementation::instance_id(&self)
+    }
+
+    fn new() -> (out: Self)
+    {
+        let cache = FracCacheImpl::new();
+        let snapshot = IJournalSnapshot::new_empty(0);
+        let bootstrap_au = bootstrap_alloc_au();
+        let journal = JournalImpl::new(snapshot, bootstrap_au);
+        let au_pool = AuPoolImpl::new(TOTAL_AUS);
+
+        let ghost free_aus = au_pool@;
+        let ghost initial_state = UnifiedCacheSystem::State {
+            recovery_state: RecoveryState::Begin,
+            cache: cache@,
+            outstanding_cache_reqs: Map::<ID, Address>::empty(),
+            disk_backed_addrs: Set::<Address>::empty().insert(spec_superblock_addr()),
+            free_aus,
+            journal: AtomicJournalState::State::empty(),
+            branch: AtomicBranchState::State::empty(),
+            persistent_image: None,
+            sync_phase: AtomicSyncPhase::None,
+            sync_req_map: Map::<SyncReqId, nat>::empty(),
+        };
+
+        proof {
+            assert(free_aus.disjoint(UnifiedCacheSystem::State::reserved_aus())) by {
+                assert(spec_superblock_addr().au == 0);
+                assert(UnifiedCacheSystem::State::reserved_aus() =~= set![0]) by {
+                    reveal(UnifiedCacheSystem::State::reserved_aus);
+                }
+                assert(!free_aus.contains(0));
+            }
+            assert(UnifiedCacheSystem::State::initialize(
+                initial_state,
+                cache.total_slots() as nat,
+                free_aus,
+            )) by {
+                assert(initial_state.cache == Cache::State::empty(cache.total_slots() as nat));
+            }
+            assert(UnifiedCacheSystem::State::init_by(
+                initial_state,
+                UnifiedCacheSystem::Config::initialize(cache.total_slots() as nat, free_aus),
+            )) by {
+                reveal(UnifiedCacheSystem::State::init_by);
+            }
+            assert(UnifiedCacheSystem::State::init(initial_state)) by {
+                reveal(UnifiedCacheSystem::State::init);
+            }
+        }
+
+        let tracked (
+            Tracked(instance),
+            Tracked(model),
+            Tracked(requests),
+            Tracked(replies),
+            Tracked(disk_requests),
+            Tracked(disk_responses),
+        ) = KVStoreTokenized::Instance::initialize(UnifiedCacheProgramModel{state: initial_state});
+
+        Implementation {
+            recovery_phase: RecoveryPhase::FetchingSuperblock,
+            cache,
+            journal,
+            au_pool,
+            branch_loaded: false,
+            sync_requests: Vec::new(),
+            outstanding_requests: HashMapWithView::new(),
+            should_retry_sync_launch: false,
+            model: Tracked(model),
+            instance: Tracked(instance),
+        }
+    }
+
+    fn kvstore_mkfs(&mut self, mut api: ClientAPI<Self::ProgramModel>)
+    {
+        api.log("unified-cache mkfs skeleton");
+    }
+
+    #[verifier::exec_allows_no_decreases_clause]
+    fn kvstore_main(&mut self, mut api: ClientAPI<Self::ProgramModel>)
+    {
+        self.recover_begin(&mut api);
+
+        let debug_print = true;
+        loop
+            invariant
+                self.inv_api(&api),
+                self.recovery_phase is FetchingSuperblock
+                    ==> self.state().recovery_state is AwaitingSuperblock,
+                self.recovery_phase is LoadingJournal
+                    ==> self.state().recovery_state is SuperblockAvailable,
+                self.recovery_phase is LoadingJournal
+                    ==> self.state().journal.journal == self.journal@,
+        {
+            let mut progress = false;
+
+            match self.recovery_phase {
+                RecoveryPhase::ReadyForUserOperation => {
+                    match api.receive_disk_response() {
+                        None => {},
+                        Some(rec) => {
+                            progress = true;
+                            self.handle_disk_response(rec, &mut api);
+                        },
+                    }
+                },
+                _ => {},
+            }
+
+            match self.recovery_phase {
+                RecoveryPhase::FetchingSuperblock
+                | RecoveryPhase::LoadingJournal
+                | RecoveryPhase::LoadingBranch => {
+                    progress = self.recover_step(&mut api) || progress;
+                },
+                RecoveryPhase::ReadyForUserOperation => {
+                    match api.receive_request(debug_print) {
+                        None => {},
+                        Some(rec) => {
+                            progress = true;
+                            match rec.request.input {
+                                Input::SimulateCrash => {
+                                    return;
+                                },
+                                _ => {
+                                    self.handle_user_request(rec.request, rec.token, &mut api);
+                                },
+                            }
+                        },
+                    }
+
+                    if self.should_retry_sync_launch {
+                        api.log("sync launch retry skeleton");
+                        self.should_retry_sync_launch = false;
+                        progress = true;
+                    }
+
+                    let bg_progress = self.do_background_work(&mut api);
+                    progress = progress || bg_progress;
+                },
+            }
+
+            if !progress {
+                api.log("sleeping");
+                api.sleep_a_little();
+            }
+        }
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// Utility Proofs
+//
+// Keep small algebraic/map proof helpers out of the executable implementation
+// flow above. These lemmas have no runtime role; they only discharge local
+// proof obligations around singleton disk/cache request maps.
+///////////////////////////////////////////////////////////////////////////////
+
+impl Implementation {
+    proof fn singleton_req_map_values(id: ID, req: DiskRequest)
+        ensures
+            map![id => req].values() == set![req],
+    {
+        let m = map![id => req];
+        assert forall |r: DiskRequest| #[trigger] m.values().contains(r)
+            implies set![req].contains(r) by {
+            let key = choose |key: ID| m.contains_key(key) && #[trigger] m[key] == r;
+            assert(key == id);
+            assert(r == req);
+        }
+        assert forall |r: DiskRequest| #[trigger] set![req].contains(r)
+            implies m.values().contains(r) by {
+            assert(r == req);
+            assert(m.contains_key(id));
+            assert(m[id] == req);
+            reveal(Map::values);
+        }
+    }
+
+    proof fn singleton_updated_addr_map(
+        id: ID,
+        req: DiskRequest,
+        addr: Address,
+    )
+        requires
+            req.addr() == addr,
+        ensures
+            Map::new(|i| map![id => req].contains_key(i), |i| map![id => req][i].addr())
+                == map![id => addr],
+    {
+        let updated = Map::new(
+            |i| map![id => req].contains_key(i),
+            |i| map![id => req][i].addr(),
+        );
+        assert_maps_equal!(updated, map![id => addr], i => {
+            if i == id {
+                assert(map![id => req].contains_key(i));
+                assert(updated[i] == req.addr());
+            } else {
+                assert(!map![id => req].contains_key(i));
+            }
+        });
+    }
+
+    proof fn singleton_addr_map_values_wf(id: ID, addr: Address)
+        requires
+            addr.wf(),
+        ensures
+            map![id => addr].values() <= Set::new(|addr: Address| addr.wf()),
+    {
+        let m = map![id => addr];
+        assert forall |candidate: Address| #[trigger] m.values().contains(candidate)
+            implies Set::new(|addr: Address| addr.wf()).contains(candidate) by {
+            let key = choose |key: ID| m.contains_key(key) && #[trigger] m[key] == candidate;
+            assert(key == id);
+            assert(candidate == addr);
+        }
+    }
+
+    proof fn cache_resps_singleton(
+        pre_cache_reqs: Map<ID, Address>,
+        id: ID,
+        addr: Address,
+        resp: DiskResponse,
+    )
+        requires
+            pre_cache_reqs == map![id => addr],
+        ensures ({
+            let resp_map = map![id => resp];
+            let finished_cache_reqs = pre_cache_reqs.restrict(resp_map.dom()).invert();
+            let cache_resps = Map::new(
+                |a| finished_cache_reqs.contains_key(a),
+                |a| resp_map[finished_cache_reqs[a]],
+            );
+            cache_resps == map![addr => resp]
+        }),
+    {
+        let resp_map = map![id => resp];
+        let restricted = pre_cache_reqs.restrict(resp_map.dom());
+        assert_maps_equal!(restricted, map![id => addr], k => {
+            if k == id {
+                assert(resp_map.dom().contains(k));
+            } else {
+                assert(!pre_cache_reqs.contains_key(k));
+            }
+        });
+        let finished_cache_reqs = restricted.invert();
+        assert_maps_equal!(finished_cache_reqs, map![addr => id], a => {
+            if a == addr {
+                assert(restricted.contains_pair(id, addr));
+                reveal(Map::invert);
+            } else {
+                assert(!restricted.contains_value(a));
+                reveal(Map::invert);
+            }
+        });
+        let cache_resps = Map::new(
+            |a| finished_cache_reqs.contains_key(a),
+            |a| resp_map[finished_cache_reqs[a]],
+        );
+        assert_maps_equal!(cache_resps, map![addr => resp], a => {
+            if a == addr {
+                assert(finished_cache_reqs[a] == id);
+            } else {
+                assert(!finished_cache_reqs.contains_key(a));
+            }
+        });
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// Refinement Proof Obligations
+//
+// The trait implementation has to keep these proof methods inside the trait
+// impl, but the whole proof-obligation block lives below the executable
+// implementation so the runtime shape stays easier to read.
+///////////////////////////////////////////////////////////////////////////////
+
+impl RefinementObligation<UnifiedCacheProgramModel> for UnifiedCacheRefinementProof {
+    open spec fn inv(model: SystemModel::State<UnifiedCacheProgramModel>) -> bool
+    {
+        let unified = UnifiedCacheSystemRefinement::unified_cache_system_i(model);
+        &&& UnifiedCacheSystemRefinement::inv(model)
+        &&& CachingDiskSystemRefinement::caching_disk_system_coordination_i(unified).inv()
+    }
+
+    open spec fn i(model: SystemModel::State<UnifiedCacheProgramModel>) -> CrashTolerantAsyncMap::State
+    {
+        CachingDiskSystemRefinement::caching_disk_system_i(
+            UnifiedCacheSystemRefinement::unified_cache_system_i(model),
+        )
+    }
+
+    open spec fn i_lbl(
+        pre: SystemModel::State<UnifiedCacheProgramModel>,
+        post: SystemModel::State<UnifiedCacheProgramModel>,
+        lbl: SystemModel::Label,
+    ) -> CrashTolerantAsyncMap::Label
+    {
+        CachingDiskSystemRefinement::caching_disk_system_i_lbl(
+            UnifiedCacheSystemRefinement::unified_cache_system_i(pre),
+            UnifiedCacheSystemRefinement::unified_cache_system_i(post),
+            UnifiedCacheSystemRefinement::unified_cache_system_i_lbl(pre, post, lbl),
+        )
+    }
+
+    proof fn i_lbl_valid(
+        pre: SystemModel::State<UnifiedCacheProgramModel>,
+        post: SystemModel::State<UnifiedCacheProgramModel>,
+        lbl: SystemModel::Label,
+        ctam_lbl: CrashTolerantAsyncMap::Label,
+    )
+    {
+        reveal(SystemModel::Label::label_correspondence);
+        reveal(crate::trusted::RefinementObligation_t::externally_visible);
+    }
+
+    proof fn init_refines(pre: SystemModel::State<UnifiedCacheProgramModel>)
+    {
+        UnifiedCacheSystemRefinement::init_refines(pre);
+        CachingDiskSystemRefinement::init_refines_ctam(
+            UnifiedCacheSystemRefinement::unified_cache_system_i(pre),
+        );
+
+        assert(CrashTolerantAsyncMap::State::init(Self::i(pre)));
+        reveal(CrashTolerantAsyncMap::State::init);
+        reveal(CrashTolerantAsyncMap::State::init_by);
+        let config = choose |config| CrashTolerantAsyncMap::State::init_by(Self::i(pre), config);
+        match config {
+            CrashTolerantAsyncMap::Config::initialize() => {
+                assert(CrashTolerantAsyncMap::State::initialize(Self::i(pre)));
+            },
+            CrashTolerantAsyncMap::Config::dummy_to_use_type_params(_) => {
+                assert(false);
+            },
+        }
+    }
+
+    proof fn next_refines(
+        pre: SystemModel::State<UnifiedCacheProgramModel>,
+        post: SystemModel::State<UnifiedCacheProgramModel>,
+        lbl: SystemModel::Label,
+    )
+    {
+        let unified_pre = UnifiedCacheSystemRefinement::unified_cache_system_i(pre);
+        let unified_post = UnifiedCacheSystemRefinement::unified_cache_system_i(post);
+        let unified_lbl = UnifiedCacheSystemRefinement::unified_cache_system_i_lbl(pre, post, lbl);
+
+        UnifiedCacheSystemRefinement::next_refines(pre, post, lbl);
+        UnifiedCacheSystemRefinement::inv_implies_caching_disk_refinement_inv(pre);
+        CachingDiskSystemRefinement::next_refines_ctam(unified_pre, unified_post, unified_lbl);
     }
 }
 

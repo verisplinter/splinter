@@ -359,6 +359,33 @@ impl FracCacheImpl {
         reveal(FracCacheImpl::wf);
     }
 
+    // This helper used to expose the `handle.inv()` conjunct from
+    // `valid_writeback_handle`. The direct reveal at the call site is simpler
+    // and keeps the proof boundary smaller.
+    // pub proof fn valid_writeback_handle_inv(cache: &FracCacheImpl, addr: &IAddress, handle: WritebackHandle)
+    // requires
+    //     cache.wf(),
+    //     cache.valid_writeback_handle(addr, handle),
+    // ensures
+    //     handle.inv(),
+    // {
+    //     reveal(FracCacheImpl::valid_writeback_handle);
+    // }
+
+    pub proof fn valid_writeback_handle_has_inv(
+        cache: &FracCacheImpl,
+        addr: &IAddress,
+        handle: WritebackHandle,
+    )
+        requires
+            cache.wf(),
+            cache.valid_writeback_handle(addr, handle),
+        ensures
+            handle.inv(),
+    {
+        reveal(FracCacheImpl::valid_writeback_handle);
+    }
+
     pub closed spec fn lookup_addr_slot(self, addr: &IAddress) -> Slot
         recommends self.entry_fetched(addr)
     {

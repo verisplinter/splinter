@@ -607,6 +607,48 @@ impl CrashAwareCachingDiskJournal::State {
                 assert(base_image.bounded_live_entries_are_tight());
             }
         }
+        assert(image.i().au_page_bounds_covered()) by {
+            assert forall |addr: Address| {
+                &&& #[trigger] tight_index.values().contains(addr.au)
+                &&& base_bounds.contains_key(addr.au)
+                &&& addr.page <= base_bounds[addr.au]
+            } implies image.i().tj.disk_view.entries.contains_key(addr) by {
+                assert(tight_index == state.i().frozen_lsn_au_index(meta));
+                assert(state.i().frozen_lsn_au_index(meta).values().contains(addr.au));
+                assert(allocation_prefix.contains(addr)) by {
+                    assert(state.i().frozen_loose_domain(meta).contains(addr)) by {
+                        assert(state.i().frozen_domain(meta).contains(addr));
+                        assert(addrs_in_aus(state.i().frozen_lsn_au_index(meta).values()).contains(addr));
+                    }
+                }
+                AllocationJournal::State::frozen_prefix_domain_bounded_by_au_page_bounds(
+                    state.i(),
+                    meta,
+                    addr,
+                );
+                assert(state.i().lsn_au_index.values().contains(addr.au)) by {
+                    let lsn = choose |lsn: LSN| #![trigger state.i().frozen_lsn_au_index(meta).contains_key(lsn)] {
+                        state.i().frozen_lsn_au_index(meta).contains_key(lsn)
+                            && state.i().frozen_lsn_au_index(meta)[lsn] == addr.au
+                    };
+                    assert(state.i().frozen_lsn_au_index(meta).contains_key(lsn));
+                    assert(state.i().lsn_au_index.contains_key(lsn));
+                    assert(state.i().lsn_au_index[lsn] == addr.au);
+                }
+                assert(state.i().au_page_bounds_covered());
+                assert(state.i().disk_view.entries.contains_key(addr));
+                assert(maps_agree_on(
+                    allocation_prefix,
+                    image.i().tj.disk_view.entries,
+                    state.i().disk_view.entries,
+                ));
+                assert(image.i().tj.disk_view.entries.restrict(allocation_prefix)
+                    == state.i().disk_view.entries.restrict(allocation_prefix));
+                assert(state.i().disk_view.entries.restrict(allocation_prefix).contains_key(addr));
+                assert(image.i().tj.disk_view.entries.restrict(allocation_prefix).contains_key(addr));
+                assert(image.i().tj.disk_view.entries.contains_key(addr));
+            }
+        }
         assert(image.i().valid_image());
         assert(image.i().first == meta.first);
         assert(image.i().tj.freshest_rec == meta.freshest_rec);

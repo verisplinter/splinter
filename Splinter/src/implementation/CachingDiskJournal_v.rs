@@ -572,6 +572,10 @@ state_machine!{ CachingDiskJournal {
             pre.disk,
             CachingDisk::Label::Access{reads, writes: Map::empty()},
         );
+        // CachingDisk::access used to imply this. Keep it explicit here:
+        // load_index derives the journal AU ownership/index from the existing
+        // visible journal image, so those reads must be from that image.
+        require to_journal_records(reads) <= pre.journal_disk_view().entries;
         require CachedJournal::State::next(
             pre.journal,
             new_journal,
@@ -587,7 +591,10 @@ state_machine!{ CachingDiskJournal {
             pre.disk,
             CachingDisk::Label::Access{reads, writes: Map::empty()},
         );
-        require to_journal_records(reads) <= pre.journal_disk_view().entries;
+        // Old component-facing read-view requirement kept for reference.
+        // Read labels are justified by the journal/cache refinement now, not
+        // by CachingDiskJournal's visible disk view.
+        // require to_journal_records(reads) <= pre.journal_disk_view().entries;
         require CachedJournal::State::next(
             pre.journal,
             pre.journal,
@@ -610,7 +617,10 @@ state_machine!{ CachingDiskJournal {
             let root = frozen.freshest_rec().unwrap();
             &&& to_journal_records(reads).contains_key(root)
             &&& pre.journal_disk_view().entries.contains_key(root)
-            &&& to_journal_records(reads)[root] == pre.journal_disk_view().entries[root]
+            // Old component-facing read-view equality kept for reference:
+            // &&& to_journal_records(reads)[root] == pre.journal_disk_view().entries[root]
+            &&& frozen.boundary_lsn < seq_end
+            &&& pre.journal_disk_view().entries[root].message_seq.seq_end == seq_end
             &&& pre.journal.status.unwrap().au_page_bounds.contains_key(root.au)
             &&& root.page <= pre.journal.status.unwrap().au_page_bounds[root.au]
         };
@@ -1652,22 +1662,17 @@ impl CachingDiskJournal::State {
                     assert forall |addr: Address| #[trigger] to_journal_records(reads).contains_key(addr)
                         <==> reads.contains_key(addr) by { }
                 }
-                assert(reads.dom() <= pre.disk.cache.dom()) by {
-                    assert(reads <= pre.disk.cache);
+                assert(reads.dom() <= pre.disk.visible().dom()) by {
                     assert forall |addr: Address| #[trigger] reads.dom().contains(addr)
-                        implies pre.disk.cache.dom().contains(addr) by {
-                        assert(reads.contains_key(addr));
-                    }
-                };
-                assert(pre.disk.cache.dom() <= pre.disk.visible().dom()) by {
-                    assert forall |addr: Address| #[trigger] pre.disk.cache.dom().contains(addr)
                         implies pre.disk.visible().dom().contains(addr) by {
-                        assert(pre.disk.cache.contains_key(addr));
-                        assert(pre.disk.visible().contains_key(addr));
+                        assert(reads.contains_key(addr));
+                        assert(to_journal_records(reads).contains_key(addr));
+                        assert(to_journal_records(reads) <= pre.journal_disk_view().entries);
+                        assert(pre.journal_disk_view().entries.contains_key(addr));
+                        assert(to_journal_records(pre.disk.visible()).contains_key(addr));
                     }
                 };
-                to_aus_preserves_lte(reads.dom(), pre.disk.cache.dom());
-                to_aus_preserves_lte(pre.disk.cache.dom(), pre.disk.visible().dom());
+                to_aus_preserves_lte(reads.dom(), pre.disk.visible().dom());
                 assert(discovered_aus <= to_aus(pre.disk.visible().dom()));
                 assert forall |au: AU| #[trigger] post.accessible_aus().contains(au)
                     implies pre.accessible_aus().contains(au) by {
@@ -2192,8 +2197,6 @@ impl CachingDiskJournal::State {
                 assert(false);
             },
         }
-        assert(reads <= self.disk.cache);
-
         reveal(CachedJournal::State::next);
         reveal(CachedJournal::State::next_by);
         let journal_lbl = CachedJournal::Label::FreezeForCommit{
@@ -2220,14 +2223,11 @@ impl CachingDiskJournal::State {
             let frozen_seq_end = to_journal_records(reads)[root].message_seq.seq_end;
             assert(reads.contains_key(root));
             assert(to_journal_records(reads).contains_key(root));
-            assert(self.disk.visible().contains_key(root));
             assert(self.journal_disk_view().entries.contains_key(root));
-            assert(to_journal_records(reads)[root] == self.journal_disk_view().entries[root]) by {
-                assert(reads <= self.disk.cache);
-                assert(self.disk.visible()[root] == self.disk.cache[root]);
-            }
-            assert(frozen_seq_end == self.frozen_seq_end(frozen));
+            assert(self.journal_disk_view().entries[root].message_seq.seq_end == seq_end);
+            assert(seq_end == self.frozen_seq_end(frozen));
             assert(frozen.boundary_lsn < frozen_seq_end);
+            assert(frozen.boundary_lsn < seq_end);
             assert(full_index.contains_key(frozen.boundary_lsn));
             assert(full_index[frozen.boundary_lsn] == frozen.first());
         }

@@ -6,7 +6,9 @@ use crate::spec::AsyncDisk_t::{Address, Disk, RawPage};
 use crate::spec::ImplDisk_t::{IAddress, IPageData};
 // use crate::spec::TotalKMMap_t::*;
 // use crate::spec::FloatingSeq_t::*;
-use crate::implementation::SuperblockTypes_v::{ASuperblock, ISuperblock, Superblock};
+use crate::implementation::SuperblockTypes_v::{
+    ASuperblock, ISuperblock, ISuperblockBranchImage, ISuperblockJournalImage, Superblock,
+};
 use crate::implementation::CachedJournal_v::JournalSnapshot;
 use crate::implementation::JournalImpl_v;
 use crate::marshalling::ISuperblockFormat_v::*;
@@ -120,11 +122,13 @@ impl DiskLayout {
     {
         &&& disk.contains_key(spec_superblock_addr())
         &&& Superblock{
-            store_ptr: None,
-            journal: JournalSnapshot{
+            journal_snapshot: JournalSnapshot{
                 boundary_lsn: 0,
                 root: None,
             },
+            journal_seq_end: 0,
+            branch_roots: Seq::empty(),
+            branch_seq_end: 0,
             } == self.spec_parse(disk[spec_superblock_addr()])
     }
 
@@ -136,7 +140,15 @@ impl DiskLayout {
             freshest_rec: None,
             first: 0,
         };
-        let sb = ISuperblock { journal_snapshot, store_ptr: None };
+        let journal = ISuperblockJournalImage {
+            snapshot: journal_snapshot,
+            seq_end: 0,
+        };
+        let branch = ISuperblockBranchImage {
+            roots: Vec::new(),
+            seq_end: 0,
+        };
+        let sb = ISuperblock { journal, branch };
         self.marshall(&sb)
     }
 

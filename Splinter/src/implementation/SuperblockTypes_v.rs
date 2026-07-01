@@ -9,6 +9,7 @@ use crate::marshalling::Marshalling_v::Parsedview;
 use crate::marshalling::WF_v::WF;
 use crate::implementation::JournalImpl_v::IJournalSnapshot;
 use crate::implementation::CachedJournal_v::JournalSnapshot;
+use crate::abstract_system::StampedMap_v::LSN;
 use crate::spec::TotalKMMap_t::TotalKMMap;
 use crate::spec::AsyncDisk_t::Address;
 use crate::spec::ImplDisk_t::IAddress;
@@ -30,8 +31,10 @@ pub open spec fn map_to_kmmap(m: Map<Key, Value>) -> TotalKMMap
 }
 
 pub struct Superblock {
-    pub store_ptr: Option<Address>,
-    pub journal: JournalSnapshot,
+    pub journal_snapshot: JournalSnapshot,
+    pub journal_seq_end: LSN,
+    pub branch_roots: Seq<Address>,
+    pub branch_seq_end: nat,
 }
 
 pub open spec(checked) fn singleton_floating_seq(at_index: nat, kmmap: TotalKMMap) -> FloatingSeq<Version>
@@ -43,18 +46,42 @@ pub open spec(checked) fn singleton_floating_seq(at_index: nat, kmmap: TotalKMMa
 impl Superblock {
     pub open spec fn wf(self) -> bool
     {
-        true
+        &&& self.branch_seq_end == self.journal_snapshot.boundary_lsn
+        &&& self.journal_snapshot.boundary_lsn <= self.journal_seq_end
+    }
+}
+
+pub struct ASuperblockJournalImage {
+    pub snapshot: JournalSnapshot,
+    pub seq_end: LSN,
+}
+
+impl ASuperblockJournalImage {
+    pub open spec fn wf(self) -> bool {
+        self.snapshot.boundary_lsn <= self.seq_end
+    }
+}
+
+pub struct ASuperblockBranchImage {
+    pub roots: Seq<Address>,
+    pub seq_end: nat,
+}
+
+impl ASuperblockBranchImage {
+    pub open spec fn wf(self, journal_snapshot: JournalSnapshot) -> bool {
+        self.seq_end == journal_snapshot.boundary_lsn
     }
 }
 
 pub struct ASuperblock {
-    pub store_ptr: Option<Address>,
-    pub journal: JournalSnapshot,
+    pub journal: ASuperblockJournalImage,
+    pub branch: ASuperblockBranchImage,
 }
 
 impl ASuperblock {
     pub open spec fn wf(self) -> bool {
-        true
+        &&& self.journal.wf()
+        &&& self.branch.wf(self.journal.snapshot)
     }
 }
 
@@ -64,26 +91,77 @@ impl View for ASuperblock {
     open spec fn view(&self) -> Self::V
     {
         Superblock{
-            store_ptr: self.store_ptr,
-            journal: self.journal,
+            journal_snapshot: self.journal.snapshot,
+            journal_seq_end: self.journal.seq_end,
+            branch_roots: self.branch.roots,
+            branch_seq_end: self.branch.seq_end,
         }
     }
 }
 
 #[derive(Debug)]
+pub struct ISuperblockJournalImage {
+    pub snapshot: IJournalSnapshot,
+    pub seq_end: u64,
+}
+
+impl Parsedview<ASuperblockJournalImage> for ISuperblockJournalImage {
+    open spec fn parsedv(&self) -> ASuperblockJournalImage {
+        ASuperblockJournalImage{
+            snapshot: self.snapshot@,
+            seq_end: self.seq_end as nat,
+        }
+    }
+}
+
+impl WF for ISuperblockJournalImage {}
+
+impl View for ISuperblockJournalImage {
+    type V = ASuperblockJournalImage;
+
+    open spec fn view(&self) -> Self::V
+    {
+        self.parsedv()
+    }
+}
+
+#[derive(Debug)]
+pub struct ISuperblockBranchImage {
+    pub roots: Vec<IAddress>,
+    pub seq_end: u64,
+}
+
+impl Parsedview<ASuperblockBranchImage> for ISuperblockBranchImage {
+    open spec fn parsedv(&self) -> ASuperblockBranchImage {
+        ASuperblockBranchImage{
+            roots: Parsedview::<Seq<Address>>::parsedv(&self.roots),
+            seq_end: self.seq_end as nat,
+        }
+    }
+}
+
+impl WF for ISuperblockBranchImage {}
+
+impl View for ISuperblockBranchImage {
+    type V = ASuperblockBranchImage;
+
+    open spec fn view(&self) -> Self::V
+    {
+        self.parsedv()
+    }
+}
+
+#[derive(Debug)]
 pub struct ISuperblock {
-    pub journal_snapshot: IJournalSnapshot,
-    pub store_ptr: Option<IAddress>,
+    pub journal: ISuperblockJournalImage,
+    pub branch: ISuperblockBranchImage,
 }
 
 impl Parsedview<ASuperblock> for ISuperblock {
     open spec fn parsedv(&self) -> ASuperblock {
         ASuperblock{
-            journal: self.journal_snapshot@,
-            store_ptr: match self.store_ptr {
-                Some(addr) => Some(addr@),
-                None => None,
-            },
+            journal: self.journal@,
+            branch: self.branch@,
         }
     }
 }

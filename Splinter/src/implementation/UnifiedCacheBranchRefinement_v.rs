@@ -47,22 +47,30 @@ use crate::implementation::CachingDiskAdapterRefinement_v::{
     cache_access_refines_caching_disk_access,
     cache_evictable_refines_observe_clean_aus,
     cache_internal_refines_caching_disk_internal,
+    cache_internal_preserves_readable_on_preserved_filled_addrs,
     cache_disk_ops_begin_refines_caching_disk_internal,
     cache_disk_ops_end_refines_caching_disk_internal,
+    cache_disk_ops_end_preserves_readable_on_addrs,
+    async_disk_process_write_preserves_readable,
     caching_disk_i as adapter_caching_disk_i,
+    filled_cache_status,
     project_cache_pages,
     project_cache_status,
     projected_cache_access_outside_aus_unchanged,
     projected_cache_read_only_access_unchanged,
 };
 use crate::implementation::CachingDiskBranch_v::{
-    active_loaded_nodes_of, branch_summary_reads_valid,
+    active_loaded_nodes_of, active_loaded_nodes_preserved_by_readable_agreement,
+    active_loaded_nodes_submap_visible_from_readable_visible,
+    active_branch_i_visible_candidate, semantic_active_branch_candidate,
+    branch_summary_reads_valid,
     branch_summary_from_reads_up_to_self_ensures,
     completed_branch_summary_from_reads, empty_caching_disk_branch_image,
     empty_caching_disk_branch_image_wf,
 	    loaded_branch_summary_agrees, loaded_branch_summary_agrees_at,
 	    loaded_branch_summary_agrees_domain_contains,
-    mini_allocator_allocated_addrs_subset_all_aus, sealed_nodes_of,
+    mini_allocator_allocated_addrs, mini_allocator_allocated_addrs_subset_all_aus,
+    sealed_nodes_of,
     sealed_summary_aus_between,
     split_read_addrs, to_branch_nodes, root_aus_up_to, root_aus_up_to_contains,
     root_aus_up_to_full,
@@ -88,6 +96,20 @@ use crate::trusted::ProgramModelTrait_t::{DiskModel, ProgramModelTrait};
 use crate::trusted::SystemModel_t::SystemModel;
 
 verus! {
+
+proof fn to_branch_nodes_restrict_submap(reads: Map<Address, RawPage>, addrs: Set<Address>)
+    ensures
+        to_branch_nodes(reads.restrict(addrs)) <= to_branch_nodes(reads),
+{
+    assert forall |addr: Address| #[trigger] to_branch_nodes(reads.restrict(addrs)).contains_key(addr)
+        implies {
+            &&& to_branch_nodes(reads).contains_key(addr)
+            &&& to_branch_nodes(reads.restrict(addrs))[addr] == to_branch_nodes(reads)[addr]
+        } by {
+        assert(reads.restrict(addrs).contains_key(addr));
+        assert(reads.contains_key(addr));
+    };
+}
 
 #[verifier::ext_equal]
 pub struct UnifiedCacheBranchSource {
@@ -536,6 +558,17 @@ impl UnifiedCacheBranchSource {
                 post.branch_caching_disk_i(),
                 CachingDisk::Label::Internal{},
             ),
+            forall |addr: Address| {
+                #[trigger] mini_allocator_allocated_addrs(
+                    self.branch_caching_disk_state_i().mini_allocator,
+                ).contains(addr)
+            } ==> {
+                &&& post.branch_caching_disk_i().readable().contains_key(addr)
+                    == self.branch_caching_disk_state_i().disk.readable().contains_key(addr)
+                &&& post.branch_caching_disk_i().readable().contains_key(addr) ==>
+                    post.branch_caching_disk_i().readable()[addr]
+                        == self.branch_caching_disk_state_i().disk.readable()[addr]
+            },
         ensures
             CrashAwareCachingDiskBranch::State::next(
                 self.i(),
@@ -561,6 +594,15 @@ impl UnifiedCacheBranchSource {
             == post.branch_caching_disk_state_i().mini_allocator);
         assert(self.branch_caching_disk_state_i().seq_end
             == post.branch_caching_disk_state_i().seq_end);
+        CachingDisk::State::internal_visible_unchanged(
+            self.branch_caching_disk_state_i().disk,
+            post.branch_caching_disk_i(),
+        );
+        active_loaded_nodes_preserved_by_readable_agreement(
+            self.branch_caching_disk_state_i().disk,
+            post.branch_caching_disk_i(),
+            self.branch_caching_disk_state_i().mini_allocator,
+        );
 
         assert(CachingDiskBranch::State::disk_internal(
             self.branch_caching_disk_state_i(),
@@ -1353,6 +1395,22 @@ impl UnifiedCacheBranchSource {
                 }
             );
         }
+        assert(post.branch_caching_disk_i().readable()
+            == self.branch_caching_disk_i().readable());
+        assert(CachingDisk::State::next(
+            self.branch_caching_disk_i(),
+            post.branch_caching_disk_i(),
+            CachingDisk::Label::Internal{},
+        ));
+        CachingDisk::State::internal_visible_unchanged(
+            self.branch_caching_disk_i(),
+            post.branch_caching_disk_i(),
+        );
+        active_loaded_nodes_preserved_by_readable_agreement(
+            self.branch_caching_disk_state_i().disk,
+            post.branch_caching_disk_i(),
+            self.branch_caching_disk_state_i().mini_allocator,
+        );
         assert(CachingDisk::State::next(
             self.branch_caching_disk_i(),
             post.branch_caching_disk_i(),
@@ -1427,6 +1485,16 @@ impl UnifiedCacheBranchSource {
             post.disk.content == self.disk.content,
             post.disk.inv(),
             Cache::State::next(self.cache, post.cache, Cache::Label::Internal{}),
+            // Old active-readable preservation precondition kept for reference.
+            // forall |addr: Address| {
+            //     &&& #[trigger] mini_allocator_allocated_addrs(
+            //         self.branch_caching_disk_state_i().mini_allocator,
+            //     ).contains(addr)
+            //     &&& cache_filled_addr(self.cache, addr)
+            // } ==> {
+            //     &&& cache_filled_addr(post.cache, addr)
+            //     &&& cache_filled_page(post.cache, addr) == cache_filled_page(self.cache, addr)
+            // },
         ensures
             CrashAwareCachingDiskBranch::State::next(
                 self.i(),
@@ -1466,6 +1534,61 @@ impl UnifiedCacheBranchSource {
                 }
             );
         }
+        // Old active-readable preservation proof kept for reference.
+        // let active_addrs = mini_allocator_allocated_addrs(
+        //     self.branch_caching_disk_state_i().mini_allocator,
+        // );
+        // let projected_active_addrs = active_addrs * addresses_in_aus(aus);
+        // cache_internal_preserves_readable_on_preserved_filled_addrs(
+        //     self.cache,
+        //     post.cache,
+        //     self.disk,
+        //     aus,
+        //     projected_active_addrs,
+        // );
+        // assert forall |addr: Address| #[trigger] active_addrs.contains(addr) implies {
+        //     &&& post.branch_caching_disk_i().readable().contains_key(addr)
+        //         == self.branch_caching_disk_i().readable().contains_key(addr)
+        //     &&& post.branch_caching_disk_i().readable().contains_key(addr) ==>
+        //         post.branch_caching_disk_i().readable()[addr]
+        //             == self.branch_caching_disk_i().readable()[addr]
+        // } by {
+        //     if projected_active_addrs.contains(addr) {
+        //         assert(addresses_in_aus(aus).contains(addr));
+        //     } else {
+        //         assert(!addresses_in_aus(aus).contains(addr));
+        //         assert(!self.branch_caching_disk_i().readable().contains_key(addr)) by {
+        //             if self.branch_caching_disk_i().readable().contains_key(addr) {
+        //                 if self.branch_caching_disk_i().cache.contains_key(addr) {
+        //                     assert(project_cache_pages(self.cache, aus).contains_key(addr));
+        //                     assert(addresses_in_aus(aus).contains(addr));
+        //                 } else {
+        //                     assert(self.branch_caching_disk_i().persistent.contains_key(addr));
+        //                     assert(self.disk.content.restrict(addresses_in_aus(aus)).contains_key(addr));
+        //                     assert(addresses_in_aus(aus).contains(addr));
+        //                 }
+        //             }
+        //         }
+        //         assert(!post.branch_caching_disk_i().readable().contains_key(addr)) by {
+        //             if post.branch_caching_disk_i().readable().contains_key(addr) {
+        //                 if post.branch_caching_disk_i().cache.contains_key(addr) {
+        //                     assert(project_cache_pages(post.cache, aus).contains_key(addr));
+        //                     assert(addresses_in_aus(aus).contains(addr));
+        //                 } else {
+        //                     assert(post.branch_caching_disk_i().persistent.contains_key(addr));
+        //                     assert(projected_post.persistent.contains_key(addr));
+        //                     assert(self.disk.content.restrict(addresses_in_aus(aus)).contains_key(addr));
+        //                     assert(addresses_in_aus(aus).contains(addr));
+        //                 }
+        //             }
+        //         }
+        //     }
+        // }
+        // active_loaded_nodes_preserved_by_readable_agreement(
+        //     self.branch_caching_disk_state_i().disk,
+        //     post.branch_caching_disk_i(),
+        //     self.branch_caching_disk_state_i().mini_allocator,
+        // );
         assert(CachingDisk::State::next(
             self.branch_caching_disk_i(),
             post.branch_caching_disk_i(),
@@ -1541,14 +1664,26 @@ impl UnifiedCacheBranchSource {
                 post.cache,
                 Cache::Label::DiskOps{requests: Set::empty(), responses},
             ),
+            // Old active read-response exclusion kept for reference.
+            // forall |addr: Address| {
+            //     &&& #[trigger] responses.contains_key(addr)
+            //     &&& mini_allocator_allocated_addrs(
+            //         self.branch_caching_disk_state_i().mini_allocator,
+            //     ).contains(addr)
+            //     &&& responses[addr] is ReadResp
+            // } ==> false,
             forall |addr: Address| {
                 &&& #[trigger] responses.contains_key(addr)
                 &&& addresses_in_aus(self.branch_projection_aus()).contains(addr)
             } ==> {
-                &&& self.disk.content.contains_key(addr)
-                &&& responses[addr] is ReadResp ==> responses[addr]->data
-                    == self.disk.content[addr]
+                // Old read-response coupling:
+                // &&& self.disk.content.contains_key(addr)
+                &&& responses[addr] is ReadResp ==> {
+                    self.disk.content.contains_key(addr) ==> responses[addr]->data
+                        == self.disk.content[addr]
+                }
                 &&& responses[addr] is WriteResp ==> {
+                    &&& self.disk.content.contains_key(addr)
                     &&& cache_filled_addr(self.cache, addr)
                     &&& self.disk.content[addr] == cache_filled_page(self.cache, addr)
                 }
@@ -1598,6 +1733,64 @@ impl UnifiedCacheBranchSource {
                 }
             );
         }
+        // Old active-readable preservation proof kept for reference. Read
+        // completions are no longer filtered out of active branch AUs here.
+        //
+        // let active_addrs = mini_allocator_allocated_addrs(
+        //     self.branch_caching_disk_state_i().mini_allocator,
+        // );
+        // let projected_active_addrs = active_addrs * addresses_in_aus(aus);
+        // cache_disk_ops_end_preserves_readable_on_addrs(
+        //     self.cache,
+        //     post.cache,
+        //     self.disk,
+        //     aus,
+        //     responses,
+        //     projected_active_addrs,
+        // );
+        // assert forall |addr: Address| #[trigger] active_addrs.contains(addr) implies {
+        //     &&& post.branch_caching_disk_i().readable().contains_key(addr)
+        //         == self.branch_caching_disk_i().readable().contains_key(addr)
+        //     &&& post.branch_caching_disk_i().readable().contains_key(addr) ==>
+        //         post.branch_caching_disk_i().readable()[addr]
+        //             == self.branch_caching_disk_i().readable()[addr]
+        // } by {
+        //     if projected_active_addrs.contains(addr) {
+        //         assert(addresses_in_aus(aus).contains(addr));
+        //     } else {
+        //         assert(!addresses_in_aus(aus).contains(addr));
+        //         assert(!self.branch_caching_disk_i().readable().contains_key(addr)) by {
+        //             if self.branch_caching_disk_i().readable().contains_key(addr) {
+        //                 if self.branch_caching_disk_i().cache.contains_key(addr) {
+        //                     assert(project_cache_pages(self.cache, aus).contains_key(addr));
+        //                     assert(addresses_in_aus(aus).contains(addr));
+        //                 } else {
+        //                     assert(self.branch_caching_disk_i().persistent.contains_key(addr));
+        //                     assert(self.disk.content.restrict(addresses_in_aus(aus)).contains_key(addr));
+        //                     assert(addresses_in_aus(aus).contains(addr));
+        //                 }
+        //             }
+        //         }
+        //         assert(!post.branch_caching_disk_i().readable().contains_key(addr)) by {
+        //             if post.branch_caching_disk_i().readable().contains_key(addr) {
+        //                 if post.branch_caching_disk_i().cache.contains_key(addr) {
+        //                     assert(project_cache_pages(post.cache, aus).contains_key(addr));
+        //                     assert(addresses_in_aus(aus).contains(addr));
+        //                 } else {
+        //                     assert(post.branch_caching_disk_i().persistent.contains_key(addr));
+        //                     assert(projected_post.persistent.contains_key(addr));
+        //                     assert(self.disk.content.restrict(addresses_in_aus(aus)).contains_key(addr));
+        //                     assert(addresses_in_aus(aus).contains(addr));
+        //                 }
+        //             }
+        //         }
+        //     }
+        // }
+        // active_loaded_nodes_preserved_by_readable_agreement(
+        //     self.branch_caching_disk_state_i().disk,
+        //     post.branch_caching_disk_i(),
+        //     self.branch_caching_disk_state_i().mini_allocator,
+        // );
         assert(CachingDisk::State::next(
             self.branch_caching_disk_i(),
             post.branch_caching_disk_i(),
@@ -1722,9 +1915,7 @@ pub proof fn init_refines(pre: SystemModel::State<UnifiedCacheProgramModel>)
                 cache_slots,
                 free_aus,
             )) by {
-                reveal(UnifiedCacheSystem::State::initialize);
             }
-            reveal(UnifiedCacheSystem::State::initialize);
 
             let src = unified_cache_branch_source(pre);
             let dst = unified_cache_branch_i(src);
@@ -2337,8 +2528,8 @@ proof fn receipt_needed_addr_in_linked_branch_internal(
             ==> addresses_in_aus(src.branch_projection_aus()).contains(branch_addr),
         forall |branch_addr: Address|
             #[trigger] branch.disk_view.entries.contains_key(branch_addr)
-            ==> branch.disk_view.entries[branch_addr]
-                == to_branch_nodes(src.branch_caching_disk_i().visible())[branch_addr],
+                && reads.contains_key(branch_addr)
+            ==> branch.disk_view.entries[branch_addr] == to_branch_nodes(reads)[branch_addr],
         forall |read_addr: Address| #[trigger] reads.contains_key(read_addr)
             ==> src.cache.valid_read(read_addr, reads[read_addr]),
     ensures
@@ -2411,8 +2602,9 @@ proof fn receipt_needed_addr_in_linked_branch_internal(
         }
         assert forall |branch_addr: Address|
             #[trigger] child_branch.disk_view.entries.contains_key(branch_addr)
+                && reads.contains_key(branch_addr)
             implies child_branch.disk_view.entries[branch_addr]
-                == to_branch_nodes(src.branch_caching_disk_i().visible())[branch_addr]
+                == to_branch_nodes(reads)[branch_addr]
         by {
             assert(child_branch.disk_view == branch.disk_view);
         }
@@ -2445,8 +2637,13 @@ proof fn projected_read_node_matches_branch_entry(
         src.cache.valid_read(addr, reads[addr]),
         forall |branch_addr: Address|
             #[trigger] branch.disk_view.entries.contains_key(branch_addr)
-            ==> branch.disk_view.entries[branch_addr]
-                == to_branch_nodes(src.branch_caching_disk_i().visible())[branch_addr],
+                && reads.contains_key(branch_addr)
+            // Old live-read view:
+            // ==> branch.disk_view.entries[branch_addr]
+            //     == to_branch_nodes(src.branch_caching_disk_i().visible())[branch_addr],
+            // ==> branch.disk_view.entries[branch_addr]
+            //     == to_branch_nodes(src.branch_caching_disk_i().readable())[branch_addr],
+            ==> branch.disk_view.entries[branch_addr] == to_branch_nodes(reads)[branch_addr],
     ensures
         to_branch_nodes(reads)[addr] == branch.disk_view.entries[addr],
 {
@@ -2458,11 +2655,55 @@ proof fn projected_read_node_matches_branch_entry(
     assert(project_cache_pages(src.cache, src.branch_projection_aus())[addr] == reads[addr]);
     assert(cdb.cache.contains_key(addr));
     assert(cdb.cache[addr] == reads[addr]);
-    assert(cdb.visible().contains_key(addr));
-    assert(cdb.visible()[addr] == reads[addr]);
-    assert(to_branch_nodes(cdb.visible()).contains_key(addr));
+    assert(cdb.readable().contains_key(addr));
+    assert(cdb.readable()[addr] == reads[addr]);
+    assert(to_branch_nodes(cdb.readable()).contains_key(addr));
     assert(to_branch_nodes(reads).contains_key(addr));
-    assert(to_branch_nodes(reads)[addr] == to_branch_nodes(cdb.visible())[addr]);
+	    assert(to_branch_nodes(reads)[addr] == to_branch_nodes(cdb.readable())[addr]);
+    assert(branch.disk_view.entries[addr] == to_branch_nodes(reads)[addr]);
+	}
+
+proof fn projected_read_node_matches_visible_branch_entry(
+    src: UnifiedCacheBranchSource,
+    reads: Map<Address, RawPage>,
+    branch: LinkedBranch<Summary>,
+    addr: Address,
+)
+    requires
+        inv(src),
+        src.superblock_loaded(),
+        branch.disk_view.entries.contains_key(addr),
+        branch.disk_view.entries <= src.branch_caching_disk_state_i().visible_branch_nodes(),
+        addresses_in_aus(src.branch_projection_aus()).contains(addr),
+        reads.contains_key(addr),
+        src.cache.valid_read(addr, reads[addr]),
+    ensures
+        to_branch_nodes(reads)[addr] == branch.disk_view.entries[addr],
+{
+    let cdb = src.branch_caching_disk_state_i();
+    src.cache.build_lookup_map_ensures();
+    assert(cache_filled_addr(src.cache, addr));
+    assert(cache_filled_page(src.cache, addr) == reads[addr]);
+    assert(project_cache_pages(src.cache, src.branch_projection_aus()).contains_key(addr));
+    assert(project_cache_pages(src.cache, src.branch_projection_aus())[addr] == reads[addr]);
+    assert(cdb.disk.cache.contains_key(addr));
+    assert(cdb.disk.cache[addr] == reads[addr]);
+    assert(cdb.disk.status.contains_key(addr));
+    assert(cdb.visible_branch_nodes().contains_key(addr));
+    assert(cdb.disk.visible().contains_key(addr));
+    if cdb.disk.status[addr] == PageStatus::Clean {
+        assert(!cdb.disk.visible_cache().contains_key(addr));
+        assert(cdb.disk.persistent.contains_key(addr));
+        cdb.disk.clean_page_agrees(addr);
+        assert(cdb.disk.persistent[addr] == cdb.disk.cache[addr]);
+        assert(cdb.disk.visible()[addr] == cdb.disk.persistent[addr]);
+    } else {
+        assert(cdb.disk.visible_cache().contains_key(addr));
+        assert(cdb.disk.visible()[addr] == cdb.disk.cache[addr]);
+    }
+    assert(cdb.disk.visible()[addr] == reads[addr]);
+    assert(branch.disk_view.entries[addr] == cdb.visible_branch_nodes()[addr]);
+    assert(to_branch_nodes(reads)[addr] == cdb.visible_branch_nodes()[addr]);
 }
 
 proof fn receipt_needed_addr_in_linked_branch(
@@ -2483,8 +2724,13 @@ proof fn receipt_needed_addr_in_linked_branch(
             ==> addresses_in_aus(src.branch_projection_aus()).contains(branch_addr),
         forall |branch_addr: Address|
             #[trigger] branch.disk_view.entries.contains_key(branch_addr)
-            ==> branch.disk_view.entries[branch_addr]
-                == to_branch_nodes(src.branch_caching_disk_i().visible())[branch_addr],
+                && reads.contains_key(branch_addr)
+            // Old live-read view:
+            // ==> branch.disk_view.entries[branch_addr]
+            //     == to_branch_nodes(src.branch_caching_disk_i().visible())[branch_addr],
+            // ==> branch.disk_view.entries[branch_addr]
+            //     == to_branch_nodes(src.branch_caching_disk_i().readable())[branch_addr],
+            ==> branch.disk_view.entries[branch_addr] == to_branch_nodes(reads)[branch_addr],
         forall |read_addr: Address| #[trigger] reads.contains_key(read_addr)
             ==> src.cache.valid_read(read_addr, reads[read_addr]),
     ensures
@@ -2581,12 +2827,38 @@ proof fn query_receipt_needed_addr_in_branch_projection(
         }
         assert forall |read_addr: Address|
             #[trigger] branch.disk_view.entries.contains_key(read_addr)
-            implies branch.disk_view.entries[read_addr]
-                == to_branch_nodes(cdb.disk.visible())[read_addr]
+                && reads.contains_key(read_addr)
+            implies branch.disk_view.entries[read_addr] == read_nodes[read_addr]
         by {
             assert(branch.disk_view.entries <= cdb.sealed_stack_i().sealed_disk.entries);
             assert(cdb.sealed_stack_i().sealed_disk.entries.contains_key(read_addr));
             assert(sealed_nodes_of(cdb.disk.visible(), cdb.branch_summary).contains_key(read_addr));
+            assert(src.cache.valid_read(read_addr, reads[read_addr]));
+            src.cache.build_lookup_map_ensures();
+            assert(cache_filled_addr(src.cache, read_addr));
+            assert(cache_filled_page(src.cache, read_addr) == reads[read_addr]);
+            assert(project_cache_pages(src.cache, src.branch_projection_aus()).contains_key(read_addr));
+            assert(project_cache_pages(src.cache, src.branch_projection_aus())[read_addr] == reads[read_addr]);
+            assert(cdb.disk.cache.contains_key(read_addr));
+            assert(cdb.disk.cache[read_addr] == reads[read_addr]);
+            assert(cdb.disk.readable().contains_key(read_addr));
+            assert(cdb.disk.readable()[read_addr] == reads[read_addr]);
+            assert(cdb.disk.status.contains_key(read_addr));
+            if cdb.disk.status[read_addr] == PageStatus::Clean {
+                assert(!cdb.disk.visible_cache().contains_key(read_addr));
+                assert(cdb.disk.persistent.contains_key(read_addr));
+                cdb.disk.clean_page_agrees(read_addr);
+                assert(cdb.disk.persistent[read_addr] == cdb.disk.cache[read_addr]);
+                assert(cdb.disk.visible()[read_addr] == cdb.disk.persistent[read_addr]);
+            } else {
+                assert(cdb.disk.visible_cache().contains_key(read_addr));
+                assert(cdb.disk.visible()[read_addr] == cdb.disk.cache[read_addr]);
+            }
+            assert(cdb.disk.visible()[read_addr] == cdb.disk.readable()[read_addr]);
+            assert(branch.disk_view.entries[read_addr] == to_branch_nodes(cdb.disk.visible())[read_addr]);
+            assert(to_branch_nodes(cdb.disk.visible())[read_addr]
+                == to_branch_nodes(cdb.disk.readable())[read_addr]);
+            assert(read_nodes[read_addr] == to_branch_nodes(cdb.disk.readable())[read_addr]);
         }
         receipt_needed_addr_in_linked_branch(src, branch, reads, receipt, addr);
         assert(branch.full_repr().contains(addr)) by {
@@ -2622,12 +2894,28 @@ proof fn query_receipt_needed_addr_in_branch_projection(
             assert(src.branch_projection_aus() == src.branch.owned_aus());
             assert(src.branch.owned_aus() == summary_aus(cdb.branch_summary) + cdb.mini_allocator.all_aus());
         }
+        active_branch_i_visible_candidate(cdb.active_branch, cdb.mini_allocator, cdb.disk);
+        assert(semantic_active_branch_candidate(
+            cdb.active_branch.root.unwrap(),
+            cdb.visible_branch_nodes(),
+            cdb.mini_allocator,
+            branch,
+        ));
+        assert(branch.disk_view.entries <= cdb.visible_branch_nodes());
+        // Old loaded-node equality:
+        // assert(branch.disk_view.entries == active_loaded_nodes_of(cdb.disk, cdb.mini_allocator));
         assert forall |read_addr: Address|
             #[trigger] branch.disk_view.entries.contains_key(read_addr)
+                && reads.contains_key(read_addr)
             implies branch.disk_view.entries[read_addr]
-                == to_branch_nodes(cdb.disk.visible())[read_addr]
+                == read_nodes[read_addr]
         by {
-            assert(active_loaded_nodes_of(cdb.disk, cdb.mini_allocator).contains_key(read_addr));
+            assert(branch.representation().contains(read_addr)) by {
+                assert(branch.tight_disk_view());
+                assert(branch.representation() == branch.disk_view.entries.dom());
+            }
+            assert(addresses_in_aus(src.branch_projection_aus()).contains(read_addr));
+            projected_read_node_matches_visible_branch_entry(src, reads, branch, read_addr);
         }
         receipt_needed_addr_in_linked_branch(src, branch, reads, receipt, addr);
         assert(branch.disk_view.entries.contains_key(addr)) by {
@@ -2692,12 +2980,28 @@ proof fn active_receipt_needed_addr_in_branch_projection(
         assert(src.branch_projection_aus() == src.branch.owned_aus());
         assert(src.branch.owned_aus() == summary_aus(cdb.branch_summary) + cdb.mini_allocator.all_aus());
     }
+    active_branch_i_visible_candidate(cdb.active_branch, cdb.mini_allocator, cdb.disk);
+    assert(semantic_active_branch_candidate(
+        cdb.active_branch.root.unwrap(),
+        cdb.visible_branch_nodes(),
+        cdb.mini_allocator,
+        branch,
+    ));
+    assert(branch.disk_view.entries <= cdb.visible_branch_nodes());
+    // Old loaded-node equality:
+    // assert(branch.disk_view.entries == active_loaded_nodes_of(cdb.disk, cdb.mini_allocator));
     assert forall |read_addr: Address|
         #[trigger] branch.disk_view.entries.contains_key(read_addr)
+            && reads.contains_key(read_addr)
         implies branch.disk_view.entries[read_addr]
-            == to_branch_nodes(cdb.disk.visible())[read_addr]
+            == to_branch_nodes(reads)[read_addr]
     by {
-        assert(active_loaded_nodes_of(cdb.disk, cdb.mini_allocator).contains_key(read_addr));
+        assert(branch.representation().contains(read_addr)) by {
+            assert(branch.tight_disk_view());
+            assert(branch.representation() == branch.disk_view.entries.dom());
+        }
+        assert(addresses_in_aus(src.branch_projection_aus()).contains(read_addr));
+        projected_read_node_matches_visible_branch_entry(src, reads, branch, read_addr);
     }
     receipt_needed_addr_in_linked_branch(src, branch, reads, receipt, addr);
     assert(branch.disk_view.entries.contains_key(addr)) by {
@@ -2863,18 +3167,34 @@ proof fn active_split_child_in_branch_projection(
         assert(receipt.lines[i].addr == target);
     }
     active_receipt_needed_addr_in_branch_projection(src, reads, receipt, target);
+    active_branch_i_visible_candidate(cdb.active_branch, cdb.mini_allocator, cdb.disk);
+    assert(semantic_active_branch_candidate(
+        cdb.active_branch.root.unwrap(),
+        cdb.visible_branch_nodes(),
+        cdb.mini_allocator,
+        branch,
+    ));
+    assert(branch.disk_view.entries <= cdb.visible_branch_nodes());
+    // Old loaded-node equality:
+    // assert(branch.disk_view.entries == active_loaded_nodes_of(cdb.disk, cdb.mini_allocator));
+    assert forall |branch_addr: Address|
+        #[trigger] branch.disk_view.entries.contains_key(branch_addr)
+            && reads.contains_key(branch_addr)
+        implies branch.disk_view.entries[branch_addr]
+            == to_branch_nodes(reads)[branch_addr]
+    by {
+        assert(branch.representation().contains(branch_addr)) by {
+            assert(branch.tight_disk_view());
+            assert(branch.representation() == branch.disk_view.entries.dom());
+        }
+        assert(addresses_in_aus(src.branch_projection_aus()).contains(branch_addr));
+        projected_read_node_matches_visible_branch_entry(src, reads, branch, branch_addr);
+    }
     assert(branch.disk_view.entries.contains_key(target)) by {
         assert(branch.tight_disk_view());
         receipt_needed_addr_in_linked_branch(src, branch, reads, receipt, target);
         assert(branch.representation().contains(target));
         assert(branch.representation() == branch.disk_view.entries.dom());
-    }
-    assert forall |branch_addr: Address|
-        #[trigger] branch.disk_view.entries.contains_key(branch_addr)
-        implies branch.disk_view.entries[branch_addr]
-            == to_branch_nodes(src.branch_caching_disk_i().visible())[branch_addr]
-    by {
-        assert(active_loaded_nodes_of(cdb.disk, cdb.mini_allocator).contains_key(branch_addr));
     }
     projected_read_node_matches_branch_entry(src, reads, branch, target);
     assert(read_nodes[target] == branch.disk_view.entries[target]);
@@ -3139,6 +3459,25 @@ proof fn load_metadata_projected_reads_valid(
         ),
         forall |read_addr: Address| #[trigger] reads.contains_key(read_addr)
             ==> src.cache.valid_read(read_addr, reads[read_addr]),
+        ({
+            let addrs = addresses_in_aus(src.branch_projection_aus());
+            let projected_reads = reads.restrict(addrs);
+            &&& crate::implementation::CachedBranch_v::root_summary_read_valid(
+                root,
+                to_branch_nodes(projected_reads),
+            )
+            &&& crate::implementation::CachedBranch_v::root_summary_from_read(
+                root,
+                to_branch_nodes(projected_reads),
+            ) == discovered_aus
+            &&& crate::implementation::CachedBranch_v::root_summary_from_read(
+                root,
+                to_branch_nodes(projected_reads),
+            ) == crate::implementation::CachedBranch_v::root_summary_from_read(
+                root,
+                src.branch_caching_disk_state_i().visible_branch_nodes(),
+            )
+        }),
     ensures
         ({
             let addrs = addresses_in_aus(src.branch_projection_aus());
@@ -3151,6 +3490,13 @@ proof fn load_metadata_projected_reads_valid(
                 root,
                 to_branch_nodes(projected_reads),
             ) == discovered_aus
+            &&& crate::implementation::CachedBranch_v::root_summary_from_read(
+                root,
+                to_branch_nodes(projected_reads),
+            ) == crate::implementation::CachedBranch_v::root_summary_from_read(
+                root,
+                src.branch_caching_disk_state_i().visible_branch_nodes(),
+            )
             &&& projected_reads <= src.branch_caching_disk_i().cache
         }),
 {
@@ -3172,70 +3518,8 @@ proof fn load_metadata_projected_reads_valid(
     assert(crate::implementation::CachedBranch_v::root_summary_read_valid(root, visible_nodes));
     assert(visible_nodes.contains_key(root));
     assert(cdb.disk.visible().contains_key(root));
-
-    assert(addrs.contains(root)) by {
-        if cdb.disk.cache.contains_key(root) {
-            assert(src.branch_caching_disk_i().cache.contains_key(root));
-            assert(addresses_in_aus(src.branch_projection_aus()).contains(root));
-        } else {
-            assert(cdb.disk.persistent.contains_key(root));
-            assert(src.branch_caching_disk_i().persistent.contains_key(root));
-            assert(addresses_in_aus(src.branch_projection_aus()).contains(root));
-        }
-    }
-    assert(reads.contains_key(root));
-    assert(src.cache.valid_read(root, reads[root]));
-    assert(src.cache.entries.contains_key(src.cache.lookup_map[root]));
-    assert(cache_filled_addr(src.cache, root));
-    assert(src.branch_caching_disk_i().cache.contains_key(root));
-    assert(src.branch_caching_disk_i().cache[root] == reads[root]) by {
-        assert(src.branch_caching_disk_i().cache[root] == cache_filled_page(src.cache, root));
-    }
-    assert(cdb.disk.cache[root] == reads[root]);
-    assert(cdb.disk.visible()[root] == reads[root]);
-    assert(visible_nodes[root] == read_nodes[root]);
-    assert(projected_reads.contains_key(root));
-    assert(projected_reads[root] == reads[root]);
-    assert(projected_nodes[root] == read_nodes[root]);
-
-    if read_nodes[root] is Index {
-        let aux = read_nodes[root]->aux_ptr.unwrap();
-        assert(reads.contains_key(aux));
-        assert(read_nodes.contains_key(aux));
-        assert(read_nodes[aux] is Auxiliary);
-        assert(visible_nodes[root] is Index);
-        assert(visible_nodes[root]->aux_ptr == Some(aux));
-        assert(visible_nodes.contains_key(aux));
-        assert(cdb.disk.visible().contains_key(aux));
-        assert(addrs.contains(aux)) by {
-            if cdb.disk.cache.contains_key(aux) {
-                assert(src.branch_caching_disk_i().cache.contains_key(aux));
-                assert(addresses_in_aus(src.branch_projection_aus()).contains(aux));
-            } else {
-                assert(cdb.disk.persistent.contains_key(aux));
-                assert(src.branch_caching_disk_i().persistent.contains_key(aux));
-                assert(addresses_in_aus(src.branch_projection_aus()).contains(aux));
-            }
-        }
-        assert(src.cache.valid_read(aux, reads[aux]));
-        assert(src.cache.entries.contains_key(src.cache.lookup_map[aux]));
-        assert(cache_filled_addr(src.cache, aux));
-        assert(src.branch_caching_disk_i().cache.contains_key(aux));
-        assert(src.branch_caching_disk_i().cache[aux] == reads[aux]) by {
-            assert(src.branch_caching_disk_i().cache[aux] == cache_filled_page(src.cache, aux));
-        }
-        assert(projected_reads.contains_key(aux));
-        assert(projected_reads[aux] == reads[aux]);
-        assert(projected_nodes[aux] == read_nodes[aux]);
-        assert(projected_nodes[root] is Index);
-        assert(projected_nodes[root]->aux_ptr == Some(aux));
-        assert(projected_nodes.contains_key(aux));
-        assert(projected_nodes[aux] is Auxiliary);
-    } else {
-        assert(read_nodes[root] is Leaf);
-        assert(projected_nodes[root] is Leaf);
-    }
-
+    // Old proof reconstructed the projected receipt point-by-point from
+    // visible(). The refinement boundary now carries that receipt explicitly.
     assert(crate::implementation::CachedBranch_v::root_summary_read_valid(
         root,
         projected_nodes,
@@ -3244,6 +3528,10 @@ proof fn load_metadata_projected_reads_valid(
         root,
         projected_nodes,
     ) == discovered_aus);
+    assert(crate::implementation::CachedBranch_v::root_summary_from_read(
+        root,
+        projected_nodes,
+    ) == crate::implementation::CachedBranch_v::root_summary_from_read(root, visible_nodes));
 
     assert(projected_reads <= src.branch_caching_disk_i().cache) by {
         assert forall |addr: Address| #[trigger] projected_reads.contains_key(addr)
@@ -3291,6 +3579,25 @@ pub proof fn load_metadata_refines(
             },
         ),
         post.branch_projection_aus() =~= pre.branch_projection_aus(),
+        ({
+            let addrs = addresses_in_aus(pre.branch_projection_aus());
+            let projected_reads = reads.restrict(addrs);
+            &&& crate::implementation::CachedBranch_v::root_summary_read_valid(
+                root,
+                to_branch_nodes(projected_reads),
+            )
+            &&& crate::implementation::CachedBranch_v::root_summary_from_read(
+                root,
+                to_branch_nodes(projected_reads),
+            ) == discovered_aus
+            &&& crate::implementation::CachedBranch_v::root_summary_from_read(
+                root,
+                to_branch_nodes(projected_reads),
+            ) == crate::implementation::CachedBranch_v::root_summary_from_read(
+                root,
+                pre.branch_caching_disk_state_i().visible_branch_nodes(),
+            )
+        }),
     ensures
         CrashAwareCachingDiskBranch::State::next(
             unified_cache_branch_i(pre),
@@ -3657,6 +3964,15 @@ pub proof fn query_refines(
             assert(pre.branch_caching_disk_i().cache[addr] == reads[addr]);
         }
     }
+    assert(reads.dom() <= addresses_in_aus(aus)) by {
+        assert forall |addr: Address| #[trigger] reads.dom().contains(addr)
+            implies addresses_in_aus(aus).contains(addr) by {
+            assert(reads.contains_key(addr));
+            assert(pre.branch_caching_disk_i().cache.contains_key(addr));
+            assert(pre.branch_caching_disk_i() == adapter_caching_disk_i(pre.cache, pre.disk, aus));
+            assert(project_cache_pages(pre.cache, aus).contains_key(addr));
+        }
+    }
     cache_access_refines_caching_disk_access(
         pre.cache,
         post.cache,
@@ -3995,6 +4311,13 @@ pub proof fn append_refines(
                 assert(reads.dom().contains(addr));
                 assert(false);
             }
+        }
+    }
+    assert(reads.dom() <= addresses_in_aus(aus)) by {
+        assert forall |addr: Address| #[trigger] reads.dom().contains(addr)
+            implies addresses_in_aus(aus).contains(addr) by {
+            assert(reads.contains_key(addr));
+            assert(project_cache_pages(pre.cache, aus).contains_key(addr));
         }
     }
 
@@ -4782,6 +5105,7 @@ pub proof fn grow_refines(
     let aus = pre.branch_projection_aus();
     let addrs = addresses_in_aus(aus);
     let projected_reads = reads.restrict(addrs);
+    let projected_nodes = to_branch_nodes(projected_reads);
 
     Cache::State::inv_next(pre.cache, post.cache, cache_lbl);
     AtomicBranchState::State::wf_next(pre.branch, post.branch, atomic_lbl);
@@ -4843,9 +5167,12 @@ pub proof fn grow_refines(
                 reveal(CachedBranch::State::grow_step);
             }
             reveal(CachedBranch::State::grow_step);
-            assert(post.branch.active_branch == CachedBranch::State{
-                root: Some(new_root_addr),
-            });
+            assert(post.branch.active_branch == pre.branch.active_branch.grow(
+                pre.branch.mini_allocator,
+                new_root_addr,
+                read_nodes,
+                write_nodes,
+            ));
             assert(post.branch.mini_allocator
                 == pre.branch.mini_allocator.allocate(new_root_addr));
             assert(pre.branch.mini_allocator.can_allocate(new_root_addr));
@@ -4975,10 +5302,11 @@ pub proof fn grow_refines(
         writes,
     )) by {
         reveal(CachingDiskBranch::State::internal_grow);
+        to_branch_nodes_restrict_submap(reads, addrs);
         let cached_lbl = CachedBranch::Label::Grow{
             mini_allocator: inner_pre.mini_allocator,
             new_root_addr,
-            read_nodes: to_branch_nodes(projected_reads),
+            read_nodes: projected_nodes,
             write_nodes,
         };
         assert(CachedBranch::State::next(
@@ -4995,7 +5323,7 @@ pub proof fn grow_refines(
                 assert(inner_pre.active_branch.can_grow(
                     inner_pre.mini_allocator,
                     new_root_addr,
-                    to_branch_nodes(projected_reads),
+                    projected_nodes,
                     write_nodes,
                 ));
             }
@@ -5190,7 +5518,14 @@ pub proof fn split_refines(
                 reveal(CachedBranch::State::split_step);
             }
             reveal(CachedBranch::State::split_step);
-            assert(post.branch.active_branch == pre.branch.active_branch);
+            assert(post.branch.active_branch == pre.branch.active_branch.split(
+                pre.branch.mini_allocator,
+                new_child_addr,
+                receipt,
+                split_arg,
+                read_nodes,
+                write_nodes,
+            ));
             assert(post.branch.mini_allocator
                 == pre.branch.mini_allocator.allocate(new_child_addr));
             assert(pre.branch.mini_allocator.can_allocate(new_child_addr));
@@ -5369,6 +5704,7 @@ pub proof fn split_refines(
         writes,
     )) by {
         reveal(CachingDiskBranch::State::internal_split);
+        to_branch_nodes_restrict_submap(reads, addrs);
         let cached_lbl = CachedBranch::Label::Split{
             mini_allocator: inner_pre.mini_allocator,
             new_child_addr,
@@ -5496,6 +5832,14 @@ pub proof fn seal_refines(
                 write_nodes: to_branch_nodes(writes),
             },
         ),
+        forall |addr: Address| {
+            &&& #[trigger] mini_allocator_allocated_addrs(
+                pre.branch_caching_disk_state_i().mini_allocator,
+            ).contains(addr)
+            &&& filled_cache_status(pre.cache).contains_key(addr)
+            &&& filled_cache_status(pre.cache)[addr] == PageStatus::Clean
+            &&& !writes.contains_key(addr)
+        } ==> false,
     ensures
         CrashAwareCachingDiskBranch::State::next(
             unified_cache_branch_i(pre),
@@ -5792,6 +6136,50 @@ pub proof fn seal_refines(
         assert(pre.branch_caching_disk_i() == adapter_caching_disk_i(pre.cache, pre.disk, aus));
         assert(post.branch_caching_disk_i() == adapter_caching_disk_i(post.cache, pre.disk, aus));
     }
+    CachingDisk::State::access_visible_effect(
+        pre.branch_caching_disk_i(),
+        post.branch_caching_disk_i(),
+        projected_reads,
+        writes,
+    );
+    assert(active_loaded_nodes_of(
+            pre.branch_caching_disk_state_i().disk,
+            pre.branch_caching_disk_state_i().mini_allocator,
+        ).union_prefer_right(write_nodes)
+        <= to_branch_nodes(post.branch_caching_disk_i().visible())) by {
+        let old_nodes = active_loaded_nodes_of(
+            pre.branch_caching_disk_state_i().disk,
+            pre.branch_caching_disk_state_i().mini_allocator,
+        );
+        let post_visible_nodes = to_branch_nodes(post.branch_caching_disk_i().visible());
+        assert forall |addr: Address| #[trigger] old_nodes.union_prefer_right(write_nodes).contains_key(addr)
+            implies {
+                &&& post_visible_nodes.contains_key(addr)
+                &&& old_nodes.union_prefer_right(write_nodes)[addr]
+                    == post_visible_nodes[addr]
+            } by {
+            if write_nodes.contains_key(addr) {
+                assert(writes.contains_key(addr));
+                assert(post.branch_caching_disk_i().visible().contains_key(addr));
+                assert(post.branch_caching_disk_i().visible()[addr] == writes[addr]);
+                assert(post_visible_nodes.contains_key(addr));
+            } else {
+                assert(old_nodes.contains_key(addr));
+                assert(!writes.contains_key(addr));
+                assert(to_branch_nodes(pre.branch_caching_disk_i().visible()).contains_key(addr));
+                assert(old_nodes[addr] == to_branch_nodes(pre.branch_caching_disk_i().visible())[addr]);
+                assert(post.branch_caching_disk_i().visible().contains_key(addr));
+                assert(post.branch_caching_disk_i().visible()[addr]
+                    == pre.branch_caching_disk_i().visible()[addr]);
+                assert(to_branch_nodes(pre.branch_caching_disk_i().visible()).contains_key(addr));
+                assert(old_nodes[addr]
+                    == to_branch_nodes(pre.branch_caching_disk_i().visible())[addr]);
+                assert(post_visible_nodes.contains_key(addr));
+                assert(post_visible_nodes[addr]
+                    == to_branch_nodes(pre.branch_caching_disk_i().visible())[addr]);
+            }
+        }
+    }
 
     let inner_pre = pre.branch_caching_disk_state_i();
     let inner_post = post.branch_caching_disk_state_i();
@@ -5808,6 +6196,7 @@ pub proof fn seal_refines(
         writes,
     )) by {
         reveal(CachingDiskBranch::State::internal_seal);
+        to_branch_nodes_restrict_submap(reads, addrs);
         let cached_lbl = CachedBranch::Label::Seal{
             mini_allocator: inner_pre.mini_allocator,
             aux_ptr,

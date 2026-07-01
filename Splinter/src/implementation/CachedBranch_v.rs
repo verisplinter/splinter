@@ -716,10 +716,7 @@ impl CachedBranch::State {
         recommends
             self.wf(),
     {
-        Self {
-            root: Some(init_root),
-            ..self
-        }
+        Self { root: Some(init_root) }
     }
 
     pub open spec fn append(
@@ -797,9 +794,7 @@ impl CachedBranch::State {
         recommends
             self.can_split(mini_allocator, new_child_addr, receipt, split_arg, read_nodes, write_nodes),
     {
-        Self {
-            ..self
-        }
+        self
     }
 
     pub open spec fn can_seal(

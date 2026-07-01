@@ -24,7 +24,10 @@ use crate::implementation::CachedJournal_v::{
 };
 use crate::implementation::CachingDiskAdapterRefinement_v::{
 	    cache_filled_addr, cache_filled_page,
-	    caching_disk_i as adapter_caching_disk_i, project_cache_pages, project_cache_status,
+	    caching_disk_i as adapter_caching_disk_i, caching_disk_i_equal_by_aus_ext,
+        backed_raw_cache_entry_in_caching_disk_i_visible,
+        caching_disk_i_equal_from_raw_projection_agreement,
+        project_cache_pages, project_cache_status, project_persistent,
 	    cache_access_refines_caching_disk_access,
 	    cache_evictable_refines_observe_clean_aus,
 	    cache_internal_refines_caching_disk_internal,
@@ -377,40 +380,22 @@ impl UnifiedCacheJournalSource {
 
         assert(post.journal_caching_disk_i() == self.journal_caching_disk_i()) by {
             assert(post.journal_projection_aus() =~= aus);
-            assert_maps_equal!(
-                post.journal_caching_disk_i().cache,
-                self.journal_caching_disk_i().cache,
-                addr => {
-                    assert(post.journal_projection_aus().contains(addr.au)
-                        <==> aus.contains(addr.au));
-                    assert(project_cache_pages(post.cache, aus)
-                        == project_cache_pages(self.cache, aus));
-                }
-            );
-            assert_maps_equal!(
-                post.journal_caching_disk_i().status,
-                self.journal_caching_disk_i().status,
-                addr => {
-                    assert(post.journal_projection_aus().contains(addr.au)
-                        <==> aus.contains(addr.au));
-                    assert(project_cache_status(post.cache, aus)
-                        == project_cache_status(self.cache, aus));
-                }
-            );
-            assert_maps_equal!(
-                post.journal_caching_disk_i().persistent,
-                self.journal_caching_disk_i().persistent,
-                addr => {
-                    assert(post.journal_projection_aus().contains(addr.au)
-                        <==> aus.contains(addr.au));
-                    assert(addresses_in_aus(post.journal_projection_aus()).contains(addr)
-                        <==> addresses_in_aus(aus).contains(addr));
+            assert(project_persistent(post.disk, aus) == project_persistent(self.disk, aus)) by {
+                assert_maps_equal!(project_persistent(post.disk, aus), project_persistent(self.disk, aus), addr => {
                     if addresses_in_aus(aus).contains(addr) {
                         assert(post.disk.content.restrict(addresses_in_aus(aus))
                             == self.disk.content.restrict(addresses_in_aus(aus)));
                     }
-                }
+                });
+            }
+            caching_disk_i_equal_from_raw_projection_agreement(
+                post.cache,
+                self.cache,
+                post.disk,
+                self.disk,
+                aus,
             );
+            caching_disk_i_equal_by_aus_ext(post.cache, post.disk, post.journal_projection_aus(), aus);
         }
 
         assert(post.journal_caching_disk_i().inv());
@@ -430,40 +415,22 @@ impl UnifiedCacheJournalSource {
 
         assert(post.journal_caching_disk_i() == self.journal_caching_disk_i()) by {
             assert(post.journal_projection_aus() =~= aus);
-            assert_maps_equal!(
-                post.journal_caching_disk_i().cache,
-                self.journal_caching_disk_i().cache,
-                addr => {
-                    assert(post.journal_projection_aus().contains(addr.au)
-                        <==> aus.contains(addr.au));
-                    assert(project_cache_pages(post.cache, aus)
-                        == project_cache_pages(self.cache, aus));
-                }
-            );
-            assert_maps_equal!(
-                post.journal_caching_disk_i().status,
-                self.journal_caching_disk_i().status,
-                addr => {
-                    assert(post.journal_projection_aus().contains(addr.au)
-                        <==> aus.contains(addr.au));
-                    assert(project_cache_status(post.cache, aus)
-                        == project_cache_status(self.cache, aus));
-                }
-            );
-            assert_maps_equal!(
-                post.journal_caching_disk_i().persistent,
-                self.journal_caching_disk_i().persistent,
-                addr => {
-                    assert(post.journal_projection_aus().contains(addr.au)
-                        <==> aus.contains(addr.au));
-                    assert(addresses_in_aus(post.journal_projection_aus()).contains(addr)
-                        <==> addresses_in_aus(aus).contains(addr));
+            assert(project_persistent(post.disk, aus) == project_persistent(self.disk, aus)) by {
+                assert_maps_equal!(project_persistent(post.disk, aus), project_persistent(self.disk, aus), addr => {
                     if addresses_in_aus(aus).contains(addr) {
                         assert(post.disk.content.restrict(addresses_in_aus(aus))
                             == self.disk.content.restrict(addresses_in_aus(aus)));
                     }
-                }
+                });
+            }
+            caching_disk_i_equal_from_raw_projection_agreement(
+                post.cache,
+                self.cache,
+                post.disk,
+                self.disk,
+                aus,
             );
+            caching_disk_i_equal_by_aus_ext(post.cache, post.disk, post.journal_projection_aus(), aus);
         }
     }
 
@@ -1438,10 +1405,14 @@ impl UnifiedCacheJournalSource {
                 &&& #[trigger] responses.contains_key(addr)
                 &&& addresses_in_aus(self.journal_projection_aus()).contains(addr)
             } ==> {
-                &&& self.disk.content.contains_key(addr)
-                &&& responses[addr] is ReadResp ==> responses[addr]->data
-                    == self.disk.content[addr]
+                // Old read-response coupling:
+                // &&& self.disk.content.contains_key(addr)
+                &&& responses[addr] is ReadResp ==> {
+                    self.disk.content.contains_key(addr) ==> responses[addr]->data
+                        == self.disk.content[addr]
+                }
                 &&& responses[addr] is WriteResp ==> {
+                    &&& self.disk.content.contains_key(addr)
                     &&& cache_filled_addr(self.cache, addr)
                     &&& self.disk.content[addr] == cache_filled_page(self.cache, addr)
                 }
@@ -1569,9 +1540,7 @@ pub proof fn init_refines(pre: SystemModel::State<UnifiedCacheProgramModel>)
                 cache_slots,
                 free_aus,
             )) by {
-                reveal(UnifiedCacheSystem::State::initialize);
             }
-            reveal(UnifiedCacheSystem::State::initialize);
 
             let src = unified_cache_journal_source(pre);
             let dst = unified_cache_journal_i(src);
@@ -1896,7 +1865,9 @@ pub proof fn load_index_refines(
     let aus = pre.journal_projection_aus();
     let cj_lbl = CachingDiskJournal::Label::LoadIndex{discovered_aus};
     let component_addrs = addresses_in_aus(aus);
-    let component_reads = journal_reads.restrict(component_addrs);
+    let image = pre.persistent_journal_image_i();
+    let component_backed_addrs = component_addrs.intersect(image.persistent.dom());
+    let component_reads = journal_reads.restrict(component_backed_addrs);
 
     AtomicJournalState::State::wf_next(pre.journal, post.journal, atomic_lbl);
     reveal(AtomicJournalState::State::next);
@@ -1946,7 +1917,6 @@ pub proof fn load_index_refines(
     Cache::State::inv_next(pre.cache, post.cache, cache_lbl);
     assert(!pre.journal.ready());
     assert(post.journal.ready());
-    let image = pre.persistent_journal_image_i();
     let image_entries = to_journal_records(image.persistent);
     let source_reads = to_journal_records(journal_reads);
     assert(image.wf());
@@ -2055,39 +2025,26 @@ pub proof fn load_index_refines(
     projected_cache_read_only_access_unchanged(pre.cache, post.cache, aus, cache_reads);
 
     assert(post.journal_caching_disk_i() == pre.journal_caching_disk_i()) by {
-        assert_maps_equal!(
-            post.journal_caching_disk_i().cache,
-            pre.journal_caching_disk_i().cache,
-            addr => {
-                assert(addresses_in_aus(post.journal_projection_aus()).contains(addr)
-                    <==> addresses_in_aus(aus).contains(addr));
-            }
+        assert(project_persistent(post.disk, aus) == project_persistent(pre.disk, aus));
+        caching_disk_i_equal_from_raw_projection_agreement(
+            post.cache,
+            pre.cache,
+            post.disk,
+            pre.disk,
+            aus,
         );
-        assert_maps_equal!(
-            post.journal_caching_disk_i().status,
-            pre.journal_caching_disk_i().status,
-            addr => {
-                assert(addresses_in_aus(post.journal_projection_aus()).contains(addr)
-                    <==> addresses_in_aus(aus).contains(addr));
-            }
-        );
-        assert_maps_equal!(
-            post.journal_caching_disk_i().persistent,
-            pre.journal_caching_disk_i().persistent,
-            addr => {
-                assert(addresses_in_aus(post.journal_projection_aus()).contains(addr)
-                    <==> addresses_in_aus(aus).contains(addr));
-            }
-        );
+        caching_disk_i_equal_by_aus_ext(post.cache, post.disk, post.journal_projection_aus(), aus);
     }
-    assert(component_reads <= pre.journal_caching_disk_i().cache) by {
+    assert(component_reads <= pre.journal_caching_disk_i().visible()) by {
         assert forall |addr: Address| #[trigger] component_reads.contains_key(addr)
             implies {
-                &&& pre.journal_caching_disk_i().cache.contains_key(addr)
-                &&& component_reads[addr] == pre.journal_caching_disk_i().cache[addr]
+                &&& pre.journal_caching_disk_i().visible().contains_key(addr)
+                &&& component_reads[addr] == pre.journal_caching_disk_i().visible()[addr]
         } by {
             assert(journal_reads.contains_key(addr));
+            assert(component_backed_addrs.contains(addr));
             assert(component_addrs.contains(addr));
+            assert(image.persistent.contains_key(addr));
             assert(cache_reads.contains_key(addr));
             assert(aus.contains(addr.au));
             assert(component_addrs.contains(addr));
@@ -2102,7 +2059,64 @@ pub proof fn load_index_refines(
             assert(component_reads[addr] == journal_reads[addr]);
             assert(project_cache_pages(pre.cache, aus).contains_key(addr));
             assert(project_cache_pages(pre.cache, aus)[addr] == cache_reads[addr]);
+            assert(project_persistent(pre.disk, aus).contains_key(addr)) by {
+                assert(image.persistent[addr] == pre.disk.content[addr]);
+                assert(addresses_in_aus(aus).contains(addr));
+            }
+            assert(pre.i().ephemeral is Known);
+            assert(pre.i().ephemeral->v == pre.journal_caching_disk_state_i());
+            assert(pre.i().semantic_inv());
+            assert(pre.journal_caching_disk_i().addrs_clean_or_evictable(
+                pre.journal_caching_disk_i().cache.dom(),
+            ));
+            assert(pre.journal_caching_disk_i().cache.dom().contains(addr));
+            pre.journal_caching_disk_i().addr_clean_or_evictable(
+                pre.journal_caching_disk_i().cache.dom(),
+                addr,
+            );
+            assert(pre.journal_caching_disk_i().status.contains_key(addr));
+            assert(pre.journal_caching_disk_i().status[addr] == PageStatus::Clean);
+            assert(pre.journal_caching_disk_i().inv());
+            pre.journal_caching_disk_i().clean_page_agrees(addr);
+            assert(pre.journal_caching_disk_i().persistent[addr]
+                == pre.journal_caching_disk_i().cache[addr]);
+            assert(pre.journal_caching_disk_i().persistent[addr]
+                == project_persistent(pre.disk, aus)[addr]);
+            assert(pre.journal_caching_disk_i().cache[addr]
+                == project_cache_pages(pre.cache, aus)[addr]);
+            assert(project_persistent(pre.disk, aus)[addr] == project_cache_pages(pre.cache, aus)[addr]);
+            backed_raw_cache_entry_in_caching_disk_i_visible(pre.cache, pre.disk, aus, addr);
+            assert(pre.journal_caching_disk_i().visible().contains_key(addr));
+            assert(pre.journal_caching_disk_i().visible()[addr] == component_reads[addr]);
+        }
+    }
+    assert(component_reads <= pre.journal_caching_disk_i().cache) by {
+        assert forall |addr: Address| #[trigger] component_reads.contains_key(addr)
+            implies {
+                &&& pre.journal_caching_disk_i().cache.contains_key(addr)
+                &&& component_reads[addr] == pre.journal_caching_disk_i().cache[addr]
+        } by {
+            assert(journal_reads.contains_key(addr));
+            assert(component_backed_addrs.contains(addr));
+            assert(component_addrs.contains(addr));
+            assert(cache_reads.contains_key(addr));
+            assert(aus.contains(addr.au));
+            assert(addresses_in_aus(aus).contains(addr));
+            Cache::State::access_read_valid(pre.cache, post.cache, cache_reads, empty_writes, addr);
+            assert(pre.cache.valid_read(addr, cache_reads[addr]));
+            pre.cache.build_lookup_map_ensures();
+            assert(pre.cache.build_lookup_map_props(pre.cache.lookup_map));
+            assert(pre.cache.entries.contains_key(pre.cache.lookup_map[addr]));
+            assert(cache_filled_addr(pre.cache, addr));
+            assert(cache_filled_page(pre.cache, addr) == cache_reads[addr]);
+            assert(journal_reads[addr] == cache_reads[addr]);
+            assert(component_reads[addr] == journal_reads[addr]);
+            assert(project_cache_pages(pre.cache, aus).contains_key(addr));
+            assert(project_cache_pages(pre.cache, aus)[addr] == cache_reads[addr]);
+            assert(pre.journal_caching_disk_i() == adapter_caching_disk_i(pre.cache, pre.disk, aus));
             assert(pre.journal_caching_disk_i().cache.contains_key(addr));
+            assert(pre.journal_caching_disk_i().cache[addr]
+                == project_cache_pages(pre.cache, aus)[addr]);
             assert(pre.journal_caching_disk_i().cache[addr] == component_reads[addr]);
         }
     }
@@ -2196,12 +2210,16 @@ pub proof fn load_index_refines(
                 assert(source_reads[addr] == image_entries[addr]);
             }
             assert forall |addr: Address| #[trigger] tight_entries.contains_key(addr)
-                implies component_addrs.contains(addr) by {
+                implies component_backed_addrs.contains(addr) by {
                 assert(tight_dv.domain_au_bounded_wrt_index(tight_index));
                 assert(tight_index.values().contains(addr.au));
                 assert(image_index.values().contains(addr.au));
                 assert(aus.contains(addr.au));
                 assert(component_addrs.contains(addr));
+                assert(tight_dv.entries <= image_entries);
+                assert(image_entries.contains_key(addr));
+                assert(image.persistent.contains_key(addr));
+                assert(component_backed_addrs.contains(addr));
             }
             au_walk_addrs_in_entries_subset(
                 source_reads,
@@ -2211,19 +2229,19 @@ pub proof fn load_index_refines(
                 first,
                 au_depth,
                 page_depth,
-                component_addrs,
+                component_backed_addrs,
             );
             CachedJournal::State::load_index_with_restricted_reads(
                 pre.journal.journal,
                 post.journal.journal,
                 source_reads,
-                component_addrs,
+                component_backed_addrs,
                 discovered_aus,
                 au_depth,
                 page_depth,
             );
-            to_journal_records_restrict(journal_reads, component_addrs);
-            assert(to_journal_records(component_reads) =~= source_reads.restrict(component_addrs));
+            to_journal_records_restrict(journal_reads, component_backed_addrs);
+            assert(to_journal_records(component_reads) =~= source_reads.restrict(component_backed_addrs));
             assert(CachedJournal::State::next(
                 pre.journal.journal,
                 post.journal.journal,
@@ -2320,6 +2338,12 @@ pub proof fn read_for_recovery_refines(
         post.in_flight_image == pre.in_flight_image,
         journal_reads.contains_key(addr),
         journal_reads <= cache_reads,
+        // Old caller-supplied whole-map CachingDisk access requirements:
+        // journal_reads <= pre.journal_caching_disk_i().cache,
+        // journal_reads <= pre.journal_caching_disk_i().visible(),
+        // Old CachingDiskJournal read-view requirement kept for reference:
+        // journal_reads.restrict(addresses_in_aus(pre.journal_projection_aus()))
+        //     <= pre.journal_caching_disk_i().visible(),
         writes.dom().disjoint(addresses_in_aus(pre.journal_projection_aus())),
         Cache::State::next(
             pre.cache,
@@ -2454,13 +2478,8 @@ pub proof fn read_for_recovery_refines(
                         messages: records,
                         reads: restricted_reads,
                     };
-                    assert(raw_journal_reads <= pre.journal_caching_disk_i().cache) by {
-                        assert forall |read: Address| #[trigger] raw_journal_reads.contains_key(read)
-                            implies pre.journal_caching_disk_i().cache.contains_key(read)
-                                && raw_journal_reads[read] == pre.journal_caching_disk_i().cache[read] by {
-                            assert(read == read_addr);
-                        }
-                    }
+                    // Old CachingDiskJournal read-view bridge kept for reference:
+                    // assert(raw_journal_reads <= pre.journal_caching_disk_i().visible());
                     let disk_lbl = CachingDisk::Label::Access{
                         reads: raw_journal_reads,
                         writes: Map::<Address, RawPage>::empty(),
@@ -2534,25 +2553,13 @@ pub proof fn read_for_recovery_refines(
                     let inner = src.ephemeral->v;
                     assert(src.ephemeral is Known);
                     assert(inner == pre.journal_caching_disk_state_i());
-                    assert(to_journal_records(raw_journal_reads) <= inner.journal_disk_view().entries) by {
-                        assert forall |read: Address| #[trigger] to_journal_records(raw_journal_reads).contains_key(read)
-                            implies inner.journal_disk_view().entries.contains_key(read)
-                                && to_journal_records(raw_journal_reads)[read]
-                                    == inner.journal_disk_view().entries[read] by {
-                            assert(raw_journal_reads.contains_key(read));
-                            assert(read == read_addr);
-                            assert(inner.disk.cache.contains_key(read));
-                            assert(inner.disk.visible().contains_key(read));
-                            assert(inner.disk.visible()[read] == inner.disk.cache[read]);
-                        }
-                    }
+                    // Old CachingDiskJournal read-view bridge kept for reference:
+                    // assert(to_journal_records(raw_journal_reads) <= inner.journal_disk_view().entries);
                     assert forall |read: Address| #[trigger] raw_journal_reads.contains_key(read) implies {
                         &&& inner.au_page_bounds_i().contains_key(read.au)
                         &&& read.page <= inner.au_page_bounds_i()[read.au]
                     } by {
                         assert(read == read_addr);
-                        let disk_view = inner.journal_disk_view();
-                        assert(disk_view.entries.contains_key(read));
                         assert(inner.au_page_bounds_i()
                             == pre.journal.journal.status.unwrap().au_page_bounds);
                     }
@@ -3872,6 +3879,14 @@ pub proof fn commit_start_refines(
             post.cache,
             Cache::Label::Access{reads, writes: Map::empty()},
         ),
+        // Old cache-only CachingDisk access requirement:
+        // reads.restrict(Set::new(|addr: Address| {
+        //     snapshot.freshest_rec() is Some && addr == snapshot.freshest_rec().unwrap()
+        // })) <= pre.journal_caching_disk_i().cache,
+        // Old CachingDiskJournal read-view requirement kept for reference:
+        // reads.restrict(Set::new(|addr: Address| {
+        //     snapshot.freshest_rec() is Some && addr == snapshot.freshest_rec().unwrap()
+        // })) <= pre.journal_caching_disk_i().visible(),
         AtomicJournalState::State::next(
             pre.journal,
             post.journal,
@@ -3901,7 +3916,9 @@ pub proof fn commit_start_refines(
         reads: to_journal_records(reads),
     };
     let aus = pre.journal_projection_aus();
-    let component_addrs = addresses_in_aus(aus);
+    let component_addrs = Set::new(|addr: Address| {
+        snapshot.freshest_rec() is Some && addr == snapshot.freshest_rec().unwrap()
+    });
     let component_reads = reads.restrict(component_addrs);
 
     AtomicJournalState::State::wf_next(pre.journal, post.journal, atomic_lbl);
@@ -3941,30 +3958,15 @@ pub proof fn commit_start_refines(
     }
     projected_cache_read_only_access_unchanged(pre.cache, post.cache, aus, reads);
     assert(post.journal_caching_disk_i() == pre.journal_caching_disk_i()) by {
-        assert_maps_equal!(
-            post.journal_caching_disk_i().cache,
-            pre.journal_caching_disk_i().cache,
-            addr => {
-                assert(addresses_in_aus(post.journal_projection_aus()).contains(addr)
-                    <==> component_addrs.contains(addr));
-            }
+        assert(project_persistent(post.disk, aus) == project_persistent(pre.disk, aus));
+        caching_disk_i_equal_from_raw_projection_agreement(
+            post.cache,
+            pre.cache,
+            post.disk,
+            pre.disk,
+            aus,
         );
-        assert_maps_equal!(
-            post.journal_caching_disk_i().status,
-            pre.journal_caching_disk_i().status,
-            addr => {
-                assert(addresses_in_aus(post.journal_projection_aus()).contains(addr)
-                    <==> component_addrs.contains(addr));
-            }
-        );
-        assert_maps_equal!(
-            post.journal_caching_disk_i().persistent,
-            pre.journal_caching_disk_i().persistent,
-            addr => {
-                assert(addresses_in_aus(post.journal_projection_aus()).contains(addr)
-                    <==> component_addrs.contains(addr));
-            }
-        );
+        caching_disk_i_equal_by_aus_ext(post.cache, post.disk, post.journal_projection_aus(), aus);
     }
     assert(post.journal_caching_disk_state_i() == pre.journal_caching_disk_state_i()) by {
         assert(post.journal.journal == pre.journal.journal);
@@ -3973,6 +3975,7 @@ pub proof fn commit_start_refines(
             == pre.journal.journal.status.unwrap().au_page_bounds);
     }
 
+    let inner = pre.journal_caching_disk_state_i();
     assert(component_reads <= pre.journal_caching_disk_i().cache) by {
         assert forall |addr: Address| #[trigger] component_reads.contains_key(addr)
             implies {
@@ -3981,6 +3984,38 @@ pub proof fn commit_start_refines(
             } by {
             assert(reads.contains_key(addr));
             assert(component_addrs.contains(addr));
+            assert(snapshot.freshest_rec() is Some);
+            let root = snapshot.freshest_rec().unwrap();
+            assert(addr == root);
+            reveal(AtomicJournalState::State::next);
+            reveal(AtomicJournalState::State::next_by);
+            assert(AtomicJournalState::State::next_by(
+                pre.journal,
+                post.journal,
+                atomic_lbl,
+                AtomicJournalState::Step::commit_start(),
+            ));
+            reveal(AtomicJournalState::State::commit_start);
+            assert(AtomicJournalState::State::commit_start(pre.journal, post.journal, atomic_lbl));
+            let full_lbl = CachedJournal::Label::FreezeForCommit{
+                frozen: snapshot,
+                reads: to_journal_records(reads),
+            };
+            assert(CachedJournal::State::next(pre.journal.journal, pre.journal.journal, full_lbl));
+            reveal(CachedJournal::State::next);
+            reveal(CachedJournal::State::next_by);
+            assert(CachedJournal::State::next_by(
+                pre.journal.journal,
+                pre.journal.journal,
+                full_lbl,
+                CachedJournal::Step::freeze_for_commit(),
+            ));
+            reveal(CachedJournal::State::freeze_for_commit);
+            let index = pre.journal.journal.status.unwrap().lsn_au_index;
+            assert(index.contains_value(root.au));
+            assert(pre.journal.loaded_index_aus().contains(root.au));
+            assert(aus.contains(root.au));
+            assert(addresses_in_aus(aus).contains(addr));
             Cache::State::access_read_valid(pre.cache, post.cache, reads, empty_writes, addr);
             assert(pre.cache.valid_read(addr, reads[addr]));
             pre.cache.build_lookup_map_ensures();
@@ -3995,7 +4030,6 @@ pub proof fn commit_start_refines(
         }
     }
 
-    let inner = pre.journal_caching_disk_state_i();
     let cj_lbl = CachingDiskJournal::Label::FreezeForCommit{frozen: snapshot, seq_end};
     to_journal_records_restrict(reads, component_addrs);
 
@@ -4006,7 +4040,6 @@ pub proof fn commit_start_refines(
     )) by {
         reveal(CachingDisk::State::access);
         assert(inner.disk == pre.journal_caching_disk_i());
-        assert(component_reads <= inner.disk.cache);
         assert_maps_equal!(
             inner.disk.cache.union_prefer_right(empty_writes),
             inner.disk.cache,
@@ -4141,7 +4174,22 @@ pub proof fn commit_start_refines(
         assert(component_reads.contains_key(root));
         assert(to_journal_records(component_reads).contains_key(root));
         assert(to_journal_records(component_reads)[root] == to_journal_records(reads)[root]);
+        assert(inner.refinement_inv());
+        assert(inner.lsn_au_index_or_empty().values().contains(root.au));
+        assert(inner.live_bounded_addr(root));
+        inner.indexed_au_page_bound_addr_in_journal_disk_image(root);
+        inner.live_bounded_addr_visible(root);
+        CachingDisk::State::access_read_matches_visible(
+            inner.disk,
+            inner.disk,
+            component_reads,
+            empty_writes,
+            root,
+        );
+        assert(component_reads[root] == inner.disk.visible()[root]);
         assert(inner.journal_disk_view().entries.contains_key(root));
+        assert(inner.journal_disk_view().entries[root]
+            == to_journal_records(inner.disk.visible())[root]);
         assert(to_journal_records(component_reads)[root] == inner.journal_disk_view().entries[root]);
         assert(seq_end == inner.frozen_seq_end(snapshot));
     } else {

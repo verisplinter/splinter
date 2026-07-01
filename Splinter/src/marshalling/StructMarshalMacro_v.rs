@@ -158,8 +158,15 @@ macro_rules! struct_marshaller_2 {
                 let field1_value = match self.field1_fmt.try_parse(&field1_slice, data) {
                     None => {
                         proof {
-                            assert(!self.field1_fmt.parsable(field1_slice@.i(data@)));
-                            assert(!self.parsable(slice@.i(data@)));
+                            let idata = slice@.i(data@);
+                            let f1_size = self.field1_fmt.uniform_size() as int;
+                            assert(field1_slice@.i(data@) == idata.subrange(0, f1_size));
+                            assert(!self.field1_fmt.parsable(idata.subrange(0, f1_size)));
+                            if self.parsable(idata) {
+                                assert(self.field1_fmt.parsable(idata.subrange(0, f1_size)));
+                                assert(false);
+                            }
+                            assert(!self.parsable(idata));
                         }
                         assert( !self.parsable(slice@.i(data@)) );
                         return None;
@@ -178,6 +185,10 @@ macro_rules! struct_marshaller_2 {
                             let f2_size = self.field2_fmt.uniform_size() as int;
                             assert(field2_slice@.i(data@) == idata.subrange(f1_size, f1_size + f2_size));
                             assert(!self.field2_fmt.parsable(idata.subrange(f1_size, f1_size + f2_size)));
+                            if self.parsable(idata) {
+                                assert(self.field2_fmt.parsable(idata.subrange(f1_size, f1_size + f2_size)));
+                                assert(false);
+                            }
                             assert(!self.parsable(idata));
                         }
                         return None;

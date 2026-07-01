@@ -1,6 +1,7 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
 use vstd::{prelude::*};
+use vstd::assert_maps_equal;
 use crate::abstract_system::MsgHistory_v::{MsgHistory, KeyedMessage};
 use crate::abstract_system::StampedMap_v::LSN;
 use crate::marshalling::Marshalling_v::Parsedview;
@@ -8,8 +9,8 @@ use crate::spec::KeyType_t::Key;
 use crate::spec::Messages_t::{Message, Value};
 use crate::spec::AsyncDisk_t::{DiskRequest, RawPage};
 use crate::implementation::OverflowFiction_v::convert_overflow_into_liveness_failure;
-use crate::implementation::CachedJournal_v::{CachedJournal, JournalRoot, JournalSnapshot, JournalStatus, acyclic_reads, all_addrs_have_complete_lsn_ranges, all_addrs_have_finite_lsn_sets, build_lsn_addr_index_from_reads, build_lsn_addr_index_from_reads_extend_next_ptr, build_lsn_addr_index_from_reads_next_ptr, build_lsn_addr_index_from_reads_next_ptr_after_insert, build_lsn_addr_index_from_reads_next_ptr_not_in_reads, build_lsn_addr_index_from_reads_values_in_reads, freeze_reads_for_seq_end, lsn_addr_index_to_au_index, lsn_index_domain_exact};
-use crate::disk::GenericDisk_v::{Address, IAddress, Pointer, Ranking, to_aus};
+use crate::implementation::CachedJournal_v::{CachedJournal, JournalRoot, JournalSnapshot, JournalStatus, acyclic_reads, all_addrs_have_complete_lsn_ranges, all_addrs_have_finite_lsn_sets, build_au_page_bounds_from_reads_au_walk_depth, build_lsn_addr_index_from_reads, build_lsn_addr_index_from_reads_extend_next_ptr, build_lsn_addr_index_from_reads_next_ptr, build_lsn_addr_index_from_reads_next_ptr_after_insert, build_lsn_addr_index_from_reads_next_ptr_not_in_reads, build_lsn_addr_index_from_reads_values_in_reads, build_lsn_au_index_from_reads_au_walk_depth, freeze_reads_for_seq_end, lsn_addr_index_to_au_index, lsn_index_domain_exact};
+use crate::disk::GenericDisk_v::{Address, AU, IAddress, Pointer, Ranking, to_aus};
 use crate::implementation::JournalTypes_v::AJournal;
 use crate::implementation::JournalTypes_v::ILsn;
 use crate::implementation::JournalTypes_v::{journal_marshall_labels, raw_page_to_record, to_journal_records};
@@ -21,7 +22,9 @@ use crate::implementation::FracCacheImpl_v::{
     WritebackAcquireResult, cache_load_label, cache_write_label, PAGE_SIZE_BYTES
 };
 use crate::implementation::ILsnAddrIndex_v::ILsnAddrIndex;
-use crate::implementation::PageAllocator_v::PageAllocator;
+use crate::implementation::AuPoolImpl_v::{AuAllocation, AuPoolImpl};
+// use crate::implementation::PageAllocator_v::PageAllocator;
+use crate::implementation::MiniAllocatorImpl_v::MiniAllocatorImpl;
 use crate::marshalling::Slice_v::Slice;
 use crate::spec::ImplDisk_t::IAU;
 use crate::marshalling::IJournalRecordFormat_v::{IJournalHeader, IJournalRecord, IJournalRecordFormat};
@@ -31,6 +34,8 @@ use crate::journal::LinkedJournal_v;
 use crate::journal::LinkedJournal_v::JournalRecord;
 
 verus!{
+
+pub const JOURNAL_FREE_AU_THRESHOLD: IAU = 5;
 
 #[derive(Debug, Copy, Clone)]
 pub struct IJournalSnapshot {
@@ -244,7 +249,8 @@ pub struct JournalImpl {
     pub index_builder: Option<IndexBuilder>,
     pub status: Option<IJournalStatus>,
     pub fmt: IJournalRecordFormat,
-    pub journal_alloc: PageAllocator,
+    // pub journal_alloc: PageAllocator,
+    pub journal_alloc: MiniAllocatorImpl,
 }
 
 closed spec fn flush_domain_from_index_range(
@@ -356,14 +362,25 @@ impl JournalImpl {
         &&& self.fmt.valid()
     }
 
-    pub closed spec fn wf(&self) -> bool {
+    pub closed spec fn basic_wf(&self) -> bool {
         &&& self.format_ok()
+        &&& self.journal_alloc.wf()
+        &&& self.journal_alloc.allocation_ready()
         &&& match self.status {
             None => { self.index_builder is Some },
             Some(status) => {
                 &&& status.wf()
                 &&& self.snapshot.boundary_lsn == status.lsn_addr_index.seq_start()
                 &&& self.snapshot.boundary_lsn <= status.clean_watermark_lsn <= status.lsn_addr_index.seq_end()
+            }
+        }
+    }
+
+    pub closed spec fn wf(&self) -> bool {
+        &&& self.basic_wf()
+        &&& match self.status {
+            None => true,
+            Some(status) => {
                 &&& (status.clean_watermark_lsn > self.snapshot.boundary_lsn
                     && status.clean_watermark_lsn < status.lsn_addr_index.seq_end()) ==> {
                     &&& status.lsn_addr_index@.contains_key((status.clean_watermark_lsn - 1) as nat)
@@ -458,6 +475,7 @@ impl JournalImpl {
 
     pub exec fn new(snapshot: IJournalSnapshot, alloc_au: u32) -> (out: Self)
     ensures
+        out.basic_wf(),
         out.wf(),
         !out.index_ready(),
         out@.snapshot == snapshot@,
@@ -479,8 +497,158 @@ impl JournalImpl {
             }),
             status: None,
             fmt: IJournalRecordFormat::new(),
-            journal_alloc: PageAllocator::new(alloc_au, start_page),
+            journal_alloc: MiniAllocatorImpl::new(alloc_au, start_page, JOURNAL_FREE_AU_THRESHOLD),
         }
+    }
+
+    pub exec fn recover_empty_index(&mut self) -> (reads: Ghost<Map<Address, RawPage>>)
+    requires
+        old(self).basic_wf(),
+        !old(self).index_ready(),
+        old(self).freshest_rec() is None,
+    ensures
+        self.basic_wf(),
+        self.wf(),
+        self@.wf(),
+        self.alloc_au() == old(self).alloc_au(),
+        self.seq_start() == old(self).seq_start(),
+        self.index_ready(),
+        self.no_unmarshalled_entries(),
+        self.seq_start() <= self.seq_end(),
+        reads@ == Map::<Address, RawPage>::empty(),
+        CachedJournal::State::load_index(
+            old(self)@,
+            self@,
+            CachedJournal::Label::LoadIndex{
+                reads: to_journal_records(reads@),
+                discovered_aus: Set::<AU>::empty(),
+            },
+            0,
+            0,
+        ),
+        CachedJournal::State::next(
+            old(self)@,
+            self@,
+            CachedJournal::Label::LoadIndex{
+                reads: to_journal_records(reads@),
+                discovered_aus: Set::<AU>::empty(),
+            },
+        ),
+    {
+        let ghost pre = *self;
+        let bdy = self.snapshot.boundary_lsn;
+        let index = ILsnAddrIndex::new(bdy);
+        self.index_builder = None;
+        self.status = Some(IJournalStatus{
+            lsn_addr_index: index,
+            unmarshalled_tail: Vec::new(),
+            au_page_bounds: Ghost(Map::empty()),
+            clean_watermark_lsn: bdy,
+        });
+        let ghost reads_map = Map::<Address, RawPage>::empty();
+        proof {
+            let journal_reads = to_journal_records(reads_map);
+            let discovered_aus = Set::<AU>::empty();
+            let lbl = CachedJournal::Label::LoadIndex{
+                reads: journal_reads,
+                discovered_aus,
+            };
+            assert(journal_reads =~= Map::<Address, JournalRecord>::empty()) by {
+                assert_maps_equal!(journal_reads, Map::<Address, JournalRecord>::empty(), addr => {
+                });
+            };
+            assert(self.status.unwrap().lsn_addr_index@ =~= Map::<LSN, Address>::empty());
+            assert(lsn_addr_index_to_au_index(self.status.unwrap().lsn_addr_index@)
+                =~= Map::<LSN, AU>::empty()) by {
+                assert_maps_equal!(
+                    lsn_addr_index_to_au_index(self.status.unwrap().lsn_addr_index@),
+                    Map::<LSN, AU>::empty(),
+                    lsn => {
+                    }
+                );
+            };
+            assert(build_lsn_au_index_from_reads_au_walk_depth(
+                journal_reads,
+                pre@.snapshot.boundary_lsn,
+                pre@.snapshot.freshest_rec(),
+                pre@.snapshot.first(),
+                0,
+                0,
+            ) =~= Map::<LSN, AU>::empty());
+            assert(build_au_page_bounds_from_reads_au_walk_depth(
+                journal_reads,
+                pre@.snapshot.boundary_lsn,
+                pre@.snapshot.freshest_rec(),
+                pre@.snapshot.first(),
+                0,
+                0,
+            ) =~= Map::<AU, nat>::empty());
+            assert(discovered_aus == build_lsn_au_index_from_reads_au_walk_depth(
+                journal_reads,
+                pre@.snapshot.boundary_lsn,
+                pre@.snapshot.freshest_rec(),
+                pre@.snapshot.first(),
+                0,
+                0,
+            ).values());
+            let post_status = self.status.unwrap();
+            let expected_tail = MsgHistory::empty_history_at(pre@.snapshot.boundary_lsn);
+            reveal(IJournalStatus::tail_as_history);
+            assert(post_status.tail_as_history().ext_equal(expected_tail)) by {
+                assert(post_status.tail_as_history().seq_start == expected_tail.seq_start);
+                assert(post_status.tail_as_history().seq_end == expected_tail.seq_end);
+                assert_maps_equal!(
+                    post_status.tail_as_history().msgs,
+                    expected_tail.msgs,
+                    lsn => {
+                    }
+                );
+            }
+            MsgHistory::ext_equal_is_equality();
+            assert(post_status.tail_as_history() == expected_tail);
+            assert(post_status@ == JournalStatus{
+                lsn_au_index: build_lsn_au_index_from_reads_au_walk_depth(
+                    journal_reads,
+                    pre@.snapshot.boundary_lsn,
+                    pre@.snapshot.freshest_rec(),
+                    pre@.snapshot.first(),
+                    0,
+                    0,
+                ),
+                au_page_bounds: build_au_page_bounds_from_reads_au_walk_depth(
+                    journal_reads,
+                    pre@.snapshot.boundary_lsn,
+                    pre@.snapshot.freshest_rec(),
+                    pre@.snapshot.first(),
+                    0,
+                    0,
+                ),
+                clean_watermark_au_page_bounds: build_au_page_bounds_from_reads_au_walk_depth(
+                    journal_reads,
+                    pre@.snapshot.boundary_lsn,
+                    pre@.snapshot.freshest_rec(),
+                    pre@.snapshot.first(),
+                    0,
+                    0,
+                ),
+                unmarshalled_tail: MsgHistory::empty_history_at(pre@.snapshot.boundary_lsn),
+                clean_watermark_lsn: pre@.snapshot.boundary_lsn,
+            });
+            assert(CachedJournal::State::load_index(pre@, self@, lbl, 0, 0)) by {
+                reveal(CachedJournal::State::load_index);
+            }
+            assert(CachedJournal::State::next_by(
+                pre@,
+                self@,
+                lbl,
+                CachedJournal::Step::load_index(0, 0),
+            )) by {
+                reveal(CachedJournal::State::next_by);
+            }
+            reveal(CachedJournal::State::next);
+            assert(CachedJournal::State::next(pre@, self@, lbl));
+        }
+        Ghost(reads_map)
     }
 
     pub exec fn recover_map_step(&self, cache: &mut FracCacheImpl, start_lsn: ILsn, journal_raw_disk_ghost: Ghost<Map<Address, RawPage>>)
@@ -1209,6 +1377,8 @@ impl JournalImpl {
     }
 
     pub exec fn peek_next_addr(&self) -> (out: IAddress)
+        requires
+            self.basic_wf(),
         ensures
             out.au as nat == self.alloc_au(),
             out@.au == self.alloc_au(),
@@ -1217,6 +1387,8 @@ impl JournalImpl {
     }
 
     pub exec fn advance_next_addr(&mut self)
+        requires
+            old(self).basic_wf(),
         ensures
             self@ == old(self)@,
             self.format_ok() == old(self).format_ok(),
@@ -1230,8 +1402,52 @@ impl JournalImpl {
     }
 
     pub closed spec fn alloc_au(&self) -> nat
+        recommends
+            self.journal_alloc.wf(),
     {
-        self.journal_alloc.alloc_au() as nat
+        self.journal_alloc.alloc_au_nat()
+    }
+
+    pub exec fn reset_free_au_threshold(&mut self, free_au_threshold: IAU)
+        requires
+            old(self).basic_wf(),
+        ensures
+            self.basic_wf(),
+            self@ == old(self)@,
+            self.alloc_au() == old(self).alloc_au(),
+    {
+        self.journal_alloc.reset_threshold(free_au_threshold);
+    }
+
+    pub exec fn free_aus_below_threshold(&self) -> (out: bool)
+        requires
+            self.basic_wf(),
+    {
+        self.journal_alloc.free_aus_below_threshold()
+    }
+
+    pub exec fn background_refill_aus(
+        &mut self,
+        pool: &mut AuPoolImpl,
+        total_aus: IAU,
+    ) -> (out: Option<AuAllocation>)
+        requires
+            old(self).basic_wf(),
+            old(pool).canonical_wf(total_aus),
+        ensures
+            self.basic_wf(),
+            self@ == old(self)@,
+            pool.canonical_wf(total_aus),
+            match out {
+                Some(allocation) => {
+                    &&& allocation.wf(total_aus)
+                    &&& allocation.as_set() <= old(pool)@
+                    &&& pool@ =~= old(pool)@ - allocation.as_set()
+                },
+                None => pool@ =~= old(pool)@,
+            },
+    {
+        self.journal_alloc.refill_from_pool(pool, total_aus)
     }
 
     fn record_fits_in_page(&self, message_len: usize) -> (fits: bool)

@@ -24,8 +24,8 @@ use crate::implementation::AllocationBranchStack_v::normalize_value;
 use crate::implementation::AllocationBranchStackRefinement_v::append_puts;
 use crate::implementation::Cache_v::{addr_maps_to_req, Cache, Entry, Slot, Status};
 use crate::implementation::CachedBranch_v::{
-    CachedBranch, LoadedBranch, LoadedPathReceipt,
-    root_summary_from_read, root_summary_read_valid,
+    CachedBranch, LoadedBranch, LoadedPathReceipt, root_summary_from_read,
+    root_summary_read_valid,
 };
 use crate::implementation::CachedJournal_v::{CachedJournal, JournalSnapshot};
 use crate::implementation::CachingDiskBranch_v::{
@@ -584,8 +584,10 @@ impl AtomicBranchState::State {
                 by {
                     assert(post.image.sealed_roots[i] == pre.image.sealed_roots.push(pre.active_branch.root.unwrap())[i]);
                 }
-                assert(post.image.sealed_roots.take(n as int) == pre.image.sealed_roots.take(n as int));
-            },
+	                assert(post.image.sealed_roots.take(n as int) == pre.image.sealed_roots.take(n as int));
+	                assert(post.active_branch == CachedBranch::State::empty_active());
+	                assert(post.active_branch.wf());
+	            },
             AtomicBranchState::Step::fill_aus() => {
                 assert(AtomicBranchState::State::fill_aus(pre, post, lbl));
                 assert(post.mini_allocator.wf());
@@ -696,9 +698,11 @@ impl AtomicBranchState::State {
                     by {
                         assert(post.image.sealed_roots[i] == pre.image.sealed_roots.push(pre.active_branch.root.unwrap())[i]);
                     }
-                    assert(post.image.sealed_roots.take(n as int) == pre.image.sealed_roots.take(n as int));
-                    assert(post.image.sealed_roots.take(n as int) == image.sealed_roots);
-                },
+	                    assert(post.image.sealed_roots.take(n as int) == pre.image.sealed_roots.take(n as int));
+	                    assert(post.image.sealed_roots.take(n as int) == image.sealed_roots);
+	                    assert(post.active_branch == CachedBranch::State::empty_active());
+	                    assert(post.active_branch.wf());
+	                },
                 AtomicBranchState::Step::fill_aus() => {
                     assert(AtomicBranchState::State::fill_aus(pre, post, lbl));
                     assert(post.image == pre.image);

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-2-Clause
 use vstd::prelude::*;
 
+use crate::spec::AsyncDisk_t::Address;
 use crate::spec::ImplDisk_t::{IAddress, IAU, IPage};
 use crate::implementation::OverflowFiction_v::convert_overflow_into_liveness_failure;
 
@@ -29,6 +30,14 @@ impl PageAllocator {
         self.next_page
     }
 
+    pub closed spec fn next_addr(self) -> Address {
+        Address{au: self.alloc_au_nat(), page: self.next_page() as nat}
+    }
+
+    pub closed spec fn next_addr_wf(self) -> bool {
+        self.next_addr().wf()
+    }
+
     pub fn new(au: IAU, start_page: IPage) -> (out: Self)
         ensures
             out.wf(),
@@ -51,8 +60,17 @@ impl PageAllocator {
             out.au == self.alloc_au(),
             out.page == self.next_page(),
             out@.au == self.alloc_au_nat(),
+            self.next_addr_wf() ==> out@.wf(),
     {
-        IAddress { au: self.au, page: self.next_page }
+        let out = IAddress { au: self.au, page: self.next_page };
+        proof {
+            if self.next_addr_wf() {
+                reveal(PageAllocator::next_addr_wf);
+                reveal(PageAllocator::next_addr);
+                assert(out@ == self.next_addr());
+            }
+        }
+        out
     }
 
     pub fn advance_next_addr(&mut self)

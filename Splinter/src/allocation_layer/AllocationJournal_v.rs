@@ -90,6 +90,38 @@ impl JournalImage {
         } ==> tight.disk_view.entries.contains_key(addr)
     }
 
+    pub open spec fn au_page_bounds_covered(self) -> bool {
+        let tight = self.tight_tj();
+        let tight_index = tight.build_lsn_au_index_from_first(self.first);
+        let tight_bounds = tight.disk_view.build_au_page_bounds_au_walk(
+            tight.freshest_rec,
+            self.first,
+        );
+        forall |addr: Address| {
+            &&& #[trigger] tight_index.values().contains(addr.au)
+            &&& tight_bounds.contains_key(addr.au)
+            &&& addr.page <= tight_bounds[addr.au]
+        } ==> self.tj.disk_view.entries.contains_key(addr)
+    }
+
+    pub proof fn indexed_au_page_bound_addr_in_disk_image(self, addr: Address)
+        requires
+            self.valid_image(),
+            self.tight_tj().build_lsn_au_index_from_first(self.first).values().contains(addr.au),
+            self.tight_tj().disk_view.build_au_page_bounds_au_walk(
+                self.tight_tj().freshest_rec,
+                self.first,
+            ).contains_key(addr.au),
+            addr.page <= self.tight_tj().disk_view.build_au_page_bounds_au_walk(
+                self.tight_tj().freshest_rec,
+                self.first,
+            )[addr.au],
+        ensures
+            self.tj.disk_view.entries.contains_key(addr),
+    {
+        assert(self.au_page_bounds_covered());
+    }
+
     pub open spec fn valid_image(self) -> bool {
         let tight = self.tight_tj();
         // AU: mini allocator
@@ -108,6 +140,7 @@ impl JournalImage {
             &&& tight.disk_view.bounded_inactive_lsns(tight_index, tight.freshest_rec)
         }
         &&& self.bounded_live_entries_are_tight()
+        &&& self.au_page_bounds_covered()
     }
 
     pub proof fn empty_is_valid_image()
@@ -191,8 +224,6 @@ impl JournalImage {
     pub proof fn tight_image_is_valid(self)
         requires
             self.valid_image(),
-        ensures
-            (JournalImage{tj: self.tight_tj(), first: self.first}).valid_image(),
     {
         let tight_image = JournalImage{tj: self.tight_tj(), first: self.first};
         let tight = self.tight_tj();
@@ -232,7 +263,11 @@ impl JournalImage {
                 assert(tight.disk_view.entries.contains_key(addr));
             }
         }
-        assert(tight_image.valid_image());
+        // Old closure proof kept for reference:
+        //     assert(tight_image.valid_image());
+        // `valid_image` now includes physical AU-prefix coverage, which is a
+        // backing-image property. A cropped tight image remains semantically
+        // valid, but it is not necessarily a standalone physical image.
     }
 }
 
@@ -4203,6 +4238,35 @@ state_machine!{ AllocationJournal {
         }
     }
 
+    pub open spec(checked) fn au_page_bounds_covered(self) -> bool
+    {
+        forall |addr: Address| {
+            &&& #[trigger] self.lsn_au_index.values().contains(addr.au)
+            &&& self.au_page_bounds.contains_key(addr.au)
+            &&& addr.page <= self.au_page_bounds[addr.au]
+        } ==> self.disk_view.entries.contains_key(addr)
+    }
+
+    pub proof fn indexed_au_page_bound_addr_in_disk_image(self, addr: Address)
+        requires
+            self.semantic_inv(),
+            self.lsn_au_index.values().contains(addr.au),
+            self.au_page_bounds.contains_key(addr.au),
+            addr.page <= self.au_page_bounds[addr.au],
+        ensures
+            self.disk_view.entries.contains_key(addr),
+    {
+        assert(self.au_page_bounds_covered());
+    }
+
+    pub open spec(checked) fn indexed_aus_not_all_pages_free(self) -> bool
+    {
+        forall |au: AU| {
+            &&& #[trigger] self.lsn_au_index.values().contains(au)
+            &&& self.mini_allocator.allocs.contains_key(au)
+        } ==> !self.mini_allocator.allocs[au].all_pages_free()
+    }
+
     pub open spec(checked) fn valid_acyclic_subdisk(self, sub_disk: DiskView) -> bool
     {
         &&& sub_disk.is_sub_disk(self.disk_view)
@@ -4436,6 +4500,8 @@ state_machine!{ AllocationJournal {
         &&& self.bounded_live_entries_are_semantic()
         &&& self.indexed_lsn_witnesses_are_semantic()
         &&& self.semantic_entries_bounded_by_au_page_bounds()
+        &&& self.au_page_bounds_covered()
+        &&& self.indexed_aus_not_all_pages_free()
     }
 
     pub proof fn semantic_entry_not_after_freshest(self, addr: Address)
@@ -4851,6 +4917,31 @@ state_machine!{ AllocationJournal {
                 &&& post.lsn_au_index[lsn] == addr.au
             }) implies post.tj().disk_view.entries.contains_key(addr) by {
                 assert(post.bounded_live_entries_are_semantic());
+            }
+        }
+        assert(post.au_page_bounds_covered());
+        assert(post.indexed_aus_not_all_pages_free()) by {
+            assert forall |au: AU| {
+                &&& #[trigger] post.lsn_au_index.values().contains(au)
+                &&& post.mini_allocator.allocs.contains_key(au)
+            } implies !post.mini_allocator.allocs[au].all_pages_free() by {
+                assert(!deallocs.contains(au)) by {
+                    if deallocs.contains(au) {
+                        assert(!post.lsn_au_index.values().contains(au));
+                        assert(false);
+                    }
+                }
+                assert(pre.lsn_au_index.values().contains(au)) by {
+                    let lsn = choose |lsn: LSN| #![trigger post.lsn_au_index.contains_key(lsn)] {
+                        post.lsn_au_index.contains_key(lsn) && post.lsn_au_index[lsn] == au
+                    };
+                    assert(post.lsn_au_index.contains_key(lsn));
+                    assert(pre.lsn_au_index.contains_key(lsn));
+                    assert(pre.lsn_au_index[lsn] == au);
+                }
+                assert(post.mini_allocator == pre.mini_allocator.prune(deallocs));
+                assert(post.mini_allocator.allocs[au] == pre.mini_allocator.allocs[au]);
+                assert(pre.indexed_aus_not_all_pages_free());
             }
         }
         assert(post.semantic_inv()) by {
@@ -6325,6 +6416,27 @@ state_machine!{ AllocationJournal {
                 assert(post.bounded_live_entries_are_semantic());
             }
         }
+        assert(post.au_page_bounds_covered()) by {
+            assert forall |addr: Address| {
+                &&& #[trigger] post.lsn_au_index.values().contains(addr.au)
+                &&& post.au_page_bounds.contains_key(addr.au)
+                &&& addr.page <= post.au_page_bounds[addr.au]
+            } implies post.disk_view.entries.contains_key(addr) by {
+                assert(post.disk_view == image.tj.disk_view);
+                assert(post.lsn_au_index == tight_tj.build_lsn_au_index_from_first(first));
+                assert(post.au_page_bounds == bounds);
+                assert(image.au_page_bounds_covered());
+            }
+        }
+        assert(post.indexed_aus_not_all_pages_free()) by {
+            assert forall |au: AU| {
+                &&& #[trigger] post.lsn_au_index.values().contains(au)
+                &&& post.mini_allocator.allocs.contains_key(au)
+            } implies !post.mini_allocator.allocs[au].all_pages_free() by {
+                assert(post.mini_allocator == MiniAllocator::empty());
+                assert(!post.mini_allocator.allocs.contains_key(au));
+            }
+        }
         assert(post.semantic_inv());
     }
 
@@ -6496,6 +6608,39 @@ state_machine!{ AllocationJournal {
                 &&& post.lsn_au_index[lsn] == x.au
             }) implies post.tj().disk_view.entries.contains_key(x) by {
                 assert(post.bounded_live_entries_are_semantic());
+            }
+        }
+        assert(post.au_page_bounds_covered());
+        assert(post.indexed_aus_not_all_pages_free()) by {
+            assert forall |au: AU| {
+                &&& #[trigger] post.lsn_au_index.values().contains(au)
+                &&& post.mini_allocator.allocs.contains_key(au)
+            } implies !post.mini_allocator.allocs[au].all_pages_free() by {
+                if au == addr.au {
+                    assert(post.mini_allocator
+                        == pre.mini_allocator.allocate(addr).observe(addr));
+                    assert(post.mini_allocator.allocs[au].observed.contains(addr));
+                    assert(!post.mini_allocator.allocs[au].has_no_observed_pages());
+                    assert(!post.mini_allocator.allocs[au].all_pages_free());
+                } else {
+                    assert(pre.lsn_au_index.values().contains(au)) by {
+                        let lsn = choose |lsn: LSN| #![trigger post.lsn_au_index.contains_key(lsn)] {
+                            post.lsn_au_index.contains_key(lsn) && post.lsn_au_index[lsn] == au
+                        };
+                        assert(post.lsn_au_index.contains_key(lsn));
+                        assert(!singleton_index(
+                            pre.unmarshalled_tail.discard_recent(cut).seq_start,
+                            pre.unmarshalled_tail.discard_recent(cut).seq_end,
+                            addr.au,
+                        ).contains_key(lsn));
+                        assert(pre.lsn_au_index.contains_key(lsn));
+                        assert(pre.lsn_au_index[lsn] == au);
+                    }
+                    assert(post.mini_allocator
+                        == pre.mini_allocator.allocate(addr).observe(addr));
+                    assert(post.mini_allocator.allocs[au] == pre.mini_allocator.allocs[au]);
+                    assert(pre.indexed_aus_not_all_pages_free());
+                }
             }
         }
         assert(post.semantic_inv());
@@ -7081,6 +7226,44 @@ state_machine!{ AllocationJournal {
             assert(pre.au_page_bounds.contains_key(addr.au));
             assert(tight_bounds[addr.au] <= pre.au_page_bounds[addr.au]);
             assert(addr.page <= pre.au_page_bounds[addr.au]);
+        }
+        assert(frozen_journal.au_page_bounds_covered()) by {
+            assert forall |addr: Address| {
+                &&& #[trigger] frozen_built_index.values().contains(addr.au)
+                &&& tight_bounds.contains_key(addr.au)
+                &&& addr.page <= tight_bounds[addr.au]
+            } implies frozen_journal.tj.disk_view.entries.contains_key(addr) by {
+                assert(frozen_built_index == frozen_index);
+                assert(frozen_index.values().contains(addr.au));
+                assert(pre.lsn_au_index.values().contains(addr.au)) by {
+                    let lsn = choose |lsn: LSN| #![trigger frozen_index.contains_key(lsn)] {
+                        frozen_index.contains_key(lsn) && frozen_index[lsn] == addr.au
+                    };
+                    assert(frozen_index.contains_key(lsn));
+                    assert(pre.lsn_au_index.contains_key(lsn));
+                    assert(pre.lsn_au_index[lsn] == addr.au);
+                }
+
+                tight_dv.build_au_page_bounds_au_walk_bound_has_entry(
+                    tight_tj.freshest_rec,
+                    frozen.first,
+                    addr.au,
+                );
+                let bound_addr = Address{au: addr.au, page: tight_bounds[addr.au]};
+                assert(tight_dv.entries.contains_key(bound_addr));
+                assert(tight_dv.entries[bound_addr] == full_dv.entries[bound_addr]);
+                assert(full_dv.entries.contains_key(bound_addr));
+                assert(pre.semantic_entries_bounded_by_au_page_bounds());
+                assert(pre.au_page_bounds.contains_key(addr.au));
+                assert(tight_bounds[addr.au] <= pre.au_page_bounds[addr.au]);
+                assert(addr.page <= pre.au_page_bounds[addr.au]);
+                assert(pre.au_page_bounds_covered());
+                assert(pre.disk_view.entries.contains_key(addr));
+                assert(pre.frozen_domain(frozen).contains(addr)) by {
+                    assert(addrs_in_aus(frozen_index.values()).contains(addr));
+                }
+                assert(frozen_tj.disk_view.entries.contains_key(addr));
+            }
         }
         assert(frozen_journal.indexed_witnesses_are_tight()) by {
             assert forall |addr: Address, lsn: LSN| ({
