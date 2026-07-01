@@ -85,7 +85,7 @@ use crate::implementation::UnifiedCacheBranchRefinement_v as UnifiedCacheBranchR
 use crate::implementation::UnifiedCacheJournalRefinement_v as UnifiedCacheJournalRefinement;
 use crate::implementation::UnifiedCacheProgramModel_v::UnifiedCacheProgramModel;
 use crate::implementation::UnifiedCacheSystem_v::{
-    AtomicSyncPhase, UnifiedCacheSystem, cache_clean_filled_addr,
+    AtomicSyncPhase, UnifiedCacheSystem,
     cache_filled_addr_raw, cache_filled_page_raw, cache_write_response_addrs,
 };
 use crate::implementation::RecoveryState_v::RecoveryState;
@@ -11200,13 +11200,6 @@ pub proof fn program_internal_branch_seal_refines(
     )) by {
         reveal(UnifiedCacheSystem::State::branch_seal);
     }
-    assert forall |addr: Address| {
-        &&& #[trigger] mini_allocator_allocated_addrs(pre_state.branch.mini_allocator).contains(addr)
-        &&& cache_clean_filled_addr(pre_state.cache, addr)
-        &&& !writes.contains_key(addr)
-    } implies false by {
-        reveal(UnifiedCacheSystem::State::branch_seal);
-    }
     assert(post_state.journal == pre_state.journal);
     assert(post_state.free_aus == pre_state.free_aus);
     assert(post_state.persistent_image == pre_state.persistent_image);
@@ -11223,27 +11216,6 @@ pub proof fn program_internal_branch_seal_refines(
     assert(UnifiedCacheBranchRefinement::inv(branch_pre));
     assert(branch_pre.superblock_loaded());
     assert(branch_pre.branch.metadata_loaded());
-    assert forall |addr: Address| {
-        &&& #[trigger] mini_allocator_allocated_addrs(
-            branch_pre.branch_caching_disk_state_i().mini_allocator,
-        ).contains(addr)
-        &&& filled_cache_status(branch_pre.cache).contains_key(addr)
-        &&& filled_cache_status(branch_pre.cache)[addr] == PageStatus::Clean
-        &&& !writes.contains_key(addr)
-    } implies false by {
-        assert(branch_pre.cache == pre_state.cache);
-        assert(branch_pre.branch == pre_state.branch);
-        assert(mini_allocator_allocated_addrs(pre_state.branch.mini_allocator).contains(addr));
-        assert(cache_clean_filled_addr(pre_state.cache, addr)) by {
-            assert(cache_filled_addr(pre_state.cache, addr));
-            assert(pre_state.cache.entries.contains_key(pre_state.cache.lookup_map[addr]));
-            assert(pre_state.cache.entries[pre_state.cache.lookup_map[addr]] is Filled);
-            assert(pre_state.cache.status_map.contains_key(pre_state.cache.lookup_map[addr]));
-            assert(cache_status_i(pre_state.cache, addr) == PageStatus::Clean);
-            assert(pre_state.cache.status_map[pre_state.cache.lookup_map[addr]] is Clean);
-        }
-        assert(false);
-    }
     UnifiedCacheBranchRefinement::seal_refines(
         branch_pre,
         branch_post,

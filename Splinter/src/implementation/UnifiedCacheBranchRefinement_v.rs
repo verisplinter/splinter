@@ -5681,14 +5681,6 @@ pub proof fn seal_refines(
                 write_nodes: to_branch_nodes(writes),
             },
         ),
-        forall |addr: Address| {
-            &&& #[trigger] mini_allocator_allocated_addrs(
-                pre.branch_caching_disk_state_i().mini_allocator,
-            ).contains(addr)
-            &&& filled_cache_status(pre.cache).contains_key(addr)
-            &&& filled_cache_status(pre.cache)[addr] == PageStatus::Clean
-            &&& !writes.contains_key(addr)
-        } ==> false,
     ensures
         CrashAwareCachingDiskBranch::State::next(
             unified_cache_branch_i(pre),

@@ -749,11 +749,6 @@ state_machine!{ UnifiedCacheSystem {
         require pre.client_ready();
         require Cache::State::next(pre.cache, new_cache, cache_lbl);
         require AtomicBranchState::State::next(pre.branch, new_branch, branch_lbl);
-        require forall |addr: Address| {
-            &&& #[trigger] mini_allocator_allocated_addrs(pre.branch.mini_allocator).contains(addr)
-            &&& cache_clean_filled_addr(pre.cache, addr)
-            &&& !writes.contains_key(addr)
-        } ==> false;
         update cache = new_cache;
         update branch = new_branch;
     }}
