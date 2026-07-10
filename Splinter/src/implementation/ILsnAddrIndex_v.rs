@@ -3,8 +3,10 @@
 use vstd::prelude::*;
 use vstd::assert_maps_equal;
 use crate::abstract_system::StampedMap_v::LSN;
-use crate::disk::GenericDisk_v::{Address, IAddress};
+use crate::disk::GenericDisk_v::{Address, AU, IAddress, to_aus, to_aus_domain};
+use crate::implementation::AuPoolImpl_v::iau_vec_set;
 use crate::implementation::JournalTypes_v::ILsn;
+use crate::spec::ImplDisk_t::IAU;
 use crate::allocation_layer::LikesJournal_v::{LsnAddrIndex, largest_lsn_plus_one, maxmax, lsn_addr_index_append_record, lsn_addr_index_discard_up_to, singleton_index};
 use crate::implementation::CachedJournal_v::{
     addr_to_lsns,
@@ -35,11 +37,9 @@ impl ILsnAddrIndex {
         &&& forall |i: int, j: int| #![auto] 0 <= i < j < self.addrs.len() ==> self.addrs[i]@ != self.addrs[j]@
     }
 
-    // TODO maybe delete; does any caller care?
-    pub closed spec fn is_empty(&self) -> bool
+    closed spec fn addrs_values(&self) -> Set<Address>
     {
-        &&& self.bounds.len() == 1
-        &&& self.addrs.len() == 0
+        Set::new(|addr: Address| exists |i: int| 0 <= i < self.addrs.len() && self.addrs[i]@ == addr)
     }
 
     pub closed spec fn seq_start(self) -> ILsn
@@ -64,6 +64,46 @@ impl ILsnAddrIndex {
         ensures out == self.seq_end()
     {
         self.bounds[self.bounds.len()-1]
+    }
+
+    pub exec fn au_vec(&self) -> (out: Vec<IAU>)
+        requires
+            self.wf(),
+        ensures
+            iau_vec_set(out@) =~= to_aus(self@.values()),
+    {
+        let mut out = Vec::<IAU>::new();
+        let mut idx: usize = 0;
+        while idx < self.addrs.len()
+            invariant
+                self.wf(),
+                idx <= self.addrs.len(),
+                out@.len() == idx,
+                forall |i: int| 0 <= i < idx ==> out@[i] as nat == self.addrs[i]@.au,
+            decreases self.addrs.len() - idx,
+        {
+            out.push(self.addrs[idx].au);
+            idx = idx + 1;
+        }
+        proof {
+            self.values_match_addrs();
+            assert(iau_vec_set(out@) =~= to_aus(self@.values())) by {
+                assert forall |au: AU| #[trigger] iau_vec_set(out@).contains(au)
+                    implies to_aus(self@.values()).contains(au) by {
+                    let i = choose |i: int| 0 <= i < out@.len() && (out@[i] as nat) == au;
+                    assert(self@.values().contains(self.addrs[i]@));
+                    to_aus_domain(self@.values());
+                };
+                assert forall |au: AU| #[trigger] to_aus(self@.values()).contains(au)
+                    implies iau_vec_set(out@).contains(au) by {
+                    let addr = choose |addr: Address| self@.values().contains(addr) && addr.au == au;
+                    assert(exists |i: int| 0 <= i < self.addrs.len() && self.addrs[i]@ == addr);
+                    let i = choose |i: int| 0 <= i < self.addrs.len() && self.addrs[i]@ == addr;
+                    assert(out@[i] as nat == self.addrs[i]@.au);
+                };
+            };
+        }
+        out
     }
 
     closed spec fn i(&self, idx: int) -> LsnAddrIndex
@@ -204,6 +244,76 @@ impl ILsnAddrIndex {
         assert(self.sorted_entry(idx)); // trigger
         let lsn = self.bounds[idx] as nat;
         self.lsn_maps_to_addr(idx, lsn);
+    }
+
+    proof fn values_match_addrs(&self)
+        requires
+            self.wf(),
+        ensures
+            self@.values() =~= self.addrs_values(),
+    {
+        assert forall |addr: Address| #[trigger] self@.values().contains(addr)
+            implies exists |i: int| 0 <= i < self.addrs.len() && self.addrs[i]@ == addr by {
+            let lsn = choose |lsn: LSN| #[trigger] self@.contains_key(lsn) && self@[lsn] == addr;
+            self.view_domain();
+            let idx = self.find_segment(lsn);
+            self.lsn_maps_to_addr(idx, lsn);
+            assert(self.addrs[idx]@ == addr);
+        };
+        assert forall |addr: Address| #[trigger] self.addrs_values().contains(addr)
+            implies self@.values().contains(addr) by {
+            let i = choose |i: int| 0 <= i < self.addrs.len() && self.addrs[i]@ == addr;
+            self.addr_at_idx_in_values(i);
+        };
+    }
+
+    pub exec fn contains_addr(&self, addr: &IAddress) -> (out: bool)
+        requires
+            self.wf(),
+        ensures
+            out == self@.values().contains(addr@),
+    {
+        let mut idx: usize = 0;
+        while idx < self.addrs.len()
+            invariant
+                self.wf(),
+                idx <= self.addrs.len(),
+                forall |i: int| 0 <= i < idx ==> self.addrs[i]@ != addr@,
+            decreases self.addrs.len() - idx,
+        {
+            if self.addrs[idx].au == addr.au && self.addrs[idx].page == addr.page {
+                proof {
+                    assert(self.addrs[idx as int]@.au == addr@.au);
+                    assert(self.addrs[idx as int]@.page == addr@.page);
+                    assert(self.addrs[idx as int]@ == addr@);
+                    self.addr_at_idx_in_values(idx as int);
+                }
+                return true;
+            }
+            proof {
+                if self.addrs[idx as int]@ == addr@ {
+                    assert(self.addrs[idx as int]@.au == addr@.au);
+                    assert(self.addrs[idx as int]@.page == addr@.page);
+                    assert(self.addrs[idx as int].au == addr.au);
+                    assert(self.addrs[idx as int].page == addr.page);
+                    assert(false);
+                }
+                assert(self.addrs[idx as int]@ != addr@);
+            }
+            idx = idx + 1;
+        }
+        proof {
+            self.values_match_addrs();
+            assert(!self.addrs_values().contains(addr@)) by {
+                if self.addrs_values().contains(addr@) {
+                    let i = choose |i: int| 0 <= i < self.addrs.len() && self.addrs[i]@ == addr@;
+                    assert(i < idx);
+                    assert(self.addrs[i]@ != addr@);
+                    assert(false);
+                }
+            }
+        }
+        false
     }
 
     proof fn find_segment_up_to(&self, lsn: LSN, j: int) -> (idx: int)
@@ -659,7 +769,6 @@ impl ILsnAddrIndex {
         }
     }
 
-    #[verifier::external_body]
     pub exec fn discard_up_to(&mut self, new_lower_bound: ILsn)
         requires
             old(self).wf(),
@@ -671,6 +780,22 @@ impl ILsnAddrIndex {
             self@ == lsn_addr_index_discard_up_to(old(self)@, new_lower_bound as nat),
     {
         if new_lower_bound == self.bounds[0] {
+            proof {
+                let discarded = lsn_addr_index_discard_up_to(self@, new_lower_bound as nat);
+                self.view_domain();
+                crate::allocation_layer::LikesJournal_v::lsn_addr_index_discard_up_to_ensures(
+                    self@,
+                    new_lower_bound as nat,
+                );
+                assert_maps_equal!(self@, discarded, lsn => {
+                    if self@.contains_key(lsn) {
+                        assert(self.seq_start() as nat <= lsn);
+                        assert(new_lower_bound as nat <= lsn);
+                        assert(discarded.contains_key(lsn));
+                        assert(discarded[lsn] == self@[lsn]);
+                    }
+                });
+            }
             return;
         }
 
@@ -737,8 +862,20 @@ impl ILsnAddrIndex {
             idx += 1;
         }
 
+        let ghost suffix_bounds = old_self.bounds@.subrange(
+            (idx + 1) as int,
+            old_self.bounds@.len() as int,
+        );
+        let ghost suffix_addrs = old_self.addrs@.subrange(
+            idx as int,
+            old_self.addrs@.len() as int,
+        );
         let mut new_bounds = self.bounds.split_off(idx + 1);
         let new_addrs = self.addrs.split_off(idx);
+        proof {
+            assert(new_bounds@ == suffix_bounds);
+            assert(new_addrs@ == suffix_addrs);
+        }
         new_bounds.insert(0, new_lower_bound);
         self.bounds = new_bounds;
         self.addrs = new_addrs;
@@ -772,8 +909,82 @@ impl ILsnAddrIndex {
                 assert(self.addrs[j] == old_self.addrs[(idx as int) + j]);
                 assert(old_self.addrs[(idx as int) + i]@ != old_self.addrs[(idx as int) + j]@);
             }
+            assert(self.bounds@ == suffix_bounds.insert(0, new_lower_bound));
+            assert(self.addrs@ == suffix_addrs);
+            assert(self.bounds[0] == new_lower_bound);
+            assert forall |j: int| 0 <= j < self.addrs.len()
+                implies #[trigger] self.addrs[j] == old_self.addrs[(idx as int) + j] by {
+                assert(self.addrs@ == suffix_addrs);
+            }
+            assert forall |j: int| 1 <= j < self.bounds.len()
+                implies #[trigger] self.bounds[j] == old_self.bounds[(idx as int) + j] by {
+                assert(self.bounds@ == suffix_bounds.insert(0, new_lower_bound));
+            }
 
-            assume(self@ == lsn_addr_index_discard_up_to(old(self)@, new_lower_bound as nat));
+            let discarded = lsn_addr_index_discard_up_to(old_self@, new_lower_bound as nat);
+            old_self.view_domain();
+            self.view_domain();
+            crate::allocation_layer::LikesJournal_v::lsn_addr_index_discard_up_to_ensures(
+                old_self@,
+                new_lower_bound as nat,
+            );
+            assert_maps_equal!(self@, discarded, lsn => {
+                if self@.contains_key(lsn) {
+                    assert(self.seq_start() as nat <= lsn < self.seq_end() as nat);
+                    assert(self.seq_start() == new_lower_bound);
+                    let new_segment = self.find_segment(lsn);
+                    let old_segment = (idx as int) + new_segment;
+                    assert(0 <= old_segment < old_self.addrs.len());
+                    assert(self.addrs[new_segment] == old_self.addrs[old_segment]);
+                    if new_segment == 0 {
+                        assert(old_self.bounds[idx as int] <= new_lower_bound);
+                        assert(old_self.bounds[idx as int] <= lsn);
+                        assert(self.bounds[1] == old_self.bounds[(idx + 1) as int]);
+                        assert(lsn < old_self.bounds[(idx + 1) as int]);
+                    } else {
+                        assert(self.bounds[new_segment]
+                            == old_self.bounds[old_segment]);
+                        assert(self.bounds[new_segment + 1]
+                            == old_self.bounds[old_segment + 1]);
+                    }
+                    old_self.lsn_maps_to_addr(old_segment, lsn);
+                    self.lsn_maps_to_addr(new_segment, lsn);
+                    assert(old_self@[lsn] == self@[lsn]);
+                    assert(discarded.contains_key(lsn));
+                    assert(discarded[lsn] == old_self@[lsn]);
+                }
+
+                if discarded.contains_key(lsn) {
+                    assert(old_self@.contains_key(lsn));
+                    assert(new_lower_bound as nat <= lsn);
+                    let old_segment = old_self.find_segment(lsn);
+                    assert((idx as int) <= old_segment) by {
+                        if old_segment < idx {
+                            old_self.bounds_monotone(old_segment + 1, idx as int);
+                            assert(lsn < old_self.bounds[old_segment + 1]);
+                            assert(old_self.bounds[old_segment + 1]
+                                <= old_self.bounds[idx as int]);
+                            assert(old_self.bounds[idx as int] <= new_lower_bound);
+                            assert(false);
+                        }
+                    }
+                    let new_segment = old_segment - (idx as int);
+                    assert(0 <= new_segment < self.addrs.len());
+                    assert(self.addrs[new_segment] == old_self.addrs[old_segment]);
+                    if new_segment == 0 {
+                        assert(self.bounds[0] == new_lower_bound);
+                        assert(self.bounds[1] == old_self.bounds[old_segment + 1]);
+                    } else {
+                        assert(self.bounds[new_segment] == old_self.bounds[old_segment]);
+                        assert(self.bounds[new_segment + 1]
+                            == old_self.bounds[old_segment + 1]);
+                    }
+                    self.lsn_maps_to_addr(new_segment, lsn);
+                    old_self.lsn_maps_to_addr(old_segment, lsn);
+                    assert(self@[lsn] == old_self@[lsn]);
+                    assert(discarded[lsn] == old_self@[lsn]);
+                }
+            });
         }
     }
 

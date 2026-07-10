@@ -31,8 +31,7 @@ use crate::implementation::CachedJournal_v::{CachedJournal, JournalSnapshot};
 use crate::implementation::CachingDiskBranch_v::{sealed_summary_aus_between, split_read_addrs};
 use crate::implementation::CachingDisk_v::addresses_in_aus;
 use crate::implementation::AbstractSuperblock_v::{
-    AbstractSuperblockImage, empty_abstract_superblock_image, marshal_abstract_superblock,
-    superblock_matches,
+    AbstractSuperblockImage, empty_abstract_superblock_image, superblock_matches,
 };
 use crate::implementation::DiskLayout_v::spec_superblock_addr;
 use crate::implementation::JournalTypes_v::to_journal_records;
@@ -155,7 +154,7 @@ state_machine!{ AtomicJournalState {
         );
 
         update journal = new_journal;
-        update mini_allocator = pre.mini_allocator.allocate(addr).observe(addr);
+        update mini_allocator = pre.mini_allocator.allocate(addr);
     }}
 
     transition!{ observe_clean_aus(lbl: Label, new_journal: CachedJournal::State) {
@@ -187,7 +186,7 @@ state_machine!{ AtomicJournalState {
     transition!{ commit_start(lbl: Label) {
         require let Label::CommitStart{snapshot, seq_end, reads} = lbl;
         require pre.in_flight is None;
-        require pre.persistent_seq_end <= snapshot.boundary_lsn;
+        require pre.persistent_seq_end <= seq_end;
         require snapshot.boundary_lsn <= seq_end;
         require seq_end == journal_snapshot_seq_end_from_reads(snapshot, reads);
         require CachedJournal::State::next(
@@ -354,7 +353,7 @@ impl AtomicJournalState::State {
                     writes,
                 });
                 assert(pre.mini_allocator.allocate(addr).wf());
-                assert(pre.mini_allocator.allocate(addr).observe(addr).wf());
+                assert(pre.mini_allocator.allocate(addr).wf());
                 assert(post.wf());
             },
             AtomicJournalState::Step::observe_clean_aus(new_journal) => {
@@ -433,6 +432,8 @@ impl AtomicJournalState::State {
             post.in_flight is None,
             post.prepared == false,
             post.mini_allocator == pre.mini_allocator.prune(lbl->discarded_aus),
+            lbl->discarded_aus == pre.journal.status.unwrap().lsn_au_index.values()
+                - post.journal.status.unwrap().lsn_au_index.values(),
             lbl->discarded_aus <= pre.owned_aus(),
             post.owned_aus() <= pre.owned_aus(),
             post.owned_aus().disjoint(lbl->discarded_aus),
@@ -516,6 +517,35 @@ impl AtomicJournalState::State {
         match step {
             AtomicJournalState::Step::commit_start() => {
                 assert(AtomicJournalState::State::commit_start(pre, post, lbl));
+            },
+            _ => {
+                assert(false);
+            },
+        }
+    }
+
+    pub proof fn fill_aus_effect(pre: Self, post: Self, lbl: AtomicJournalState::Label)
+        requires
+            AtomicJournalState::State::next(pre, post, lbl),
+            lbl is FillAUs,
+        ensures
+            post.journal == pre.journal,
+            post.persistent_seq_end == pre.persistent_seq_end,
+            post.in_flight == pre.in_flight,
+            post.prepared == pre.prepared,
+            post.mini_allocator == pre.mini_allocator.add_aus(match lbl {
+                AtomicJournalState::Label::FillAUs{aus} => aus,
+                _ => arbitrary(),
+            }),
+    {
+        reveal(AtomicJournalState::State::next);
+        reveal(AtomicJournalState::State::next_by);
+        let step = choose |step| AtomicJournalState::State::next_by(pre, post, lbl, step);
+        match step {
+            AtomicJournalState::Step::fill_aus() => {
+                assert(AtomicJournalState::State::fill_aus(pre, post, lbl)) by {
+                    reveal(AtomicJournalState::State::fill_aus);
+                }
             },
             _ => {
                 assert(false);

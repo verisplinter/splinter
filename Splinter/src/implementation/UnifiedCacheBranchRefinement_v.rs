@@ -2744,9 +2744,9 @@ proof fn query_receipt_needed_addr_in_branch_projection(
                 assert(branch.representation() == branch.disk_view.entries.dom());
             }
             assert(cdb.active_branch_i().addrs_closed_under_mini_allocator());
-            assert(cdb.active_branch_i().mini_allocator.page_is_reserved(branch_addr));
+            assert(cdb.active_branch_i().mini_allocator.page_is_allocated(branch_addr));
             assert(cdb.active_branch_i().mini_allocator == cdb.mini_allocator);
-            assert(cdb.mini_allocator.page_is_reserved(branch_addr));
+            assert(cdb.mini_allocator.page_is_allocated(branch_addr));
             assert(cdb.mini_allocator.all_aus().contains(branch_addr.au));
             assert(src.branch_projection_aus() == src.branch.owned_aus());
             assert(src.branch.owned_aus() == summary_aus(cdb.branch_summary) + cdb.mini_allocator.all_aus());
@@ -2779,9 +2779,9 @@ proof fn query_receipt_needed_addr_in_branch_projection(
             assert(branch.representation() == branch.disk_view.entries.dom());
         }
         assert(cdb.active_branch_i().addrs_closed_under_mini_allocator());
-        assert(cdb.active_branch_i().mini_allocator.page_is_reserved(addr));
+        assert(cdb.active_branch_i().mini_allocator.page_is_allocated(addr));
         assert(cdb.active_branch_i().mini_allocator == cdb.mini_allocator);
-        assert(cdb.mini_allocator.page_is_reserved(addr));
+        assert(cdb.mini_allocator.page_is_allocated(addr));
         assert(cdb.mini_allocator.all_aus().contains(addr.au));
     }
     assert(src.branch_projection_aus() == src.branch.owned_aus());
@@ -2828,9 +2828,9 @@ proof fn active_receipt_needed_addr_in_branch_projection(
             assert(branch.representation() == branch.disk_view.entries.dom());
         }
         assert(cdb.active_branch_i().addrs_closed_under_mini_allocator());
-        assert(cdb.active_branch_i().mini_allocator.page_is_reserved(branch_addr));
+        assert(cdb.active_branch_i().mini_allocator.page_is_allocated(branch_addr));
         assert(cdb.active_branch_i().mini_allocator == cdb.mini_allocator);
-        assert(cdb.mini_allocator.page_is_reserved(branch_addr));
+        assert(cdb.mini_allocator.page_is_allocated(branch_addr));
         assert(cdb.mini_allocator.all_aus().contains(branch_addr.au));
         assert(src.branch_projection_aus() == src.branch.owned_aus());
         assert(src.branch.owned_aus() == summary_aus(cdb.branch_summary) + cdb.mini_allocator.all_aus());
@@ -2865,9 +2865,9 @@ proof fn active_receipt_needed_addr_in_branch_projection(
     assert(branch.disk_view.wf());
     assert(addr.wf());
     assert(cdb.active_branch_i().addrs_closed_under_mini_allocator());
-    assert(cdb.active_branch_i().mini_allocator.page_is_reserved(addr));
+    assert(cdb.active_branch_i().mini_allocator.page_is_allocated(addr));
     assert(cdb.active_branch_i().mini_allocator == cdb.mini_allocator);
-    assert(cdb.mini_allocator.page_is_reserved(addr));
+    assert(cdb.mini_allocator.page_is_allocated(addr));
     assert(cdb.mini_allocator.all_aus().contains(addr.au));
     assert(src.branch_projection_aus() == src.branch.owned_aus());
     assert(src.branch.owned_aus() == summary_aus(cdb.branch_summary) + cdb.mini_allocator.all_aus());
@@ -2903,9 +2903,9 @@ proof fn active_root_in_branch_projection(
         assert(branch.has_root());
     }
     assert(cdb.active_branch_i().addrs_closed_under_mini_allocator());
-    assert(cdb.active_branch_i().mini_allocator.page_is_reserved(root));
+    assert(cdb.active_branch_i().mini_allocator.page_is_allocated(root));
     assert(cdb.active_branch_i().mini_allocator == cdb.mini_allocator);
-    assert(cdb.mini_allocator.page_is_reserved(root));
+    assert(cdb.mini_allocator.page_is_allocated(root));
     assert(cdb.mini_allocator.all_aus().contains(root.au));
     assert(src.branch_projection_aus() == src.branch.owned_aus());
     assert(src.branch.owned_aus() == summary_aus(cdb.branch_summary) + cdb.mini_allocator.all_aus());
@@ -2940,9 +2940,9 @@ proof fn active_root_au_in_branch_mini_allocator(
         assert(branch.has_root());
     }
     assert(cdb.active_branch_i().addrs_closed_under_mini_allocator());
-    assert(cdb.active_branch_i().mini_allocator.page_is_reserved(root));
+    assert(cdb.active_branch_i().mini_allocator.page_is_allocated(root));
     assert(cdb.active_branch_i().mini_allocator == cdb.mini_allocator);
-    assert(cdb.mini_allocator.page_is_reserved(root));
+    assert(cdb.mini_allocator.page_is_allocated(root));
     assert(cdb.mini_allocator.all_aus().contains(root.au));
 }
 
@@ -3064,9 +3064,9 @@ proof fn active_split_child_in_branch_projection(
     assert(branch.disk_view.entries.contains_key(child));
     assert(child.wf());
     assert(cdb.active_branch_i().addrs_closed_under_mini_allocator());
-    assert(cdb.active_branch_i().mini_allocator.page_is_reserved(child));
+    assert(cdb.active_branch_i().mini_allocator.page_is_allocated(child));
     assert(cdb.active_branch_i().mini_allocator == cdb.mini_allocator);
-    assert(cdb.mini_allocator.page_is_reserved(child));
+    assert(cdb.mini_allocator.page_is_allocated(child));
     assert(cdb.mini_allocator.all_aus().contains(child.au));
     assert(src.branch_projection_aus() == src.branch.owned_aus());
     assert(src.branch.owned_aus() == summary_aus(cdb.branch_summary) + cdb.mini_allocator.all_aus());
@@ -5757,7 +5757,7 @@ pub proof fn seal_refines(
                 read_nodes,
                 write_nodes,
             ));
-            assert(summary == pre.branch.mini_allocator.reserved_aus());
+            assert(summary == pre.branch.mini_allocator.allocated_aus());
             assert(post.branch.image == AtomicBranchImage{
                 sealed_roots: pre.branch.image.sealed_roots.push(root),
                 seq_end: pre.branch.image.seq_end,
@@ -5787,7 +5787,7 @@ pub proof fn seal_refines(
     assert(summary <= pre.branch.mini_allocator.all_aus()) by {
         assert forall |au: AU| #[trigger] summary.contains(au)
             implies pre.branch.mini_allocator.all_aus().contains(au) by {
-            assert(summary == pre.branch.mini_allocator.reserved_aus());
+            assert(summary == pre.branch.mini_allocator.allocated_aus());
             assert(pre.branch.mini_allocator.allocs.contains_key(au));
         }
     }
@@ -5918,7 +5918,7 @@ pub proof fn seal_refines(
                     read_nodes,
                     write_nodes,
                 ));
-                assert(pre.branch.mini_allocator.reserved_aus().contains(addr.au));
+                assert(pre.branch.mini_allocator.allocated_aus().contains(addr.au));
                 assert(pre.branch.mini_allocator.all_aus().contains(addr.au));
                 assert(pre.branch.owned_aus().contains(addr.au));
                 assert(pre.branch_projection_aus() == pre.branch.owned_aus());
@@ -5942,8 +5942,8 @@ pub proof fn seal_refines(
                 assert(pre.branch.mini_allocator.wf());
                 assert(pre.branch.mini_allocator.allocs.contains_key(root.au));
                 assert(pre.branch.mini_allocator.allocs[root.au].wf());
-                assert(pre.branch.mini_allocator.page_is_reserved(root));
-                assert(pre.branch.mini_allocator.allocs[root.au].reserved.contains(root));
+                assert(pre.branch.mini_allocator.page_is_allocated(root));
+                assert(pre.branch.mini_allocator.allocs[root.au].allocated.contains(root));
                 assert(root.wf());
             } else {
                 assert(aux_ptr is Some);
@@ -6062,12 +6062,12 @@ pub proof fn seal_refines(
                     write_nodes,
                 )) by {
                     assert(projected_nodes[root] == read_nodes[root]);
-                    assert(summary == inner_pre.mini_allocator.reserved_aus());
+                    assert(summary == inner_pre.mini_allocator.allocated_aus());
                     assert(write_nodes == loaded_seal_write_nodes(
                         root,
                         projected_nodes,
                         aux_ptr,
-                        inner_pre.mini_allocator.reserved_aus(),
+                        inner_pre.mini_allocator.allocated_aus(),
                     ));
                 }
             }

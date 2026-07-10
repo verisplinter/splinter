@@ -28,11 +28,6 @@ pub open spec(checked) fn page_count() -> Page
     AsyncDisk_t::page_count()
 }
 
-pub open spec(checked) fn au_count() -> AU
-{
-    AsyncDisk_t::au_count()
-}
-
 impl Address {
     /// Returns the Address for the first page of this AU.
     pub open spec(checked) fn first_page(self) -> Address {

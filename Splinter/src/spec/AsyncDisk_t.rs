@@ -36,20 +36,18 @@ pub struct Address {
     pub page: Page,
 }
 
-/// Returns the number of a disk pages in an Allocation Unit.
-/// Left as an uninterpreted function since it's implementation defined.
-
+/// Stable pages-per-AU value selected by the executable disk geometry.
 pub uninterp spec(checked) fn page_count() -> nat;
-
-/// Returns the number of Allocation Unit of the disk.
-/// Left as an uninterpreted function since it's implementation defined.
-pub uninterp spec(checked) fn au_count() -> nat;
 
 impl Address {
     /// Returns true iff this Address is well formed.
     pub open spec(checked) fn wf(self) -> bool {
-        &&& self.au < au_count()
-        &&& self.page < page_count()
+        self.page < page_count()
+    }
+
+    pub open spec(checked) fn bounded_by(self, physical_au_count: nat) -> bool {
+        &&& self.wf()
+        &&& self.au < physical_au_count
     }
 }
 

@@ -166,8 +166,9 @@ state_machine!{ AbstractCrashAwareJournal {
             // Frozen journal stitches to frozen map
             require frozen_journal.seq_start == lbl->new_boundary_lsn;
 
-            // Journal doesn't go backwards
-            require pre.persistent.seq_end <= lbl->new_boundary_lsn;
+            // The durable journal endpoint does not go backwards. Journal-only
+            // sync may advance it while retaining the map boundary.
+            require pre.persistent.seq_end <= frozen_journal.seq_end;
             require AbstractJournal::State::next(
                 pre.ephemeral->v,
                 pre.ephemeral->v,

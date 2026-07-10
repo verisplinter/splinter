@@ -576,7 +576,7 @@ impl AllocationCrashAwareJournal::State{
 
         assert(self.i().frozen is None);
         self.persistent_image_view_i_wf();
-        assert(self.i().persistent.seq_end <= lbl->new_boundary_lsn);
+        assert(self.i().persistent.seq_end <= frozen_journal.i().seq_end);
         assert(post.i().frozen == Some(frozen_journal.i()));
         assert(AbstractCrashAwareJournal::State::next_by(
             self.i(),

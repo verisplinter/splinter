@@ -125,6 +125,57 @@ impl Clone for IBranchNode {
     }
 }
 
+impl IBranchNode {
+    pub fn clone_checked(&self) -> (out: Self)
+        ensures
+            out@ == self@,
+            self.wf() ==> out.wf(),
+    {
+        match self {
+            Self::Leaf { keys, msgs } => {
+                let out = Self::Leaf { keys: keys.clone(), msgs: msgs.clone() };
+                proof {
+                    assert(out@ == self@);
+                    if self.wf() {
+                        assert(keys.len() == msgs.len());
+                        assert(out.wf());
+                    }
+                }
+                out
+            },
+            Self::Index { pivots, children, aux_ptr } => {
+                let out = Self::Index {
+                    pivots: pivots.clone(),
+                    children: children.clone(),
+                    aux_ptr: *aux_ptr,
+                };
+                proof {
+                    assert(out@ == self@);
+                    if self.wf() {
+                        assert(children.len() == pivots.len() + 1);
+                        assert(out->pivots.wf());
+                        assert(out->children.wf());
+                        assert(out->aux_ptr.wf());
+                        assert(out->children.len() == out->pivots.len() + 1);
+                        assert(out.wf());
+                    }
+                }
+                out
+            },
+            Self::Auxiliary { summary_aus } => {
+                let out = Self::Auxiliary { summary_aus: summary_aus.clone() };
+                proof {
+                    assert(out@ == self@);
+                    if self.wf() {
+                        assert(out.wf());
+                    }
+                }
+                out
+            },
+        }
+    }
+}
+
 impl WF for IBranchNode {
     open spec fn wf(&self) -> bool
     {

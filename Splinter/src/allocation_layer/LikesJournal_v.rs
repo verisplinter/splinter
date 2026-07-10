@@ -689,15 +689,6 @@ impl TruncatedJournal {
 }
 
 impl MsgHistory {
-    pub open spec(checked) fn tight_discard_old(self, new: Self, new_bdy: LSN) -> bool
-    recommends
-        self.wf(),
-        new.wf(),
-        self.can_discard_to(new_bdy),
-    {
-        let msgs = if self.seq_start <= new_bdy { self.discard_old(new_bdy) } else { self };
-        &&& new.ext_equal(msgs)
-    }
 }
 
 // Definitions that used to live in the Refinement file, but jonh pulled in here so the invariant

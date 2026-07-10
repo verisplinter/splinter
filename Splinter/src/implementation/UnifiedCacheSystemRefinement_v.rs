@@ -23,10 +23,7 @@ use crate::disk::GenericDisk_v::{
 };
 use crate::implementation::AbstractSuperblock_v::{
     AbstractSuperblockImage, abstract_superblock_raw_wf,
-    assumed_parse_marshalled_abstract_superblock,
-    empty_abstract_superblock_image, marshal_abstract_superblock,
-    marshalled_abstract_superblock_raw_wf,
-    parse_abstract_superblock, superblock_matches,
+    empty_abstract_superblock_image, parse_abstract_superblock, superblock_matches,
 };
 use crate::implementation::AtomicBranchState_v::{AtomicBranchImage, AtomicBranchState};
 use crate::implementation::AtomicJournalState_v::AtomicJournalState;
@@ -176,6 +173,7 @@ pub closed spec fn unified_cache_cache_disk_response_inv(
     } ==> {
         let addr = model.program.state.outstanding_cache_reqs[id];
         let resp = model.disk.responses[id];
+        &&& addr.wf()
         &&& resp is ReadResp ==> {
             &&& resp->data == model.disk.content[addr]
         }
@@ -215,7 +213,6 @@ pub closed spec fn unified_cache_cache_request_wf(
     &&& state.outstanding_cache_reqs.is_injective()
     &&& !state.outstanding_cache_reqs.contains_value(spec_superblock_addr())
     &&& state.outstanding_cache_reqs.values() <= state.cache.lookup_map.dom()
-    &&& state.outstanding_cache_reqs.values() <= Set::new(|addr: Address| addr.wf())
     &&& forall |id: ID| #[trigger] state.outstanding_cache_reqs.contains_key(id) ==> {
         let addr = state.outstanding_cache_reqs[id];
         let slot = state.cache.lookup_map[addr];
@@ -319,8 +316,8 @@ pub open spec fn unified_cache_superblockstore_i(
         arbitrary()
     };
     let landed = unified_cache_in_flight_superblock_landed(model.program.state, model.disk);
-    let pending_raw = if model.program.state.sync_phase is SuperblockWriteIssued {
-        marshal_abstract_superblock(model.program.state.atomic_inflight_superblock_i())
+    let pending_raw = if unified_cache_superblock_write_pending(model) {
+        model.disk.requests[model.program.state.sync_phase->req_id]->data
     } else {
         arbitrary()
     };
@@ -420,6 +417,74 @@ pub closed spec fn unified_cache_superblockstore_refinement_inv(
 ) -> bool
 {
     unified_cache_superblockstore_i(model).inv()
+}
+
+pub proof fn inv_implies_journal_source_inv(
+    model: SystemModel::State<UnifiedCacheProgramModel>,
+)
+    requires
+        inv(model),
+    ensures
+        UnifiedCacheJournalRefinement::inv(
+            UnifiedCacheJournalRefinement::unified_cache_journal_source(model),
+        ),
+{
+    assert(unified_cache_component_refinement_inv(model));
+}
+
+pub proof fn inv_implies_branch_source_inv(
+    model: SystemModel::State<UnifiedCacheProgramModel>,
+)
+    requires
+        inv(model),
+    ensures
+        UnifiedCacheBranchRefinement::inv(
+            UnifiedCacheBranchRefinement::unified_cache_branch_source(model),
+        ),
+{
+    assert(unified_cache_component_refinement_inv(model));
+}
+
+pub proof fn post_superblock_journal_source_facts(
+    model: SystemModel::State<UnifiedCacheProgramModel>,
+)
+    requires
+        inv(model),
+        !(model.program.state.recovery_state is Begin),
+        !(model.program.state.recovery_state is AwaitingSuperblock),
+    ensures
+        UnifiedCacheJournalRefinement::inv(
+            UnifiedCacheJournalRefinement::unified_cache_journal_source(model),
+        ),
+        UnifiedCacheJournalRefinement::unified_cache_journal_source(model).superblock_loaded(),
+        UnifiedCacheJournalRefinement::unified_cache_journal_source(model)
+            .journal_caching_disk_state_i().refinement_inv(),
+{
+    let state = model.program.state;
+    let src = UnifiedCacheJournalRefinement::unified_cache_journal_source(model);
+    inv_implies_journal_source_inv(model);
+    assert(UnifiedCacheJournalRefinement::inv(src));
+    assert(src.inv());
+    assert(src.semantic_inv());
+    assert(unified_cache_recovery_metadata_inv(model));
+    if state.recovery_state is SuperblockAvailable {
+        assert(state.persistent_image is Some);
+    } else if state.recovery_state is MetadataLoadComplete {
+        assert(state.persistent_image is Some);
+    } else {
+        assert(state.recovery_state is RecoveryComplete);
+        assert(state.persistent_image is Some);
+    }
+    assert(src.superblock_loaded());
+    assert(src.ephemeral_journal_i()
+        == crate::implementation::CrashAwareCachingDiskJournal_v::EphemeralCachingDiskJournal::Known{
+            v: src.journal_caching_disk_state_i(),
+        });
+    assert(src.i().ephemeral is Known);
+    assert(src.i().ephemeral->v == src.journal_caching_disk_state_i());
+    assert(src.i().refinement_inv());
+    assert(src.i().semantic_inv());
+    assert(src.journal_caching_disk_state_i().refinement_inv());
 }
 
 pub closed spec fn unified_cache_ready_inv(
@@ -647,6 +712,39 @@ pub closed spec fn unified_cache_recovery_metadata_inv(
     }
 }
 
+pub proof fn allocation_metadata_loaded_facts(
+    model: SystemModel::State<UnifiedCacheProgramModel>,
+)
+    requires
+        inv(model),
+        model.program.state.allocation_metadata_loaded(),
+    ensures
+        model.program.state.persistent_image is Some,
+        model.program.state.journal_metadata_loaded(),
+        model.program.state.branch_metadata_loaded(),
+        UnifiedCacheJournalRefinement::unified_cache_journal_source(model).superblock_loaded(),
+        UnifiedCacheJournalRefinement::unified_cache_journal_source(model).journal.ready(),
+        UnifiedCacheBranchRefinement::unified_cache_branch_source(model).superblock_loaded(),
+        UnifiedCacheBranchRefinement::unified_cache_branch_source(model).branch.metadata_loaded(),
+{
+    let state = model.program.state;
+    assert(unified_cache_recovery_metadata_inv(model));
+    if state.recovery_state is MetadataLoadComplete {
+        assert(state.persistent_image is Some);
+        assert(state.journal.ready());
+        assert(state.branch.metadata_loaded());
+    } else {
+        assert(state.recovery_state is RecoveryComplete);
+        assert(state.persistent_image is Some);
+        assert(state.journal.ready());
+        assert(state.branch.metadata_loaded());
+    }
+    let journal_src = UnifiedCacheJournalRefinement::unified_cache_journal_source(model);
+    let branch_src = UnifiedCacheBranchRefinement::unified_cache_branch_source(model);
+    assert(journal_src.persistent_image == state.persistent_image);
+    assert(branch_src.persistent_image == state.persistent_image);
+}
+
 pub closed spec fn unified_cache_durable_image_inv(
     model: SystemModel::State<UnifiedCacheProgramModel>,
 ) -> bool
@@ -704,7 +802,7 @@ pub closed spec fn unified_cache_superblock_write_request_inv(
         ==> {
             let phase = state.sync_phase;
             let req = model.disk.requests[phase->req_id];
-            &&& req->data == marshal_abstract_superblock(state.atomic_inflight_superblock_i())
+            &&& superblock_matches(req->data, state.atomic_inflight_superblock_i())
             &&& state.atomic_inflight_superblock_i().wf()
         }
 }
@@ -768,6 +866,36 @@ pub proof fn inv_implies_caching_disk_refinement_inv(
         branch_src,
     ));
     CachingDiskSystemRefinement::refinement_inv_from_parts(system);
+}
+
+pub proof fn inv_implies_cache_inv(model: SystemModel::State<UnifiedCacheProgramModel>)
+    requires
+        inv(model),
+    ensures
+        model.program.state.cache.inv(),
+{
+    let src = UnifiedCacheJournalRefinement::unified_cache_journal_source(model);
+    assert(unified_cache_component_refinement_inv(model));
+    assert(UnifiedCacheJournalRefinement::inv(src));
+    assert(src.inv());
+    assert(src.cache == model.program.state.cache);
+    assert(model.program.state.cache.inv());
+}
+
+pub proof fn inv_implies_ready_seq_end_alignment(
+    model: SystemModel::State<UnifiedCacheProgramModel>,
+)
+    requires
+        inv(model),
+        model.program.state.client_ready(),
+    ensures
+        model.program.state.persistent_image is Some,
+        model.program.state.journal.ready(),
+        model.program.state.branch.metadata_loaded(),
+        model.program.state.journal.journal.seq_end()
+            == model.program.state.branch.seq_end(),
+{
+    assert(unified_cache_ready_inv(model));
 }
 
 pub proof fn program_execute_progress_invs(
@@ -856,7 +984,7 @@ pub proof fn journal_projection_aus_subset_system_journal_owned(
 )
     requires
         inv(model),
-        model.program.state.client_ready(),
+        model.program.state.allocation_metadata_loaded(),
     ensures
         UnifiedCacheJournalRefinement::unified_cache_journal_source(model).journal_projection_aus()
             <= unified_cache_system_i(model).journal_owned_aus(),
@@ -865,7 +993,7 @@ pub proof fn journal_projection_aus_subset_system_journal_owned(
     let system = unified_cache_system_i(model);
     let cj = src.journal_caching_disk_state_i();
 
-    assert(unified_cache_ready_inv(model));
+    allocation_metadata_loaded_facts(model);
     assert(src.superblock_loaded());
     assert(src.journal.ready());
     assert(system.journal == UnifiedCacheJournalRefinement::unified_cache_journal_i(src));
@@ -890,7 +1018,7 @@ pub proof fn branch_projection_aus_subset_system_branch_owned(
 )
     requires
         inv(model),
-        model.program.state.client_ready(),
+        model.program.state.allocation_metadata_loaded(),
     ensures
         UnifiedCacheBranchRefinement::unified_cache_branch_source(model).branch_projection_aus()
             <= unified_cache_system_i(model).branch_owned_aus(),
@@ -899,7 +1027,7 @@ pub proof fn branch_projection_aus_subset_system_branch_owned(
     let system = unified_cache_system_i(model);
     let cb = src.branch_caching_disk_state_i();
 
-    assert(unified_cache_ready_inv(model));
+    allocation_metadata_loaded_facts(model);
     assert(src.superblock_loaded());
     assert(src.branch.metadata_loaded());
     assert(system.branch == UnifiedCacheBranchRefinement::unified_cache_branch_i(src));
@@ -965,7 +1093,7 @@ pub proof fn journal_fill_aus_shared_projection_inv_from_system_inv(
 )
     requires
         inv(model),
-        model.program.state.client_ready(),
+        model.program.state.allocation_metadata_loaded(),
         aus <= model.program.state.free_aus,
     ensures
         UnifiedCacheJournalRefinement::unified_cache_journal_source(
@@ -1038,7 +1166,7 @@ pub proof fn branch_fill_aus_shared_projection_inv_from_system_inv(
 )
     requires
         inv(model),
-        model.program.state.client_ready(),
+        model.program.state.allocation_metadata_loaded(),
         aus <= model.program.state.free_aus,
     ensures
         UnifiedCacheBranchRefinement::unified_cache_branch_source(
@@ -2783,10 +2911,6 @@ pub proof fn cache_io_begin_preserves_cache_request_wf(
             |id| req_map.contains_key(id),
             |id| req_map[id].addr(),
         ).contains_value(spec_superblock_addr()),
-        Map::new(
-            |id| req_map.contains_key(id),
-            |id| req_map[id].addr(),
-        ).values() <= Set::new(|addr: Address| addr.wf()),
     ensures
         unified_cache_cache_request_wf(post),
 {
@@ -2959,21 +3083,6 @@ pub proof fn cache_io_begin_preserves_cache_request_wf(
         }
     }
     assert(new_outstanding.values() <= post_state.cache.lookup_map.dom());
-    assert(new_outstanding.values() <= Set::new(|addr: Address| addr.wf())) by {
-        assert forall |addr: Address| #![auto] new_outstanding.values().contains(addr)
-            implies addr.wf()
-        by {
-            let id = choose |id: ID| #![auto] new_outstanding.contains_key(id)
-                && new_outstanding[id] == addr;
-            if updated.contains_key(id) {
-                assert(updated.values().contains(addr));
-            } else {
-                assert(pre_state.outstanding_cache_reqs.contains_key(id));
-                assert(pre_state.outstanding_cache_reqs.values().contains(addr));
-                assert(unified_cache_cache_request_wf(pre));
-            }
-        }
-    }
     assert forall |id: ID| #[trigger] new_outstanding.contains_key(id) implies {
         let addr = new_outstanding[id];
         let slot = post_state.cache.lookup_map[addr];
@@ -3367,18 +3476,6 @@ pub proof fn cache_io_end_preserves_cache_request_wf(
         }
     }
     assert(new_outstanding.values() <= post_state.cache.lookup_map.dom());
-    assert(new_outstanding.values() <= Set::new(|addr: Address| addr.wf())) by {
-        assert forall |addr: Address| #![auto] new_outstanding.values().contains(addr)
-            implies addr.wf()
-        by {
-            let id = choose |id: ID| #![auto] new_outstanding.contains_key(id)
-                && new_outstanding[id] == addr;
-            assert(pre_state.outstanding_cache_reqs.contains_key(id));
-            assert(pre_state.outstanding_cache_reqs[id] == addr);
-            assert(pre_state.outstanding_cache_reqs.values().contains(addr));
-            assert(unified_cache_cache_request_wf(pre));
-        }
-    }
     assert(post_state.outstanding_cache_reqs == new_outstanding);
 }
 
@@ -3400,6 +3497,7 @@ pub proof fn cache_resps_coherent_from_disk_response_inv(
             ],
         ),
     ensures
+        cache_resps.dom() <= Set::new(|addr: Address| addr.wf()),
         forall |addr: Address| #[trigger] cache_resps.contains_key(addr) ==> {
             &&& cache_resps[addr] is ReadResp ==> cache_resps[addr]->data
                 == pre.disk.content[addr]
@@ -3433,6 +3531,9 @@ pub proof fn cache_resps_coherent_from_disk_response_inv(
         assert(resp_map.contains_key(id));
         assert(state.outstanding_cache_reqs.contains_key(id));
         assert(state.outstanding_cache_reqs[id] == addr);
+        assert(addr.wf()) by {
+            assert(unified_cache_cache_disk_response_inv(pre));
+        }
         assert(cache_resps[addr] == resp_map[id]);
         assert(pre.disk.responses.contains_key(id));
         assert(pre.disk.responses[id] == resp_map[id]);
@@ -3676,10 +3777,6 @@ pub proof fn cache_io_begin_preserves_outstanding_cache_reqs_disk_backed(
             |id| req_map.contains_key(id),
             |id| req_map[id].addr(),
         ).contains_value(spec_superblock_addr()),
-        Map::new(
-            |id| req_map.contains_key(id),
-            |id| req_map[id].addr(),
-        ).values() <= Set::new(|addr: Address| addr.wf()),
         post.program.state.disk_backed_addrs == pre.program.state.disk_backed_addrs,
         post.disk.requests == pre.disk.requests.union_prefer_right(req_map),
         post.disk.responses == pre.disk.responses,
@@ -4049,7 +4146,7 @@ pub proof fn init_refines(pre: SystemModel::State<UnifiedCacheProgramModel>)
             let journal_src = UnifiedCacheJournalRefinement::unified_cache_journal_source(pre);
             let branch_src = UnifiedCacheBranchRefinement::unified_cache_branch_source(pre);
             let dst = unified_cache_system_i(pre);
-            let initial_superblock = CrashAwareCachingDiskSystem::State::empty_superblock_page();
+            let initial_superblock = pre.disk.content[spec_superblock_addr()];
 
             assert(journal_src.persistent_superblock_image_i()
                 == empty_abstract_superblock_image()) by {
@@ -6052,8 +6149,7 @@ pub proof fn program_disk_superblock_recovery_refines(
     assert(pre.disk.content.contains_key(spec_superblock_addr()));
     assert(pre.disk.responses[req_id]->data == pre.disk.content[spec_superblock_addr()]);
     assert(raw_page == pre.disk.content[spec_superblock_addr()]);
-    assumed_parse_marshalled_abstract_superblock(image);
-    assert(raw_page == marshal_abstract_superblock(image));
+    assert(superblock_matches(raw_page, image));
     assert(parse_abstract_superblock(pre.disk.content[spec_superblock_addr()]) == image);
 
     let journal_pre = UnifiedCacheJournalRefinement::unified_cache_journal_source(pre);
@@ -6654,7 +6750,7 @@ pub proof fn program_disk_execute_sync_prepared_refines(
     };
     let req_map = Map::empty().insert(req_id, req);
     let image = pre_state.atomic_inflight_superblock_i();
-    let raw_page = marshal_abstract_superblock(image);
+    let raw_page = req->data;
 
     reveal(SystemModel::State::program_disk);
 
@@ -6668,7 +6764,6 @@ pub proof fn program_disk_execute_sync_prepared_refines(
     assert(pre_state.client_ready());
     assert(req is WriteReq);
     assert(req->to == spec_superblock_addr());
-    assert(req->data == raw_page);
     assert(superblock_matches(raw_page, image));
     assert(reqs == Multiset::singleton((req_id, req)));
     assert(reqs == multiset_map_singleton(req_id, req));
@@ -8071,27 +8166,7 @@ pub proof fn program_disk_cache_io_end_refines(
             assert(false);
         }
     }
-    assert(cache_resps.dom() <= Set::new(|addr: Address| addr.wf())) by {
-        assert forall |addr: Address| #![auto] cache_resps.dom().contains(addr)
-            implies addr.wf()
-        by {
-            assert(cache_resps.contains_key(addr));
-            assert(finished.contains_key(addr));
-            Cache::State::invert_contains_pair(
-                pre_state.outstanding_cache_reqs.restrict(resp_map.dom()),
-                addr,
-            );
-            let id = finished[addr];
-            assert(pre_state.outstanding_cache_reqs.restrict(resp_map.dom()).contains_pair(
-                id,
-                addr,
-            ));
-            assert(pre_state.outstanding_cache_reqs.contains_key(id));
-            assert(pre_state.outstanding_cache_reqs[id] == addr);
-            assert(pre_state.outstanding_cache_reqs.values().contains(addr));
-            assert(unified_cache_cache_request_wf(pre));
-        }
-    }
+    assert(cache_resps.dom() <= Set::new(|addr: Address| addr.wf()));
     cache_io_end_preserves_shared_cache_disk_inv(pre, post, cache_resps);
     assert(unified_cache_shared_cache_disk_inv(post));
     assert(unified_cache_recovery_superblock_io_inv(post)) by {
@@ -9040,7 +9115,7 @@ pub proof fn program_internal_read_for_recovery_refines(
     let journal_records = full_msgs.maybe_discard_old(
         pre_state.journal.journal.snapshot.boundary_lsn,
     );
-    let branch_records = full_msgs.maybe_discard_old(pre_state.journal.journal.seq_start());
+    let branch_records = full_msgs.maybe_discard_old(pre_state.branch.seq_end());
     let journal_lbl = AtomicJournalState::Label::ReadForRecovery{
         messages: journal_records,
         reads: crate::implementation::JournalTypes_v::to_journal_records(journal_reads),
@@ -9217,17 +9292,25 @@ pub proof fn program_internal_read_for_recovery_refines(
         assert(src.branch.ephemeral is Known);
         assert(src.branch.ephemeral->v == branch_pre.branch_caching_disk_state_i());
     }
-    assert(journal_records == crate::implementation::AllocationBranchStackRefinement_v::append_puts(
-        src.branch_lsn(),
-        keys,
-        msgs,
-    )) by {
+    assert(journal_records.maybe_discard_old(src.branch_lsn()) == branch_records) by {
         assert(src.branch_lsn() == pre_state.branch.seq_end());
         assert(pre_state.journal.journal.seq_start()
             == pre_state.journal.journal.snapshot.boundary_lsn);
         assert(pre_state.journal.journal.snapshot.boundary_lsn
             == pre_state.journal.journal.seq_start());
-        assert(branch_records == journal_records);
+    }
+    assert(journal_records.maybe_discard_old(src.branch_lsn())
+        == crate::implementation::AllocationBranchStackRefinement_v::append_puts(
+            src.branch_lsn(),
+            keys,
+            msgs,
+        )) by {
+        assert(src.branch_lsn() == pre_state.branch.seq_end());
+        assert(branch_records == crate::implementation::AllocationBranchStackRefinement_v::append_puts(
+            pre_state.branch.seq_end(),
+            keys,
+            msgs,
+        ));
     }
     assert(CrashAwareCachingDiskSystem::State::recover(
         src,
@@ -9236,6 +9319,7 @@ pub proof fn program_internal_read_for_recovery_refines(
         dst.journal,
         dst.branch,
         journal_records,
+        branch_records,
         keys,
         msgs,
     )) by {
@@ -9249,6 +9333,7 @@ pub proof fn program_internal_read_for_recovery_refines(
             dst.journal,
             dst.branch,
             journal_records,
+            branch_records,
             keys,
             msgs,
         ),
@@ -9775,8 +9860,30 @@ pub proof fn program_internal_journal_fill_aus_refines(
         journal: new_journal,
         ..pre_state
     });
-    assert(pre_state.client_ready());
-    assert(post_state.client_ready());
+    assert(pre_state.allocation_metadata_loaded());
+    assert(post_state.allocation_metadata_loaded()) by {
+        assert(post_state.recovery_state == pre_state.recovery_state);
+        assert(post_state.branch == pre_state.branch);
+        assert(AtomicJournalState::State::next(pre_state.journal, post_state.journal, atomic_lbl));
+        reveal(AtomicJournalState::State::next);
+        let step = choose |step| AtomicJournalState::State::next_by(
+            pre_state.journal,
+            post_state.journal,
+            atomic_lbl,
+            step,
+        );
+        match step {
+            AtomicJournalState::Step::fill_aus() => {
+                reveal(AtomicJournalState::State::next_by);
+                reveal(AtomicJournalState::State::fill_aus);
+                assert(post_state.journal.journal == pre_state.journal.journal);
+            },
+            _ => {
+                reveal(AtomicJournalState::State::next_by);
+                assert(false);
+            },
+        }
+    }
     assert(AtomicJournalState::State::next(pre_state.journal, post_state.journal, atomic_lbl));
 
     let journal_pre = UnifiedCacheJournalRefinement::unified_cache_journal_source(pre);
@@ -9784,6 +9891,7 @@ pub proof fn program_internal_journal_fill_aus_refines(
     let branch_pre = UnifiedCacheBranchRefinement::unified_cache_branch_source(pre);
     let branch_post = UnifiedCacheBranchRefinement::unified_cache_branch_source(post);
 
+    allocation_metadata_loaded_facts(pre);
     assert(UnifiedCacheJournalRefinement::inv(journal_pre));
     assert(journal_pre.superblock_loaded());
     assert(journal_pre.journal.ready());
@@ -10543,8 +10651,33 @@ pub proof fn program_internal_branch_fill_aus_refines(
         branch: new_branch,
         ..pre_state
     });
-    assert(pre_state.client_ready());
-    assert(post_state.client_ready());
+    assert(pre_state.allocation_metadata_loaded());
+    assert(post_state.allocation_metadata_loaded()) by {
+        assert(post_state.recovery_state == pre_state.recovery_state);
+        assert(post_state.journal == pre_state.journal);
+        assert(AtomicBranchState::State::next(pre_state.branch, post_state.branch, atomic_lbl));
+        reveal(AtomicBranchState::State::next);
+        let step = choose |step| AtomicBranchState::State::next_by(
+            pre_state.branch,
+            post_state.branch,
+            atomic_lbl,
+            step,
+        );
+        match step {
+            AtomicBranchState::Step::fill_aus() => {
+                reveal(AtomicBranchState::State::next_by);
+                reveal(AtomicBranchState::State::fill_aus);
+                assert(post_state.branch.image == pre_state.branch.image);
+                assert(post_state.branch.branch_summary == pre_state.branch.branch_summary);
+                assert(post_state.branch.active_branch == pre_state.branch.active_branch);
+                assert(post_state.branch.seq_end == pre_state.branch.seq_end);
+            },
+            _ => {
+                reveal(AtomicBranchState::State::next_by);
+                assert(false);
+            },
+        }
+    }
     assert(AtomicBranchState::State::next(pre_state.branch, post_state.branch, atomic_lbl));
 
     let journal_pre = UnifiedCacheJournalRefinement::unified_cache_journal_source(pre);
@@ -10552,6 +10685,7 @@ pub proof fn program_internal_branch_fill_aus_refines(
     let branch_pre = UnifiedCacheBranchRefinement::unified_cache_branch_source(pre);
     let branch_post = UnifiedCacheBranchRefinement::unified_cache_branch_source(post);
 
+    allocation_metadata_loaded_facts(pre);
     assert(UnifiedCacheBranchRefinement::inv(branch_pre));
     assert(branch_pre.superblock_loaded());
     assert(branch_pre.branch.metadata_loaded());
@@ -12681,10 +12815,10 @@ pub proof fn disk_internal_process_write_refines(
         assert(addr == spec_superblock_addr());
         assert(unified_cache_superblock_write_pending(pre));
         assert(unified_cache_superblock_write_request_inv(pre));
-        assert(req->data == marshal_abstract_superblock(pre_state.atomic_inflight_superblock_i()));
+        assert(superblock_matches(req->data, pre_state.atomic_inflight_superblock_i()));
         assert(pre_state.atomic_inflight_superblock_i() == image);
         assert(image.wf());
-        marshalled_abstract_superblock_raw_wf(image);
+        assert(abstract_superblock_raw_wf(req->data));
         assert(post.disk.content.contains_key(spec_superblock_addr()));
         assert(post.disk.content[spec_superblock_addr()] == req->data);
         assert(UnifiedCacheJournalRefinement::async_disk_superblock_page_wf(
@@ -12887,9 +13021,7 @@ pub proof fn disk_internal_process_write_refines(
         assert(src.sync_reqs == dst.sync_reqs);
         assert(src.free_aus == dst.free_aus);
         assert(src.superblockstore.in_flight == Option::Some(req->data)) by {
-            assert(src.superblockstore.in_flight == Option::Some(
-                marshal_abstract_superblock(pre_state.atomic_inflight_superblock_i()),
-            ));
+            assert(unified_cache_superblock_write_pending(pre));
         }
         assert(!src.superblockstore.landed);
         assert(dst.superblockstore.persistent == req->data);

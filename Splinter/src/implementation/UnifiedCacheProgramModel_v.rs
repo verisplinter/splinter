@@ -100,6 +100,50 @@ impl UnifiedCacheProgramModel {
             &&& Self::disk_step_matches_info(pre.state, step, info)
         }
     }
+
+    pub proof fn lift_internal_step(pre: Self, post: Self)
+        requires
+            exists |step: UnifiedCacheSystem::Step|
+                UnifiedCacheSystem::State::next_by(
+                    pre.state,
+                    post.state,
+                    UnifiedCacheSystem::Label::Internal,
+                    step,
+                ),
+        ensures
+            ProgramModelTrait::next(pre, post, ProgramLabel::Internal{}),
+    {
+        assert(UnifiedCacheSystem::State::next(
+            pre.state,
+            post.state,
+            UnifiedCacheSystem::Label::Internal,
+        )) by {
+            reveal(UnifiedCacheSystem::State::next);
+        }
+    }
+
+    pub proof fn lift_disk_step(
+        pre: Self,
+        post: Self,
+        info: ProgramDiskInfo,
+    )
+        requires
+            exists |step: UnifiedCacheSystem::Step| {
+                &&& UnifiedCacheSystem::State::next_by(
+                    pre.state,
+                    post.state,
+                    UnifiedCacheSystem::Label::Disk,
+                    step,
+                )
+                &&& Self::disk_step_matches_info(pre.state, step, info)
+            },
+        ensures
+            ProgramModelTrait::next(pre, post, ProgramLabel::DiskIO{info}),
+    {
+        assert(Self::valid_disk_transition(pre, post, info)) by {
+            reveal(UnifiedCacheProgramModel::valid_disk_transition);
+        }
+    }
 }
 
 impl ProgramModelTrait for UnifiedCacheProgramModel {

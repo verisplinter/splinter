@@ -139,31 +139,4 @@ ensures
     unique_multiset_map_insert_equiv(Multiset::empty(), k, v);
 }
 
-pub proof fn unique_multiset_map_remove_equiv<K,V>(pre: Multiset<(K,V)>, k: K, v: V)
-requires
-    unique_keys(pre),
-    pre.contains((k, v)),
-ensures
-    unique_keys(pre.remove((k,v))),
-    multiset_to_map(pre.remove((k,v))) == multiset_to_map(pre).remove(k),
-{
-    unique_multiset_remove(pre, k, v);
-
-    let mpre = multiset_to_map(pre);
-    let post = pre.remove((k,v));
-    let mpost = multiset_to_map(post);
-    let mpre_r = mpre.remove(k);
-    assert forall |k0| mpre_r.contains_key(k0) implies mpost.contains_key(k0) by {
-        assert( post.contains((k0, mpre_r[k0])) ); // trigger
-    }
-    assert forall |k0| mpost.contains_key(k0) implies mpre_r.contains_key(k0) by {
-        assert( pre.contains((k0, mpost[k0])) );   // trigger
-    }
-
-    assert forall |k0| #![auto] mpost.contains_key(k0) implies mpost[k0] == mpre_r[k0] by {
-        let pr = choose |pr| #![auto] post.contains(pr) && pr.0==k0;
-        assert( pre.contains(pr) );  // trigger
-    }
-}
-
 }//verus!

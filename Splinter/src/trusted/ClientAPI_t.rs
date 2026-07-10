@@ -8,7 +8,7 @@ use crate::spec::MapSpec_t::{ID};
 use crate::spec::KeyType_t::Key;
 use crate::spec::Messages_t::Value;
 // use crate::spec::AsyncDisk_t;
-use crate::spec::ImplDisk_t::{IAddress, IDiskRequest, IDiskResponse};
+use crate::spec::ImplDisk_t::{IAddress, IDiskGeometry, IDiskRequest, IDiskResponse};
 
 use crate::implementation::MultisetMapRelation_v::*;    // TODO move to _t, I guess
 
@@ -131,6 +131,7 @@ pub struct ClientAPI<ProgramModel: ProgramModelTrait>{
     pub script_phase: Option<usize>,
     pub script_failed: bool,
     pub poll_budget: u64,
+    pub geometry: IDiskGeometry,
     pub the_disk: TheDisk,
     pub _p: std::marker::PhantomData<(ProgramModel,)>,
 }
@@ -153,8 +154,27 @@ pub struct DiskResponseRecord<ProgramModel: ProgramModelTrait> {
 
 impl<ProgramModel: ProgramModelTrait> ClientAPI<ProgramModel>{
     #[verifier::external_body]
-    pub fn new(instance: Ghost<InstanceId>, script_phase: Option<usize>) -> (out: Self)
-        ensures out.instance_id() == instance
+    pub fn bind_disk_geometry(geometry: IDiskGeometry) -> (out: IDiskGeometry)
+        requires
+            1 < geometry.physical_au_count as nat,
+            0 < geometry.pages_per_au as nat,
+        ensures
+            out == geometry,
+            out.wf(),
+    {
+        geometry
+    }
+
+    #[verifier::external_body]
+    pub fn new(
+        instance: Ghost<InstanceId>,
+        script_phase: Option<usize>,
+        geometry: IDiskGeometry,
+    ) -> (out: Self)
+        requires geometry.wf()
+        ensures
+            out.instance_id() == instance,
+            out.disk_geometry() == geometry,
     {
         let inputs =
             match script_phase {
@@ -195,13 +215,17 @@ impl<ProgramModel: ProgramModelTrait> ClientAPI<ProgramModel>{
             script_phase,
             script_failed: false,
             poll_budget: 50,
+            geometry,
             the_disk: TheDisk::new(),
             _p: std::marker::PhantomData
         }
     }
-    
+
     #[verifier::external_body]
     pub uninterp spec fn instance_id(&self) -> InstanceId;
+
+    #[verifier::external_body]
+    pub uninterp spec fn disk_geometry(&self) -> IDiskGeometry;
 
     // right now this is a tightly coupled API, we cannot ensure that the result is 
     // comes from the tokenized state machine instance transition due to it being in proof mode
@@ -311,17 +335,43 @@ impl<ProgramModel: ProgramModelTrait> ClientAPI<ProgramModel>{
         let Tracked(out) = Tracked::<ID>::assume_new(); out
     }
 
-    pub fn i_page_count() -> (out: u64)
-        ensures out as nat == 7
-        // ensures out as nat == AsyncDisk_t::page_count()
-        // well that's difficult to ensure since the abstract page_count() is uninterp
+    #[verifier::external_body]
+    pub fn i_page_count(&self) -> (out: u64)
+        ensures out == self.disk_geometry().pages_per_au as u64
     {
-        7
+        self.geometry.pages_per_au as u64
     }
     
-    pub fn block_num(ia: &IAddress) -> u64
+    #[verifier::external_body]
+    pub fn block_num(&self, ia: &IAddress) -> u64
     {
-        ia.au as u64 * Self::i_page_count() + ia.page as u64
+        ia.au as u64 * self.i_page_count() + ia.page as u64
+    }
+
+    #[verifier::external_body]
+    pub fn format_storage(
+        &mut self,
+        superblock: Vec<u8>,
+    )
+        requires
+            superblock.len() == BLOCK_SIZE,
+        ensures
+            self.instance_id() == old(self).instance_id(),
+    {
+        let total_blocks = (self.geometry.physical_au_count as u64)
+            .checked_mul(self.geometry.pages_per_au as u64)
+            .expect("disk block count overflow during mkfs");
+        let disk_size = (BLOCK_SIZE as u64)
+            .checked_mul(total_blocks)
+            .expect("disk byte size overflow during mkfs");
+
+        self.the_disk.disk_worker.file
+            .set_len(disk_size)
+            .expect("failed to size storage.bin during mkfs");
+        self.the_disk.disk_worker.write_work(0, superblock);
+        self.the_disk.disk_worker.file
+            .sync_all()
+            .expect("failed to sync storage.bin during mkfs");
     }
 
     #[verifier::external_body]
@@ -339,12 +389,14 @@ impl<ProgramModel: ProgramModelTrait> ClientAPI<ProgramModel>{
         println!("send_disk_request({:?})", &disk_req);
         let req = match disk_req {
             IDiskRequest::ReadReq{from} => {
+                let block = self.block_num(&from);
                 thread::spawn(move ||
-                    ReadReq{ disk, id, block: Self::block_num(&from) }.run())
+                    ReadReq{ disk, id, block }.run())
             },
             IDiskRequest::WriteReq{to, data} => {
+                let block = self.block_num(&to);
                 thread::spawn(move ||
-                    WriteReq{ disk, id, block: Self::block_num(&to), payload: data }.run())
+                    WriteReq{ disk, id, block, payload: data }.run())
             },
         };
         
@@ -432,6 +484,31 @@ impl<ProgramModel: ProgramModelTrait> ClientAPI<ProgramModel>{
     #[verifier::external_body]
     pub fn log(&self, s: &str) {
         println!("{}", s)
+    }
+
+    #[verifier::external_body]
+    pub fn log_u64(&self, message: &str, value: u64) {
+        println!("{}{}", message, value)
+    }
+
+    #[verifier::external_body]
+    pub fn fatal_geometry_mismatch(
+        &self,
+        formatted_au_count: u64,
+        physical_au_count: u64,
+        formatted_pages_per_au: u64,
+        runtime_pages_per_au: u64,
+    )
+        ensures false,
+    {
+        eprintln!(
+            "incompatible storage geometry: formatted aus={}, physical aus={}, formatted pages/au={}, runtime pages/au={}",
+            formatted_au_count,
+            physical_au_count,
+            formatted_pages_per_au,
+            runtime_pages_per_au,
+        );
+        process::exit(1);
     }
 
 

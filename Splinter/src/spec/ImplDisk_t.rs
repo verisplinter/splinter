@@ -7,7 +7,7 @@ use vstd::prelude::*;
 //use vstd::prelude_macros::*;
 use vstd::{map::*, seq::*, bytes::*, string::View};
 
-use crate::spec::AsyncDisk_t::{Address, au_count, DiskRequest, DiskResponse, GenericDiskRequest, GenericDiskResponse, page_count};
+use crate::spec::AsyncDisk_t::{Address, DiskRequest, DiskResponse, GenericDiskRequest, GenericDiskResponse, page_count};
 
 verus!{
 /// IAddress defined for executable code
@@ -15,6 +15,20 @@ verus!{
 pub type IAU = u32;
 
 pub type IPage = u32;
+
+#[derive(Debug, Copy, Clone)]
+pub struct IDiskGeometry {
+    pub physical_au_count: IAU,
+    pub pages_per_au: IPage,
+}
+
+impl IDiskGeometry {
+    pub open spec fn wf(&self) -> bool {
+        &&& 1 < self.physical_au_count as nat
+        &&& 0 < self.pages_per_au as nat
+        &&& self.pages_per_au as nat == page_count()
+    }
+}
 
 #[derive(Debug, Copy, Clone, Eq, Hash)]
 pub struct IAddress {
@@ -74,28 +88,19 @@ impl PartialEq for IAddress {
 /// further restricted by actual disk size
 pub uninterp spec(checked) fn ipage_count() -> IPage;
 
-/// further restricted by actual disk size
-pub uninterp spec(checked) fn iau_count() -> IAU;
-
 // REMOVED: conflicting inherent wf() method - use WF trait instead
 // The inherent wf() was shadowing the WF trait method, causing Verus
 // verification issues in struct_marshaller_2! macro.
 // impl IAddress {
 //     pub open spec(checked) fn wf(self) -> bool {
-//         &&& self.au < iau_count()
-//         &&& self.page < ipage_count()
+//         self.page < ipage_count()
 //     }
 // }
 
-/// axioms relating spec and impl page and au count
+/// Axiom relating spec and implementation page geometry.
 #[verifier(external_body)]
 pub broadcast axiom fn page_count_equals_ipage_count()
     ensures #[trigger] page_count() == ipage_count()
-;
-
-#[verifier(external_body)]
-pub broadcast axiom fn au_count_equals_iau_count()
-    ensures #[trigger] au_count() == iau_count()
 ;
 
 pub type IPageData = Vec<u8>;

@@ -5,6 +5,7 @@
 
 use vstd::prelude::*;
 use vstd::map::*;
+use vstd::assert_maps_equal;
 
 use crate::allocation_layer::AllocationBranch_v::Summary;
 use crate::betree::LinkedBranch_v::{DiskView as SpecDiskView, LinkedBranch as SpecLinkedBranch, Node as SpecNode, Path as SpecPath, SplitArg};
@@ -288,7 +289,7 @@ pub fn allocate_fresh_addr_from_mini(
     ensures
         allocator.wf(),
         result is Ok ==> old(allocator).allocation_ready(),
-        result is Err ==> !old(allocator).allocation_ready(),
+        result is Err ==> *allocator == *old(allocator),
 {
     match allocator.allocate_fresh_addr() {
         Some(addr) => Ok(addr),
@@ -300,8 +301,23 @@ impl MemBranchStore {
     pub fn new() -> (out: Self)
         ensures
             out.wf(),
+            out@.entries == Map::<Address, SpecNode<Summary>>::empty(),
     {
-        Self { entries: Vec::new() }
+        let out = Self { entries: Vec::new() };
+        proof {
+            assert_maps_equal!(
+                out@.entries,
+                Map::<Address, SpecNode<Summary>>::empty(),
+                addr => {
+                    if out@.entries.contains_key(addr) {
+                        let idx = choose |i: int| 0 <= i < out.entries@.len()
+                            && #[trigger] out.entries@[i].0@ == addr;
+                        assert(false);
+                    }
+                }
+            );
+        }
+        out
     }
 
     pub open spec fn unique_addrs(entries: Seq<(IAddress, BranchNode)>) -> bool
@@ -321,9 +337,15 @@ impl MemBranchStore {
             old(self).wf(),
         ensures
             self.wf(),
+            result is Ok ==> self@.entries == old(self)@.entries.insert(addr@, node@),
+            result is Err ==> self@ == old(self)@,
+            !old(self)@.entries.contains_key(addr@) ==> result is Ok,
     {
         let ghost pre_entries = self.entries@;
         if find_store_index(&self.entries, &addr).is_some() {
+            proof {
+                assert(self@ == old(self)@);
+            }
             return Err(BranchError::AddressInUse);
         }
         self.entries.push((addr, node));
@@ -349,6 +371,50 @@ impl MemBranchStore {
                     assert(pre_entries[i].0@ != addr@);
                 }
             }
+            assert(self@.entries =~= old(self)@.entries.insert(addr@, node@)) by {
+                assert forall |a: Address| #[trigger] self@.entries.contains_key(a)
+                    == old(self)@.entries.insert(addr@, node@).contains_key(a) by {
+                    if self@.entries.contains_key(a) {
+                        let k = choose |k: int| 0 <= k < self.entries@.len()
+                            && self.entries@[k].0@ == a;
+                        if k == pre_entries.len() {
+                            assert(a == addr@);
+                        } else {
+                            assert(pre_entries[k].0@ == a);
+                            assert(old(self)@.entries.contains_key(a));
+                        }
+                    }
+                    if old(self)@.entries.insert(addr@, node@).contains_key(a) {
+                        if a == addr@ {
+                            assert(self.entries@[pre_entries.len() as int].0@ == a);
+                            assert(self@.entries.contains_key(a));
+                        } else {
+                            assert(old(self)@.entries.contains_key(a));
+                            let k = choose |k: int| 0 <= k < pre_entries.len()
+                                && pre_entries[k].0@ == a;
+                            assert(self.entries@[k].0@ == a);
+                            assert(self@.entries.contains_key(a));
+                        }
+                    }
+                }
+                assert forall |a: Address| self@.entries.contains_key(a) implies
+                    #[trigger] self@.entries[a]
+                        == old(self)@.entries.insert(addr@, node@)[a] by {
+                    if a == addr@ {
+                        let k = choose |k: int| 0 <= k < self.entries@.len()
+                            && self.entries@[k].0@ == a;
+                        assert(k == pre_entries.len() as int);
+                    } else {
+                        let k = choose |k: int| 0 <= k < self.entries@.len()
+                            && self.entries@[k].0@ == a;
+                        assert(k != pre_entries.len());
+                        assert(self.entries@[k] == pre_entries[k]);
+                        let old_k = choose |old_k: int| 0 <= old_k < pre_entries.len()
+                            && pre_entries[old_k].0@ == a;
+                        assert(old_k == k);
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -358,6 +424,9 @@ impl MemBranchStore {
             old(self).wf(),
         ensures
             self.wf(),
+            result is Ok ==> self@.entries == old(self)@.entries.insert(addr@, node@),
+            result is Err ==> self@ == old(self)@,
+            old(self)@.entries.contains_key(addr@) ==> result is Ok,
     {
         let ghost pre_entries = self.entries@;
         match find_store_index(&self.entries, &addr) {
@@ -375,10 +444,103 @@ impl MemBranchStore {
                         assert(self.entries@[j].0@ == pre_entries[j].0@);
                         assert(old(self).wf());
                     }
+                    assert(self@.entries =~= old(self)@.entries.insert(addr@, node@)) by {
+                        assert forall |a: Address| #[trigger] self@.entries.contains_key(a)
+                            == old(self)@.entries.insert(addr@, node@).contains_key(a) by {
+                            if self@.entries.contains_key(a) {
+                                let k = choose |k: int| 0 <= k < self.entries@.len()
+                                    && self.entries@[k].0@ == a;
+                                if k == idx as int {
+                                    assert(a == addr@);
+                                } else {
+                                    assert(pre_entries[k].0@ == a);
+                                    assert(old(self)@.entries.contains_key(a));
+                                }
+                            }
+                            if old(self)@.entries.insert(addr@, node@).contains_key(a) {
+                                if a == addr@ {
+                                    assert(self.entries@[idx as int].0@ == a);
+                                    assert(self@.entries.contains_key(a));
+                                } else {
+                                    assert(old(self)@.entries.contains_key(a));
+                                    let k = choose |k: int| 0 <= k < pre_entries.len()
+                                        && pre_entries[k].0@ == a;
+                                    assert(k != idx as int);
+                                    assert(self.entries@[k].0@ == a);
+                                    assert(self@.entries.contains_key(a));
+                                }
+                            }
+                        }
+                        assert forall |a: Address| self@.entries.contains_key(a) implies
+                            #[trigger] self@.entries[a]
+                                == old(self)@.entries.insert(addr@, node@)[a] by {
+                            if a == addr@ {
+                                let k = choose |k: int| 0 <= k < self.entries@.len()
+                                    && self.entries@[k].0@ == a;
+                                assert(self.entries@[k].0@ == self.entries@[idx as int].0@);
+                                assert(k == idx as int);
+                            } else {
+                                let k = choose |k: int| 0 <= k < self.entries@.len()
+                                    && self.entries@[k].0@ == a;
+                                assert(k != idx as int);
+                                assert(self.entries@[k] == pre_entries[k]);
+                                let old_k = choose |old_k: int| 0 <= old_k < pre_entries.len()
+                                    && pre_entries[old_k].0@ == a;
+                                assert(pre_entries[old_k].0@ == pre_entries[k].0@);
+                                assert(old_k == k);
+                            }
+                        }
+                    }
                 }
                 Ok(())
             }
-            None => Err(BranchError::MissingNode),
+            None => {
+                proof {
+                    assert(self@ == old(self)@);
+                }
+                Err(BranchError::MissingNode)
+            },
+        }
+    }
+
+    pub fn read_checked(&self, addr: &IAddress) -> (out: Option<BranchNode>)
+        requires
+            self.wf(),
+        ensures
+            out is Some ==> {
+                &&& self@.entries.contains_key(addr@)
+                &&& out.unwrap()@ == self@.entries[addr@]
+            },
+            out is None ==> !self@.entries.contains_key(addr@),
+    {
+        match find_store_index(&self.entries, addr) {
+            Some(idx) => {
+                let node = self.entries[idx].1.clone_checked();
+                proof {
+                    assert(self.entries@[idx as int].0@ == addr@);
+                    assert(self@.entries.contains_key(addr@));
+                    assert(self@.entries[addr@] == self.entries@[idx as int].1@) by {
+                        let chosen = choose |i: int| 0 <= i < self.entries@.len()
+                            && self.entries@[i].0@ == addr@;
+                        assert(self.entries@[chosen].0@ == self.entries@[idx as int].0@);
+                        assert(chosen == idx as int);
+                    }
+                    assert(node@ == self.entries@[idx as int].1@);
+                }
+                Some(node)
+            },
+            None => {
+                proof {
+                    assert(!self@.entries.contains_key(addr@)) by {
+                        if self@.entries.contains_key(addr@) {
+                            let idx = choose |i: int| 0 <= i < self.entries@.len()
+                                && self.entries@[i].0@ == addr@;
+                            assert(false);
+                        }
+                    }
+                }
+                None
+            },
         }
     }
 }
@@ -457,7 +619,11 @@ impl BranchImpl {
         ||| self.sealed_inv(store)
     }
 
-    pub fn new(root: IAddress) -> Self {
+    pub fn new(root: IAddress) -> (out: Self)
+        ensures
+            out.root == root,
+            out.root@ == root@,
+    {
         Self { root }
     }
 
@@ -523,6 +689,13 @@ impl BranchImpl {
         }
 
         Err(BranchError::CycleDetected)
+    }
+
+    pub fn find_leaf_for_key(&self, store: &MemBranchStore, key: Key) -> Result<IAddress, BranchError>
+        requires
+            self.invariants(store),
+    {
+        self.find_leaf(store, key)
     }
 
     fn find_split_target(&self, store: &MemBranchStore, pivot: Key) -> Result<SplitTarget, BranchError>

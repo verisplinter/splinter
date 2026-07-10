@@ -698,7 +698,7 @@ impl CachedBranch::State {
     {
         &&& self.is_empty_active()
         &&& mini_allocator.wf()
-        &&& mini_allocator.reserved_aus() == Set::<AU>::empty()
+        &&& mini_allocator.allocated_aus() == Set::<AU>::empty()
         &&& mini_allocator.can_allocate(init_root)
         &&& keys.len() > 0
         &&& keys.len() == msgs.len()
@@ -810,8 +810,8 @@ impl CachedBranch::State {
         &&& (aux_ptr is Some <==> read_nodes[self.root.unwrap()] is Index)
         &&& mini_allocator.wf()
         &&& (aux_ptr is Some ==> mini_allocator.can_allocate(aux_ptr.unwrap()))
-        &&& (aux_ptr is Some ==> mini_allocator.reserved_aus().contains(aux_ptr.unwrap().au))
-        &&& write_nodes == loaded_seal_write_nodes(self.root.unwrap(), read_nodes, aux_ptr, mini_allocator.reserved_aus())
+        &&& (aux_ptr is Some ==> mini_allocator.allocated_aus().contains(aux_ptr.unwrap().au))
+        &&& write_nodes == loaded_seal_write_nodes(self.root.unwrap(), read_nodes, aux_ptr, mini_allocator.allocated_aus())
     }
 
     pub open spec fn seal(

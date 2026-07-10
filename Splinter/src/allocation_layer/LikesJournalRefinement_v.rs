@@ -133,58 +133,6 @@ impl LikesJournal::State {
         }
     }
 
-    proof fn largest_lsn_plus_one_matches_seq_end(self, ptr: Pointer)
-        requires
-            self.inv(),
-            ptr is Some,
-            self.lsn_addr_index.values().contains(ptr.unwrap()),
-        ensures
-            largest_lsn_plus_one(self.lsn_addr_index, ptr)
-                == self.tj().disk_view.entries[ptr.unwrap()].message_seq.seq_end,
-    {
-        let tj = self.tj();
-        let index = self.lsn_addr_index;
-        let addr = ptr.unwrap();
-        let bdy = tj.disk_view.boundary_lsn;
-        let msgs = tj.disk_view.entries[addr].message_seq;
-
-        tj.build_lsn_addr_index_ensures();
-        assert(index == tj.build_lsn_addr_index());
-        assert(tj.disk_view.index_keys_map_to_valid_entries(tj.build_lsn_addr_index()));
-        assert(tj.disk_view.index_keys_map_to_valid_entries(index));
-        reveal(TruncatedJournal::index_domain_valid);
-
-
-        let witness_lsn = choose |lsn: LSN| #![auto] index.contains_key(lsn) && index[lsn] == addr;
-        tj.disk_view.instantiate_index_keys_map_to_valid_entries(index, witness_lsn);
-        assert(bdy < msgs.seq_end) by {
-        }
-
-        let end_minus_one = (msgs.seq_end - 1) as nat;
-        assert(LinkedJournal_v::DiskView::cropped_msg_seq_contains_lsn(bdy, msgs, end_minus_one)) by {
-            assert(bdy <= end_minus_one) by {
-                if !(bdy <= end_minus_one) {
-                }
-            }
-            assert(msgs.seq_start <= end_minus_one) by {
-                if !(msgs.seq_start <= end_minus_one) {
-                }
-            }
-        }
-
-        assert forall |other_lsn| (#[trigger] index.contains_key(other_lsn) && index[other_lsn] == addr)
-            implies other_lsn <= end_minus_one by {
-            tj.disk_view.instantiate_index_keys_map_to_valid_entries(index, other_lsn);
-        }
-        assert(maxmax(index, addr, end_minus_one)); // trigger
-
-        let max_lsn = choose |lsn: LSN| maxmax(index, addr, lsn);
-        assert(max_lsn <= end_minus_one) by {
-        }
-        assert(end_minus_one <= max_lsn) by {
-        }
-    }
-
     pub proof fn read_for_recovery_refines(self, post: Self, lbl: LikesJournal::Label, addr: Address)
     requires 
         self.inv(), 

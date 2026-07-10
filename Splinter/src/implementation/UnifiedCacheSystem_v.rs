@@ -18,7 +18,7 @@ use crate::allocation_layer::MiniAllocator_v::MiniAllocator;
 use crate::betree::LinkedBranch_v::SplitArg;
 use crate::disk::GenericDisk_v::{AU, Address, Pointer};
 use crate::implementation::AbstractSuperblock_v::{
-    AbstractSuperblockImage, marshal_abstract_superblock, superblock_matches,
+    AbstractSuperblockImage, superblock_matches,
 };
 use crate::implementation::AllocationBranchStack_v::normalize_value;
 use crate::implementation::AllocationBranchStackRefinement_v::append_puts;
@@ -65,15 +65,6 @@ pub open spec fn cache_write_response_addrs(
 ) -> Set<Address>
 {
     Set::new(|addr: Address| responses.contains_key(addr) && responses[addr] is WriteResp)
-}
-
-pub open spec fn cache_clean_filled_addr(cache: Cache::State, addr: Address) -> bool
-{
-    &&& cache.lookup_map.contains_key(addr)
-    &&& cache.entries.contains_key(cache.lookup_map[addr])
-    &&& cache.entries[cache.lookup_map[addr]] is Filled
-    &&& cache.status_map.contains_key(cache.lookup_map[addr])
-    &&& cache.status_map[cache.lookup_map[addr]] is Clean
 }
 
 pub open spec fn cache_filled_addr_raw(cache: Cache::State, addr: Address) -> bool
@@ -375,7 +366,6 @@ state_machine!{ UnifiedCacheSystem {
         );
         require req is WriteReq;
         require req->to == spec_superblock_addr();
-        require req->data == marshal_abstract_superblock(image);
         require superblock_matches(req->data, image);
         require reqs == Multiset::singleton((req_id, req));
         require resps.is_empty();
@@ -432,7 +422,6 @@ state_machine!{ UnifiedCacheSystem {
         require !(pre.recovery_state is AwaitingSuperblock);
         require updated.is_injective();
         require !updated.contains_value(spec_superblock_addr());
-        require updated.values() <= Set::new(|addr: Address| addr.wf());
         require multiset_to_map(reqs) == req_map;
         require resps.is_empty();
         require Cache::State::next(
@@ -537,7 +526,7 @@ state_machine!{ UnifiedCacheSystem {
         let journal_records = full_msgs.maybe_discard_old(
             pre.journal.journal.snapshot.boundary_lsn);
         let branch_records = full_msgs.maybe_discard_old(
-            pre.journal.journal.seq_start());
+            pre.branch.seq_end());
 
         let journal_lbl = AtomicJournalState::Label::ReadForRecovery{
             messages: journal_records,
@@ -608,7 +597,7 @@ state_machine!{ UnifiedCacheSystem {
         new_journal: AtomicJournalState::State,
     ) {
         require lbl is Internal;
-        require pre.client_ready();
+        require pre.allocation_metadata_loaded();
         require aus <= pre.free_aus;
         require AtomicJournalState::State::next(
             pre.journal,
@@ -658,7 +647,7 @@ state_machine!{ UnifiedCacheSystem {
         new_branch: AtomicBranchState::State,
     ) {
         require lbl is Internal;
-        require pre.client_ready();
+        require pre.allocation_metadata_loaded();
         require aus <= pre.free_aus;
         require AtomicBranchState::State::next(
             pre.branch,
@@ -804,6 +793,14 @@ state_machine!{ UnifiedCacheSystem {
         self.branch.metadata_loaded()
     }
 
+    pub open spec fn allocation_metadata_loaded(self) -> bool
+    {
+        &&& self.journal_metadata_loaded()
+        &&& self.branch_metadata_loaded()
+        &&& (self.recovery_state is MetadataLoadComplete
+            || self.recovery_state is RecoveryComplete)
+    }
+
     pub open spec fn client_ready(self) -> bool
     {
         self.recovery_state is RecoveryComplete
@@ -821,11 +818,6 @@ state_machine!{ UnifiedCacheSystem {
     pub open spec fn sync_image(self) -> Option<AbstractSuperblockImage>
     {
         self.sync_phase.image()
-    }
-
-    pub open spec fn superblock_write_req_id(self) -> Option<ID>
-    {
-        self.sync_phase.req_id()
     }
 
     pub open spec fn sync_image_metadata_valid(self, image: AbstractSuperblockImage) -> bool

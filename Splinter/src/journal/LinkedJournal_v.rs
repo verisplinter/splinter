@@ -30,6 +30,17 @@ pub struct JournalRecord {
 }
 
 impl JournalRecord {
+    pub proof fn fields_equal_imply_equal(lhs: Self, rhs: Self)
+        requires
+            lhs.message_seq =~= rhs.message_seq,
+            lhs.prior_rec == rhs.prior_rec,
+        ensures
+            lhs == rhs,
+    {
+        MsgHistory::ext_equal_is_equality();
+        assert(lhs.message_seq == rhs.message_seq);
+    }
+
     pub open spec(checked) fn wf(self) -> bool {
         &&& self.message_seq.wf()
         &&& !self.message_seq.is_empty()

@@ -29,12 +29,12 @@ use crate::implementation::CachedBranch_v::{
 };
 use crate::implementation::CachedJournal_v::{CachedJournal, JournalSnapshot};
 use crate::implementation::CachingDiskBranch_v::{
-    root_aus_up_to, sealed_summary_aus_between, split_read_addrs,
+    root_aus_up_to, root_aus_up_to_contains, root_aus_up_to_member_has_index,
+    sealed_summary_aus_between, split_read_addrs,
 };
 use crate::implementation::CachingDisk_v::addresses_in_aus;
 use crate::implementation::AbstractSuperblock_v::{
-    AbstractSuperblockImage, empty_abstract_superblock_image, marshal_abstract_superblock,
-    superblock_matches,
+    AbstractSuperblockImage, empty_abstract_superblock_image, superblock_matches,
 };
 use crate::implementation::DiskLayout_v::spec_superblock_addr;
 use crate::implementation::JournalTypes_v::to_journal_records;
@@ -205,7 +205,7 @@ state_machine!{ AtomicBranchState {
             write_nodes,
         };
         require CachedBranch::State::next(pre.active_branch, pre.active_branch, branch_lbl);
-        require summary == pre.mini_allocator.reserved_aus();
+        require summary == pre.mini_allocator.allocated_aus();
 
         update image = AtomicBranchImage{
             sealed_roots: pre.image.sealed_roots.push(root),
@@ -295,8 +295,8 @@ pub open spec fn mini_allocator_allocated_addrs(mini_allocator: MiniAllocator) -
 {
     Set::new(|addr: Address| {
         &&& mini_allocator.allocs.contains_key(addr.au)
-        &&& (mini_allocator.allocs[addr.au].reserved
-            + mini_allocator.allocs[addr.au].observed).contains(addr)
+        &&& (mini_allocator.allocs[addr.au].allocated
+            + mini_allocator.allocs[addr.au].allocated).contains(addr)
     })
 }
 
@@ -824,6 +824,8 @@ impl AtomicBranchState::State {
             post.branch_summary == pre.branch_summary,
             post.persisted_root_count == pre.persisted_root_count,
             post.seq_end == pre.seq_end + lbl->keys.len(),
+            post.metadata_loaded() == pre.metadata_loaded(),
+            post.active_branch.ready_for_operation(post.mini_allocator),
     {
         reveal(AtomicBranchState::State::next);
         reveal(AtomicBranchState::State::next_by);
@@ -836,9 +838,80 @@ impl AtomicBranchState::State {
                     lbl,
                     new_active_branch,
                 ));
+                let (keys, msgs, receipt, read_nodes, write_nodes) = match lbl {
+                    AtomicBranchState::Label::Append{keys, msgs, receipt, read_nodes, write_nodes, ..} =>
+                        (keys, msgs, receipt, read_nodes, write_nodes),
+                    _ => arbitrary(),
+                };
+                let branch_lbl = CachedBranch::Label::Append{
+                    mini_allocator: pre.mini_allocator,
+                    receipt,
+                    keys,
+                    msgs,
+                    read_nodes,
+                    write_nodes,
+                };
+                assert(CachedBranch::State::next(pre.active_branch, new_active_branch, branch_lbl));
+                reveal(CachedBranch::State::next);
+                reveal(CachedBranch::State::next_by);
+                assert(CachedBranch::State::next_by(
+                    pre.active_branch,
+                    new_active_branch,
+                    branch_lbl,
+                    CachedBranch::Step::append_step(),
+                ));
+                assert(CachedBranch::State::append_step(
+                    pre.active_branch,
+                    new_active_branch,
+                    branch_lbl,
+                ));
+                assert(new_active_branch == pre.active_branch);
+                assert(post.active_branch == new_active_branch);
+                assert(post.mini_allocator == pre.mini_allocator);
+                assert(pre.active_branch.ready_for_operation(pre.mini_allocator));
             },
             AtomicBranchState::Step::append_empty(new_active_branch) => {
                 assert(AtomicBranchState::State::append_empty(pre, post, lbl, new_active_branch));
+                let (keys, msgs, init_root, write_nodes) = match lbl {
+                    AtomicBranchState::Label::Append{keys, msgs, init_root, write_nodes, ..} =>
+                        (keys, msgs, init_root, write_nodes),
+                    _ => arbitrary(),
+                };
+                assert(init_root is Some);
+                let init_addr = init_root.unwrap();
+                let branch_lbl = CachedBranch::Label::Initialize{
+                    mini_allocator: pre.mini_allocator,
+                    init_root: init_addr,
+                    keys,
+                    msgs,
+                    write_nodes,
+                };
+                assert(CachedBranch::State::next(pre.active_branch, new_active_branch, branch_lbl));
+                reveal(CachedBranch::State::next);
+                reveal(CachedBranch::State::next_by);
+                assert(CachedBranch::State::next_by(
+                    pre.active_branch,
+                    new_active_branch,
+                    branch_lbl,
+                    CachedBranch::Step::initialize_branch(),
+                ));
+                assert(CachedBranch::State::initialize_branch(
+                    pre.active_branch,
+                    new_active_branch,
+                    branch_lbl,
+                ));
+                assert(pre.mini_allocator.can_allocate(init_addr));
+                crate::implementation::AllocationBranchStack_v::mini_allocator_allocate_preserves_all_aus(
+                    pre.mini_allocator,
+                    init_addr,
+                );
+                assert(post.active_branch == new_active_branch);
+                assert(post.mini_allocator == pre.mini_allocator.allocate(init_addr));
+                assert(new_active_branch.root == Some(init_addr));
+                assert(post.mini_allocator.all_aus() == pre.mini_allocator.all_aus());
+                assert(pre.mini_allocator.all_aus().contains(init_addr.au)) by {
+                    assert(pre.mini_allocator.allocs.contains_key(init_addr.au));
+                }
             },
             _ => {
                 assert(false);
@@ -1030,6 +1103,31 @@ impl AtomicBranchState::State {
         }
     }
 
+    pub proof fn grow_effect(pre: Self, post: Self, lbl: AtomicBranchState::Label)
+        requires
+            AtomicBranchState::State::next(pre, post, lbl),
+            lbl is Grow,
+        ensures
+            post.seq_end == pre.seq_end,
+            post.in_flight == pre.in_flight,
+            post.prepared == pre.prepared,
+            post.persistent_image == pre.persistent_image,
+    {
+        reveal(AtomicBranchState::State::next);
+        reveal(AtomicBranchState::State::next_by);
+        let step = choose |step| AtomicBranchState::State::next_by(pre, post, lbl, step);
+        match step {
+            AtomicBranchState::Step::grow(new_active_branch) => {
+                assert(AtomicBranchState::State::grow(pre, post, lbl, new_active_branch)) by {
+                    reveal(AtomicBranchState::State::grow);
+                }
+            },
+            _ => {
+                assert(false);
+            },
+        }
+    }
+
     pub proof fn fill_aus_effect(pre: Self, post: Self, lbl: AtomicBranchState::Label)
         requires
             AtomicBranchState::State::next(pre, post, lbl),
@@ -1058,6 +1156,105 @@ impl AtomicBranchState::State {
             _ => {
                 assert(false);
             },
+        }
+    }
+
+    pub proof fn seal_effect(pre: Self, post: Self, lbl: AtomicBranchState::Label)
+        requires
+            AtomicBranchState::State::next(pre, post, lbl),
+            lbl is Seal,
+        ensures
+            post.image.sealed_roots == pre.image.sealed_roots.push(pre.active_branch.root.unwrap()),
+            post.image.seq_end == pre.image.seq_end,
+            post.active_branch == CachedBranch::State::empty_active(),
+            post.mini_allocator == pre.mini_allocator.prune(lbl->summary),
+            post.branch_summary == pre.branch_summary.insert(
+                pre.active_branch.root.unwrap().au,
+                lbl->summary,
+            ),
+            post.persisted_root_count == pre.persisted_root_count,
+            post.persistent_image == pre.persistent_image,
+            post.in_flight == pre.in_flight,
+            post.prepared == pre.prepared,
+            post.seq_end == pre.seq_end,
+            pre.metadata_loaded() ==> post.metadata_loaded(),
+    {
+        reveal(AtomicBranchState::State::next);
+        reveal(AtomicBranchState::State::next_by);
+        let step = choose |step| AtomicBranchState::State::next_by(pre, post, lbl, step);
+        match step {
+            AtomicBranchState::Step::seal() => {
+                assert(AtomicBranchState::State::seal(pre, post, lbl)) by {
+                    reveal(AtomicBranchState::State::seal);
+                }
+            },
+            _ => assert(false),
+        }
+        if pre.metadata_loaded() {
+            assert(post.metadata_loaded()) by {
+                assert forall |au: AU| #[trigger] root_aus_up_to(
+                    post.image.sealed_roots,
+                    post.image.sealed_roots.len() as nat,
+                ).contains(au) implies post.branch_summary.dom().contains(au) by {
+                    let idx = root_aus_up_to_member_has_index(
+                        post.image.sealed_roots,
+                        post.image.sealed_roots.len() as nat,
+                        au,
+                    );
+                    if idx < pre.image.sealed_roots.len() {
+                        assert(post.image.sealed_roots[idx]
+                            == pre.image.sealed_roots[idx]);
+                        root_aus_up_to_contains(
+                            pre.image.sealed_roots,
+                            pre.image.sealed_roots.len() as nat,
+                            idx,
+                        );
+                        assert(pre.branch_summary.dom().contains(au));
+                    } else {
+                        assert(idx == pre.image.sealed_roots.len());
+                        assert(post.image.sealed_roots[idx]
+                            == pre.active_branch.root.unwrap());
+                        assert(au == pre.active_branch.root.unwrap().au);
+                    }
+                    assert(post.branch_summary == pre.branch_summary.insert(
+                        pre.active_branch.root.unwrap().au,
+                        lbl->summary,
+                    ));
+                }
+            }
+        }
+    }
+
+    pub proof fn observe_persisted_roots_effect(
+        pre: Self,
+        post: Self,
+        lbl: AtomicBranchState::Label,
+    )
+        requires
+            AtomicBranchState::State::next(pre, post, lbl),
+            lbl is ObservePersistedRoots,
+        ensures
+            post.image == pre.image,
+            post.persistent_image == pre.persistent_image,
+            post.in_flight == pre.in_flight,
+            post.prepared == pre.prepared,
+            post.branch_summary == pre.branch_summary,
+            post.persisted_root_count == lbl->target_count,
+            post.active_branch == pre.active_branch,
+            post.mini_allocator == pre.mini_allocator,
+            post.seq_end == pre.seq_end,
+            post.metadata_loaded() == pre.metadata_loaded(),
+    {
+        reveal(AtomicBranchState::State::next);
+        reveal(AtomicBranchState::State::next_by);
+        let step = choose |step| AtomicBranchState::State::next_by(pre, post, lbl, step);
+        match step {
+            AtomicBranchState::Step::observe_persisted_roots() => {
+                assert(AtomicBranchState::State::observe_persisted_roots(pre, post, lbl)) by {
+                    reveal(AtomicBranchState::State::observe_persisted_roots);
+                }
+            },
+            _ => assert(false),
         }
     }
 
@@ -1120,6 +1317,38 @@ impl AtomicBranchState::State {
         match step {
             AtomicBranchState::Step::commit_start() => {
                 assert(AtomicBranchState::State::commit_start(pre, post, lbl));
+            },
+            _ => {
+                assert(false);
+            },
+        }
+    }
+
+    pub proof fn commit_prepared_effect(
+        pre: Self,
+        post: Self,
+        lbl: AtomicBranchState::Label,
+    )
+        requires
+            AtomicBranchState::State::next(pre, post, lbl),
+            lbl is CommitPrepared,
+        ensures
+            post.image == pre.image,
+            post.persistent_image == pre.persistent_image,
+            post.branch_summary == pre.branch_summary,
+            post.persisted_root_count == pre.persisted_root_count,
+            post.active_branch == pre.active_branch,
+            post.mini_allocator == pre.mini_allocator,
+            post.seq_end == pre.seq_end,
+            post.in_flight == pre.in_flight,
+            post.prepared,
+    {
+        reveal(AtomicBranchState::State::next);
+        reveal(AtomicBranchState::State::next_by);
+        let step = choose |step| AtomicBranchState::State::next_by(pre, post, lbl, step);
+        match step {
+            AtomicBranchState::Step::commit_prepared() => {
+                assert(AtomicBranchState::State::commit_prepared(pre, post, lbl));
             },
             _ => {
                 assert(false);

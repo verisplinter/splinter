@@ -63,8 +63,8 @@ pub open spec fn mini_allocator_allocated_addrs(
 {
     Set::new(|addr: Address| {
         &&& mini_allocator.allocs.contains_key(addr.au)
-        &&& (mini_allocator.allocs[addr.au].reserved
-            + mini_allocator.allocs[addr.au].observed).contains(addr)
+        &&& (mini_allocator.allocs[addr.au].allocated
+            + mini_allocator.allocs[addr.au].allocated).contains(addr)
     })
 }
 
@@ -267,7 +267,7 @@ pub open spec fn semantic_active_branch_candidate(
     &&& branch.root == root
     &&& branch.disk_view.entries <= visible_nodes
     &&& forall |addr: Address| #[trigger] branch.disk_view.entries.contains_key(addr)
-        <==> mini_allocator.page_is_reserved(addr)
+        <==> mini_allocator.page_is_allocated(addr)
     &&& branch.inv()
     &&& branch.tight_disk_view()
 }
@@ -382,14 +382,14 @@ pub proof fn semantic_active_branch_unique(
     assert(branch1.root == branch2.root);
     assert_maps_equal!(branch1.disk_view.entries, branch2.disk_view.entries, addr => {
         if branch1.disk_view.entries.contains_key(addr) {
-            assert(mini_allocator.page_is_reserved(addr));
+            assert(mini_allocator.page_is_allocated(addr));
             assert(branch2.disk_view.entries.contains_key(addr));
             assert(visible_nodes.contains_key(addr));
             assert(branch1.disk_view.entries[addr] == visible_nodes[addr]);
             assert(branch2.disk_view.entries[addr] == visible_nodes[addr]);
         }
         if branch2.disk_view.entries.contains_key(addr) {
-            assert(mini_allocator.page_is_reserved(addr));
+            assert(mini_allocator.page_is_allocated(addr));
             assert(branch1.disk_view.entries.contains_key(addr));
             assert(visible_nodes.contains_key(addr));
             assert(branch1.disk_view.entries[addr] == visible_nodes[addr]);
@@ -481,7 +481,7 @@ pub proof fn branch_candidate_from_allocation_branch_inv(
         semantic_active_branch_candidate(root, visible_nodes, mini_allocator, branch),
 {
     assert forall |addr: Address| #[trigger] branch.disk_view.entries.contains_key(addr)
-        <==> mini_allocator.page_is_reserved(addr) by {
+        <==> mini_allocator.page_is_allocated(addr) by {
         let active = AllocationBranch{
             sealed: false,
             branch: Some(branch),
@@ -617,6 +617,46 @@ pub open spec fn sealed_summary_aus_between(
 {
     sealed_summary_aus_up_to(sealed_roots, branch_summary, end)
         .difference(sealed_summary_aus_up_to(sealed_roots, branch_summary, start))
+}
+
+pub proof fn sealed_summary_aus_between_last_subset(
+    sealed_roots: Seq<Address>,
+    branch_summary: Map<AU, Summary>,
+    end: nat,
+)
+    requires
+        0 < end <= sealed_roots.len(),
+        branch_summary.contains_key(sealed_roots[(end - 1) as int].au),
+    ensures
+        sealed_summary_aus_between(
+            sealed_roots,
+            branch_summary,
+            (end - 1) as nat,
+            end,
+        ) <= branch_summary[sealed_roots[(end - 1) as int].au],
+{
+    let start = (end - 1) as nat;
+    let root_au = sealed_roots[(end - 1) as int].au;
+    assert forall |au: AU| #[trigger] sealed_summary_aus_between(
+        sealed_roots,
+        branch_summary,
+        start,
+        end,
+    ).contains(au) implies branch_summary[root_au].contains(au) by {
+        if !branch_summary[root_au].contains(au) {
+            assert(sealed_summary_aus_up_to(
+                sealed_roots,
+                branch_summary,
+                end,
+            ).contains(au));
+            assert(sealed_summary_aus_up_to(
+                sealed_roots,
+                branch_summary,
+                start,
+            ).contains(au));
+            assert(false);
+        }
+    }
 }
 
 pub proof fn sealed_summary_aus_up_to_monotonic(
@@ -2144,32 +2184,32 @@ pub proof fn receipt_path_valid_for_split_from_loaded(
     }
 }
 
-proof fn mini_allocator_all_minus_removable_is_reserved(mini_allocator: MiniAllocator)
+proof fn mini_allocator_all_minus_removable_is_allocated(mini_allocator: MiniAllocator)
     requires
         mini_allocator.wf(),
     ensures
         mini_allocator.all_aus().difference(mini_allocator.removable_aus())
-            == mini_allocator.reserved_aus(),
+            == mini_allocator.allocated_aus(),
 {
     assert(mini_allocator.all_aus().difference(mini_allocator.removable_aus())
-        =~= mini_allocator.reserved_aus()) by {
+        =~= mini_allocator.allocated_aus()) by {
         assert forall |au: AU|
             #![trigger mini_allocator.all_aus().contains(au)]
-            #![trigger mini_allocator.reserved_aus().contains(au)]
+            #![trigger mini_allocator.allocated_aus().contains(au)]
             mini_allocator.all_aus().difference(mini_allocator.removable_aus()).contains(au)
-                <==> mini_allocator.reserved_aus().contains(au)
+                <==> mini_allocator.allocated_aus().contains(au)
         by {
             if mini_allocator.all_aus().difference(mini_allocator.removable_aus()).contains(au) {
                 assert(mini_allocator.allocs.contains_key(au));
                 assert(!mini_allocator.removable_aus().contains(au));
                 assert(!mini_allocator.can_remove(au));
-                if mini_allocator.allocs[au].has_no_outstanding_refs() {
+                if mini_allocator.allocs[au].has_no_allocated_pages() {
                     assert(mini_allocator.can_remove(au));
                     assert(false);
                 }
-            } else if mini_allocator.reserved_aus().contains(au) {
+            } else if mini_allocator.allocated_aus().contains(au) {
                 assert(mini_allocator.allocs.contains_key(au));
-                assert(!mini_allocator.allocs[au].has_no_outstanding_refs());
+                assert(!mini_allocator.allocs[au].has_no_allocated_pages());
                 assert(!mini_allocator.can_remove(au));
                 assert(!mini_allocator.removable_aus().contains(au));
             }
@@ -3428,7 +3468,7 @@ state_machine!{ CachingDiskBranch {
         };
         require CachedBranch::State::next(pre.active_branch, pre.active_branch, branch_lbl);
         let sealed_root = pre.active_branch.root.unwrap();
-        let sealed_summary = pre.mini_allocator.reserved_aus();
+        let sealed_summary = pre.mini_allocator.allocated_aus();
         let next_mini_allocator = pre.mini_allocator
             .prune(sealed_summary);
         let new_branch_summary = pre.branch_summary.insert(
@@ -4060,8 +4100,8 @@ state_machine!{ CachingDiskBranch {
                     assert(path.target().disk_view.entries.contains_key(path.target().root));
                     assert(branch.disk_view.entries.contains_key(target));
                     assert(pre.i().active_branch.addrs_closed_under_mini_allocator());
-                    assert(pre.i().active_branch.mini_allocator.page_is_reserved(target));
-                    assert(pre.mini_allocator.page_is_reserved(target));
+                    assert(pre.i().active_branch.mini_allocator.page_is_allocated(target));
+                    assert(pre.mini_allocator.page_is_allocated(target));
                     assert(pre.mini_allocator.all_aus().contains(target.au));
                     assert(post.mini_allocator == pre.mini_allocator);
 
@@ -4092,7 +4132,7 @@ state_machine!{ CachingDiskBranch {
                         assert(addr == target);
                         assert(branch.disk_view.entries.contains_key(target));
                         assert(pre.i().active_branch.addrs_closed_under_mini_allocator());
-                        assert(pre.i().active_branch.mini_allocator.page_is_reserved(target));
+                        assert(pre.i().active_branch.mini_allocator.page_is_allocated(target));
                         assert(pre.i().wf());
                     }
                     assert(writes.dom().disjoint(addresses_in_aus(summary_aus(pre.branch_summary)))) by {
@@ -4370,7 +4410,7 @@ state_machine!{ CachingDiskBranch {
         assert(!branch.disk_view.entries.contains_key(new_root_addr)) by {
             if branch.disk_view.entries.contains_key(new_root_addr) {
                 assert(pre.i().active_branch.addrs_closed_under_mini_allocator());
-                assert(pre.i().active_branch.mini_allocator.page_is_reserved(new_root_addr));
+                assert(pre.i().active_branch.mini_allocator.page_is_allocated(new_root_addr));
                 assert(false);
             }
         }
@@ -4534,7 +4574,7 @@ state_machine!{ CachingDiskBranch {
         assert(!branch.disk_view.entries.contains_key(new_child_addr)) by {
             if branch.disk_view.entries.contains_key(new_child_addr) {
                 assert(pre.i().active_branch.addrs_closed_under_mini_allocator());
-                assert(pre.i().active_branch.mini_allocator.page_is_reserved(new_child_addr));
+                assert(pre.i().active_branch.mini_allocator.page_is_allocated(new_child_addr));
                 assert(false);
             }
         }
@@ -4594,7 +4634,7 @@ state_machine!{ CachingDiskBranch {
             if addr == parent_addr || addr == child_addr {
                 assert(branch.disk_view.entries.contains_key(addr));
                 assert(pre.i().active_branch.addrs_closed_under_mini_allocator());
-                assert(pre.i().active_branch.mini_allocator.page_is_reserved(addr));
+                assert(pre.i().active_branch.mini_allocator.page_is_allocated(addr));
                 assert(pre.i().wf());
             } else {
                 assert(addr == new_child_addr);
@@ -4715,7 +4755,7 @@ state_machine!{ CachingDiskBranch {
         let dealloc_aus = pre.i().active_branch.mini_allocator.removable_aus();
         let sealed_active = pre.i().active_branch.branch_seal(aux_ptr, dealloc_aus);
         let sealed_branch = sealed_active.branch.unwrap();
-        let sealed_summary = pre.mini_allocator.reserved_aus();
+        let sealed_summary = pre.mini_allocator.allocated_aus();
 
         CachingDisk::State::access_visible_effect(
             pre.disk,
@@ -4749,13 +4789,13 @@ state_machine!{ CachingDiskBranch {
         if aux_ptr is Some {
             let ptr = aux_ptr.unwrap();
             assert(pre.mini_allocator.can_allocate(ptr));
-            assert(pre.mini_allocator.reserved_aus().contains(ptr.au));
+            assert(pre.mini_allocator.allocated_aus().contains(ptr.au));
             assert(!dealloc_aus.contains(ptr.au)) by {
                 if dealloc_aus.contains(ptr.au) {
                     assert(pre.mini_allocator.removable_aus().contains(ptr.au));
                     assert(pre.mini_allocator.can_remove(ptr.au));
-                    assert(pre.mini_allocator.allocs[ptr.au].has_no_outstanding_refs());
-                    assert(!pre.mini_allocator.reserved_aus().contains(ptr.au));
+                    assert(pre.mini_allocator.allocs[ptr.au].has_no_allocated_pages());
+                    assert(!pre.mini_allocator.allocated_aus().contains(ptr.au));
                     assert(false);
                 }
             }
@@ -4874,7 +4914,7 @@ state_machine!{ CachingDiskBranch {
         assert(sealed_branch.valid_sealed_branch());
         assert(sealed_branch.tight_disk_view_with_summary());
 
-        mini_allocator_all_minus_removable_is_reserved(pre.mini_allocator);
+        mini_allocator_all_minus_removable_is_allocated(pre.mini_allocator);
         if aux_ptr is Some {
             mini_allocator_allocate_preserves_all_aus(pre.mini_allocator, aux_ptr.unwrap());
             let allocated = pre.mini_allocator.allocate(aux_ptr.unwrap());
@@ -5299,7 +5339,7 @@ state_machine!{ CachingDiskBranch {
         pre.i().sealed_stack.push_branch_preserves_wf(pre.i().branch_summary, sealed_branch, loose_active_disk);
         pre.i().active_branch.mini_allocator.prune_preserves_wf(sealed_branch.get_summary());
         assert(post.active_branch.wf());
-        pre.mini_allocator.prune_preserves_wf(pre.mini_allocator.reserved_aus());
+        pre.mini_allocator.prune_preserves_wf(pre.mini_allocator.allocated_aus());
         assert(post.mini_allocator.wf());
         assert(post.persisted_root_count == pre.persisted_root_count);
         assert(post.persisted_root_count <= post.sealed_roots.len());
@@ -5313,12 +5353,12 @@ state_machine!{ CachingDiskBranch {
                 assert(addr == root || addr == aux_ptr.unwrap());
                 if addr == root {
                     assert(pre.i().active_branch.addrs_closed_under_mini_allocator());
-                    assert(pre.i().active_branch.mini_allocator.page_is_reserved(root));
-                    assert(pre.mini_allocator.page_is_reserved(root));
+                    assert(pre.i().active_branch.mini_allocator.page_is_allocated(root));
+                    assert(pre.mini_allocator.page_is_allocated(root));
                     assert(pre.mini_allocator.all_aus().contains(root.au));
                 } else {
                     assert(addr == aux_ptr.unwrap());
-                    assert(pre.mini_allocator.reserved_aus().contains(addr.au));
+                    assert(pre.mini_allocator.allocated_aus().contains(addr.au));
                     assert(pre.mini_allocator.all_aus().contains(addr.au));
                 }
             } else {
@@ -5447,8 +5487,8 @@ state_machine!{ CachingDiskBranch {
                     } by {
                     assert(pre.visible_branch_nodes().contains_key(addr));
                     assert(pre.i().active_branch.addrs_closed_under_mini_allocator());
-                    assert(pre.i().active_branch.mini_allocator.page_is_reserved(addr));
-                    assert(pre.mini_allocator.page_is_reserved(addr));
+                    assert(pre.i().active_branch.mini_allocator.page_is_allocated(addr));
+                    assert(pre.mini_allocator.page_is_allocated(addr));
                     assert(pre.mini_allocator.all_aus().contains(addr.au));
                     assert(!aus.contains(addr.au)) by {
                         if aus.contains(addr.au) {
@@ -6061,8 +6101,8 @@ impl CachingDiskBranch::State {
                                             assert(path.target().root == addr);
                                             assert(branch.disk_view.entries.contains_key(addr));
                                             assert(pre.i().active_branch.addrs_closed_under_mini_allocator());
-                                            assert(pre.i().active_branch.mini_allocator.page_is_reserved(addr));
-                                            assert(pre.mini_allocator.page_is_reserved(addr));
+                                            assert(pre.i().active_branch.mini_allocator.page_is_allocated(addr));
+                                            assert(pre.mini_allocator.page_is_allocated(addr));
                                             assert(pre.mini_allocator.all_aus().contains(au));
                                             assert(pre.accessible_aus().contains(au));
                                         },
@@ -6393,7 +6433,7 @@ impl CachingDiskBranch::State {
                             assert(!branch.disk_view.entries.contains_key(new_child_addr)) by {
                                 if branch.disk_view.entries.contains_key(new_child_addr) {
                                     assert(pre.i().active_branch.addrs_closed_under_mini_allocator());
-                                    assert(pre.i().active_branch.mini_allocator.page_is_reserved(new_child_addr));
+                                    assert(pre.i().active_branch.mini_allocator.page_is_allocated(new_child_addr));
                                     assert(pre.mini_allocator.can_allocate(new_child_addr));
                                     assert(false);
                                 }
@@ -6427,8 +6467,8 @@ impl CachingDiskBranch::State {
                                 assert(branch.disk_view.entries.contains_key(addr));
                             }
                             assert(pre.i().active_branch.addrs_closed_under_mini_allocator());
-                            assert(pre.i().active_branch.mini_allocator.page_is_reserved(addr));
-                            assert(pre.mini_allocator.page_is_reserved(addr));
+                            assert(pre.i().active_branch.mini_allocator.page_is_allocated(addr));
+                            assert(pre.mini_allocator.page_is_allocated(addr));
                             assert(pre.mini_allocator.all_aus().contains(au));
                             assert(pre.accessible_aus().contains(au));
                         }
@@ -6462,7 +6502,7 @@ impl CachingDiskBranch::State {
                     },
                     _ => { assert(false); },
                 }
-                let sealed_summary = pre.mini_allocator.reserved_aus();
+                let sealed_summary = pre.mini_allocator.allocated_aus();
                 pre.mini_allocator.prune_preserves_wf(sealed_summary);
                 assert(post.mini_allocator.all_aus()
                     == pre.mini_allocator.all_aus().difference(sealed_summary));
@@ -6506,11 +6546,11 @@ impl CachingDiskBranch::State {
                             pre.active_branch.root.unwrap(),
                             read_nodes,
                             aux_ptr,
-                            pre.mini_allocator.reserved_aus(),
+                            pre.mini_allocator.allocated_aus(),
                         ));
                         assert(write_nodes.contains_key(addr));
                         if aux_ptr is Some && addr == aux_ptr.unwrap() {
-                            assert(pre.mini_allocator.reserved_aus().contains(au));
+                            assert(pre.mini_allocator.allocated_aus().contains(au));
                             assert(pre.mini_allocator.all_aus().contains(au));
                         } else {
                             assert(addr == pre.active_branch.root.unwrap());
@@ -6686,7 +6726,7 @@ impl CachingDiskBranch::State {
                 assert(CachingDiskBranch::State::internal_seal(pre, post, lbl, written_disk, aux_ptr, reads, writes)) by {
                     reveal(CachingDiskBranch::State::internal_seal);
                 }
-                let sealed_summary = pre.mini_allocator.reserved_aus();
+                let sealed_summary = pre.mini_allocator.allocated_aus();
                 pre.mini_allocator.prune_preserves_wf(sealed_summary);
                 assert(post.mini_allocator.all_aus()
                     == pre.mini_allocator.all_aus().difference(sealed_summary));

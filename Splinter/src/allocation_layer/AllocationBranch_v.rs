@@ -88,7 +88,7 @@ impl AllocationBranch {
     {
         &&& !self.sealed
         // can initialize also means that no pages are allocated
-        &&& self.mini_allocator.reserved_aus() == Set::<AU>::empty()
+        &&& self.mini_allocator.allocated_aus() == Set::<AU>::empty()
         &&& self.mini_allocator.can_allocate(addr)
         &&& keys.len() > 0
         &&& keys.len() == msgs.len()
@@ -203,7 +203,7 @@ impl AllocationBranch {
     {
         if ptr is Some {
             let mini_allocator = self.mini_allocator.allocate(ptr.unwrap());
-            let reserved_aus = self.mini_allocator.reserved_aus();
+            let reserved_aus = self.mini_allocator.allocated_aus();
             Self{                
                 sealed: true,
                 branch: Some(self.branch.unwrap().seal(ptr.unwrap(), reserved_aus)),
@@ -274,7 +274,7 @@ impl AllocationBranch {
         recommends self.branch is Some
     {
         forall |addr| #[trigger] self.branch.unwrap().disk_view.entries.contains_key(addr)
-            <==> self.mini_allocator.page_is_reserved(addr)
+            <==> self.mini_allocator.page_is_allocated(addr)
     }
 
     pub proof fn alloc_aus_singleton(self) 
@@ -479,13 +479,13 @@ impl AllocationBranch {
             BuildEvent::Initialize{addr, keys, msgs} => {
                 let branch = post.branch.unwrap();
                 assert(branch.valid_ranking(map!{addr => 1nat})); // trigger
-                assert(post.mini_allocator.page_is_reserved(addr)); // trigger
+                assert(post.mini_allocator.page_is_allocated(addr)); // trigger
 
-                assert forall |address| #[trigger] post.mini_allocator.page_is_reserved(address)
+                assert forall |address| #[trigger] post.mini_allocator.page_is_allocated(address)
                 implies branch.disk_view.entries.contains_key(address)
                 by {
                     if address != addr {
-                        assert(pre.mini_allocator.reserved_aus().contains(address.au)); // trigger
+                        assert(pre.mini_allocator.allocated_aus().contains(address.au)); // trigger
                     }
                 }
             },
@@ -503,7 +503,7 @@ impl AllocationBranch {
                 let post_branch = post.branch.unwrap();
 
                 Refinement_v::split_refines(pre_branch, addr, path, split_arg);
-                assert(post.mini_allocator.allocs[addr.au].reserved.contains(addr)); // trigger
+                assert(post.mini_allocator.allocs[addr.au].allocated.contains(addr)); // trigger
             },
             BuildEvent::AllocFill{} => {
             },
@@ -540,11 +540,11 @@ impl AllocationBranch {
 
         assert(post.addrs_closed_under_mini_allocator()) by {
             assert forall |address| #[trigger] post_branch.disk_view.entries.contains_key(address)
-                <==> post.mini_allocator.page_is_reserved(address)
+                <==> post.mini_allocator.page_is_allocated(address)
             by {
                 if address == addr {
                     assert(post_branch.disk_view.entries.contains_key(address));
-                    assert(post.mini_allocator.page_is_reserved(address));
+                    assert(post.mini_allocator.page_is_allocated(address));
                 } else {
                     assert(post_branch.disk_view.entries.contains_key(address)
                         <==> branch.disk_view.entries.contains_key(address));
@@ -553,8 +553,8 @@ impl AllocationBranch {
                         assert(post.mini_allocator.allocs.contains_key(address.au));
                         assert(post.mini_allocator.allocs[address.au]
                             == self.mini_allocator.allocs[address.au].reserve(set!{addr}));
-                        assert(post.mini_allocator.page_is_reserved(address)
-                            <==> self.mini_allocator.page_is_reserved(address));
+                        assert(post.mini_allocator.page_is_allocated(address)
+                            <==> self.mini_allocator.page_is_allocated(address));
                     } else {
                         assert(post.mini_allocator.allocs.contains_key(address.au)
                             <==> self.mini_allocator.allocs.contains_key(address.au));
@@ -562,12 +562,12 @@ impl AllocationBranch {
                             assert(post.mini_allocator.allocs[address.au]
                                 == self.mini_allocator.allocs[address.au]);
                         }
-                        assert(post.mini_allocator.page_is_reserved(address)
-                            <==> self.mini_allocator.page_is_reserved(address));
+                        assert(post.mini_allocator.page_is_allocated(address)
+                            <==> self.mini_allocator.page_is_allocated(address));
                     }
 
                     assert(branch.disk_view.entries.contains_key(address)
-                        <==> self.mini_allocator.page_is_reserved(address));
+                        <==> self.mini_allocator.page_is_allocated(address));
                 }
             }
         }
@@ -587,26 +587,26 @@ impl AllocationBranch {
         let post_branch = post.branch.unwrap();
 
         if aux_ptr is None {
-            assert forall |au| self.mini_allocator.reserved_aus().contains(au) 
+            assert forall |au| self.mini_allocator.allocated_aus().contains(au)
             implies au == branch.root.au
             by {
                 if au != branch.root.au {
-                    let addr = self.mini_allocator.allocs[au].reserved.choose();
-                    if (self.mini_allocator.allocs[au].reserved.finite()) {
-                        if self.mini_allocator.allocs[au].reserved.len() == 0 {
-                            self.mini_allocator.allocs[au].reserved.lemma_len0_is_empty();
+                    let addr = self.mini_allocator.allocs[au].allocated.choose();
+                    if (self.mini_allocator.allocs[au].allocated.finite()) {
+                        if self.mini_allocator.allocs[au].allocated.len() == 0 {
+                            self.mini_allocator.allocs[au].allocated.lemma_len0_is_empty();
                         }
                     }
-                    assert(self.mini_allocator.allocs[au].reserved.contains(addr)); // trigger
+                    assert(self.mini_allocator.allocs[au].allocated.contains(addr)); // trigger
                     assert(branch.disk_view.entries.contains_key(addr)); // trigger
                 }
             }
-            assert(post.mini_allocator.all_aus() == self.mini_allocator.reserved_aus()); // trigger
+            assert(post.mini_allocator.all_aus() == self.mini_allocator.allocated_aus()); // trigger
             assert(branch.get_summary() =~= post.mini_allocator.all_aus()); // trigger
             return;
         }
 
-        let reserved_aus = self.mini_allocator.reserved_aus();
+        let reserved_aus = self.mini_allocator.allocated_aus();
         let except = set!{branch.root} + set!{aux_ptr.unwrap()};
 
         assert(branch.disk_view.entries.remove_keys(except) =~= post_branch.disk_view.entries.remove_keys(except)); // trigger

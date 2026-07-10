@@ -70,6 +70,53 @@ pub proof fn refinement_inv_from_parts(model: CrashAwareCachingDiskSystem::State
 {
 }
 
+proof fn journal_i_abstract_ephemeral_wf(journal: CrashAwareCachingDiskJournal::State)
+    requires
+        journal.refinement_inv(),
+        journal.ephemeral is Known,
+    ensures
+        journal.i_abstract().ephemeral is Known,
+        journal.i_abstract().ephemeral->v.wf(),
+{
+    journal.semantic_inv_implies_i_inv();
+    let alloc_crash = journal.i();
+    assert(alloc_crash.inv());
+    assert(alloc_crash.ephemeral is Known);
+
+    let alloc_journal = alloc_crash.ephemeral->v;
+    assert(alloc_journal.inv());
+    assert(alloc_journal.semantic_inv());
+    assert(alloc_journal.refinement_inv());
+
+    alloc_journal.i_inv();
+    let likes = alloc_journal.i();
+    assert(likes.inv());
+    likes.i_inv();
+
+    let linked = likes.i();
+    assert(linked.inv());
+    linked.i_wf();
+
+    let paged = linked.i();
+    assert(paged.wf());
+    let paged_prefix = paged.truncated_journal.i();
+    if paged.truncated_journal.freshest_rec is Some {
+        let rec = paged.truncated_journal.freshest_rec.unwrap();
+        rec.i_lemma(paged.truncated_journal.boundary_lsn);
+    } else {
+        assert(paged_prefix == MsgHistory::empty_history_at(paged.truncated_journal.boundary_lsn));
+        assert(paged_prefix.wf());
+        assert(paged_prefix.seq_end == paged.truncated_journal.boundary_lsn);
+    }
+    assert(paged_prefix.wf());
+    assert(paged_prefix.seq_end == paged.truncated_journal.seq_end());
+    assert(paged_prefix.seq_end == paged.unmarshalled_tail.seq_start);
+    paged_prefix.concat_lemma(paged.unmarshalled_tail);
+    assert(alloc_journal.i_abstract() == paged.i());
+    assert(paged.i().wf());
+    assert(journal.i_abstract().ephemeral->v == alloc_journal.i_abstract());
+}
+
 proof fn caching_disk_system_commit_flags_unchanged(pre: CrashAwareCachingDiskSystem::State, post: CrashAwareCachingDiskSystem::State)
     requires
         post.journal.frozen == pre.journal.frozen,
@@ -1261,13 +1308,24 @@ proof fn recover_refines_coordination(
     lbl: CrashAwareCachingDiskSystem::Label,
     new_journal: CrashAwareCachingDiskJournal::State,
     new_branch: CrashAwareCachingDiskBranch::State,
-    records: crate::abstract_system::MsgHistory_v::MsgHistory,
+    journal_records: crate::abstract_system::MsgHistory_v::MsgHistory,
+    branch_records: crate::abstract_system::MsgHistory_v::MsgHistory,
     keys: Seq<crate::spec::KeyType_t::Key>,
     msgs: Seq<Message>,
 )
     requires
         refinement_inv(pre),
-        CrashAwareCachingDiskSystem::State::recover(pre, post, lbl, new_journal, new_branch, records, keys, msgs),
+        CrashAwareCachingDiskSystem::State::recover(
+            pre,
+            post,
+            lbl,
+            new_journal,
+            new_branch,
+            journal_records,
+            branch_records,
+            keys,
+            msgs,
+        ),
     ensures
         CoordinationSystem::State::next(
             caching_disk_system_coordination_i(pre),
@@ -1284,10 +1342,10 @@ proof fn recover_refines_coordination(
     let cpre = caching_disk_system_coordination_i(pre);
     let cpost = caching_disk_system_coordination_i(post);
     let clbl = CoordinationSystem::Label::Label{ctam_label: caching_disk_system_i_lbl(pre, post, lbl)};
-    let journal_lbl = CrashAwareCachingDiskJournal::Label::ReadForRecovery{records};
+    let journal_lbl = CrashAwareCachingDiskJournal::Label::ReadForRecovery{records: journal_records};
     let branch_lbl = CrashAwareCachingDiskBranch::Label::Append{keys, msgs};
 
-    recover_journal_component_refine(pre, new_journal, records);
+    recover_journal_component_refine(pre, new_journal, journal_records);
     recover_branch_append_component_refine(pre, new_branch, keys, msgs);
     assert(cpre.journal == pre.journal.i_abstract());
     assert(cpre.mapadt == pre.branch.i().abstract_i());
@@ -1295,19 +1353,121 @@ proof fn recover_refines_coordination(
     assert(cpost.superblock_landed == cpre.superblock_landed);
     assert(cpre.mapadt.ephemeral is Known);
     branch_lsn_matches_coordination_map(pre);
-    assert(records == append_puts(pre.branch_lsn(), keys, msgs));
-    assert(records == append_puts(cpre.mapadt.i().seq_end, keys, msgs));
+    assert(branch_records == journal_records.maybe_discard_old(pre.branch_lsn()));
+    assert(branch_records == append_puts(pre.branch_lsn(), keys, msgs));
+    assert(branch_records == append_puts(cpre.mapadt.i().seq_end, keys, msgs));
     append_puts_wf(cpre.mapadt.i().seq_end, keys, msgs);
-    assert(records.wf());
+    assert(branch_records.wf());
     assert(CoordinationSystem::State::recover(
         cpre,
         cpost,
         clbl,
         new_journal.i_abstract(),
         new_branch.abstract_i(),
-        records,
+        branch_records,
     )) by {
         reveal(CoordinationSystem::State::recover);
+        journal_records.maybe_discard_old_is_subseq(pre.branch_lsn());
+        assert(journal_records.includes_subseq(branch_records));
+        assert(cpre.journal.ephemeral is Known);
+        let abs_journal = cpre.journal.ephemeral->v;
+        assert(abs_journal.journal.includes_subseq(journal_records)) by {
+            assert(AbstractCrashAwareJournal::State::next(
+                cpre.journal,
+                new_journal.i_abstract(),
+                AbstractCrashAwareJournal::Label::ReadForRecoveryLabel{
+                    records: journal_records,
+                },
+            ));
+            reveal(AbstractCrashAwareJournal::State::next);
+            reveal(AbstractCrashAwareJournal::State::next_by);
+            assert(AbstractCrashAwareJournal::State::read_for_recovery(
+                cpre.journal,
+                new_journal.i_abstract(),
+                AbstractCrashAwareJournal::Label::ReadForRecoveryLabel{
+                    records: journal_records,
+                },
+            )) by {
+                reveal(AbstractCrashAwareJournal::State::read_for_recovery);
+            }
+            reveal(AbstractJournal::State::next);
+            reveal(AbstractJournal::State::next_by);
+            assert(AbstractJournal::State::read_for_recovery(
+                abs_journal,
+                abs_journal,
+                AbstractJournal::Label::ReadForRecoveryLabel{messages: journal_records},
+            )) by {
+                reveal(AbstractJournal::State::read_for_recovery);
+            }
+        }
+        journal_i_abstract_ephemeral_wf(pre.journal);
+        assert(abs_journal.wf());
+        assert(abs_journal.journal.includes_subseq(branch_records)) by {
+            assert(abs_journal.journal.seq_start <= journal_records.seq_start);
+            assert(journal_records.seq_start <= branch_records.seq_start);
+            assert(branch_records.seq_end <= journal_records.seq_end);
+            assert(journal_records.seq_end <= abs_journal.journal.seq_end);
+            assert forall |lsn: LSN| #![auto] branch_records.contains(lsn)
+                implies abs_journal.journal.contains(lsn)
+                    && abs_journal.journal.msgs[lsn] === branch_records.msgs[lsn] by {
+                assert(journal_records.contains(lsn));
+                assert(journal_records.msgs[lsn] === branch_records.msgs[lsn]);
+                assert(abs_journal.journal.contains(lsn));
+                assert(abs_journal.journal.msgs[lsn] === journal_records.msgs[lsn]);
+            }
+        }
+        assert(AbstractCrashAwareJournal::State::next(
+            cpre.journal,
+            new_journal.i_abstract(),
+            AbstractCrashAwareJournal::Label::ReadForRecoveryLabel{records: branch_records},
+        )) by {
+            reveal(AbstractCrashAwareJournal::State::next);
+            reveal(AbstractCrashAwareJournal::State::next_by);
+            assert(new_journal == pre.journal);
+            assert(new_journal.i_abstract() == cpre.journal);
+            assert(AbstractCrashAwareJournal::State::read_for_recovery(
+                cpre.journal,
+                cpre.journal,
+                AbstractCrashAwareJournal::Label::ReadForRecoveryLabel{records: branch_records},
+            )) by {
+                reveal(AbstractCrashAwareJournal::State::read_for_recovery);
+                assert(cpre.journal.ephemeral is Known);
+                assert(AbstractJournal::State::next(
+                    cpre.journal.ephemeral->v,
+                    cpre.journal.ephemeral->v,
+                    AbstractJournal::Label::ReadForRecoveryLabel{messages: branch_records},
+                )) by {
+                    pre.journal.semantic_inv_implies_i_inv();
+                    assert(cpre.journal == pre.journal.i_abstract());
+                    assert(cpre.journal.ephemeral->v.wf());
+                    assert(AbstractJournal::State::read_for_recovery(
+                        cpre.journal.ephemeral->v,
+                        cpre.journal.ephemeral->v,
+                        AbstractJournal::Label::ReadForRecoveryLabel{messages: branch_records},
+                    )) by {
+                        reveal(AbstractJournal::State::read_for_recovery);
+                    }
+                    assert(AbstractJournal::State::next_by(
+                        cpre.journal.ephemeral->v,
+                        cpre.journal.ephemeral->v,
+                        AbstractJournal::Label::ReadForRecoveryLabel{messages: branch_records},
+                        AbstractJournal::Step::read_for_recovery(),
+                    )) by {
+                        reveal(AbstractJournal::State::next_by);
+                    }
+                    reveal(AbstractJournal::State::next);
+                }
+            }
+            assert(AbstractCrashAwareJournal::State::next_by(
+                cpre.journal,
+                cpre.journal,
+                AbstractCrashAwareJournal::Label::ReadForRecoveryLabel{records: branch_records},
+                AbstractCrashAwareJournal::Step::read_for_recovery(),
+            )) by {
+                reveal(AbstractCrashAwareJournal::State::next_by);
+            }
+            reveal(AbstractCrashAwareJournal::State::next);
+        }
     }
     assert(CoordinationSystem::State::next_by(
         cpre,
@@ -1316,7 +1476,7 @@ proof fn recover_refines_coordination(
         CoordinationSystem::Step::recover(
             new_journal.i_abstract(),
             new_branch.abstract_i(),
-            records,
+            branch_records,
         ),
     ));
 }
@@ -2877,20 +3037,38 @@ pub proof fn next_refines_coordination(
             }
             load_ephemeral_refines_coordination(pre, post, lbl, new_journal, new_branch);
         },
-        CrashAwareCachingDiskSystem::Step::recover(new_journal, new_branch, records, keys, msgs) => {
+        CrashAwareCachingDiskSystem::Step::recover(
+            new_journal,
+            new_branch,
+            journal_records,
+            branch_records,
+            keys,
+            msgs,
+        ) => {
             assert(CrashAwareCachingDiskSystem::State::recover(
                 pre,
                 post,
                 lbl,
                 new_journal,
                 new_branch,
-                records,
+                journal_records,
+                branch_records,
                 keys,
                 msgs,
             )) by {
                 reveal(CrashAwareCachingDiskSystem::State::recover);
             }
-            recover_refines_coordination(pre, post, lbl, new_journal, new_branch, records, keys, msgs);
+            recover_refines_coordination(
+                pre,
+                post,
+                lbl,
+                new_journal,
+                new_branch,
+                journal_records,
+                branch_records,
+                keys,
+                msgs,
+            );
         },
         CrashAwareCachingDiskSystem::Step::commit_start(
             new_journal,

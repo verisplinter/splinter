@@ -9,8 +9,10 @@ use crate::disk::GenericDisk_v::Address;
 use crate::implementation::CachedJournal_v::JournalSnapshot;
 use crate::implementation::JournalImpl_v::IJournalSnapshot;
 use crate::implementation::SuperblockTypes_v::{
-    ASuperblock, ASuperblockBranchImage, ASuperblockJournalImage, ISuperblock,
-    ISuperblockBranchImage, ISuperblockJournalImage,
+    ASuperblock, ASuperblockBranchImage, ASuperblockGeometry,
+    ASuperblockJournalImage, ASuperblockPayload, ISuperblock,
+    ISuperblockBranchImage, ISuperblockGeometry, ISuperblockJournalImage,
+    ISuperblockPayload,
 };
 use crate::marshalling::IAddressFormat_v::IAddressFormat;
 use crate::marshalling::IJournalSnapshotFormat_v::IJournalSnapshotFormat;
@@ -22,10 +24,13 @@ use crate::marshalling::Slice_v::Slice;
 use crate::marshalling::UniformSizedMarshal_v::UniformSizedMarshal;
 use crate::marshalling::UniformSized_v::UniformSized;
 use crate::marshalling::WF_v::WF;
+use crate::trusted::ClientAPI_t::BLOCK_SIZE;
 
 verus! {
 
-pub const SUPERBLOCK_BRANCH_ROOTS_SIZE: usize = 512;
+// The fixed-width geometry/journal/branch fields occupy 45 bytes, leaving 955 bytes
+// for the length-prefixed sealed-root vector in a 1000-byte disk page.
+pub const SUPERBLOCK_BRANCH_ROOTS_SIZE: usize = 955;
 
 pub type IBranchRootsFormat = ResizableUniformSizedElementSeqFormat<IAddressFormat, u8>;
 
@@ -196,30 +201,107 @@ struct_marshaller_2! {
 
 verus! {
 
-proof fn isuperblock_wf_proof(
+proof fn isuperblock_geometry_wf_proof(
+    pages_per_au: u32,
+    formatted_au_count: u32,
+    geometry: ISuperblockGeometry,
+)
+    requires
+        pages_per_au.wf(),
+        formatted_au_count.wf(),
+        geometry.pages_per_au == pages_per_au,
+        geometry.formatted_au_count == formatted_au_count,
+    ensures
+        geometry.wf(),
+{
+}
+
+proof fn isuperblock_geometry_postcondition_proof(
+    fmt: &ISuperblockGeometryFormat,
+    slice: &Slice,
+    data: &Vec<u8>,
+    field1_slice: &Slice,
+    field1_value: u32,
+    field2_slice: &Slice,
+    field2_value: u32,
+    result: ISuperblockGeometry,
+)
+    requires
+        fmt.valid(),
+        slice@.valid(data@),
+        result.pages_per_au == field1_value,
+        result.formatted_au_count == field2_value,
+        field1_value.wf(),
+        field2_value.wf(),
+        fmt.parsable(slice@.i(data@)),
+        Parsedview::<nat>::parsedv(&field1_value)
+            == fmt.field1_fmt.parse(field1_slice@.i(data@)),
+        Parsedview::<nat>::parsedv(&field2_value)
+            == fmt.field2_fmt.parse(field2_slice@.i(data@)),
+        field1_slice@.i(data@) == slice@.i(data@).subrange(
+            0,
+            fmt.field1_fmt.uniform_size() as int,
+        ),
+        field2_slice@.i(data@) == slice@.i(data@).subrange(
+            fmt.field1_fmt.uniform_size() as int,
+            fmt.field1_fmt.uniform_size() as int + fmt.field2_fmt.uniform_size() as int,
+        ),
+    ensures
+        result.parsedv() == fmt.parse(slice@.i(data@)),
+        result.wf(),
+{
+}
+
+} // verus!
+
+struct_marshaller_2! {
+    format_name: ISuperblockGeometryFormat,
+    impl_type: ISuperblockGeometry,
+    spec_type: ASuperblockGeometry,
+    wf_proof: isuperblock_geometry_wf_proof,
+    postcondition_proof: isuperblock_geometry_postcondition_proof,
+    field1: {
+        impl_field: pages_per_au,
+        spec_field: pages_per_au,
+        formatter_type: NatFormat<u32>,
+        formatter_spec_new: NatFormat::spec_new(),
+        formatter_new: NatFormat::new(),
+    },
+    field2: {
+        impl_field: formatted_au_count,
+        spec_field: formatted_au_count,
+        formatter_type: NatFormat<u32>,
+        formatter_spec_new: NatFormat::spec_new(),
+        formatter_new: NatFormat::new(),
+    }
+}
+
+verus! {
+
+proof fn isuperblock_payload_wf_proof(
     journal: ISuperblockJournalImage,
     branch: ISuperblockBranchImage,
-    sb: ISuperblock,
+    payload: ISuperblockPayload,
 )
     requires
         journal.wf(),
         branch.wf(),
-        sb.journal == journal,
-        sb.branch == branch,
+        payload.journal == journal,
+        payload.branch == branch,
     ensures
-        sb.wf(),
+        payload.wf(),
 {
 }
 
-proof fn isuperblock_postcondition_proof(
-    fmt: &ISuperblockFormat,
+proof fn isuperblock_payload_postcondition_proof(
+    fmt: &ISuperblockPayloadFormat,
     slice: &Slice,
     data: &Vec<u8>,
     field1_slice: &Slice,
     field1_value: ISuperblockJournalImage,
     field2_slice: &Slice,
     field2_value: ISuperblockBranchImage,
-    result: ISuperblock,
+    result: ISuperblockPayload,
 )
     requires
         fmt.valid(),
@@ -246,11 +328,11 @@ proof fn isuperblock_postcondition_proof(
 } // verus!
 
 struct_marshaller_2! {
-    format_name: ISuperblockFormat,
-    impl_type: ISuperblock,
-    spec_type: ASuperblock,
-    wf_proof: isuperblock_wf_proof,
-    postcondition_proof: isuperblock_postcondition_proof,
+    format_name: ISuperblockPayloadFormat,
+    impl_type: ISuperblockPayload,
+    spec_type: ASuperblockPayload,
+    wf_proof: isuperblock_payload_wf_proof,
+    postcondition_proof: isuperblock_payload_postcondition_proof,
     field1: {
         impl_field: journal,
         spec_field: journal,
@@ -266,3 +348,130 @@ struct_marshaller_2! {
         formatter_new: ISuperblockBranchFormat::new(),
     }
 }
+
+verus! {
+
+proof fn isuperblock_wf_proof(
+    geometry: ISuperblockGeometry,
+    payload: ISuperblockPayload,
+    sb: ISuperblock,
+)
+    requires
+        geometry.wf(),
+        payload.wf(),
+        sb.geometry == geometry,
+        sb.payload == payload,
+    ensures
+        sb.wf(),
+{
+}
+
+proof fn isuperblock_postcondition_proof(
+    fmt: &ISuperblockFormat,
+    slice: &Slice,
+    data: &Vec<u8>,
+    field1_slice: &Slice,
+    field1_value: ISuperblockGeometry,
+    field2_slice: &Slice,
+    field2_value: ISuperblockPayload,
+    result: ISuperblock,
+)
+    requires
+        fmt.valid(),
+        slice@.valid(data@),
+        result.geometry == field1_value,
+        result.payload == field2_value,
+        field1_value.wf(),
+        field2_value.wf(),
+        fmt.parsable(slice@.i(data@)),
+        Parsedview::<ASuperblockGeometry>::parsedv(&field1_value)
+            == fmt.field1_fmt.parse(field1_slice@.i(data@)),
+        Parsedview::<ASuperblockPayload>::parsedv(&field2_value)
+            == fmt.field2_fmt.parse(field2_slice@.i(data@)),
+        field1_slice@.i(data@) == slice@.i(data@).subrange(
+            0,
+            fmt.field1_fmt.uniform_size() as int,
+        ),
+        field2_slice@.i(data@) == slice@.i(data@).subrange(
+            fmt.field1_fmt.uniform_size() as int,
+            fmt.field1_fmt.uniform_size() as int + fmt.field2_fmt.uniform_size() as int,
+        ),
+    ensures
+        result.parsedv() == fmt.parse(slice@.i(data@)),
+        result.wf(),
+{
+}
+
+} // verus!
+
+struct_marshaller_2! {
+    format_name: ISuperblockFormat,
+    impl_type: ISuperblock,
+    spec_type: ASuperblock,
+    wf_proof: isuperblock_wf_proof,
+    postcondition_proof: isuperblock_postcondition_proof,
+    field1: {
+        impl_field: geometry,
+        spec_field: geometry,
+        formatter_type: ISuperblockGeometryFormat,
+        formatter_spec_new: ISuperblockGeometryFormat::spec_new(),
+        formatter_new: ISuperblockGeometryFormat::new(),
+    },
+    field2: {
+        impl_field: payload,
+        spec_field: payload,
+        formatter_type: ISuperblockPayloadFormat,
+        formatter_spec_new: ISuperblockPayloadFormat::spec_new(),
+        formatter_new: ISuperblockPayloadFormat::new(),
+    }
+}
+
+verus! {
+
+pub proof fn isuperblock_format_uniform_size(fmt: &ISuperblockFormat)
+    requires
+        *fmt == ISuperblockFormat::spec_new(),
+    ensures
+        fmt.uniform_size() == BLOCK_SIZE,
+{
+    assert(BLOCK_SIZE == 1000);
+    assert(fmt.field1_fmt.field1_fmt.uniform_size() == 4);
+    assert(fmt.field1_fmt.field2_fmt.uniform_size() == 4);
+    assert(fmt.field1_fmt.uniform_size() == 8);
+
+    assert(fmt.field2_fmt.field2_fmt.field1_fmt.total_size
+        == SUPERBLOCK_BRANCH_ROOTS_SIZE);
+    assert(fmt.field2_fmt.field2_fmt.field1_fmt.uniform_size() == 955);
+    assert(fmt.field2_fmt.field2_fmt.field2_fmt.uniform_size() == 8);
+    assert(fmt.field2_fmt.field2_fmt.uniform_size() == 963);
+
+    assert(fmt.field2_fmt.field1_fmt.field1_fmt.field1_fmt.uniform_size() == 8);
+    assert(fmt.field2_fmt.field1_fmt.field1_fmt.field2_fmt.f.field1_fmt.uniform_size() == 4);
+    assert(fmt.field2_fmt.field1_fmt.field1_fmt.field2_fmt.f.field2_fmt.uniform_size() == 4);
+    assert(fmt.field2_fmt.field1_fmt.field1_fmt.field2_fmt.f.uniform_size() == 8);
+    assert(fmt.field2_fmt.field1_fmt.field1_fmt.field2_fmt.uniform_size() == 9);
+    assert(fmt.field2_fmt.field1_fmt.field1_fmt.field3_fmt.uniform_size() == 4);
+    assert(fmt.field2_fmt.field1_fmt.field1_fmt.uniform_size() == 21);
+    assert(fmt.field2_fmt.field1_fmt.field2_fmt.uniform_size() == 8);
+    assert(fmt.field2_fmt.field1_fmt.uniform_size() == 29);
+    assert(fmt.field2_fmt.uniform_size() == 992);
+    assert(fmt.uniform_size() == 1000);
+}
+
+pub proof fn branch_roots_format_max_length_fits_u8(fmt: &ISuperblockFormat)
+    requires
+        *fmt == ISuperblockFormat::spec_new(),
+    ensures
+        fmt.field2_fmt.field2_fmt.field1_fmt.max_length <= u8::MAX as int,
+{
+    let roots_fmt = fmt.field2_fmt.field2_fmt.field1_fmt;
+    assert(roots_fmt.total_size == SUPERBLOCK_BRANCH_ROOTS_SIZE);
+    assert(roots_fmt.lenf.uniform_size() == 1);
+    assert(roots_fmt.eltf.field1_fmt.uniform_size() == 4);
+    assert(roots_fmt.eltf.field2_fmt.uniform_size() == 4);
+    assert(roots_fmt.eltf.uniform_size() == 8);
+    assert(roots_fmt.max_length
+        == (SUPERBLOCK_BRANCH_ROOTS_SIZE - 1) as usize / 8);
+}
+
+} // verus!

@@ -2362,6 +2362,9 @@ pub proof fn read_for_recovery_refines(
                 ),
             },
         ),
+        to_journal_records(journal_reads)[addr].message_seq.maybe_discard_old(
+            pre.journal.journal.snapshot.boundary_lsn,
+        ).wf(),
         post.journal == pre.journal,
         post.journal_projection_aus() =~= pre.journal_projection_aus(),
         inv(post),
@@ -2569,6 +2572,9 @@ pub proof fn read_for_recovery_refines(
                         reveal(CachingDiskJournal::State::next_by);
                     }
                     reveal(CachingDiskJournal::State::next);
+                    assert(inner.refinement_inv());
+                    inner.read_for_recovery_refines(inner, cdj_lbl, raw_journal_reads);
+                    assert(records.wf());
                 },
                 _ => {
                     assert(false);
@@ -2866,7 +2872,7 @@ pub proof fn journal_marshal_refines(
             }
             assert(post.journal.journal == new_journal);
             assert(post.journal.mini_allocator
-                == pre.journal.mini_allocator.allocate(addr).observe(addr));
+                == pre.journal.mini_allocator.allocate(addr));
             assert(post.journal.persistent_seq_end == pre.journal.persistent_seq_end);
             assert(post.journal.in_flight == pre.journal.in_flight);
             assert(post.journal.prepared == pre.journal.prepared);
@@ -4217,7 +4223,7 @@ pub proof fn commit_start_refines(
     assert(src.frozen is None);
     assert(dst.frozen == Option::Some(CachingDiskJournalFrozenMetadata{snapshot, seq_end}));
     assert(!dst.prepared);
-    assert(src.persistent.metadata().seq_end <= snapshot.boundary_lsn) by {
+    assert(src.persistent.metadata().seq_end <= seq_end) by {
         assert(src.persistent.metadata().seq_end == pre.journal.persistent_seq_end);
         reveal(AtomicJournalState::State::next);
         reveal(AtomicJournalState::State::next_by);

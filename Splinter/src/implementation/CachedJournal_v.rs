@@ -89,6 +89,147 @@ pub open spec fn page_walk_reads_cover(
     }
 }
 
+pub open spec fn page_walk_reads_prefix(
+    reads: Map<Address, JournalRecord>,
+    boundary_lsn: LSN,
+    root: Pointer,
+    depth: nat,
+    next: Pointer,
+) -> bool
+    decreases depth
+{
+    if depth == 0 {
+        root == next
+    } else if root is Some {
+        &&& reads.contains_key(root.unwrap())
+        &&& page_walk_reads_prefix(
+            reads,
+            boundary_lsn,
+            reads[root.unwrap()].cropped_prior(boundary_lsn),
+            (depth - 1) as nat,
+            next,
+        )
+    } else {
+        next is None
+    }
+}
+
+pub proof fn page_walk_reads_prefix_extend(
+    reads: Map<Address, JournalRecord>,
+    boundary_lsn: LSN,
+    root: Pointer,
+    depth: nat,
+    addr: Address,
+    data: JournalRecord,
+)
+    requires
+        page_walk_reads_prefix(reads, boundary_lsn, root, depth, Some(addr)),
+        !reads.contains_key(addr),
+    ensures
+        page_walk_reads_prefix(
+            reads.insert(addr, data),
+            boundary_lsn,
+            root,
+            depth + 1,
+            data.cropped_prior(boundary_lsn),
+        ),
+    decreases depth,
+{
+    if depth == 0 {
+        assert(root == Some(addr));
+        assert(reads.insert(addr, data)[addr] == data);
+        assert((depth + 1) - 1 == depth);
+        assert(page_walk_reads_prefix(
+            reads.insert(addr, data),
+            boundary_lsn,
+            data.cropped_prior(boundary_lsn),
+            depth,
+            data.cropped_prior(boundary_lsn),
+        ));
+    } else {
+        assert(root is Some);
+        let root_addr = root.unwrap();
+        assert(reads.contains_key(root_addr));
+        assert(root_addr != addr);
+        page_walk_reads_prefix_extend(
+            reads,
+            boundary_lsn,
+            reads[root_addr].cropped_prior(boundary_lsn),
+            (depth - 1) as nat,
+            addr,
+            data,
+        );
+        assert(reads.insert(addr, data)[root_addr] == reads[root_addr]);
+        assert(reads.insert(addr, data)[root_addr].cropped_prior(boundary_lsn)
+            == reads[root_addr].cropped_prior(boundary_lsn));
+        assert((depth + 1) - 1 == depth);
+        assert(page_walk_reads_prefix(
+            reads.insert(addr, data),
+            boundary_lsn,
+            reads[root_addr].cropped_prior(boundary_lsn),
+            depth,
+            data.cropped_prior(boundary_lsn),
+        ));
+    }
+}
+
+pub proof fn page_walk_reads_prefix_complete(
+    reads: Map<Address, JournalRecord>,
+    boundary_lsn: LSN,
+    root: Pointer,
+    depth: nat,
+)
+    requires
+        page_walk_reads_prefix(reads, boundary_lsn, root, depth, None),
+    ensures
+        page_walk_reads_cover(reads, boundary_lsn, root, depth),
+    decreases depth,
+{
+    if depth == 0 {
+        assert(root is None);
+    } else if root is Some {
+        let addr = root.unwrap();
+        page_walk_reads_prefix_complete(
+            reads,
+            boundary_lsn,
+            reads[addr].cropped_prior(boundary_lsn),
+            (depth - 1) as nat,
+        );
+    }
+}
+
+pub proof fn page_walk_reads_cover_monotonic_depth(
+    reads: Map<Address, JournalRecord>,
+    boundary_lsn: LSN,
+    root: Pointer,
+    small_depth: nat,
+    large_depth: nat,
+)
+    requires
+        page_walk_reads_cover(reads, boundary_lsn, root, small_depth),
+        small_depth <= large_depth,
+    ensures
+        page_walk_reads_cover(reads, boundary_lsn, root, large_depth),
+    decreases small_depth,
+{
+    if root is Some {
+        if small_depth == 0 {
+            assert(false);
+        } else {
+            assert(large_depth > 0);
+            let addr = root.unwrap();
+            let next = reads[addr].cropped_prior(boundary_lsn);
+            page_walk_reads_cover_monotonic_depth(
+                reads,
+                boundary_lsn,
+                next,
+                (small_depth - 1) as nat,
+                (large_depth - 1) as nat,
+            );
+        }
+    }
+}
+
 pub open spec fn au_walk_reads_cover(
     reads: Map<Address, JournalRecord>,
     boundary_lsn: LSN,
@@ -119,6 +260,169 @@ pub open spec fn au_walk_reads_cover(
                 (au_depth - 1) as nat,
                 page_depth,
             )
+        }
+    }
+}
+
+pub proof fn au_walk_reads_cover_monotonic_page_depth(
+    reads: Map<Address, JournalRecord>,
+    boundary_lsn: LSN,
+    root: Pointer,
+    first: AU,
+    au_depth: nat,
+    small_page_depth: nat,
+    large_page_depth: nat,
+)
+    requires
+        au_walk_reads_cover(reads, boundary_lsn, root, first, au_depth, small_page_depth),
+        small_page_depth <= large_page_depth,
+    ensures
+        au_walk_reads_cover(reads, boundary_lsn, root, first, au_depth, large_page_depth),
+    decreases au_depth,
+{
+    if root is Some && au_depth > 0 {
+        let addr = root.unwrap();
+        if addr.au == first {
+            page_walk_reads_cover_monotonic_depth(
+                reads,
+                boundary_lsn,
+                root,
+                small_page_depth,
+                large_page_depth,
+            );
+        } else {
+            let bottom = addr.first_page();
+            let next = reads[bottom].cropped_prior(boundary_lsn);
+            au_walk_reads_cover_monotonic_page_depth(
+                reads,
+                boundary_lsn,
+                next,
+                first,
+                (au_depth - 1) as nat,
+                small_page_depth,
+                large_page_depth,
+            );
+        }
+    }
+}
+
+pub proof fn page_walk_reads_cover_contains_same_au_bottom(
+    reads: Map<Address, JournalRecord>,
+    entries: Map<Address, JournalRecord>,
+    boundary_lsn: LSN,
+    root: Pointer,
+    first: AU,
+    depth: nat,
+)
+    requires
+        page_walk_reads_cover(reads, boundary_lsn, root, depth),
+        root is Some,
+        root.unwrap().au != first,
+        (DiskView{boundary_lsn, entries}).pointer_is_upstream(root, first),
+        forall |addr: Address| #[trigger] reads.contains_key(addr)
+            && entries.contains_key(addr) ==> reads[addr] == entries[addr],
+    ensures
+        reads.contains_key(root.unwrap().first_page()),
+        page_walk_reads_cover(
+            reads,
+            boundary_lsn,
+            (DiskView{boundary_lsn, entries}).next(Some(root.unwrap().first_page())),
+            (depth - 1) as nat,
+        ),
+    decreases root.unwrap().page,
+{
+    let dv = DiskView{boundary_lsn, entries};
+    let addr = root.unwrap();
+    assert(depth > 0);
+    assert(reads.contains_key(addr));
+    assert(entries.contains_key(addr));
+    assert(reads[addr] == entries[addr]);
+    assert(reads[addr].cropped_prior(boundary_lsn) == dv.next(root));
+    if addr.page == 0 {
+        assert(addr.first_page() == addr);
+    } else {
+        dv.nonfirst_pages(addr, first);
+        assert(dv.entries[addr].prior_rec == Some(addr.previous()));
+        assert(dv.entries[addr].cropped_prior(boundary_lsn) == Some(addr.previous()));
+        assert(dv.next(root) == Some(addr.previous()));
+        assert(addr.previous().au == addr.au);
+        assert(addr.previous().page < addr.page);
+        assert(dv.pointer_is_upstream(Some(addr.previous()), first));
+        page_walk_reads_cover_contains_same_au_bottom(
+            reads,
+            entries,
+            boundary_lsn,
+            Some(addr.previous()),
+            first,
+            (depth - 1) as nat,
+        );
+        page_walk_reads_cover_monotonic_depth(
+            reads,
+            boundary_lsn,
+            dv.next(Some(addr.first_page())),
+            ((depth - 1) as nat - 1) as nat,
+            (depth - 1) as nat,
+        );
+    }
+}
+
+pub proof fn page_walk_reads_cover_to_au_walk_reads_cover(
+    reads: Map<Address, JournalRecord>,
+    entries: Map<Address, JournalRecord>,
+    boundary_lsn: LSN,
+    root: Pointer,
+    first: AU,
+    depth: nat,
+)
+    requires
+        page_walk_reads_cover(reads, boundary_lsn, root, depth),
+        (DiskView{boundary_lsn, entries}).pointer_is_upstream(root, first),
+        forall |addr: Address| #[trigger] reads.contains_key(addr)
+            && entries.contains_key(addr) ==> reads[addr] == entries[addr],
+    ensures
+        au_walk_reads_cover(reads, boundary_lsn, root, first, depth, depth),
+    decreases depth,
+{
+    let dv = DiskView{boundary_lsn, entries};
+    if root is Some {
+        assert(depth > 0);
+        let addr = root.unwrap();
+        if addr.au == first {
+        } else {
+            let bottom = addr.first_page();
+            page_walk_reads_cover_contains_same_au_bottom(
+                reads,
+                entries,
+                boundary_lsn,
+                root,
+                first,
+                depth,
+            );
+            dv.bottom_properties(root, first);
+            assert(reads.contains_key(addr));
+            assert(reads.contains_key(bottom));
+            assert(entries.contains_key(bottom));
+            assert(reads[bottom] == entries[bottom]);
+            let next = reads[bottom].cropped_prior(boundary_lsn);
+            assert(next == dv.next(Some(bottom)));
+            assert(dv.pointer_is_upstream(next, first));
+            page_walk_reads_cover_to_au_walk_reads_cover(
+                reads,
+                entries,
+                boundary_lsn,
+                next,
+                first,
+                (depth - 1) as nat,
+            );
+            au_walk_reads_cover_monotonic_page_depth(
+                reads,
+                boundary_lsn,
+                next,
+                first,
+                (depth - 1) as nat,
+                (depth - 1) as nat,
+                depth,
+            );
         }
     }
 }
@@ -968,6 +1272,73 @@ pub proof fn page_walk_reads_cover_build_matches_full(
     }
 }
 
+pub proof fn page_walk_reads_cover_addr_build_matches_full_by_value(
+    reads: Map<Address, JournalRecord>,
+    entries: Map<Address, JournalRecord>,
+    boundary_lsn: LSN,
+    root: Pointer,
+    depth: nat,
+)
+    requires
+        acyclic_reads(boundary_lsn, reads),
+        page_walk_reads_cover(reads, boundary_lsn, root, depth),
+        (DiskView{boundary_lsn, entries}).decodable(root),
+        (DiskView{boundary_lsn, entries}).acyclic(),
+        forall |addr: Address| #[trigger] reads.contains_key(addr)
+            && entries.contains_key(addr) ==> reads[addr] == entries[addr],
+    ensures ({
+        let full_dv = DiskView{boundary_lsn, entries};
+        build_lsn_addr_index_from_reads(reads, boundary_lsn, root)
+            =~= full_dv.build_lsn_addr_index(root)
+    }),
+    decreases depth,
+{
+    let full_dv = DiskView{boundary_lsn, entries};
+    reveal(build_lsn_addr_index_from_reads);
+    reveal(DiskView::build_lsn_addr_index);
+    if root is None {
+        assert_maps_equal!(
+            build_lsn_addr_index_from_reads(reads, boundary_lsn, root),
+            full_dv.build_lsn_addr_index(root),
+        );
+    } else {
+        assert(depth > 0);
+        let addr = root.unwrap();
+        assert(reads.contains_key(addr));
+        assert(entries.contains_key(addr));
+        assert(reads[addr] == entries[addr]);
+        let next = reads[addr].cropped_prior(boundary_lsn);
+        assert(next == full_dv.next(root));
+
+        page_walk_reads_cover_addr_build_matches_full_by_value(
+            reads,
+            entries,
+            boundary_lsn,
+            next,
+            (depth - 1) as nat,
+        );
+
+        let curr_msgs = reads[addr].message_seq;
+        let start_lsn = max(boundary_lsn as int, curr_msgs.seq_start as int) as nat;
+        let update = singleton_index(start_lsn, curr_msgs.seq_end, addr);
+        assert(update == singleton_index(
+            max(boundary_lsn as int, entries[addr].message_seq.seq_start as int) as nat,
+            entries[addr].message_seq.seq_end,
+            addr,
+        ));
+        build_lsn_addr_index_from_reads_step(reads, boundary_lsn, root, next, update);
+        assert(build_lsn_addr_index_from_reads(reads, boundary_lsn, root)
+            =~= build_lsn_addr_index_from_reads(reads, boundary_lsn, next)
+                .union_prefer_right(update));
+        assert(full_dv.build_lsn_addr_index(root)
+            =~= full_dv.build_lsn_addr_index(next).union_prefer_right(update));
+        assert_maps_equal!(
+            build_lsn_addr_index_from_reads(reads, boundary_lsn, root),
+            full_dv.build_lsn_addr_index(root),
+        );
+    }
+}
+
 pub proof fn page_walk_reads_cover_build_matches_full_by_value(
     reads: Map<Address, JournalRecord>,
     entries: Map<Address, JournalRecord>,
@@ -1306,56 +1677,6 @@ pub proof fn au_walk_reads_cover_build_matches_full_by_value(
     }
 }
 
-pub proof fn au_walk_larger_disk_matches_valid_subdisk(
-    sub_entries: Map<Address, JournalRecord>,
-    larger_entries: Map<Address, JournalRecord>,
-    boundary_lsn: LSN,
-    root: Pointer,
-    first: AU,
-    au_depth: nat,
-    page_depth: nat,
-)
-    requires
-        sub_entries <= larger_entries,
-        au_walk_reads_cover(sub_entries, boundary_lsn, root, first, au_depth, page_depth),
-        (DiskView{boundary_lsn, entries: sub_entries}).pointer_is_upstream(root, first),
-    ensures ({
-        let sub_dv = DiskView{boundary_lsn, entries: sub_entries};
-        build_lsn_au_index_from_reads_au_walk_depth(
-            larger_entries,
-            boundary_lsn,
-            root,
-            first,
-            au_depth,
-            page_depth,
-        ) =~= sub_dv.build_lsn_au_index_au_walk(root, first)
-    }),
-{
-    au_walk_reads_cover_supermap(
-        sub_entries,
-        larger_entries,
-        boundary_lsn,
-        root,
-        first,
-        au_depth,
-        page_depth,
-    );
-    assert forall |addr: Address| #[trigger] larger_entries.contains_key(addr)
-        && sub_entries.contains_key(addr)
-        implies larger_entries[addr] == sub_entries[addr] by {
-        assert(sub_entries <= larger_entries);
-    }
-    au_walk_reads_cover_build_matches_full_by_value(
-        larger_entries,
-        sub_entries,
-        boundary_lsn,
-        root,
-        first,
-        au_depth,
-        page_depth,
-    );
-}
-
 pub proof fn build_lsn_au_index_from_reads_au_walk_matches_full(
     reads: Map<Address, JournalRecord>,
     entries: Map<Address, JournalRecord>,
@@ -1391,65 +1712,6 @@ pub proof fn build_lsn_au_index_from_reads_au_walk_matches_full(
         au_depth,
         page_depth,
     );
-}
-
-pub proof fn build_lsn_au_index_from_reads_au_walk_values_in_entries(
-    reads: Map<Address, JournalRecord>,
-    entries: Map<Address, JournalRecord>,
-    boundary_lsn: LSN,
-    root: Pointer,
-    first: AU,
-    au_depth: nat,
-    page_depth: nat,
-    au: AU,
-)
-    requires
-        reads <= entries,
-        au_walk_reads_cover(reads, boundary_lsn, root, first, au_depth, page_depth),
-        (DiskView{boundary_lsn, entries}).wf_addrs(),
-        (DiskView{boundary_lsn, entries}).pointer_is_upstream(root, first),
-        build_lsn_au_index_from_reads_au_walk_depth(
-            reads,
-            boundary_lsn,
-            root,
-            first,
-            au_depth,
-            page_depth,
-        ).values().contains(au),
-    ensures
-        to_aus(entries.dom()).contains(au),
-{
-    let full_dv = DiskView{boundary_lsn, entries};
-    let bounded = build_lsn_au_index_from_reads_au_walk_depth(
-        reads,
-        boundary_lsn,
-        root,
-        first,
-        au_depth,
-        page_depth,
-    );
-    let full_index = full_dv.build_lsn_au_index_au_walk(root, first);
-    build_lsn_au_index_from_reads_au_walk_matches_full(
-        reads,
-        entries,
-        boundary_lsn,
-        root,
-        first,
-        au_depth,
-        page_depth,
-    );
-    assert(bounded =~= full_index);
-    assert(full_index.values().contains(au));
-    full_dv.lemma_aus_hold_contiguous_lsns(root, first);
-    full_dv.build_lsn_au_index_equiv_page_walk(root, first);
-    full_dv.build_lsn_au_index_page_walk_exist_valid_entries(root);
-    assert(full_dv.index_keys_exist_valid_entries(full_dv.build_lsn_au_index_page_walk(root)));
-    assert(full_dv.index_keys_exist_valid_entries(full_index));
-    let lsn = choose |lsn: LSN| #![auto] full_index.contains_key(lsn) && full_index[lsn] == au;
-    let addr = full_dv.instantiate_index_keys_exist_valid_entries(full_index, lsn);
-    assert(full_dv.addr_supports_lsn(addr, lsn));
-    assert(entries.dom().contains(addr));
-    to_aus_domain(entries.dom());
 }
 
 pub proof fn build_lsn_au_index_from_reads_page_walk_values_in_sub_entries(
@@ -2036,8 +2298,219 @@ decreases rank_of_reads(boundary_lsn, reads, root)
     }
 }
 
+pub proof fn build_lsn_addr_index_from_reads_key_range(
+    reads: Map<Address, JournalRecord>,
+    boundary_lsn: LSN,
+    root: Pointer,
+    lsn: LSN,
+)
+requires
+    acyclic_reads(boundary_lsn, reads),
+    build_lsn_addr_index_from_reads(reads, boundary_lsn, root).contains_key(lsn),
+ensures ({
+    let index = build_lsn_addr_index_from_reads(reads, boundary_lsn, root);
+    let addr = index[lsn];
+    &&& reads.contains_key(addr)
+    &&& max(boundary_lsn as int, reads[addr].message_seq.seq_start as int) as nat <= lsn
+    &&& lsn < reads[addr].message_seq.seq_end
+}),
+decreases rank_of_reads(boundary_lsn, reads, root)
+{
+    reveal(build_lsn_addr_index_from_reads);
+    if root is Some && reads.contains_key(root.unwrap()) {
+        let curr = root.unwrap();
+        let curr_msgs = reads[curr].message_seq;
+        let start_lsn = max(boundary_lsn as int, curr_msgs.seq_start as int) as nat;
+        let update = singleton_index(start_lsn, curr_msgs.seq_end, curr);
+        let next_ptr = reads[curr].cropped_prior(boundary_lsn);
+        let sub_index = build_lsn_addr_index_from_reads(reads, boundary_lsn, next_ptr);
+        let index = build_lsn_addr_index_from_reads(reads, boundary_lsn, root);
+        assert(index == sub_index.union_prefer_right(update));
+        if update.contains_key(lsn) {
+            assert(index[lsn] == update[lsn]);
+            assert(update[lsn] == curr);
+            assert(start_lsn <= lsn < curr_msgs.seq_end);
+        } else {
+            assert(sub_index.contains_key(lsn));
+            assert(index[lsn] == sub_index[lsn]);
+            build_lsn_addr_index_from_reads_key_range(reads, boundary_lsn, next_ptr, lsn);
+        }
+    } else {
+        assert(build_lsn_addr_index_from_reads(reads, boundary_lsn, root) == Map::<LSN, Address>::empty());
+        assert(false);
+    }
+}
+
+pub proof fn lsn_addr_index_to_au_index_append_record(
+    index: LsnAddrIndex,
+    start: LSN,
+    end: LSN,
+    addr: Address,
+)
+    ensures
+        lsn_addr_index_to_au_index(
+            lsn_addr_index_append_record(index, start, end, addr),
+        ) =~= lsn_addr_index_to_au_index(index).union_prefer_right(
+            crate::allocation_layer::AllocationJournal_v::singleton_index(start, end, addr.au),
+        ),
+{
+    let addr_update = singleton_index(start, end, addr);
+    let au_update = crate::allocation_layer::AllocationJournal_v::singleton_index(start, end, addr.au);
+    assert_maps_equal!(
+        lsn_addr_index_to_au_index(lsn_addr_index_append_record(index, start, end, addr)),
+        lsn_addr_index_to_au_index(index).union_prefer_right(au_update),
+        lsn => {
+            reveal(lsn_addr_index_append_record);
+            if au_update.contains_key(lsn) {
+                assert(addr_update.contains_key(lsn));
+                assert(addr_update[lsn].au == au_update[lsn]);
+            } else if index.contains_key(lsn) {
+                assert(lsn_addr_index_to_au_index(index).contains_key(lsn));
+                assert(lsn_addr_index_to_au_index(index)[lsn] == index[lsn].au);
+            }
+        }
+    );
+}
+
+pub proof fn build_lsn_addr_index_from_reads_to_au_index_page_walk_depth(
+    reads: Map<Address, JournalRecord>,
+    boundary_lsn: LSN,
+    root: Pointer,
+    depth: nat,
+)
+    requires
+        acyclic_reads(boundary_lsn, reads),
+        page_walk_reads_cover(reads, boundary_lsn, root, depth),
+    ensures
+        lsn_addr_index_to_au_index(
+            build_lsn_addr_index_from_reads(reads, boundary_lsn, root),
+        ) =~= build_lsn_au_index_from_reads_page_walk_depth(
+            reads,
+            boundary_lsn,
+            root,
+            depth,
+        ),
+    decreases depth,
+{
+    if root is Some {
+        assert(depth > 0);
+        let addr = root.unwrap();
+        assert(reads.contains_key(addr));
+        let curr_msgs = reads[addr].message_seq;
+        let start_lsn = max(boundary_lsn as int, curr_msgs.seq_start as int) as nat;
+        let end_lsn = curr_msgs.seq_end;
+        let next = reads[addr].cropped_prior(boundary_lsn);
+        build_lsn_addr_index_from_reads_to_au_index_page_walk_depth(
+            reads,
+            boundary_lsn,
+            next,
+            (depth - 1) as nat,
+        );
+        let addr_index = build_lsn_addr_index_from_reads(reads, boundary_lsn, root);
+        let sub_addr_index = build_lsn_addr_index_from_reads(reads, boundary_lsn, next);
+        let au_index = build_lsn_au_index_from_reads_page_walk_depth(
+            reads,
+            boundary_lsn,
+            root,
+            depth,
+        );
+        let sub_au_index = build_lsn_au_index_from_reads_page_walk_depth(
+            reads,
+            boundary_lsn,
+            next,
+            (depth - 1) as nat,
+        );
+        reveal(build_lsn_addr_index_from_reads);
+        assert(addr_index == lsn_addr_index_append_record(sub_addr_index, start_lsn, end_lsn, addr));
+        assert(au_index == sub_au_index.union_prefer_right(
+            crate::allocation_layer::AllocationJournal_v::singleton_index(start_lsn, end_lsn, addr.au),
+        ));
+        lsn_addr_index_to_au_index_append_record(sub_addr_index, start_lsn, end_lsn, addr);
+        assert_maps_equal!(
+            lsn_addr_index_to_au_index(addr_index),
+            au_index,
+            lsn => {}
+        );
+    } else {
+        reveal(build_lsn_addr_index_from_reads);
+        assert_maps_equal!(
+            lsn_addr_index_to_au_index(build_lsn_addr_index_from_reads(reads, boundary_lsn, root)),
+            build_lsn_au_index_from_reads_page_walk_depth(reads, boundary_lsn, root, depth),
+            lsn => {}
+        );
+    }
+}
+
+pub proof fn build_lsn_addr_index_from_reads_to_au_index_au_walk_depth(
+    reads: Map<Address, JournalRecord>,
+    entries: Map<Address, JournalRecord>,
+    boundary_lsn: LSN,
+    root: Pointer,
+    first: AU,
+    au_depth: nat,
+    page_depth: nat,
+)
+    requires
+        acyclic_reads(boundary_lsn, reads),
+        page_walk_reads_cover(reads, boundary_lsn, root, page_depth),
+        au_walk_reads_cover(reads, boundary_lsn, root, first, au_depth, page_depth),
+        (DiskView{boundary_lsn, entries}).pointer_is_upstream(root, first),
+        forall |addr: Address| #[trigger] reads.contains_key(addr)
+            && entries.contains_key(addr) ==> reads[addr] == entries[addr],
+    ensures
+        lsn_addr_index_to_au_index(
+            build_lsn_addr_index_from_reads(reads, boundary_lsn, root),
+        ) =~= build_lsn_au_index_from_reads_au_walk_depth(
+            reads,
+            boundary_lsn,
+            root,
+            first,
+            au_depth,
+            page_depth,
+        ),
+{
+    let full_dv = DiskView{boundary_lsn, entries};
+    build_lsn_addr_index_from_reads_to_au_index_page_walk_depth(
+        reads,
+        boundary_lsn,
+        root,
+        page_depth,
+    );
+    page_walk_reads_cover_build_matches_full_by_value(
+        reads,
+        entries,
+        boundary_lsn,
+        root,
+        page_depth,
+    );
+    au_walk_reads_cover_build_matches_full_by_value(
+        reads,
+        entries,
+        boundary_lsn,
+        root,
+        first,
+        au_depth,
+        page_depth,
+    );
+    full_dv.build_lsn_au_index_equiv_page_walk(root, first);
+    assert_maps_equal!(
+        lsn_addr_index_to_au_index(
+            build_lsn_addr_index_from_reads(reads, boundary_lsn, root),
+        ),
+        build_lsn_au_index_from_reads_au_walk_depth(
+            reads,
+            boundary_lsn,
+            root,
+            first,
+            au_depth,
+            page_depth,
+        ),
+        lsn => {}
+    );
+}
+
 pub struct JournalSnapshot {
-    pub boundary_lsn: LSN, 
+    pub boundary_lsn: LSN,
     pub root: Option<JournalRoot>,
 }
 
@@ -2321,6 +2794,341 @@ pub proof fn build_au_page_bounds_from_reads_au_walk_depth_supermap(
             );
         }
     }
+}
+
+pub proof fn build_lsn_addr_index_from_reads_values_bounded_by_page_bounds(
+    reads: Map<Address, JournalRecord>,
+    boundary_lsn: LSN,
+    root: Pointer,
+    depth: nat,
+    addr: Address,
+)
+    requires
+        acyclic_reads(boundary_lsn, reads),
+        page_walk_reads_cover(reads, boundary_lsn, root, depth),
+        build_lsn_addr_index_from_reads(reads, boundary_lsn, root).values().contains(addr),
+    ensures
+        build_au_page_bounds_from_reads_page_walk_depth(
+            reads,
+            boundary_lsn,
+            root,
+            depth,
+        ).contains_key(addr.au),
+        addr.page <= build_au_page_bounds_from_reads_page_walk_depth(
+            reads,
+            boundary_lsn,
+            root,
+            depth,
+        )[addr.au],
+    decreases rank_of_reads(boundary_lsn, reads, root),
+{
+    reveal(build_lsn_addr_index_from_reads);
+    if root is Some && reads.contains_key(root.unwrap()) {
+        let curr = root.unwrap();
+        let curr_msgs = reads[curr].message_seq;
+        let start_lsn = max(boundary_lsn as int, curr_msgs.seq_start as int) as nat;
+        let update = singleton_index(start_lsn, curr_msgs.seq_end, curr);
+        let next = reads[curr].cropped_prior(boundary_lsn);
+        let index = build_lsn_addr_index_from_reads(reads, boundary_lsn, root);
+        let sub_index = build_lsn_addr_index_from_reads(reads, boundary_lsn, next);
+        let bounds = build_au_page_bounds_from_reads_page_walk_depth(
+            reads,
+            boundary_lsn,
+            root,
+            depth,
+        );
+        let prior = build_au_page_bounds_from_reads_page_walk_depth(
+            reads,
+            boundary_lsn,
+            next,
+            (depth - 1) as nat,
+        );
+        assert(depth > 0);
+        assert(index == lsn_addr_index_append_record(sub_index, start_lsn, curr_msgs.seq_end, curr));
+        let lsn = choose |lsn: LSN| #![auto] index.contains_key(lsn) && index[lsn] == addr;
+        if update.contains_key(lsn) {
+            assert(update[lsn] == curr);
+            assert(index[lsn] == curr);
+            assert(addr == curr);
+            assert(bounds.contains_key(addr.au));
+            if prior.contains_key(addr.au) && addr.page <= prior[addr.au] {
+                assert(bounds[addr.au] == prior[addr.au]);
+            } else {
+                assert(bounds[addr.au] == addr.page);
+            }
+        } else {
+            assert(sub_index.contains_key(lsn));
+            assert(sub_index[lsn] == addr);
+            assert(sub_index.values().contains(addr));
+            build_lsn_addr_index_from_reads_values_bounded_by_page_bounds(
+                reads,
+                boundary_lsn,
+                next,
+                (depth - 1) as nat,
+                addr,
+            );
+            assert(prior.contains_key(addr.au));
+            assert(addr.page <= prior[addr.au]);
+            assert(bounds.contains_key(addr.au));
+            if addr.au == curr.au {
+                if prior.contains_key(curr.au) && curr.page <= prior[curr.au] {
+                    assert(bounds[addr.au] == prior[addr.au]);
+                } else {
+                    assert(bounds[addr.au] == curr.page);
+                    assert(prior[addr.au] < curr.page);
+                    assert(addr.page <= curr.page);
+                }
+            } else {
+                assert(bounds[addr.au] == prior[addr.au]);
+            }
+        }
+    } else {
+        assert(build_lsn_addr_index_from_reads(reads, boundary_lsn, root) == Map::<LSN, Address>::empty());
+    }
+}
+
+pub proof fn build_au_page_bounds_from_reads_page_walk_depth_matches_disk(
+    reads: Map<Address, JournalRecord>,
+    entries: Map<Address, JournalRecord>,
+    boundary_lsn: LSN,
+    root: Pointer,
+    depth: nat,
+)
+    requires
+        page_walk_reads_cover(reads, boundary_lsn, root, depth),
+        (DiskView{boundary_lsn, entries}).decodable(root),
+        (DiskView{boundary_lsn, entries}).acyclic(),
+        forall |a: Address| #[trigger] reads.contains_key(a)
+            && entries.contains_key(a) ==> reads[a] == entries[a],
+    ensures
+        build_au_page_bounds_from_reads_page_walk_depth(
+            reads,
+            boundary_lsn,
+            root,
+            depth,
+        ) =~= (DiskView{boundary_lsn, entries}).build_au_page_bounds_page_walk(root),
+    decreases depth,
+{
+    let dv = DiskView{boundary_lsn, entries};
+    if root is Some {
+        assert(depth > 0);
+        let addr = root.unwrap();
+        assert(reads.contains_key(addr));
+        assert(entries.contains_key(addr));
+        assert(reads[addr] == entries[addr]);
+        let next = reads[addr].cropped_prior(boundary_lsn);
+        assert(dv.next(root) == next);
+        assert(dv.decodable(next));
+        build_au_page_bounds_from_reads_page_walk_depth_matches_disk(
+            reads,
+            entries,
+            boundary_lsn,
+            next,
+            (depth - 1) as nat,
+        );
+        let reads_prior = build_au_page_bounds_from_reads_page_walk_depth(
+            reads,
+            boundary_lsn,
+            next,
+            (depth - 1) as nat,
+        );
+        let disk_prior = dv.build_au_page_bounds_page_walk(next);
+        assert(reads_prior =~= disk_prior);
+        assert_maps_equal!(
+            build_au_page_bounds_from_reads_page_walk_depth(
+                reads,
+                boundary_lsn,
+                root,
+                depth,
+            ),
+            dv.build_au_page_bounds_page_walk(root),
+            au => {
+                if reads_prior.contains_key(addr.au) {
+                    assert(disk_prior.contains_key(addr.au));
+                    assert(reads_prior[addr.au] == disk_prior[addr.au]);
+                }
+                if disk_prior.contains_key(addr.au) {
+                    assert(reads_prior.contains_key(addr.au));
+                    assert(reads_prior[addr.au] == disk_prior[addr.au]);
+                }
+            }
+        );
+    }
+}
+
+pub proof fn build_au_page_bounds_from_reads_au_walk_depth_matches_disk(
+    reads: Map<Address, JournalRecord>,
+    entries: Map<Address, JournalRecord>,
+    boundary_lsn: LSN,
+    root: Pointer,
+    first: AU,
+    au_depth: nat,
+    page_depth: nat,
+)
+    requires
+        au_walk_reads_cover(reads, boundary_lsn, root, first, au_depth, page_depth),
+        (DiskView{boundary_lsn, entries}).pointer_is_upstream(root, first),
+        forall |a: Address| #[trigger] reads.contains_key(a)
+            && entries.contains_key(a) ==> reads[a] == entries[a],
+    ensures
+        build_au_page_bounds_from_reads_au_walk_depth(
+            reads,
+            boundary_lsn,
+            root,
+            first,
+            au_depth,
+            page_depth,
+        ) =~= (DiskView{boundary_lsn, entries}).build_au_page_bounds_au_walk(root, first),
+    decreases au_depth,
+{
+    let dv = DiskView{boundary_lsn, entries};
+    if root is Some {
+        assert(au_depth > 0);
+        let addr = root.unwrap();
+        if addr.au == first {
+            assert(page_walk_reads_cover(reads, boundary_lsn, root, page_depth));
+            build_au_page_bounds_from_reads_page_walk_depth_matches_disk(
+                reads,
+                entries,
+                boundary_lsn,
+                root,
+                page_depth,
+            );
+            assert_maps_equal!(
+                build_au_page_bounds_from_reads_au_walk_depth(
+                    reads,
+                    boundary_lsn,
+                    root,
+                    first,
+                    au_depth,
+                    page_depth,
+                ),
+                dv.build_au_page_bounds_au_walk(root, first),
+                au => {}
+            );
+        } else {
+            let bottom = addr.first_page();
+            assert(reads.contains_key(addr));
+            assert(reads.contains_key(bottom));
+            assert(entries.contains_key(addr));
+            dv.bottom_properties(root, first);
+            assert(dv.pointer_is_upstream(Some(bottom), first));
+            assert(entries.contains_key(bottom));
+            assert(reads[bottom] == entries[bottom]);
+            let next = reads[bottom].cropped_prior(boundary_lsn);
+            assert(dv.next(Some(bottom)) == next);
+            assert(dv.pointer_is_upstream(next, first));
+            build_au_page_bounds_from_reads_au_walk_depth_matches_disk(
+                reads,
+                entries,
+                boundary_lsn,
+                next,
+                first,
+                (au_depth - 1) as nat,
+                page_depth,
+            );
+            let reads_prior = build_au_page_bounds_from_reads_au_walk_depth(
+                reads,
+                boundary_lsn,
+                next,
+                first,
+                (au_depth - 1) as nat,
+                page_depth,
+            );
+            let disk_prior = dv.build_au_page_bounds_au_walk(next, first);
+            assert(reads_prior =~= disk_prior);
+            assert_maps_equal!(
+                build_au_page_bounds_from_reads_au_walk_depth(
+                    reads,
+                    boundary_lsn,
+                    root,
+                    first,
+                    au_depth,
+                    page_depth,
+                ),
+                dv.build_au_page_bounds_au_walk(root, first),
+                au => {}
+            );
+        }
+    }
+}
+
+pub proof fn build_lsn_addr_index_from_reads_values_bounded_by_au_page_bounds(
+    reads: Map<Address, JournalRecord>,
+    entries: Map<Address, JournalRecord>,
+    boundary_lsn: LSN,
+    root: Pointer,
+    first: AU,
+    au_depth: nat,
+    page_depth: nat,
+    addr: Address,
+)
+    requires
+        acyclic_reads(boundary_lsn, reads),
+        page_walk_reads_cover(reads, boundary_lsn, root, page_depth),
+        au_walk_reads_cover(reads, boundary_lsn, root, first, au_depth, page_depth),
+        (DiskView{boundary_lsn, entries}).pointer_is_upstream(root, first),
+        forall |a: Address| #[trigger] reads.contains_key(a)
+            && entries.contains_key(a) ==> reads[a] == entries[a],
+        build_lsn_addr_index_from_reads(reads, boundary_lsn, root).values().contains(addr),
+    ensures
+        build_au_page_bounds_from_reads_au_walk_depth(
+            reads,
+            boundary_lsn,
+            root,
+            first,
+            au_depth,
+            page_depth,
+        ).contains_key(addr.au),
+        addr.page <= build_au_page_bounds_from_reads_au_walk_depth(
+            reads,
+            boundary_lsn,
+            root,
+            first,
+            au_depth,
+            page_depth,
+        )[addr.au],
+{
+    build_lsn_addr_index_from_reads_values_bounded_by_page_bounds(
+        reads,
+        boundary_lsn,
+        root,
+        page_depth,
+        addr,
+    );
+    let dv = DiskView{boundary_lsn, entries};
+    build_au_page_bounds_from_reads_page_walk_depth_matches_disk(
+        reads,
+        entries,
+        boundary_lsn,
+        root,
+        page_depth,
+    );
+    build_au_page_bounds_from_reads_au_walk_depth_matches_disk(
+        reads,
+        entries,
+        boundary_lsn,
+        root,
+        first,
+        au_depth,
+        page_depth,
+    );
+    dv.build_au_page_bounds_equiv_page_walk(root, first);
+    let page_bounds = build_au_page_bounds_from_reads_page_walk_depth(
+        reads,
+        boundary_lsn,
+        root,
+        page_depth,
+    );
+    let au_bounds = build_au_page_bounds_from_reads_au_walk_depth(
+        reads,
+        boundary_lsn,
+        root,
+        first,
+        au_depth,
+        page_depth,
+    );
+    assert(au_bounds =~= page_bounds);
 }
 
 pub struct JournalStatus {

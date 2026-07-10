@@ -360,7 +360,7 @@ state_machine!{ CrashAwareCachingDiskJournal {
         require pre.ephemeral is Known;
         require pre.frozen is None;
         require snapshot.boundary_lsn == new_boundary_lsn;
-        require pre.persistent.metadata().seq_end <= new_boundary_lsn;
+        require pre.persistent.metadata().seq_end <= seq_end;
         require CachingDiskJournal::State::next(
             pre.ephemeral->v,
             pre.ephemeral->v,

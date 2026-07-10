@@ -197,7 +197,7 @@ state_machine!{AllocationCrashAwareJournal{
             // Frozen journal stitches to frozen map
             require frozen_journal.boundary_lsn == lbl->new_boundary_lsn;
             // Journal doesn't go backwards
-            require pre.persistent.seq_end <= lbl->new_boundary_lsn;
+            require pre.persistent.seq_end <= frozen_journal.seq_end;
             update frozen = Option::Some(frozen_journal);
         }
     }

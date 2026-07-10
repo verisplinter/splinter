@@ -11,10 +11,8 @@ pub mod journal;
 pub mod allocation_layer;
 pub mod betree;
 
-// Temporarily disabled while the unified-cache implementation path is being
-// developed.
-// use crate::trusted::TrustedEntry_t; // Auditor's "entry point": Auditor starts reading here
-// use crate::implementation::Implementation_v;  // Implementor's entry point: Execution starts here
+use crate::trusted::TrustedEntry_t; // Auditor's entry point: Auditor starts reading here
+use crate::implementation::Implementation_v; // Implementor's entry point: execution starts here
 
 // This file is where the generic theorem that the auditor reads
 // (in _t files) meets the implementation that the implementor supplies
@@ -25,5 +23,5 @@ pub mod betree;
 // put into the executable.
 
 fn main() {
-    // TrustedEntry_t::entry::<Implementation_v::Implementation>();
+    TrustedEntry_t::entry::<Implementation_v::Implementation>();
 }

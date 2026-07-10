@@ -884,39 +884,6 @@ impl CachingDiskJournal::State {
         }
     }
 
-    pub proof fn frozen_prefix_domain_matches_i(
-        self,
-        frozen: JournalSnapshot,
-        seq_end: LSN,
-    )
-        requires
-            self.inv(),
-            self.semantic_inv(),
-            self.frozen_snapshot_valid(frozen, seq_end),
-        ensures
-            self.frozen_prefix_domain(frozen) =~= self.i().frozen_prefix_domain(JournalMetadata{
-                boundary_lsn: frozen.boundary_lsn,
-                seq_end,
-                freshest_rec: frozen.freshest_rec(),
-                first: frozen.first(),
-            }),
-    {
-        let meta = JournalMetadata{
-            boundary_lsn: frozen.boundary_lsn,
-            seq_end,
-            freshest_rec: frozen.freshest_rec(),
-            first: frozen.first(),
-        };
-        self.frozen_tj_matches_i_frozen_tj(frozen, seq_end);
-        assert(self.i().frozen_image(meta).tight_tj()
-            == (JournalImage{tj: self.frozen_tj(frozen), first: frozen.first()}).tight_tj());
-        assert(self.i().frozen_loose_domain(meta) =~= self.frozen_loose_domain(frozen));
-        assert(self.frozen_prefix_domain(frozen) =~= self.i().frozen_prefix_domain(meta)) by {
-            assert forall |addr: Address| #[trigger] self.frozen_prefix_domain(frozen).contains(addr)
-                <==> self.i().frozen_prefix_domain(meta).contains(addr) by {}
-        }
-    }
-
     pub proof fn frozen_prefix_domain_within_clean_watermark_au_page_bounds_domain(
         self,
         frozen: JournalSnapshot,
@@ -1749,7 +1716,7 @@ impl CachingDiskJournal::State {
                         marshalled_msgs,
                         addr.au,
                     ));
-                assert(post.mini_allocator == self.mini_allocator.allocate(addr).observe(addr));
+                assert(post.mini_allocator == self.mini_allocator.allocate(addr));
                 assert(post.disk.visible() == self.disk.visible().union_prefer_right(writes));
                 assert_maps_equal!(
                     post.journal_disk_view().entries,
@@ -1808,7 +1775,7 @@ impl CachingDiskJournal::State {
 	                assert(post.i().au_page_bounds
 	                    == self.i().au_page_bounds.insert(addr.au, addr.page));
                 assert(post.i().mini_allocator
-                    == self.i().mini_allocator.allocate(addr).observe(addr));
+                    == self.i().mini_allocator.allocate(addr));
                 assert(self.i().mini_allocator.tight_next_addr(self.i().freshest_rec, addr));
                 let aj_lbl = lbl.i(self);
                 assert(aj_lbl.arrow_InternalAllocations_allocs() == Set::<AU>::empty());
@@ -2279,6 +2246,7 @@ impl CachingDiskJournal::State {
             CachingDiskJournal::State::read_for_recovery(self, post, lbl, reads),
         ensures
             AllocationJournal::State::next(self.i(), post.i(), lbl.i(self)),
+            lbl.arrow_ReadForRecovery_messages().wf(),
     {
         reveal(CachingDiskJournal::State::read_for_recovery);
         reveal(CachedJournal::State::next);
@@ -2348,6 +2316,40 @@ impl CachingDiskJournal::State {
             },
         }
         reveal(AllocationJournal::State::next);
+        let alloc_lbl = lbl.i(self);
+        assert(alloc_lbl == AllocationJournal::Label::ReadForRecovery{messages});
+        assert(AllocationJournal::State::next(self.i(), post.i(), alloc_lbl));
+        self.i().next_refines(post.i(), alloc_lbl);
+        let likes_pre = self.i().i();
+        let likes_post = post.i().i();
+        let likes_lbl = self.i().label_i(alloc_lbl);
+        assert(likes_lbl == crate::allocation_layer::LikesJournal_v::LikesJournal::Label::ReadForRecovery{
+            messages,
+        });
+        assert(crate::allocation_layer::LikesJournal_v::LikesJournal::State::next(
+            likes_pre,
+            likes_post,
+            likes_lbl,
+        ));
+        assert(messages.wf()) by {
+            reveal(crate::allocation_layer::LikesJournal_v::LikesJournal::State::next);
+            reveal(crate::allocation_layer::LikesJournal_v::LikesJournal::State::next_by);
+            let likes_step = choose |step: crate::allocation_layer::LikesJournal_v::LikesJournal::Step|
+                crate::allocation_layer::LikesJournal_v::LikesJournal::State::next_by(
+                    likes_pre,
+                    likes_post,
+                    likes_lbl,
+                    step,
+                );
+            match likes_step {
+                crate::allocation_layer::LikesJournal_v::LikesJournal::Step::read_for_recovery(_) => {
+                    reveal(crate::allocation_layer::LikesJournal_v::LikesJournal::State::read_for_recovery);
+                },
+                _ => {
+                    assert(false);
+                },
+            }
+        }
     }
 
     pub proof fn freeze_for_commit_refines(
@@ -2857,7 +2859,7 @@ impl CachingDiskJournal::State {
                 marshalled_msgs,
                 addr.au,
             ));
-        assert(post.mini_allocator == self.mini_allocator.allocate(addr).observe(addr));
+        assert(post.mini_allocator == self.mini_allocator.allocate(addr));
         assert(post.disk.visible() == self.disk.visible().union_prefer_right(writes));
         assert_maps_equal!(
             post.journal_disk_view().entries,
@@ -2913,7 +2915,7 @@ impl CachingDiskJournal::State {
             }
         }
         assert(post.i().au_page_bounds == self.i().au_page_bounds.insert(addr.au, addr.page));
-        assert(post.i().mini_allocator == self.i().mini_allocator.allocate(addr).observe(addr));
+        assert(post.i().mini_allocator == self.i().mini_allocator.allocate(addr));
         assert(self.i().mini_allocator.tight_next_addr(self.i().freshest_rec, addr));
         assert(lbl.i(self).arrow_InternalAllocations_allocs() == Set::<AU>::empty());
         assert(lbl.i(self).arrow_InternalAllocations_deallocs() == Set::<AU>::empty());

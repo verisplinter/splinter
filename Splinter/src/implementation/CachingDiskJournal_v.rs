@@ -673,7 +673,7 @@ state_machine!{ CachingDiskJournal {
 
         update journal = new_journal;
         update disk = new_disk;
-        update mini_allocator = pre.mini_allocator.allocate(addr).observe(addr);
+        update mini_allocator = pre.mini_allocator.allocate(addr);
     }}
 
     transition!{ observe_clean_aus(
@@ -838,16 +838,6 @@ state_machine!{ CachingDiskJournal {
         &&& AllocationJournal::State::mini_allocator_follows_freshest_rec(
             self.journal_tj().freshest_rec,
             self.mini_allocator,
-        )
-    }
-
-    pub open spec fn loaded_journal_structure(self) -> bool
-        recommends self.journal.status is Some
-    {
-        &&& self.journal_tj().seq_end() == cj_unmarshalled_tail(self.journal).seq_start
-        &&& cj_lsn_au_index(self.journal) == self.journal_tj().disk_view.build_lsn_au_index_au_walk(
-            self.journal_tj().freshest_rec,
-            self.journal.snapshot.first(),
         )
     }
 
@@ -1016,11 +1006,11 @@ state_machine!{ CachingDiskJournal {
                         &&& post.mini_allocator.allocs.contains_key(au)
                     } implies !post.mini_allocator.allocs[au].all_pages_free() by {
                         if au == addr.au {
-                            assert(post.mini_allocator == pre.mini_allocator.allocate(addr).observe(addr));
+                            assert(post.mini_allocator == pre.mini_allocator.allocate(addr));
                             let after_allocate = pre.mini_allocator.allocate(addr);
-                            assert(after_allocate.allocs[addr.au].reserved.contains(addr));
-                            assert(post.mini_allocator.allocs[addr.au].observed.contains(addr));
-                            assert(!post.mini_allocator.allocs[addr.au].has_no_observed_pages());
+                            assert(after_allocate.allocs[addr.au].allocated.contains(addr));
+                            assert(post.mini_allocator.allocs[addr.au].allocated.contains(addr));
+                            assert(!post.mini_allocator.allocs[addr.au].has_no_allocated_pages());
                             assert(!post.mini_allocator.allocs[addr.au].all_pages_free());
                         } else {
                             assert(old_index.values().contains(au));
@@ -1039,8 +1029,8 @@ state_machine!{ CachingDiskJournal {
         assert(pre.mini_allocator.can_allocate(addr));
         assert(pre.mini_allocator.allocate(addr).wf());
         assert(pre.mini_allocator.allocate(addr).allocs.contains_key(addr.au));
-        assert(pre.mini_allocator.allocate(addr).allocs[addr.au].reserved.contains(addr));
-        assert(post.mini_allocator.allocs[addr.au].observed.contains(addr));
+        assert(pre.mini_allocator.allocate(addr).allocs[addr.au].allocated.contains(addr));
+        assert(post.mini_allocator.allocs[addr.au].allocated.contains(addr));
         assert(!post.mini_allocator.allocs[addr.au].all_pages_free());
         assert(post.mini_allocator.wf());
         CachingDisk::State::access_effect(pre.disk, post.disk, Map::empty(), writes);
@@ -1455,10 +1445,6 @@ impl CachingDiskJournal::State {
         })
     }
 
-    pub open spec fn clean_watermark_durable(self) -> bool {
-        self.disk.addrs_clean_or_evictable(self.clean_watermark_pages())
-    }
-
     pub open spec fn persistent_visible_agree_on(self, addrs: Set<Address>) -> bool {
         self.disk.persistent.restrict(addrs) == self.disk.visible().restrict(addrs)
     }
@@ -1764,71 +1750,6 @@ impl CachingDiskJournal::State {
             }
         }
         self.frozen_loose_subdomain_accessible(snapshot, addrs);
-    }
-
-    pub proof fn persistent_frozen_loose_domain_persistent_aus_accessible(
-        self,
-        frozen: crate::implementation::CrashAwareCachingDiskJournal_v::CachingDiskJournalFrozenMetadata,
-    )
-        requires
-            self.inv(),
-            self.journal.status is None,
-        ensures
-            to_aus(self.disk.persistent.restrict(
-                self.persistent_frozen_loose_domain(frozen),
-            ).dom()) <= self.accessible_aus(),
-    {
-        let addrs = self.disk.persistent.restrict(
-            self.persistent_frozen_loose_domain(frozen),
-        ).dom();
-        assert(addrs <= self.disk.visible().dom()) by {
-            assert forall |addr: Address| #[trigger] addrs.contains(addr)
-                implies self.disk.visible().dom().contains(addr) by {
-                assert(self.disk.persistent.restrict(
-                    self.persistent_frozen_loose_domain(frozen),
-                ).contains_key(addr));
-                assert(self.disk.persistent.contains_key(addr));
-                assert(self.disk.visible().contains_key(addr));
-            }
-        }
-        to_aus_preserves_lte(addrs, self.disk.visible().dom());
-        assert(to_aus(addrs) <= to_aus(self.disk.visible().dom()));
-    }
-
-    pub proof fn frozen_tj_aus_accessible(self, snapshot: JournalSnapshot)
-        requires
-            self.inv(),
-        ensures
-            to_aus(self.frozen_tj(snapshot).disk_view.entries.dom()) <= self.accessible_aus(),
-    {
-        let addrs = self.frozen_tj(snapshot).disk_view.entries.dom();
-        assert(addrs <= self.frozen_loose_domain(snapshot)) by {
-            assert forall |addr: Address| #[trigger] addrs.contains(addr)
-                implies self.frozen_loose_domain(snapshot).contains(addr) by {
-                assert(self.frozen_tj(snapshot).disk_view.entries.contains_key(addr));
-            }
-        }
-        assert(addrs <= self.journal_disk_view().entries.dom()) by {
-            assert forall |addr: Address| #[trigger] addrs.contains(addr)
-                implies self.journal_disk_view().entries.dom().contains(addr) by {
-                assert(self.frozen_tj(snapshot).disk_view.entries.contains_key(addr));
-            }
-        }
-        self.frozen_loose_subdomain_accessible(snapshot, addrs);
-    }
-
-    pub proof fn lsn_au_index_or_empty_matches_full(self)
-        requires
-            self.visible_journal_structure(),
-        ensures
-            self.lsn_au_index_or_empty()
-                == self.journal_tj().disk_view.build_lsn_au_index_au_walk(
-                    self.journal_tj().freshest_rec,
-                    self.journal.snapshot.first(),
-                ),
-    {
-        assert(self.visible_journal_structure());
-        assert(self.lsn_au_index_or_empty() == self.visible_lsn_au_index());
     }
 
     pub proof fn interpreted_tj_matches(self)

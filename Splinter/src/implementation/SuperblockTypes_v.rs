@@ -1,34 +1,15 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
 use vstd::{prelude::*};
-use crate::spec::MapSpec_t::{MapSpec, Version};
-use crate::spec::FloatingSeq_t::FloatingSeq;
-use crate::spec::KeyType_t::Key;
-use crate::spec::Messages_t::{Message, Value};
 use crate::marshalling::Marshalling_v::Parsedview;
 use crate::marshalling::WF_v::WF;
 use crate::implementation::JournalImpl_v::IJournalSnapshot;
 use crate::implementation::CachedJournal_v::JournalSnapshot;
 use crate::abstract_system::StampedMap_v::LSN;
-use crate::spec::TotalKMMap_t::TotalKMMap;
-use crate::spec::AsyncDisk_t::Address;
-use crate::spec::ImplDisk_t::IAddress;
+use crate::spec::AsyncDisk_t::{Address, page_count};
+use crate::spec::ImplDisk_t::{IAddress, IAU, IPage};
 
 verus! {
-
-pub open spec fn map_to_kmmap(m: Map<Key, Value>) -> TotalKMMap
-{
-    TotalKMMap(
-        Map::new(|k: Key| true,
-            |k: Key|
-                if m.contains_key(k) {
-                    Message::Define{value: m[k]}
-                } else {
-                    Message::empty()
-                }
-        )
-    )
-}
 
 pub struct Superblock {
     pub journal_snapshot: JournalSnapshot,
@@ -37,17 +18,13 @@ pub struct Superblock {
     pub branch_seq_end: nat,
 }
 
-pub open spec(checked) fn singleton_floating_seq(at_index: nat, kmmap: TotalKMMap) -> FloatingSeq<Version>
-{
-    FloatingSeq::new(at_index, at_index + 1,
-          |i| Version{ appv: MapSpec::State{ kmmap } } )
-}
-
 impl Superblock {
     pub open spec fn wf(self) -> bool
     {
         &&& self.branch_seq_end == self.journal_snapshot.boundary_lsn
         &&& self.journal_snapshot.boundary_lsn <= self.journal_seq_end
+        &&& forall |i: int| 0 <= i < self.branch_roots.len()
+            ==> #[trigger] self.branch_roots[i].wf()
     }
 }
 
@@ -69,23 +46,60 @@ pub struct ASuperblockBranchImage {
 
 impl ASuperblockBranchImage {
     pub open spec fn wf(self, journal_snapshot: JournalSnapshot) -> bool {
-        self.seq_end == journal_snapshot.boundary_lsn
+        &&& self.seq_end == journal_snapshot.boundary_lsn
+        &&& forall |i: int| 0 <= i < self.roots.len()
+            ==> #[trigger] self.roots[i].wf()
     }
 }
 
 pub struct ASuperblock {
+    pub geometry: ASuperblockGeometry,
+    pub payload: ASuperblockPayload,
+}
+
+pub struct ASuperblockGeometry {
+    pub pages_per_au: nat,
+    pub formatted_au_count: nat,
+}
+
+impl ASuperblockGeometry {
+    pub open spec fn wf(self) -> bool {
+        &&& self.pages_per_au == page_count()
+        &&& 1 < self.formatted_au_count
+    }
+}
+
+pub struct ASuperblockPayload {
     pub journal: ASuperblockJournalImage,
     pub branch: ASuperblockBranchImage,
 }
 
-impl ASuperblock {
+impl ASuperblockPayload {
     pub open spec fn wf(self) -> bool {
         &&& self.journal.wf()
         &&& self.branch.wf(self.journal.snapshot)
     }
 }
 
-impl View for ASuperblock {
+impl ASuperblock {
+    pub open spec fn addresses_bounded(self) -> bool {
+        let bound = self.geometry.formatted_au_count;
+        &&& self.payload.journal.snapshot.root is Some ==>
+            self.payload.journal.snapshot.root.unwrap().freshest_rec.au < bound
+        &&& self.payload.journal.snapshot.root is Some ==>
+            self.payload.journal.snapshot.root.unwrap().first < bound
+        &&& forall |i: int| 0 <= i < self.payload.branch.roots.len()
+            ==> #[trigger] self.payload.branch.roots[i].au < bound
+    }
+
+    pub open spec fn wf(self) -> bool {
+        &&& self.geometry.wf()
+        &&& self.payload.wf()
+        &&& self.addresses_bounded()
+    }
+}
+
+impl View for ASuperblockPayload {
     type V = Superblock;
 
     open spec fn view(&self) -> Self::V
@@ -96,6 +110,15 @@ impl View for ASuperblock {
             branch_roots: self.branch.roots,
             branch_seq_end: self.branch.seq_end,
         }
+    }
+}
+
+impl View for ASuperblock {
+    type V = Superblock;
+
+    open spec fn view(&self) -> Self::V
+    {
+        self.payload@
     }
 }
 
@@ -152,16 +175,68 @@ impl View for ISuperblockBranchImage {
 }
 
 #[derive(Debug)]
-pub struct ISuperblock {
+pub struct ISuperblockGeometry {
+    pub pages_per_au: IPage,
+    pub formatted_au_count: IAU,
+}
+
+impl Parsedview<ASuperblockGeometry> for ISuperblockGeometry {
+    open spec fn parsedv(&self) -> ASuperblockGeometry {
+        ASuperblockGeometry {
+            pages_per_au: self.pages_per_au as nat,
+            formatted_au_count: self.formatted_au_count as nat,
+        }
+    }
+}
+
+impl WF for ISuperblockGeometry {}
+
+impl View for ISuperblockGeometry {
+    type V = ASuperblockGeometry;
+
+    open spec fn view(&self) -> Self::V
+    {
+        self.parsedv()
+    }
+}
+
+#[derive(Debug)]
+pub struct ISuperblockPayload {
     pub journal: ISuperblockJournalImage,
     pub branch: ISuperblockBranchImage,
+}
+
+impl Parsedview<ASuperblockPayload> for ISuperblockPayload {
+    open spec fn parsedv(&self) -> ASuperblockPayload {
+        ASuperblockPayload {
+            journal: self.journal@,
+            branch: self.branch@,
+        }
+    }
+}
+
+impl WF for ISuperblockPayload {}
+
+impl View for ISuperblockPayload {
+    type V = ASuperblockPayload;
+
+    open spec fn view(&self) -> Self::V
+    {
+        self.parsedv()
+    }
+}
+
+#[derive(Debug)]
+pub struct ISuperblock {
+    pub geometry: ISuperblockGeometry,
+    pub payload: ISuperblockPayload,
 }
 
 impl Parsedview<ASuperblock> for ISuperblock {
     open spec fn parsedv(&self) -> ASuperblock {
         ASuperblock{
-            journal: self.journal@,
-            branch: self.branch@,
+            geometry: self.geometry@,
+            payload: self.payload@,
         }
     }
 }

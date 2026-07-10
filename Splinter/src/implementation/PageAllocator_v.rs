@@ -9,32 +9,38 @@ use crate::implementation::OverflowFiction_v::convert_overflow_into_liveness_fai
 verus! {
 
 pub struct PageAllocator {
-    au: IAU,
-    next_page: IPage,
+    pub au: IAU,
+    pub next_page: IPage,
 }
 
 impl PageAllocator {
-    pub closed spec fn wf(self) -> bool {
+    pub open spec fn wf(self) -> bool {
         true
     }
 
-    pub closed spec fn alloc_au(self) -> IAU {
+    pub open spec fn alloc_au(self) -> IAU {
         self.au
     }
 
-    pub closed spec fn alloc_au_nat(self) -> nat {
+    pub open spec fn alloc_au_nat(self) -> nat {
         self.au as nat
     }
 
-    pub closed spec fn next_page(self) -> IPage {
+    pub proof fn alloc_au_nat_is_alloc_au(self)
+        ensures
+            self.alloc_au_nat() == self.alloc_au() as nat,
+    {
+    }
+
+    pub open spec fn next_page(self) -> IPage {
         self.next_page
     }
 
-    pub closed spec fn next_addr(self) -> Address {
+    pub open spec fn next_addr(self) -> Address {
         Address{au: self.alloc_au_nat(), page: self.next_page() as nat}
     }
 
-    pub closed spec fn next_addr_wf(self) -> bool {
+    pub open spec fn next_addr_wf(self) -> bool {
         self.next_addr().wf()
     }
 
@@ -42,17 +48,10 @@ impl PageAllocator {
         ensures
             out.wf(),
             out.alloc_au() == au,
+            out.alloc_au_nat() == au as nat,
             out.next_page() == start_page,
     {
         Self { au, next_page: start_page }
-    }
-
-    pub fn exec_alloc_au(&self) -> (out: IAU)
-        ensures
-            out == self.alloc_au(),
-            out as nat == self.alloc_au_nat(),
-    {
-        self.au
     }
 
     pub fn peek_next_addr(&self) -> (out: IAddress)
@@ -77,6 +76,7 @@ impl PageAllocator {
         ensures
             self.wf(),
             self.alloc_au() == old(self).alloc_au(),
+            self.alloc_au_nat() == old(self).alloc_au_nat(),
             self.next_page() == old(self).next_page() + 1,
     {
         if self.next_page == u32::MAX {

@@ -120,8 +120,12 @@ impl Marshal for IJournalSnapshotFormat {
     exec fn try_parse(&self, slice: &Slice, data: &Vec<u8>) -> (ov: Option<Self::U>)
     {
         let total_size = self.exec_uniform_size();
-        if slice.len() < total_size || data.len() < slice.end {
-            proof { assume(!self.parsable(slice@.i(data@))); }
+        if slice.len() < total_size {
+            assert(!self.parsable(slice@.i(data@)));
+            return None;
+        }
+        if data.len() < slice.end {
+            assert(false);
             return None;
         }
 
@@ -130,7 +134,15 @@ impl Marshal for IJournalSnapshotFormat {
         let boundary_lsn = match self.field1_fmt.try_parse(&field1_slice, data) {
             Some(v) => v,
             None => {
-                proof { assume(!self.parsable(slice@.i(data@))); }
+                proof {
+                    let idata = slice@.i(data@);
+                    let f1_end = self.field1_fmt.uniform_size() as int;
+                    assert(field1_slice@.i(data@) == idata.subrange(0, f1_end));
+                    assert(!self.field1_fmt.parsable(idata.subrange(0, f1_end)));
+                    if self.parsable(idata) {
+                        assert(false);
+                    }
+                }
                 return None;
             },
         };
@@ -141,7 +153,16 @@ impl Marshal for IJournalSnapshotFormat {
         let freshest_rec = match self.field2_fmt.try_parse(&field2_slice, data) {
             Some(v) => v,
             None => {
-                proof { assume(!self.parsable(slice@.i(data@))); }
+                proof {
+                    let idata = slice@.i(data@);
+                    let f1_end = self.field1_fmt.uniform_size() as int;
+                    let f2_end = f1_end + self.field2_fmt.uniform_size() as int;
+                    assert(field2_slice@.i(data@) == idata.subrange(f1_end, f2_end));
+                    assert(!self.field2_fmt.parsable(idata.subrange(f1_end, f2_end)));
+                    if self.parsable(idata) {
+                        assert(false);
+                    }
+                }
                 return None;
             },
         };
@@ -152,16 +173,49 @@ impl Marshal for IJournalSnapshotFormat {
         let first = match self.field3_fmt.try_parse(&field3_slice, data) {
             Some(v) => v,
             None => {
-                proof { assume(!self.parsable(slice@.i(data@))); }
+                proof {
+                    let idata = slice@.i(data@);
+                    let f1_end = self.field1_fmt.uniform_size() as int;
+                    let f2_end = f1_end + self.field2_fmt.uniform_size() as int;
+                    let f3_end = f2_end + self.field3_fmt.uniform_size() as int;
+                    assert(field3_slice@.i(data@) == idata.subrange(f2_end, f3_end));
+                    assert(!self.field3_fmt.parsable(idata.subrange(f2_end, f3_end)));
+                    if self.parsable(idata) {
+                        assert(false);
+                    }
+                }
                 return None;
             },
         };
 
         let result = IJournalSnapshot{boundary_lsn, freshest_rec, first};
         proof {
-            assume(self.parsable(slice@.i(data@)));
-            assume(result.parsedv() == self.parse(slice@.i(data@)));
-            assume(result.wf());
+            let idata = slice@.i(data@);
+            let f1_end = self.field1_fmt.uniform_size() as int;
+            let f2_end = f1_end + self.field2_fmt.uniform_size() as int;
+            let f3_end = f2_end + self.field3_fmt.uniform_size() as int;
+
+            assert(field1_slice@.i(data@) == idata.subrange(0, f1_end));
+            assert(field2_slice@.i(data@) == idata.subrange(f1_end, f2_end));
+            assert(field3_slice@.i(data@) == idata.subrange(f2_end, f3_end));
+            assert(self.parsable(idata));
+
+            assert(Parsedview::<nat>::parsedv(&boundary_lsn)
+                == self.field1_fmt.parse(idata.subrange(0, f1_end)));
+            assert(Parsedview::<Option<crate::disk::GenericDisk_v::Address>>::parsedv(&freshest_rec)
+                == self.field2_fmt.parse(idata.subrange(f1_end, f2_end)));
+            assert(Parsedview::<nat>::parsedv(&first)
+                == self.field3_fmt.parse(idata.subrange(f2_end, f3_end)));
+
+            match freshest_rec {
+                None => {},
+                Some(addr) => {
+                    assert(addr@
+                        == self.field2_fmt.parse(idata.subrange(f1_end, f2_end)).unwrap());
+                },
+            }
+            assert(result.parsedv() == self.parse(idata));
+            assert(result.wf());
         }
         Some(result)
     }
@@ -188,15 +242,68 @@ impl Marshal for IJournalSnapshotFormat {
 
     exec fn exec_marshall(&self, value: &Self::U, data: &mut Vec<u8>, start: usize) -> (end: usize) {
         let field1_end = self.field1_fmt.exec_marshall(&value.boundary_lsn, data, start);
+        let ghost after_field1 = data@;
         let field2_end = self.field2_fmt.exec_marshall(&value.freshest_rec, data, field1_end);
+        let ghost after_field2 = data@;
         let field3_end = self.field3_fmt.exec_marshall(&value.first, data, field2_end);
         proof {
-            assume(field3_end == start + self.spec_size(value.parsedv()));
-            assume(data.len() == old(data).len());
-            assume(forall |i| 0 <= i < start ==> data[i] == old(data)[i]);
-            assume(forall |i| field3_end <= i < data.len() ==> data[i] == old(data)[i]);
-            assume(self.parsable(data@.subrange(start as int, field3_end as int)));
-            assume(self.parse(data@.subrange(start as int, field3_end as int)) == value.parsedv());
+            let f1_size = self.field1_fmt.uniform_size() as int;
+            let f2_size = self.field2_fmt.uniform_size() as int;
+            let f3_size = self.field3_fmt.uniform_size() as int;
+            let subr = data@.subrange(start as int, field3_end as int);
+
+            assert(after_field1.subrange(start as int, field1_end as int)
+                == after_field2.subrange(start as int, field1_end as int));
+            assert(after_field2.subrange(start as int, field2_end as int)
+                == data@.subrange(start as int, field2_end as int));
+            assert(after_field2.subrange(field1_end as int, field2_end as int)
+                == data@.subrange(field1_end as int, field2_end as int));
+            assert(after_field1.subrange(start as int, field1_end as int)
+                == data@.subrange(start as int, field1_end as int));
+
+            assert(subr.subrange(0, f1_size)
+                == data@.subrange(start as int, field1_end as int));
+            assert(subr.subrange(f1_size, f1_size + f2_size)
+                == data@.subrange(field1_end as int, field2_end as int));
+            assert(subr.subrange(
+                    f1_size + f2_size,
+                    f1_size + f2_size + f3_size,
+                ) == data@.subrange(field2_end as int, field3_end as int));
+
+            assert(self.field1_fmt.parsable(subr.subrange(0, f1_size)));
+            assert(self.field2_fmt.parsable(
+                subr.subrange(f1_size, f1_size + f2_size),
+            ));
+            assert(self.field3_fmt.parsable(subr.subrange(
+                f1_size + f2_size,
+                f1_size + f2_size + f3_size,
+            )));
+            assert(self.parsable(subr));
+
+            assert(self.field1_fmt.parse(subr.subrange(0, f1_size))
+                == Parsedview::<nat>::parsedv(&value.boundary_lsn));
+            assert(self.field2_fmt.parse(
+                    after_field2.subrange(field1_end as int, field2_end as int),
+                ) == Parsedview::<Option<crate::disk::GenericDisk_v::Address>>::parsedv(
+                    &value.freshest_rec,
+                ));
+            assert(self.field2_fmt.parse(subr.subrange(f1_size, f1_size + f2_size))
+                == Parsedview::<Option<crate::disk::GenericDisk_v::Address>>::parsedv(
+                    &value.freshest_rec,
+                ));
+            assert(self.field3_fmt.parse(subr.subrange(
+                    f1_size + f2_size,
+                    f1_size + f2_size + f3_size,
+                )) == Parsedview::<nat>::parsedv(&value.first));
+
+            match value.freshest_rec {
+                None => {},
+                Some(addr) => {
+                    assert(value.parsedv().root is Some);
+                },
+            }
+            assert(self.parse(subr) == value.parsedv());
+            assert(field3_end == start + self.spec_size(value.parsedv()));
         }
         field3_end
     }

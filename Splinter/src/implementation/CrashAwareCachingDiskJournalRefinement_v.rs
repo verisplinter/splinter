@@ -662,72 +662,6 @@ impl CrashAwareCachingDiskJournal::State {
         assert(CachingDiskJournalImage::materialized_from_loaded_index(state, frozen) == image);
     }
 
-    pub proof fn materialization_certificate_implies_materialized_accessible_aus(
-        state: CachingDiskJournal::State,
-        frozen: CachingDiskJournalFrozenMetadata,
-    )
-        requires
-            state.refinement_inv(),
-            materialization_certificate(state, frozen),
-        ensures
-            CachingDiskJournalImage::materialized_from_persistent(
-                state,
-                frozen,
-            ).accessible_aus() <= caching_disk_journal_accessible_aus(state),
-    {
-        Self::materialization_certificate_implies_persistent_frozen_loose_domain_matches_visible(
-            state,
-            frozen,
-        );
-        state.frozen_loose_domain_persistent_aus_accessible(frozen.snapshot);
-        assert(state.persistent_frozen_loose_domain(frozen)
-            =~= state.frozen_loose_domain(frozen.snapshot));
-        assert(CachingDiskJournalImage::materialized_from_persistent(
-            state,
-            frozen,
-        ).persistent == state.disk.persistent.restrict(
-            state.persistent_frozen_loose_domain(frozen),
-        ));
-        assert(state.disk.persistent.restrict(
-            state.persistent_frozen_loose_domain(frozen),
-        ).dom() =~= state.disk.persistent.restrict(
-            state.frozen_loose_domain(frozen.snapshot),
-        ).dom()) by {
-            assert forall |addr: Address|
-                #[trigger] state.disk.persistent.restrict(
-                    state.persistent_frozen_loose_domain(frozen),
-                ).dom().contains(addr)
-                <==> state.disk.persistent.restrict(
-                    state.frozen_loose_domain(frozen.snapshot),
-                ).dom().contains(addr) by {
-                if state.disk.persistent.restrict(
-                    state.persistent_frozen_loose_domain(frozen),
-                ).dom().contains(addr) {
-                    assert(state.disk.persistent.restrict(
-                        state.persistent_frozen_loose_domain(frozen),
-                    ).contains_key(addr));
-                    assert(state.persistent_frozen_loose_domain(frozen).contains(addr));
-                    assert(state.frozen_loose_domain(frozen.snapshot).contains(addr));
-                    assert(state.disk.persistent.restrict(
-                        state.frozen_loose_domain(frozen.snapshot),
-                    ).contains_key(addr));
-                }
-                if state.disk.persistent.restrict(
-                    state.frozen_loose_domain(frozen.snapshot),
-                ).dom().contains(addr) {
-                    assert(state.disk.persistent.restrict(
-                        state.frozen_loose_domain(frozen.snapshot),
-                    ).contains_key(addr));
-                    assert(state.frozen_loose_domain(frozen.snapshot).contains(addr));
-                    assert(state.persistent_frozen_loose_domain(frozen).contains(addr));
-                    assert(state.disk.persistent.restrict(
-                        state.persistent_frozen_loose_domain(frozen),
-                    ).contains_key(addr));
-                }
-            }
-        }
-    }
-
     pub proof fn materialization_certificate_implies_materialized_index_values_match_visible(
         state: CachingDiskJournal::State,
         frozen: CachingDiskJournalFrozenMetadata,
@@ -1219,29 +1153,6 @@ impl CrashAwareCachingDiskJournal::State {
             );
         }
         assert(state.i().acceptable_frozen_image(meta, materialized.i()));
-    }
-
-    pub proof fn materialized_from_persistent_unchanged(
-        pre: CachingDiskJournal::State,
-        post: CachingDiskJournal::State,
-        frozen: CachingDiskJournalFrozenMetadata,
-    )
-        requires
-            pre.disk.persistent == post.disk.persistent,
-            pre.persistent_frozen_loose_domain(frozen)
-                =~= post.persistent_frozen_loose_domain(frozen),
-        ensures
-            CachingDiskJournalImage::materialized_from_persistent(pre, frozen)
-                == CachingDiskJournalImage::materialized_from_persistent(post, frozen),
-    {
-        assert(pre.disk.persistent.restrict(pre.persistent_frozen_loose_domain(frozen))
-            == post.disk.persistent.restrict(post.persistent_frozen_loose_domain(frozen))) by {
-            assert_maps_equal!(
-                pre.disk.persistent.restrict(pre.persistent_frozen_loose_domain(frozen)),
-                post.disk.persistent.restrict(post.persistent_frozen_loose_domain(frozen)),
-                addr => {}
-            );
-        }
     }
 
     pub open spec fn i_abstract(self) -> AbstractCrashAwareJournal::State {

@@ -3,135 +3,60 @@
 //
 #![allow(unused_imports)]
 use vstd::prelude::*;
-//use vstd::prelude_macros::*;
-use vstd::prelude::*;
 use crate::disk::GenericDisk_v::{AU, Address, page_count};
 
 verus! {
 
 pub struct PageAllocator {
-    pub observed: Set<Address>, // pages reachable from superblock Repr 
-    pub reserved: Set<Address>, // pages reachable from stack ref
+    pub allocated: Set<Address>,
     pub au: AU,
 }
 
-// TODO: observed <= reserved
-
 impl PageAllocator {
     pub open spec(checked) fn new(au: AU) -> Self {
-        Self{observed: Set::empty(), reserved: Set::empty(), au}
+        Self{allocated: Set::empty(), au}
     }
 
     pub open spec(checked) fn wf(self) -> bool {
-        // && observed !! reserved // does not have to be disjoint, cow case
-        // && |observed + reserved| <= PageCount()
-// This is a nasty trigger choice that demands some manual triggerin'
-//         &&& (forall |addr| (#[trigger] (self.observed + self.reserved).contains(addr)) ==> addr.wf())
-//         &&& (forall |addr| #[trigger] (self.observed + self.reserved).contains(addr) ==> addr.au == self.au)
-        &&& (forall |addr| #![auto] self.observed.contains(addr) ==> addr.wf())
-        &&& (forall |addr| #![auto] self.reserved.contains(addr) ==> addr.wf())
-        &&& (forall |addr| #![auto] self.observed.contains(addr) ==> addr.au == self.au)
-        &&& (forall |addr| #![auto] self.reserved.contains(addr) ==> addr.au == self.au)
+        &&& (forall |addr| #![auto] self.allocated.contains(addr) ==> addr.wf())
+        &&& (forall |addr| #![auto] self.allocated.contains(addr) ==> addr.au == self.au)
     }
 
     pub open spec(checked) fn is_free_addr(self, addr: Address) -> bool {
         &&& addr.wf()
         &&& addr.au == self.au
-        &&& !(self.observed + self.reserved).contains(addr)
+        &&& !self.allocated.contains(addr)
     }
 
-    /// get a stack reference
+    /// Compatibility name: allocate pages into this AU.
     pub open spec(checked) fn reserve(self, addrs: Set<Address>) -> (out: Self)
     recommends
         self.wf(),
         forall |addr| addrs.contains(addr) ==> self.is_free_addr(addr),
     // ensures out.wf()
     {
-        Self{reserved: self.reserved + addrs, ..self}
-    }
-
-    /// done with / returns a stack reference 
-    pub open spec(checked) fn unreserve(self, addrs: Set<Address>) -> (out: Self)
-    recommends
-            self.wf(),
-            addrs.subset_of(self.reserved),  // ensures out.wf()
-
-    {
-        Self{reserved: self.reserved.difference(addrs), ..self}
-    }
-
-    pub open spec(checked) fn observe(self, addrs: Set<Address>) -> (out: Self)
-    recommends
-        self.wf(),
-        forall |addr| #[trigger] addrs.contains(addr) ==> addr.wf() && addr.au == self.au,
-    // ensures out.wf()
-    {
-        Self{observed: self.observed+addrs, ..self}
-    }
-
-    //     pub proof fn observe_wf(self, addrs: Set<Address>)
-    //     requires
-    //             self.wf(),
-    //             forall |addr| #[trigger] addrs.contains(addr) ==> addr.wf() && addr.au == self.au,
-    //     ensures self.observe(addrs).wf(),
-    //     {
-    // //         let out = self.observe(addrs);
-    // //         assert forall |ax| (#[trigger] (out.observed + out.reserved).contains(ax))
-    // //             implies ax.wf() by {
-    // //             if addrs.contains(ax) {
-    // //                 assert( ax.wf() );
-    // //             } else {
-    // //                 assert( (self.observed + self.reserved).contains(ax) );
-    // //                 assert( ax.wf() );
-    // //             }
-    // //         }
-    // //         assert forall |ax| #[trigger] (out.observed + out.reserved).contains(ax)
-    // //             implies ax.au == out.au by {
-    // //         }
-    //     }
-
-    pub open spec(checked) fn unobserve(self, addrs: Set<Address>) -> (out: Self)
-    recommends
-            self.wf(),
-            addrs.subset_of(self.observed),
-    // ensures out.wf()
-    {
-        Self{observed: self.observed.difference(addrs), ..self}
-    }
-
-    pub open spec(checked) fn unobserve_all(self) -> (out: Self)
-    recommends
-            self.wf(),
-    // ensures out.wf()
-    {
-        self.unobserve(self.observed)
+        Self{allocated: self.allocated + addrs, ..self}
     }
 
     pub open spec(checked) fn free(self, addrs: Set<Address>) -> (out: Self)
     recommends
             self.wf(),
-            addrs.subset_of(self.observed + self.reserved),  // ensures out.wf()
+            addrs.subset_of(self.allocated),  // ensures out.wf()
     {
-        Self{observed: self.observed.difference(addrs), reserved: self.reserved.difference(addrs), au: self.au}
+        Self{allocated: self.allocated.difference(addrs), au: self.au}
     }
 
-    pub open spec(checked) fn has_no_observed_pages(self) -> bool {
-        &&& self.observed == Set::<Address>::empty()    // type inference failure
-    }
-
-    pub open spec(checked) fn has_no_outstanding_refs(self) -> bool {
-        &&& self.reserved == Set::<Address>::empty()    // type inference failure
+    pub open spec(checked) fn has_no_allocated_pages(self) -> bool {
+        &&& self.allocated == Set::<Address>::empty()
     }
 
     pub open spec(checked) fn all_pages_allocated(self) -> bool {
         forall |addr: Address| #![auto] addr.wf() && addr.au == self.au 
-            ==> ( self.reserved.contains(addr) || self.observed.contains(addr) )
-        // &&& (self.reserved + self.observed).len() == page_count()
+            ==> self.allocated.contains(addr)
     }
 
     pub open spec(checked) fn all_pages_free(self) -> bool {
-        &&& self.has_no_observed_pages()
-        &&& self.has_no_outstanding_refs()
+        self.has_no_allocated_pages()
     }
 }
 
@@ -161,17 +86,11 @@ impl MiniAllocator {
         Self{allocs: new_allocs, ..self}
     }
 
-    // mini allocator's job is to allocate freespace and manage reserved pages
-    // as long as there are no reserved pages, it can be safely removed from the mini allocator
+    // Mini allocator tracks pages allocated out of each owned AU. An AU with no
+    // allocated pages can be removed from the mini allocator.
     pub open spec(checked) fn can_remove(self, au: AU) -> bool {
         &&& self.allocs.contains_key(au)
-        &&& self.allocs[au].has_no_outstanding_refs()
-    }
-
-    // a set of AUs that belongs to the frozen freeset
-    pub open spec(checked) fn not_observed_aus(self) -> Set<AU>
-    {
-        Set::new(|au| self.allocs.contains_key(au) && self.allocs[au].has_no_observed_pages())
+        &&& self.allocs[au].has_no_allocated_pages()
     }
 
     pub open spec(checked) fn can_allocate(self, addr: Address) -> bool
@@ -190,42 +109,50 @@ impl MiniAllocator {
         Self{ allocs: self.allocs.insert(addr.au, result), curr: new_curr }
     }
 
-    pub open spec(checked) fn observe(self, addr: Address) -> Self
-        recommends
+    pub proof fn allocate_allocated_aus(self, addr: Address)
+        requires
             self.wf(),
-            self.allocs.contains_key(addr.au),
-            self.allocs[addr.au].reserved.contains(addr),
+            self.can_allocate(addr),
+        ensures
+            self.allocate(addr).allocated_aus() =~= self.allocated_aus().insert(addr.au),
     {
-        let result = self.allocs[addr.au].observe(set![addr]);
-        Self{ allocs: self.allocs.insert(addr.au, result), ..self }
+        let post = self.allocate(addr);
+        assert forall |au: AU| #[trigger] post.allocated_aus().contains(au)
+            <==> self.allocated_aus().insert(addr.au).contains(au) by {
+            if au == addr.au {
+                assert(post.allocs[au].allocated.contains(addr));
+                assert(post.allocs[au].allocated != Set::<Address>::empty());
+            } else {
+                assert(post.allocs.contains_key(au) == self.allocs.contains_key(au));
+                if post.allocs.contains_key(au) {
+                    assert(post.allocs[au] == self.allocs[au]);
+                }
+            }
+        }
     }
 
-    pub proof fn allocate_observe_can_allocate_subset(self, allocated: Address, addr: Address)
+    pub proof fn allocate_can_allocate_subset(self, allocated: Address, addr: Address)
         requires
             self.wf(),
             self.can_allocate(allocated),
-            self.allocate(allocated).observe(allocated).can_allocate(addr),
+            self.allocate(allocated).can_allocate(addr),
         ensures
             self.can_allocate(addr),
     {
-        let after_allocate = self.allocate(allocated);
-        let after = after_allocate.observe(allocated);
+        let after = self.allocate(allocated);
         assert(after.allocs.contains_key(addr.au));
         if addr.au == allocated.au {
             assert(self.allocs.contains_key(addr.au));
             assert(after.allocs[addr.au]
-                == self.allocs[addr.au].reserve(set![allocated]).observe(set![allocated]));
+                == self.allocs[addr.au].reserve(set![allocated]));
             assert(after.allocs[addr.au].is_free_addr(addr));
             assert(addr.wf());
             assert(addr.au == self.allocs[addr.au].au);
-            assert(!after.allocs[addr.au].observed.contains(addr));
-            assert(!after.allocs[addr.au].reserved.contains(addr));
-            assert(!self.allocs[addr.au].observed.contains(addr));
-            assert(!self.allocs[addr.au].reserved.contains(addr));
+            assert(!after.allocs[addr.au].allocated.contains(addr));
+            assert(!self.allocs[addr.au].allocated.contains(addr));
             assert(self.allocs[addr.au].is_free_addr(addr));
         } else {
-            assert(after_allocate.allocs[addr.au] == self.allocs[addr.au]);
-            assert(after.allocs[addr.au] == after_allocate.allocs[addr.au]);
+            assert(after.allocs[addr.au] == self.allocs[addr.au]);
             assert(self.allocs.contains_key(addr.au));
             assert(after.allocs[addr.au].is_free_addr(addr));
             assert(self.allocs[addr.au].is_free_addr(addr));
@@ -246,6 +173,24 @@ impl MiniAllocator {
                         { None } else { self.curr };
 
         Self{allocs: new_allocs, curr: new_curr}
+    }
+
+    pub proof fn prune_allocated_aus_empty(self)
+        requires
+            self.wf(),
+        ensures
+            self.prune(self.allocated_aus()).allocated_aus() =~= Set::<AU>::empty(),
+    {
+        let post = self.prune(self.allocated_aus());
+        assert forall |au: AU| #[trigger] post.allocated_aus().contains(au)
+            implies false by {
+            assert(post.allocs.contains_key(au));
+            assert(self.allocs.contains_key(au));
+            assert(post.allocs[au] == self.allocs[au]);
+            assert(!post.allocs[au].has_no_allocated_pages());
+            assert(self.allocated_aus().contains(au));
+            assert(!post.allocs.contains_key(au));
+        }
     }
 
     pub proof fn prune_preserves_wf(self, aus: Set<AU>)
@@ -275,15 +220,15 @@ impl MiniAllocator {
         assert(post.wf());
     }
 
-    pub open spec fn page_is_reserved(self, addr: Address) -> bool
+    pub open spec fn page_is_allocated(self, addr: Address) -> bool
     {
         &&& self.allocs.contains_key(addr.au)
-        &&& self.allocs[addr.au].reserved.contains(addr)
+        &&& self.allocs[addr.au].allocated.contains(addr)
     }
 
-    pub open spec fn reserved_aus(self) -> Set<AU>
+    pub open spec fn allocated_aus(self) -> Set<AU>
     {
-        Set::new(|au| self.allocs.contains_key(au) && !self.allocs[au].has_no_outstanding_refs())
+        Set::new(|au| self.allocs.contains_key(au) && !self.allocs[au].has_no_allocated_pages())
     }
 
     pub open spec fn removable_aus(self) -> Set<AU>

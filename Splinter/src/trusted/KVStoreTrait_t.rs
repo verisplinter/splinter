@@ -12,6 +12,7 @@ use crate::trusted::KVStoreTokenized_t::KVStoreTokenized;
 use crate::trusted::SystemModel_t::SystemModel;
 use crate::spec::MapSpec_t::ID;
 use crate::spec::AsyncDisk_t::DiskResponse;
+use crate::spec::ImplDisk_t::IDiskGeometry;
 use crate::implementation::MultisetMapRelation_v::multiset_map_singleton;
 
 verus!{
@@ -27,7 +28,14 @@ pub trait KVStoreTrait : Sized{
     // NOTE: this must return the instance of the KVStoreTokenized, not enforced yet
     spec fn instance_id(self) -> InstanceId;
 
-    fn new() -> (out: Self)
+    fn configured_disk_geometry() -> (out: IDiskGeometry)
+        ensures
+            1 < out.physical_au_count as nat,
+            0 < out.pages_per_au as nat,
+    ;
+
+    fn new(geometry: IDiskGeometry) -> (out: Self)
+        requires geometry.wf()
         ensures out.wf_init()
     ;
 

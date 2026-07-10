@@ -291,6 +291,40 @@ impl MsgHistory {
     }
   }
 
+  pub proof fn maybe_discard_old_is_subseq(self, lsn: LSN)
+    requires
+      self.wf(),
+      lsn <= self.seq_end,
+    ensures ({
+      let sub = self.maybe_discard_old(lsn);
+      &&& sub.wf()
+      &&& self.includes_subseq(sub)
+    }),
+  {
+    let sub = self.maybe_discard_old(lsn);
+    if self.seq_start <= lsn {
+      assert(self.can_discard_to(lsn));
+      assert(sub == self.discard_old(lsn));
+      assert(sub.seq_start == lsn);
+      assert(sub.seq_end == self.seq_end);
+      assert(sub.wf()) by {
+        assert(sub.seq_start <= sub.seq_end);
+        assert forall |k| #![auto] sub.msgs.dom().contains(k) <==> sub.contains(k) by {};
+      }
+      assert(self.includes_subseq(sub)) by {
+        assert(self.seq_start <= sub.seq_start);
+        assert(sub.seq_end <= self.seq_end);
+        assert forall |k| #![auto] sub.contains(k) implies self.contains(k) && self.msgs[k] === sub.msgs[k] by {};
+      }
+    } else {
+      assert(sub == self);
+      assert(sub.wf());
+      assert(self.includes_subseq(sub)) by {
+        assert forall |k| #![auto] sub.contains(k) implies self.contains(k) && self.msgs[k] === sub.msgs[k] by {};
+      }
+    }
+  }
+
   // TODO(tenzin): this isn't really needed
   pub proof fn discard_order_is_commutative(self, start: LSN, end: LSN)
     requires
