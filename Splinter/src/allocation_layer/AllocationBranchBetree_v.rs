@@ -1623,7 +1623,8 @@ impl LinkedBranch<Summary> {
         forall |addr| #[trigger] (other.disk_view.representation()-self.disk_view.representation()).contains(addr)
             ==> !domain_bound.contains(addr.au)
     ensures
-        other.valid_sealed_branch()
+        other.valid_sealed_branch(),
+        other.i() == self.i(),
     {
         Refinement_v::lemma_reachable_addrs_subset(self, self.the_ranking());
 
@@ -1659,6 +1660,8 @@ impl LinkedBranch<Summary> {
                 assert((other.disk_view.representation()-self.disk_view.representation()).contains(addr)); // trigger
             }
         }
+
+        assert(other.i() == self.i());
 
     }
 

@@ -815,9 +815,10 @@ impl Path<SimpleBuffer>{
                 let result_child = result.child_at_idx(r as nat);
                 subtree.agreeable_disks_same_reachable_betree_addrs(result_child, ranking);
                 subtree.reachable_betree_addrs_ignore_ranking(subtree.the_ranking(), ranking);
-                assume(result_child.wf()); // TODO(jonh): repair proof decay with verus version evolution
-                assume(result_child.valid_ranking(result_child.the_ranking())); // TODO(jonh): repair proof decay with verus version evolution
-                assume(result_child.valid_ranking(ranking)); // TODO(jonh): repair proof decay with verus version evolution
+                result.child_at_idx_acyclic(r as nat);
+                assert(result_child.wf());
+                assert(result_child.valid_ranking(result_child.the_ranking()));
+                assert(result_child.valid_ranking(ranking));
                 result_child.reachable_betree_addrs_ignore_ranking(result_child.the_ranking(), ranking);
                 subtree.same_reachable_betree_addrs_implies_same_buffer_addrs(result_child);
                 result.child_at_idx_reachable_addrs_ensures(r as nat);
@@ -831,7 +832,9 @@ impl Path<SimpleBuffer>{
             result.i_children_lemma();
             self.linked.i_children_lemma();
 
-            assume(self.linked.dv.is_sub_disk(result.dv)); // TODO(jonh): repair proof decay with verus version evolution
+            assert(self.linked.dv.entries <= replacement.dv.entries);
+            assert(replacement.dv.entries <= result.dv.entries);
+            assert(self.linked.dv.entries <= result.dv.entries);
 
             assert forall |i| 0 <= i < result.i()->children.len()
             implies #[trigger] result.i()->children[i] == i_result->children[i]

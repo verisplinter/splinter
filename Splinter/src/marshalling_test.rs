@@ -247,7 +247,8 @@ exec fn test_journal_snapshot_marshalling() -> (Vec<u8>, usize)
 {
     let snapshot = IJournalSnapshot { 
         boundary_lsn: 12345, 
-        freshest_rec: Some(IAddress { au: 42, page: 7 })
+        freshest_rec: Some(IAddress { au: 42, page: 7 }),
+        first: 0,
     };
     let fmt = IJournalSnapshotFormat::new();
     
@@ -262,7 +263,8 @@ exec fn test_journal_snapshot_marshalling_none() -> (Vec<u8>, usize)
 {
     let snapshot = IJournalSnapshot { 
         boundary_lsn: 99999, 
-        freshest_rec: None
+        freshest_rec: None,
+        first: 0,
     };
     let fmt = IJournalSnapshotFormat::new();
     

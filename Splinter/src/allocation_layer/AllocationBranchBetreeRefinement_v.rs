@@ -8,14 +8,14 @@ use vstd::{map::*, seq_lib::*, set_lib::*, multiset::*};
 use vstd::map_lib::lemma_values_finite;
 
 use crate::spec::KeyType_t::Key;
-use crate::disk::GenericDisk_v::{Address, Ranking, to_aus_additive, to_aus_domain};
+use crate::disk::GenericDisk_v::{Address, Ranking, addrs_closed, to_aus_additive, to_aus_domain};
 use crate::betree::Buffer_v::{Buffer, SimpleBuffer};
 use crate::betree::BufferDisk_v::BufferDisk;
 use crate::betree::SplitRequest_v::SplitRequest;
 use crate::betree::LinkedSeq_v::LinkedSeq;
 use crate::betree::LinkedBetree_v::{Addrs, BetreeNode, LinkedBetree, LinkedBetreeVars, Path, PathAddrs, QueryReceipt, QueryReceiptLine, SplitAddrs, TwoAddrs};
 use crate::betree::LinkedBranch_v::Refinement_v;
-use crate::betree::Utils_v::lemma_union_set_of_sets_subset;
+use crate::betree::Utils_v::{lemma_subset_union_seq_of_sets, lemma_union_set_of_sets_subset};
 use crate::betree::PivotBranchRefinement_v;
 use crate::allocation_layer::Likes_v::{Likes, restrict_domain_au, restrict_domain_au_ensures, to_au_likes, to_au_likes_domain, to_au_likes_singleton};
 use crate::allocation_layer::LikesBetree_v::{Likeable, LikesBetree, compact_add_buffers, split_add_buffers, split_discard_betree};
@@ -79,6 +79,34 @@ impl Path<BranchNode> {
     {
         if self.depth > 0 {
             self.subpath().i_substitute_ensures(replacement, path_addrs.subrange(1, path_addrs.len() as int));
+        }
+    }
+}
+
+impl<T> Path<T> {
+    proof fn substitute_same_dv_root(
+        self,
+        left: LinkedBetree<T>,
+        right: LinkedBetree<T>,
+        path_addrs: PathAddrs,
+    )
+        requires
+            self.depth == path_addrs.len(),
+            left.dv == right.dv,
+            left.root == right.root,
+        ensures
+            self.substitute(left, path_addrs).dv
+                == self.substitute(right, path_addrs).dv,
+            self.substitute(left, path_addrs).root
+                == self.substitute(right, path_addrs).root,
+        decreases self.depth,
+    {
+        if self.depth > 0 {
+            self.subpath().substitute_same_dv_root(
+                left,
+                right,
+                path_addrs.subrange(1, path_addrs.len() as int),
+            );
         }
     }
 }
@@ -584,9 +612,6 @@ impl AllocationBranchBetree::State {
 
         assert(new_branch.inv());
         post.inv_implies_wf_branch_dv();
-        
-        // 
-        // new_branch.valid_subdisk_preserves_valid_sealed_branch(bdv.get_branch(new_branch.root), new_branch.get_summary());
 
         // Prove sub-disk relation: new_branch entries are retained in the post buffer disk.
         assert(new_branch.disk_view.is_sub_disk(bdv.to_branch_disk())) by {
@@ -654,65 +679,398 @@ impl AllocationBranchBetree::State {
                 assert(bdv.entries[addr] == full_buffer_dv[addr]);
                 assert(full_buffer_dv[addr] == new_branch.disk_view.entries[addr]);
             }
-        } // meow
-        // bdv is the larger new_branch d
+        }
 
-        assume(bdv.get_branch(new_branch.root).inv());
-        assume(bdv.get_branch(new_branch.root).i() == new_branch.i());
+        let embedded_branch = bdv.get_branch(new_branch.root);
+        let new_summary = new_branch.get_summary();
+        let pre_summary_aus = summary_aus(pre.branch_summary);
+        let extra_entries = embedded_branch.disk_view.representation()
+            - new_branch.disk_view.representation();
+
+        assert(new_branch.full_repr() <= embedded_branch.disk_view.representation()) by {
+            assert(new_branch.full_repr() == new_branch.disk_view.representation());
+            assert(new_branch.disk_view.is_sub_disk(embedded_branch.disk_view));
+        }
+        assert(addrs_closed(new_branch.disk_view.entries.dom(), new_summary));
+        assert forall |addr: Address| #[trigger] extra_entries.contains(addr)
+            implies !new_summary.contains(addr.au) by {
+            if new_summary.contains(addr.au) {
+                assert(bdv.entries.contains_key(addr));
+                assert(!new_branch.disk_view.entries.contains_key(addr));
+
+                let full_buffer_dv = pre_bdv.entries.union_prefer_right(
+                    new_branch.disk_view.entries,
+                );
+                assert(full_buffer_dv.contains_key(addr));
+                assert(pre_bdv.entries.contains_key(addr));
+                assert(pre_summary_aus.contains(addr.au));
+
+                assert(new_summary <= pre.wip_branches[branch_idx].mini_allocator.all_aus());
+                AllocationBranch::alloc_aus_ensures(pre.wip_branches, branch_idx);
+                assert(pre.wip_branches[branch_idx].mini_allocator.all_aus()
+                    <= pre.branch_allocator_aus());
+                assert(pre_summary_aus.disjoint(pre.branch_allocator_aus()));
+                assert(false);
+            }
+        }
+        new_branch.valid_subdisk_preserves_valid_sealed_branch(
+            embedded_branch,
+            new_summary,
+        );
+        assert(embedded_branch.inv());
+        assert(embedded_branch.i() == new_branch.i());
         
         assert forall |k| true 
         implies (buffer.linked_contains(bdv.i(), new_branch.root, k) <==> 
             #[trigger] pre_bdv.i().valid_compact_key_domain(path.i().target().root(), start, end, k))
         by {
-            if buffer.linked_contains(bdv.i(), new_branch.root, k) {
+            let node = path.target().root();
+            let compact_slice = node.buffers.slice(start as int, end as int);
+            let compact_ofs_map = node.make_offset_map().decrement(start);
+            let compactor_roots = CompactorInput::input_roots(pre.compactors);
+            let roots_seq = Seq::new(
+                pre.compactors.len(),
+                |i| pre.compactors[i].input_buffers.addrs.to_set(),
+            );
 
-                
-                // new_branch.buffer_contains();
-                // proof fn buffer_contains_refines(self, addr: Address, k: Key)
+            assert(pre.compactors[input_idx].input_buffers == compact_slice);
+            lemma_subset_union_seq_of_sets(roots_seq, input_idx);
+            assert(compact_slice.addrs.to_set() <= compactor_roots);
 
+            assert forall |idx: int| true implies
+                (pre_bdv.key_in_buffer_filtered(compact_slice, compact_ofs_map, 0, k, idx)
+                    <==> pre_bdv.i().key_in_buffer_filtered(
+                        compact_slice,
+                        compact_ofs_map,
+                        0,
+                        k,
+                        idx,
+                    )) by {
+                if pre_bdv.key_in_buffer_filtered(
+                    compact_slice,
+                    compact_ofs_map,
+                    0,
+                    k,
+                    idx,
+                ) || pre_bdv.i().key_in_buffer_filtered(
+                    compact_slice,
+                    compact_ofs_map,
+                    0,
+                    k,
+                    idx,
+                ) {
+                    assert(0 <= idx < compact_slice.len());
+                    let addr = compact_slice[idx];
+                    assert(compact_slice.addrs.to_set().contains(addr));
+                    assert(compactor_roots.contains(addr));
+                    pre_bdv.sealed_branch_roots_contains(
+                        pre.betree.linked.transitive_likes().1.dom() + compactor_roots,
+                        addr,
+                    );
+                    pre_bdv.buffer_contains_refines(addr, k);
+                }
             }
 
-            assume(false);
-            // pub open spec(checked) fn valid_compact_key_domain(self, node: BetreeNode, start: nat, end: nat, k: Key) -> bool
+            assert(pre_bdv.valid_compact_key_domain(node, start, end, k)
+                <==> pre_bdv.i().valid_compact_key_domain(node, start, end, k)) by {
+                if pre_bdv.valid_compact_key_domain(node, start, end, k) {
+                    let idx = choose |idx: int|
+                        #[trigger] pre_bdv.key_in_buffer_filtered(
+                            compact_slice,
+                            compact_ofs_map,
+                            0,
+                            k,
+                            idx,
+                        );
+                    assert(pre_bdv.i().key_in_buffer_filtered(
+                        compact_slice,
+                        compact_ofs_map,
+                        0,
+                        k,
+                        idx,
+                    ));
+                }
+                if pre_bdv.i().valid_compact_key_domain(node, start, end, k) {
+                    let idx = choose |idx: int|
+                        #[trigger] pre_bdv.i().key_in_buffer_filtered(
+                            compact_slice,
+                            compact_ofs_map,
+                            0,
+                            k,
+                            idx,
+                        );
+                    assert(pre_bdv.key_in_buffer_filtered(
+                        compact_slice,
+                        compact_ofs_map,
+                        0,
+                        k,
+                        idx,
+                    ));
+                }
+            }
+            assert(path.i().target().root() == node);
+
+            bdv.buffer_contains_refines(new_branch.root, k);
+            assert(bdv.i().entries[new_branch.root] == embedded_branch.i().i());
+            assert(bdv.i().entries[new_branch.root] == buffer);
+            assert(buffer.linked_contains(bdv.i(), new_branch.root, k)
+                <==> bdv.i().buffer_contains(new_branch.root, k));
+            assert(new_branch.root().linked_contains(bdv, new_branch.root, k)
+                <==> bdv.buffer_contains(new_branch.root, k));
 
         }
 
         assert(path.i().target().compact_buffer_valid_domain(start, end, buffer, bdv.i(), new_branch.root));
-
-        // requires self.get_branch(addr).inv()
-        // ensures self.buffer_contains(addr, k) == self.i().buffer_contains(addr, k)
-        
         assert(path.target().compact_buffer_valid_range(start, end, new_branch.root(), bdv, new_branch.root));
-        assume(path.i().target().compact_buffer_valid_range(start, end, buffer, bdv.i(), new_branch.root));
+        assert(path.i().target().compact_buffer_valid_range(
+            start,
+            end,
+            buffer,
+            bdv.i(),
+            new_branch.root,
+        )) by {
+            assert forall |k| buffer.linked_contains(bdv.i(), new_branch.root, k)
+                implies #[trigger] buffer.linked_query(bdv.i(), new_branch.root, k)
+                    == pre_bdv.i().compact_key_value(
+                        path.i().target().root(),
+                        start,
+                        end,
+                        k,
+                    ) by {
+                let node = path.target().root();
+                let compact_slice = node.buffers.slice(start as int, end as int);
+                let compactor_roots = CompactorInput::input_roots(pre.compactors);
+                let roots_seq = Seq::new(
+                    pre.compactors.len(),
+                    |i| pre.compactors[i].input_buffers.addrs.to_set(),
+                );
+                assert(pre.compactors[input_idx].input_buffers == compact_slice);
+                lemma_subset_union_seq_of_sets(roots_seq, input_idx);
+                assert(compact_slice.addrs.to_set() <= compactor_roots);
+                assert forall |idx: int| 0 <= idx < compact_slice.len()
+                    implies pre_bdv.get_branch(#[trigger] compact_slice[idx]).inv() by {
+                    let addr = compact_slice[idx];
+                    assert(compact_slice.addrs.to_set().contains(addr));
+                    assert(compactor_roots.contains(addr));
+                    pre_bdv.sealed_branch_roots_contains(
+                        pre.betree.linked.transitive_likes().1.dom() + compactor_roots,
+                        addr,
+                    );
+                }
+
+                let from = if node.flushed_ofs(k) <= start {
+                    0
+                } else {
+                    node.flushed_ofs(k) - start
+                };
+                assert(pre_bdv.i().valid_compact_key_domain(node, start, end, k));
+                assert(node.flushed_ofs(k) <= end);
+                assert(compact_slice.len() == end - start);
+                assert(from <= compact_slice.len());
+                pre_bdv.query_from_refines(compact_slice, k, from as int);
+                bdv.query_refines(new_branch.root, k);
+
+                assert(bdv.i().entries[new_branch.root] == buffer);
+                assert(bdv.i().buffer_contains(new_branch.root, k));
+                bdv.buffer_contains_refines(new_branch.root, k);
+                assert(bdv.buffer_contains(new_branch.root, k));
+                assert(new_branch.root().linked_contains(bdv, new_branch.root, k));
+                assert(new_branch.root().linked_query(bdv, new_branch.root, k)
+                    == pre_bdv.compact_key_value(node, start, end, k));
+                assert(bdv.query(new_branch.root, k)
+                    == new_branch.root().linked_query(bdv, new_branch.root, k));
+                assert(bdv.i().query(new_branch.root, k)
+                    == buffer.linked_query(bdv.i(), new_branch.root, k));
+                assert(pre_bdv.compact_key_value(node, start, end, k)
+                    == pre_bdv.query_from(compact_slice, k, from as int));
+                assert(pre_bdv.i().compact_key_value(node, start, end, k)
+                    == pre_bdv.i().query_from(compact_slice, k, from as int));
+                assert(path.i().target().root() == node);
+            }
+        }
 
         assert(path.i().target().can_compact(start, end, buffer, bdv.i(), linked_new_addrs));
 
-        assume(false);
-        // missing valid_view
+        let compacted = LinkedBetreeVars::State::post_compact(
+            path,
+            start,
+            end,
+            new_branch.root(),
+            linked_new_addrs,
+            path_addrs,
+        );
+        let i_compacted = LinkedBetreeVars::State::post_compact(
+            path.i(),
+            start,
+            end,
+            buffer,
+            linked_new_addrs,
+            path_addrs,
+        );
+        let full_buffer_dv = BufferDisk{
+            entries: pre_bdv.entries.union_prefer_right(new_branch.disk_view.entries),
+        };
 
-        assert(LinkedBetreeVars::State::internal_compact(pre.i().betree, new_betree.i(), lbl.i()->linked_lbl, 
+        pre.inv_implies_wf_branch_dv();
+        assert(new_branch.disk_view.wf());
+        assert(full_buffer_dv.to_branch_disk().wf()) by {
+            assert forall |addr| #[trigger] full_buffer_dv.entries.contains_key(addr)
+                implies new_branch.full_repr().contains(addr)
+                    || pre_bdv.entries.contains_key(addr) by {
+                if new_branch.disk_view.entries.contains_key(addr) {
+                    assert(new_branch.disk_view.representation().contains(addr));
+                    assert(new_branch.full_repr() == new_branch.disk_view.representation());
+                } else {
+                    assert(pre_bdv.entries.contains_key(addr));
+                }
+            }
+        }
+        let full_embedded_branch = full_buffer_dv.get_branch(new_branch.root);
+        let full_extra_entries = full_embedded_branch.disk_view.representation()
+            - new_branch.disk_view.representation();
+        assert forall |addr: Address| #[trigger] full_extra_entries.contains(addr)
+            implies !new_summary.contains(addr.au) by {
+            if new_summary.contains(addr.au) {
+                assert(full_buffer_dv.entries.contains_key(addr));
+                assert(!new_branch.disk_view.entries.contains_key(addr));
+                assert(pre_bdv.entries.contains_key(addr));
+                assert(pre_summary_aus.contains(addr.au));
+                assert(new_summary <= pre.wip_branches[branch_idx].mini_allocator.all_aus());
+                AllocationBranch::alloc_aus_ensures(pre.wip_branches, branch_idx);
+                assert(pre.wip_branches[branch_idx].mini_allocator.all_aus()
+                    <= pre.branch_allocator_aus());
+                assert(pre_summary_aus.disjoint(pre.branch_allocator_aus()));
+                assert(false);
+            }
+        }
+        new_branch.valid_subdisk_preserves_valid_sealed_branch(
+            full_embedded_branch,
+            new_summary,
+        );
+        assert(full_embedded_branch.i() == new_branch.i());
+        assert(pre_bdv.is_sub_disk(full_buffer_dv));
+        assert(bdv.is_sub_disk(full_buffer_dv));
+        pre_bdv.i_preserves_sub_disk(full_buffer_dv);
+        bdv.i_preserves_sub_disk(full_buffer_dv);
+        assert(pre_bdv.i().entries <= full_buffer_dv.i().entries);
+        assert(bdv.i().entries <= full_buffer_dv.i().entries);
+
+        assert(i_compacted.buffer_dv
+            == pre_bdv.i().modify_disk(new_branch.root, buffer));
+        assert(i_compacted.buffer_dv.is_sub_disk(full_buffer_dv.i())) by {
+            assert forall |addr| i_compacted.buffer_dv.entries.contains_key(addr)
+                implies i_compacted.buffer_dv.entries[addr]
+                    == #[trigger] full_buffer_dv.i().entries[addr] by {
+                if addr == new_branch.root {
+                    assert(full_embedded_branch.i() == new_branch.i());
+                    assert(full_buffer_dv.i().entries[addr] == new_branch.i().i());
+                } else {
+                    assert(pre_bdv.i().entries.contains_key(addr));
+                    assert(full_buffer_dv.i().entries.contains_key(addr));
+                    assert(pre_bdv.i().entries[addr] == full_buffer_dv.i().entries[addr]);
+                }
+            }
+        }
+        assert(bdv.i().agrees_with(i_compacted.buffer_dv)) by {
+            assert forall |addr| bdv.i().entries.contains_key(addr)
+                && i_compacted.buffer_dv.entries.contains_key(addr)
+                implies bdv.i().entries[addr]
+                    == #[trigger] i_compacted.buffer_dv.entries[addr] by {
+                assert(full_buffer_dv.i().entries.contains_key(addr));
+                assert(bdv.i().entries[addr] == full_buffer_dv.i().entries[addr]);
+                assert(i_compacted.buffer_dv.entries[addr]
+                    == full_buffer_dv.i().entries[addr]);
+            }
+        }
+
+        assert(compacted.valid_view(new_betree.linked));
+        pre.betree.post_compact_ensures(
+            path,
+            start,
+            end,
+            new_branch.root(),
+            linked_new_addrs,
+            path_addrs,
+        );
+        path.i_substitute_ensures(
+            path.target().compact(start, end, new_branch.root(), linked_new_addrs),
+            path_addrs,
+        );
+        let native_replacement = path.target().compact(
+            start,
+            end,
+            new_branch.root(),
+            linked_new_addrs,
+        ).i();
+        let interpreted_replacement = path.i().target().compact(
+            start,
+            end,
+            buffer,
+            linked_new_addrs,
+        );
+        assert(native_replacement.dv == interpreted_replacement.dv);
+        assert(native_replacement.root == interpreted_replacement.root);
+        path.i().substitute_same_dv_root(
+            native_replacement,
+            interpreted_replacement,
+            path_addrs,
+        );
+        assert(i_compacted.dv == compacted.dv);
+        assert(i_compacted.root == compacted.root);
+        post.betree.linked.i_valid();
+        assert(i_compacted.valid_view(new_betree.i().linked));
+
+        assert(LinkedBetreeVars::State::internal_compact(pre.i().betree, new_betree.i(), lbl.i()->linked_lbl,
             new_betree.i().linked, path.i(), start, end, new_branch.i().i(), linked_new_addrs, path_addrs));
 
+        let (_, new_buffer_aus) = AllocationBetree::State::internal_compact_complete_au_likes(
+            path.i(),
+            start,
+            end,
+            linked_new_addrs,
+            path_addrs,
+            pre.i().betree_aus,
+            pre.i().buffer_aus,
+        );
+        post.inv_branch_summary_ensures();
+        assert(new_buffer_aus == post.branch_aus);
+        assert(new_buffer_aus.dom() <= summary_aus(post.branch_summary));
+        let post_buffer_domain = restrict_domain_au(
+            full_buffer_dv.entries,
+            summary_aus(post.branch_summary),
+        );
+        assert(restrict_domain_au(i_compacted.buffer_dv.entries, new_buffer_aus.dom())
+            <= bdv.i().repr()) by {
+            assert forall |addr| #[trigger] restrict_domain_au(
+                i_compacted.buffer_dv.entries,
+                new_buffer_aus.dom(),
+            ).contains(addr) implies bdv.i().repr().contains(addr) by {
+                assert(i_compacted.buffer_dv.entries.contains_key(addr));
+                assert(full_buffer_dv.i().entries.contains_key(addr));
+                assert(full_buffer_dv.entries.contains_key(addr));
+                assert(new_buffer_aus.dom().contains(addr.au));
+                assert(summary_aus(post.branch_summary).contains(addr.au));
+                assert(post_buffer_domain.contains(addr));
+                assert(bdv.entries.contains_key(addr));
+                assert(bdv.i().entries.contains_key(addr));
+            }
+        }
 
-
-        assume(false);
-//         reveal(AllocationBetree::State::next_by);
-
-//         let (betree_likes, buffer_likes) = pre.betree.linked.transitive_likes();
-//         let compacted = LinkedBetreeVars::State::post_compact(path, start, end, compacted_buffer, new_addrs, path_addrs);
-
-//         pre.betree.internal_compact_complete_aus_ensures(new_betree, path, start, end, compacted_buffer, new_addrs, path_addrs);
-//         LikesBetree::State::post_compact_likes_ensures(pre.betree, new_betree, path, start, end, compacted_buffer, new_addrs, path_addrs);
-        
-//         let (compacted_betree_likes, compacted_buffer_likes) = compacted.transitive_likes();
-//         compacted.valid_view_ensures(new_betree.linked);
-//         compacted.valid_view_implies_same_transitive_likes(post.betree.linked);
-
-//         pre.betree.post_compact_ensures(path, start, end, compacted_buffer, new_addrs, path_addrs);
-//         compacted.tree_likes_domain(compacted.the_ranking());
-//         compacted.buffer_likes_domain(compacted_betree_likes);
-//         restrict_domain_au_ensures(compacted_buffer_likes, compacted.buffer_dv.entries);
-//         assert(new_betree.linked.valid_buffer_dv());
+        reveal(AllocationBetree::State::next_by);
+        assert(AllocationBetree::State::next_by(
+            pre.i(),
+            post.i(),
+            lbl.i(),
+            AllocationBetree::Step::internal_compact_complete(
+                new_betree.i(),
+                path.i(),
+                start,
+                end,
+                buffer,
+                linked_new_addrs,
+                path_addrs,
+            ),
+        ));
     }
 
     proof fn next_refines(pre: Self, post: Self, lbl: AllocationBranchBetree::Label) 
@@ -770,8 +1128,19 @@ impl AllocationBranchBetree::State {
                 assert(AllocationBetree::State::next_by(pre.i(), post.i(), lbl.i(), AllocationBetree::Step::internal_buffer_noop(new_betree.i()))); // trigger
             }
             AllocationBranchBetree::Step::internal_compact_complete(input_idx, new_betree, path, start, end, compacted_buffer, new_addrs, path_addrs) => {
-                assume(false);
-                // Self::internal_compact_complete_inv_refines(pre, post, lbl, new_betree, input_idx, path, start, end, compacted_buffer, new_addrs, path_addrs);
+                Self::internal_compact_complete_inv_refines(
+                    pre,
+                    post,
+                    lbl,
+                    input_idx,
+                    new_betree,
+                    path,
+                    start,
+                    end,
+                    compacted_buffer,
+                    new_addrs,
+                    path_addrs,
+                );
             }
             _ => { assert(false); }
         }
