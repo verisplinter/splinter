@@ -1,7 +1,6 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
-pub mod AllocationCrashAwareJournalRefinement_v;
-pub mod AllocationCrashAwareJournal_v;
+pub mod AllocationJournalAbstractRefinement_v;
 pub mod AllocationJournalRefinement_v;
 pub mod AllocationJournal_v;
 pub mod AllocationBetree_v;

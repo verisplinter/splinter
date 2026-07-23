@@ -2198,6 +2198,7 @@ impl CachingDiskJournal::State {
             CachingDiskJournal::State::put(self, post, lbl, new_journal),
         ensures
             AllocationJournal::State::next(self.i(), post.i(), lbl.i(self)),
+            AllocationJournal::State::put(self.i(), post.i(), lbl.i(self)),
     {
         reveal(CachingDiskJournal::State::put);
         reveal(CachedJournal::State::next);
@@ -2229,6 +2230,9 @@ impl CachingDiskJournal::State {
             i_lbl,
             AllocationJournal::Step::put(),
         )) by {
+            reveal(AllocationJournal::State::next_by);
+        }
+        assert(AllocationJournal::State::put(self.i(), post.i(), i_lbl)) by {
             reveal(AllocationJournal::State::next_by);
         }
         reveal(AllocationJournal::State::next);
@@ -2366,6 +2370,7 @@ impl CachingDiskJournal::State {
             CachingDiskJournal::State::freeze_for_commit(self, post, lbl, reads),
         ensures
             AllocationJournal::State::next(self.i(), post.i(), lbl.i(self)),
+            AllocationJournal::State::freeze_for_commit(self.i(), post.i(), lbl.i(self)),
     {
         reveal(CachingDiskJournal::State::freeze_for_commit);
         reveal(CachedJournal::State::next);
@@ -2427,6 +2432,13 @@ impl CachingDiskJournal::State {
             post.i(),
             lbl.i(self),
             AllocationJournal::Step::freeze_for_commit(),
+        )) by {
+            reveal(AllocationJournal::State::next_by);
+        }
+        assert(AllocationJournal::State::freeze_for_commit(
+            self.i(),
+            post.i(),
+            lbl.i(self),
         )) by {
             reveal(AllocationJournal::State::next_by);
         }
@@ -5563,6 +5575,66 @@ impl CachingDiskJournal::State {
                 },
             }
         }
+    }
+
+    pub proof fn put_next_refines_transition(
+        self,
+        post: Self,
+        lbl: CachingDiskJournal::Label,
+    )
+        requires
+            self.refinement_inv(),
+            lbl is Put,
+            CachingDiskJournal::State::next(self, post, lbl),
+        ensures
+            post.refinement_inv(),
+            AllocationJournal::State::put(self.i(), post.i(), lbl.i(self)),
+    {
+        CachingDiskJournal::State::inv_next(self, post, lbl);
+        reveal(CachingDiskJournal::State::next);
+        reveal(CachingDiskJournal::State::next_by);
+        let step = choose |step: CachingDiskJournal::Step| #![auto]
+            CachingDiskJournal::State::next_by(self, post, lbl, step);
+        match step {
+            CachingDiskJournal::Step::put(new_journal) => {
+                self.put_refines(post, lbl, new_journal);
+                reveal(AllocationJournal::State::next_by);
+            },
+            _ => {
+                assert(false);
+            },
+        }
+        self.next_refines(post, lbl);
+    }
+
+    pub proof fn freeze_for_commit_next_refines_transition(
+        self,
+        post: Self,
+        lbl: CachingDiskJournal::Label,
+    )
+        requires
+            self.refinement_inv(),
+            lbl is FreezeForCommit,
+            CachingDiskJournal::State::next(self, post, lbl),
+        ensures
+            post.refinement_inv(),
+            AllocationJournal::State::freeze_for_commit(self.i(), post.i(), lbl.i(self)),
+    {
+        CachingDiskJournal::State::inv_next(self, post, lbl);
+        reveal(CachingDiskJournal::State::next);
+        reveal(CachingDiskJournal::State::next_by);
+        let step = choose |step: CachingDiskJournal::Step| #![auto]
+            CachingDiskJournal::State::next_by(self, post, lbl, step);
+        match step {
+            CachingDiskJournal::Step::freeze_for_commit(reads) => {
+                self.freeze_for_commit_refines(post, lbl, reads);
+                reveal(AllocationJournal::State::next_by);
+            },
+            _ => {
+                assert(false);
+            },
+        }
+        self.next_refines(post, lbl);
     }
 
     pub proof fn next_refines(self, post: Self, lbl: CachingDiskJournal::Label)

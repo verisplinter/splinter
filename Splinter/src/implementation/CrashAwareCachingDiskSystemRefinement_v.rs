@@ -78,12 +78,8 @@ proof fn journal_i_abstract_ephemeral_wf(journal: CrashAwareCachingDiskJournal::
         journal.i_abstract().ephemeral is Known,
         journal.i_abstract().ephemeral->v.wf(),
 {
-    journal.semantic_inv_implies_i_inv();
-    let alloc_crash = journal.i();
-    assert(alloc_crash.inv());
-    assert(alloc_crash.ephemeral is Known);
-
-    let alloc_journal = alloc_crash.ephemeral->v;
+    journal.ephemeral->v.semantic_inv_implies_i_inv();
+    let alloc_journal = journal.ephemeral->v.i();
     assert(alloc_journal.inv());
     assert(alloc_journal.semantic_inv());
     assert(alloc_journal.refinement_inv());
@@ -620,7 +616,6 @@ proof fn put_refines_coordination(
                         reveal(CrashAwareCachingDiskJournal::State::put);
                     }
                     pre.journal.put_refines(new_journal, journal_lbl, new_ephemeral);
-                    pre.journal.allocation_next_refines_abstract(new_journal, journal_lbl);
                     assert(new_journal.frozen == pre.journal.frozen);
                 },
                 _ => { assert(false); },
@@ -751,7 +746,6 @@ proof fn req_sync_refines_coordination(
             };
             reveal(CrashAwareCachingDiskJournal::State::query_end_lsn);
             assert(pre.journal.ephemeral is Known);
-            assert(pre.journal.i().ephemeral is Known);
             assert(pre.journal.i_abstract().ephemeral is Known);
             assert(cpre.journal == pre.journal.i_abstract());
             assert(cpre.journal.ephemeral is Known);
@@ -1437,7 +1431,7 @@ proof fn recover_refines_coordination(
                     cpre.journal.ephemeral->v,
                     AbstractJournal::Label::ReadForRecoveryLabel{messages: branch_records},
                 )) by {
-                    pre.journal.semantic_inv_implies_i_inv();
+                    journal_i_abstract_ephemeral_wf(pre.journal);
                     assert(cpre.journal == pre.journal.i_abstract());
                     assert(cpre.journal.ephemeral->v.wf());
                     assert(AbstractJournal::State::read_for_recovery(
@@ -1944,7 +1938,6 @@ proof fn commit_prepared_components_preserve_i(
             CrashAwareCachingDiskBranch::Label::FreezePrepared,
         ),
     ensures
-        new_journal.i() == pre.journal.i(),
         new_journal.i_abstract() == pre.journal.i_abstract(),
         new_branch.i() == pre.branch.i(),
         new_branch.abstract_i() == pre.branch.abstract_i(),
@@ -2081,7 +2074,6 @@ proof fn commit_prepared_refines_coordination(
     assert(cpost.superblock_in_flight == true);
     assert(cpre.superblock_landed == false);
     assert(cpost.superblock_landed == false);
-    assert(new_journal.i() == pre.journal.i());
     assert(new_journal.i_abstract() == pre.journal.i_abstract());
     assert(new_branch.i() == pre.branch.i());
     assert(new_branch.abstract_i() == pre.branch.abstract_i());
@@ -2272,8 +2264,7 @@ proof fn commit_start_journal_component_refine(
             _ => { assert(false); },
         }
     }
-    assert(pre.journal.i().ephemeral is Known);
-    assert(pre.journal.label_i(new_journal, journal_lbl) is CommitStart);
+    assert(pre.journal.i_abstract().ephemeral is Known);
     assert(pre.journal.label_i_abstract(new_journal, journal_lbl) is CommitStartLabel);
     assert(pre.journal.label_i_abstract(new_journal, journal_lbl)->new_boundary_lsn == new_boundary_lsn);
 
