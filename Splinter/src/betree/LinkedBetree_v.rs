@@ -480,11 +480,12 @@ impl<T> LinkedBetree<T> {
         self.the_ranking().restrict(self.dv.entries.dom())
     }
 
-    proof fn finite_ranking_ensures(self)
+    pub proof fn finite_ranking_ensures(self)
         requires self.acyclic()
         ensures
-            self.valid_ranking(self.finite_ranking()), 
-            self.finite_ranking().dom().finite()
+            self.valid_ranking(self.finite_ranking()),
+            self.finite_ranking().dom().finite(),
+            self.finite_ranking().dom() <= self.dv.entries.dom(),
     {
         lemma_len_subset(self.finite_ranking().dom(), self.dv.entries.dom());
     }
@@ -1380,6 +1381,8 @@ state_machine!{ LinkedBetreeVars<T: Buffer> {
             &&& result.acyclic()
             &&& self.linked.buffer_dv == result.buffer_dv
             &&& self.linked.valid_buffer_dv() ==> result.valid_buffer_dv()
+            &&& result.reachable_buffer_addrs()
+                <= self.linked.reachable_buffer_addrs()
         })
     {
         let ranking = self.linked.finite_ranking();
@@ -1568,6 +1571,22 @@ impl<T> LinkedBetree<T> {
         i
     }
 
+    pub proof fn child_containing_reachable_addr(
+        self,
+        ranking: Ranking,
+        addr: Address,
+        start: nat,
+    ) -> (i: nat)
+        requires
+            self.wf(),
+            self.valid_ranking(ranking),
+            self.exists_child_subtree_contains_addr(ranking, addr, start),
+        ensures
+            self.child_subtree_contains_addr(ranking, addr, start, i),
+    {
+        self.get_child_given_betree_addr(ranking, addr, start)
+    }
+
     pub proof fn reachable_betree_addrs_using_ranking_recur_lemma(self, ranking: Ranking, child_idx: nat)
         requires self.can_recurse_for_reachable(ranking, child_idx)
         ensures ({
@@ -1624,6 +1643,43 @@ impl<T> LinkedBetree<T> {
             let sub_tree_addrs = self.reachable_betree_addrs_using_ranking_recur(ranking, 0);
             self.reachable_betree_addrs_using_ranking_recur_lemma(ranking, 0);
             assert(sub_tree_addrs.insert(self.root.unwrap()) =~= self.reachable_betree_addrs_using_ranking(ranking));
+        }
+    }
+
+    proof fn reachable_betree_addrs_using_ranking_recur_subset_ranking(
+        self,
+        ranking: Ranking,
+        child_idx: nat,
+    )
+        requires self.can_recurse_for_reachable(ranking, child_idx)
+        ensures self.reachable_betree_addrs_using_ranking_recur(ranking, child_idx)
+            <= ranking.dom()
+        decreases
+            self.get_rank(ranking),
+            self.child_count() - child_idx,
+    {
+        if child_idx < self.child_count() {
+            assert(self.root().valid_child_index(child_idx));
+            let child = self.child_at_idx(child_idx);
+            child.reachable_betree_addrs_using_ranking_subset_ranking(ranking);
+            self.reachable_betree_addrs_using_ranking_recur_subset_ranking(
+                ranking,
+                child_idx + 1,
+            );
+        }
+    }
+
+    pub proof fn reachable_betree_addrs_using_ranking_subset_ranking(
+        self,
+        ranking: Ranking,
+    )
+        requires self.wf(), self.valid_ranking(ranking)
+        ensures self.reachable_betree_addrs_using_ranking(ranking) <= ranking.dom()
+        decreases self.get_rank(ranking)
+    {
+        if self.has_root() {
+            assert(ranking.contains_key(self.root.unwrap()));
+            self.reachable_betree_addrs_using_ranking_recur_subset_ranking(ranking, 0);
         }
     }
 

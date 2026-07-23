@@ -87,7 +87,7 @@ pub open spec fn stack_query_roots_up_to(
     }
 }
 
-proof fn child_branch_inv_internal_from_parent(
+pub proof fn child_branch_inv_internal_from_parent(
     branch: LinkedBranch<Summary>,
     ranking: Ranking,
     child_idx: int,
@@ -185,7 +185,7 @@ proof fn local_query_internal_descends_to_child(
     assert(branch.i_internal(ranking).query(key) == child.i_internal(ranking).query(key));
 }
 
-proof fn query_read_node_matches_visible(
+pub proof fn query_read_node_matches_visible(
     disk: CachingDisk::State,
     reads: Map<Address, RawPage>,
     addr: Address,
@@ -283,7 +283,7 @@ proof fn receipt_query_matches_branch_query_internal(
     }
 }
 
-proof fn receipt_query_matches_branch_query(
+pub proof fn receipt_query_matches_branch_query(
     disk: CachingDisk::State,
     branch: LinkedBranch<Summary>,
     reads: Map<Address, RawPage>,
@@ -334,7 +334,7 @@ proof fn leaf_append_route_equiv(leaf: BranchNode, keys: Seq<Key>)
     Key::largest_lte_is_lemma(leaf->keys, keys.last(), last_idx);
 }
 
-proof fn receipt_path_valid_for_append(
+pub proof fn receipt_path_valid_for_append(
     disk: CachingDisk::State,
     branch: LinkedBranch<Summary>,
     ranking: Ranking,
@@ -448,7 +448,7 @@ proof fn receipt_path_valid_for_append(
     }
 }
 
-proof fn linked_append_keys_are_path_equiv(
+pub proof fn linked_append_keys_are_path_equiv(
     branch: LinkedBranch<Summary>,
     ranking: Ranking,
     keys: Seq<Key>,
@@ -576,7 +576,7 @@ proof fn branch_query_nop_for_append_key_internal(
     }
 }
 
-proof fn branch_query_nop_for_append_key(
+pub proof fn branch_query_nop_for_append_key(
     branch: LinkedBranch<Summary>,
     keys: Seq<Key>,
     path: Path<Summary>,
@@ -608,7 +608,7 @@ proof fn branch_query_nop_for_append_key(
     assert(branch.query(key) == msg);
 }
 
-proof fn receipt_path_valid_for_split(
+pub proof fn receipt_path_valid_for_split(
     disk: CachingDisk::State,
     branch: LinkedBranch<Summary>,
     ranking: Ranking,

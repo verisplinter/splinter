@@ -3,7 +3,6 @@
 #![allow(unused_imports)]
 use vstd::prelude::*;
 //use vstd::prelude_macros::*;
-use vstd::prelude::*;
 use vstd::{map::*, seq_lib::*, set_lib::*, multiset::*};
 
 use crate::disk::GenericDisk_v::Address;
@@ -198,6 +197,10 @@ impl AllocationBetree::State {
         &&& self.betree_aus == to_au_likes(betree_likes)
         &&& self.buffer_aus == to_au_likes(buffer_likes)
     }
+
+    pub open spec(checked) fn refinement_inv(self) -> bool {
+        self.inv()
+    }
     
     pub open spec(checked) fn i(self) -> LikesBetree::State
     {
@@ -352,12 +355,12 @@ impl AllocationBetree::State {
         restrict_domain_au_ensures(compacted_buffer_likes, compacted.buffer_dv.entries);
     }
 
-    proof fn next_refines(pre: Self, post: Self, lbl: AllocationBetree::Label) 
+    pub proof fn next_refines(pre: Self, post: Self, lbl: AllocationBetree::Label)
         requires 
-            pre.inv(),
+            pre.refinement_inv(),
             AllocationBetree::State::next(pre, post, lbl),
         ensures
-            post.inv(),
+            post.refinement_inv(),
             LikesBetree::State::next(pre.i(), post.i(), lbl.i())
     {
         reveal(AllocationBetree::State::next);

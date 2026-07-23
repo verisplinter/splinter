@@ -1090,12 +1090,35 @@ impl AllocationBranchBetree::State {
             AllocationBranchBetree::Step::au_likes_noop(new_betree) => { 
                 Self::au_likes_noop_refines(pre, post, lbl, new_betree);
             }
+            AllocationBranchBetree::Step::internal_noop() => {
+                reveal(AllocationBranchBetree::State::internal_noop);
+                reveal(AllocationBetree::State::internal_noop);
+                reveal(LinkedBetreeVars::State::internal_noop);
+                assert(post == pre);
+                assert(AllocationBetree::State::next_by(
+                    pre.i(),
+                    post.i(),
+                    lbl.i(),
+                    AllocationBetree::Step::internal_noop(),
+                ));
+                assert(AllocationBetree::State::next(
+                    pre.i(),
+                    post.i(),
+                    lbl.i(),
+                ));
+            }
             AllocationBranchBetree::Step::branch_begin() => { 
                 assert(AllocationBetree::State::next_by(pre.i(), post.i(), lbl.i(), AllocationBetree::Step::internal_noop())); // trigger
             }
             AllocationBranchBetree::Step::branch_build(idx, post_branch, event) => { 
+                assert(AllocationBetree::State::next_by(
+                    pre.i(), post.i(), lbl.i(), AllocationBetree::Step::internal_noop(),
+                ));
             }
             AllocationBranchBetree::Step::branch_abort(idx) => { 
+                assert(AllocationBetree::State::next_by(
+                    pre.i(), post.i(), lbl.i(), AllocationBetree::Step::internal_noop(),
+                ));
             }
             AllocationBranchBetree::Step::internal_flush_memtable(new_betree, branch_idx, new_root_addr) => {
                 Self::internal_flush_memtable_refines(pre, post, lbl, new_betree, branch_idx, new_root_addr);
@@ -1111,6 +1134,9 @@ impl AllocationBranchBetree::State {
                 Self::internal_flush_refines(pre, post, lbl, new_betree, path, child_idx, buffer_gc, new_addrs, path_addrs);
             }
             AllocationBranchBetree::Step::internal_compact_begin(path, start, end, input) => {
+                assert(AllocationBetree::State::next_by(
+                    pre.i(), post.i(), lbl.i(), AllocationBetree::Step::internal_noop(),
+                ));
             }
             AllocationBranchBetree::Step::internal_compact_abort(input_idx, new_betree) => {
                 assert(pre.i().betree.linked.valid_view(new_betree.i().linked)) by {

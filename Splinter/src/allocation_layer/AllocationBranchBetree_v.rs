@@ -229,12 +229,18 @@ state_machine!{ AllocationBranchBetree {
         update betree = new_betree;
     }}
 
+    transition!{ internal_noop(lbl: Label) {
+        require lbl is Internal;
+        require lbl->allocs.is_empty();
+        require lbl->deallocs.is_empty();
+    }}
+
     transition!{ branch_begin(lbl: Label) {
         require lbl is Internal;
-        require pre.is_fresh(lbl->allocs);
+        require lbl->allocs.is_empty();
         require lbl->deallocs.is_empty();
 
-        let branch = AllocationBranch::new(lbl->allocs);
+        let branch = AllocationBranch::new(Set::empty());
         update wip_branches = pre.wip_branches.push(branch);
     }}
 
@@ -553,6 +559,12 @@ state_machine!{ AllocationBranchBetree {
     fn au_likes_noop_inductive(pre: Self, post: Self, lbl: Label, new_betree: LinkedBetreeVars::State<BranchNode>) {
         reveal(LinkedBetreeVars::State::next);
         reveal(LinkedBetreeVars::State::next_by);
+        assert(post.inv());
+    }
+
+    #[inductive(internal_noop)]
+    fn internal_noop_inductive(pre: Self, post: Self, lbl: Label) {
+        assert(post == pre);
         assert(post.inv());
     }
    
@@ -1177,6 +1189,168 @@ state_machine!{ AllocationBranchBetree {
             }
         }
         assert(post.inv());
+    }
+
+    pub proof fn inv_init(
+        post: Self,
+        betree: LinkedBetreeVars::State<BranchNode>,
+    )
+        requires
+            AllocationBranchBetree::State::initialize(post, betree),
+        ensures
+            post.inv(),
+    {
+        AllocationBranchBetree::State::initialize_inductive(post, betree);
+    }
+
+    pub proof fn inv_next(pre: Self, post: Self, lbl: Label)
+        requires
+            pre.inv(),
+            AllocationBranchBetree::State::next(pre, post, lbl),
+        ensures
+            post.inv(),
+    {
+        reveal(AllocationBranchBetree::State::next);
+        reveal(AllocationBranchBetree::State::next_by);
+
+        let step = choose |step: AllocationBranchBetree::Step|
+            AllocationBranchBetree::State::next_by(pre, post, lbl, step);
+        match step {
+            AllocationBranchBetree::Step::au_likes_noop(new_betree) => {
+                AllocationBranchBetree::State::au_likes_noop_inductive(
+                    pre, post, lbl, new_betree,
+                );
+            }
+            AllocationBranchBetree::Step::internal_noop() => {
+                AllocationBranchBetree::State::internal_noop_inductive(
+                    pre, post, lbl,
+                );
+            }
+            AllocationBranchBetree::Step::branch_begin() => {
+                AllocationBranchBetree::State::branch_begin_inductive(
+                    pre, post, lbl,
+                );
+            }
+            AllocationBranchBetree::Step::branch_build(
+                idx,
+                post_branch,
+                event,
+            ) => {
+                AllocationBranchBetree::State::branch_build_inductive(
+                    pre, post, lbl, idx, post_branch, event,
+                );
+            }
+            AllocationBranchBetree::Step::branch_abort(idx) => {
+                AllocationBranchBetree::State::branch_abort_inductive(
+                    pre, post, lbl, idx,
+                );
+            }
+            AllocationBranchBetree::Step::internal_flush_memtable(
+                new_betree,
+                branch_idx,
+                new_root_addr,
+            ) => {
+                AllocationBranchBetree::State::internal_flush_memtable_inductive(
+                    pre,
+                    post,
+                    lbl,
+                    new_betree,
+                    branch_idx,
+                    new_root_addr,
+                );
+            }
+            AllocationBranchBetree::Step::internal_grow(
+                new_betree,
+                new_root_addr,
+            ) => {
+                AllocationBranchBetree::State::internal_grow_inductive(
+                    pre, post, lbl, new_betree, new_root_addr,
+                );
+            }
+            AllocationBranchBetree::Step::internal_split(
+                new_betree,
+                path,
+                request,
+                new_addrs,
+                path_addrs,
+            ) => {
+                AllocationBranchBetree::State::internal_split_inductive(
+                    pre,
+                    post,
+                    lbl,
+                    new_betree,
+                    path,
+                    request,
+                    new_addrs,
+                    path_addrs,
+                );
+            }
+            AllocationBranchBetree::Step::internal_flush(
+                new_betree,
+                path,
+                child_idx,
+                buffer_gc,
+                new_addrs,
+                path_addrs,
+            ) => {
+                AllocationBranchBetree::State::internal_flush_inductive(
+                    pre,
+                    post,
+                    lbl,
+                    new_betree,
+                    path,
+                    child_idx,
+                    buffer_gc,
+                    new_addrs,
+                    path_addrs,
+                );
+            }
+            AllocationBranchBetree::Step::internal_compact_begin(
+                path,
+                start,
+                end,
+                input,
+            ) => {
+                AllocationBranchBetree::State::internal_compact_begin_inductive(
+                    pre, post, lbl, path, start, end, input,
+                );
+            }
+            AllocationBranchBetree::Step::internal_compact_abort(
+                input_idx,
+                new_betree,
+            ) => {
+                AllocationBranchBetree::State::internal_compact_abort_inductive(
+                    pre, post, lbl, input_idx, new_betree,
+                );
+            }
+            AllocationBranchBetree::Step::internal_compact_complete(
+                new_betree,
+                path,
+                start,
+                end,
+                input_idx,
+                branch_idx,
+                new_node_addr,
+                path_addrs,
+            ) => {
+                AllocationBranchBetree::State::internal_compact_complete_inductive(
+                    pre,
+                    post,
+                    lbl,
+                    new_betree,
+                    path,
+                    start,
+                    end,
+                    input_idx,
+                    branch_idx,
+                    new_node_addr,
+                    path_addrs,
+                );
+            }
+            _ => {
+                assert(false);
+            }
+        }
     }
 }} // end of AllocationBetree state machine
 
