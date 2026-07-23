@@ -212,7 +212,7 @@ impl AllocationBetree::State {
         }
     }
 
-    proof fn init_inv_refines(self, v: LinkedBetreeVars::State<SimpleBuffer>) 
+    pub proof fn init_refines(self, v: LinkedBetreeVars::State<SimpleBuffer>)
         requires AllocationBetree::State::initialize(self, v), 
         ensures self.inv(), LikesBetree::State::initialize(self.i(), v), 
     {

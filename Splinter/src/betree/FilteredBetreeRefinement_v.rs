@@ -1058,7 +1058,14 @@ impl FilteredBetree::State {
         PivotBetree::State{root: self.root.i(), memtable: self.memtable}
     }
 
-    proof fn init_refines(self, stamped_betree: StampedBetree) 
+    pub proof fn i_inv(self)
+        requires self.inv()
+        ensures self.i().inv()
+    {
+        self.root.i_wf();
+    }
+
+    pub proof fn init_refines(self, stamped_betree: StampedBetree)
         requires FilteredBetree::State::initialize(self, stamped_betree)
         ensures PivotBetree::State::initialize(self.i(), i_stamped_betree(stamped_betree))
     {
@@ -1181,7 +1188,7 @@ impl FilteredBetree::State {
         reveal(PivotBetree::State::next_by);
     }
 
-    proof fn next_refines(self, post: Self, lbl: FilteredBetree::Label)
+    pub proof fn next_refines(self, post: Self, lbl: FilteredBetree::Label)
         requires self.inv(), FilteredBetree::State::next(self, post, lbl),
         ensures post.inv(), PivotBetree::State::next(self.i(), post.i(), lbl.i()),
     {

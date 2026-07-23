@@ -4,6 +4,7 @@ pub mod AllocationJournalAbstractRefinement_v;
 pub mod AllocationJournalRefinement_v;
 pub mod AllocationJournal_v;
 pub mod AllocationBetree_v;
+pub mod AllocationBetreeAbstractRefinement_v;
 pub mod AllocationBetreeRefinement_v;
 pub mod AllocationBranch_v;
 pub mod AllocationBranchBetree_v;

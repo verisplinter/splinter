@@ -28,6 +28,7 @@ use crate::betree::LinkedBetree_v::{
 use crate::betree::SplitRequest_v::SplitRequest;
 use crate::betree::LinkedSeq_v::LinkedSeq;
 use crate::allocation_layer::LikesBetree_v::Likeable;
+use crate::allocation_layer::Likes_v::to_au_likes;
 use crate::betree::LinkedBranch_v::{
     DiskView as BranchDiskView, LinkedBranch, Path as BranchPath,
     Refinement_v as LinkedBranchRefinement,
@@ -47,6 +48,7 @@ use crate::implementation::CachingDiskBranchBetree_v::{
     disk_extend_for_alloc,
     disk_extend_visible_outside_allocs, disk_forget_visible_outside_aus,
     loose_disk_for_summary, tight_branch_addrs, tight_branch_exists,
+    reclaim_guarded_aus, reclaim_guarded_aus_preserves_inv,
     tight_branch_of, tight_sealed_branch_disk, to_betree_nodes,
     to_branch_nodes, visible_branch_disk,
 };
@@ -436,6 +438,7 @@ proof fn mini_allocator_allocated_addrs_after_prune(
 proof fn disk_access_without_alloc_or_dealloc(
     pre: CachingDisk::State,
     post: CachingDisk::State,
+    guard_aus: Set<AU>,
     reads: Map<Address, RawPage>,
     writes: Map<Address, RawPage>,
 )
@@ -446,6 +449,7 @@ proof fn disk_access_without_alloc_or_dealloc(
             post,
             Set::empty(),
             Set::empty(),
+            guard_aus,
             reads,
             writes,
         ),
@@ -461,15 +465,17 @@ proof fn disk_access_without_alloc_or_dealloc(
         post,
         Set::empty(),
         Set::empty(),
+        guard_aus,
         reads,
         writes,
     );
     disk_extend_empty_is_identity(pre, witness.expanded);
     assert(witness.expanded == pre);
+    assert(Set::<AU>::empty() - guard_aus == Set::<AU>::empty());
     CachingDisk::State::forget_effect(
         witness.accessed,
         post,
-        Set::empty(),
+        Set::empty() - guard_aus,
     );
     assert(post == witness.accessed) by {
         assert_maps_equal!(post.cache, witness.accessed.cache, addr => {});
@@ -1462,6 +1468,58 @@ pub proof fn tight_branch_unique(
     });
 }
 
+pub proof fn tight_branch_unique_in_unbounded_disk(
+    loose_disk: BufferDisk<BranchNode>,
+    root: Address,
+    left: LinkedBranch<Summary>,
+    right: LinkedBranch<Summary>,
+)
+    requires
+        left.root == root,
+        right.root == root,
+        left.valid_sealed_branch(),
+        right.valid_sealed_branch(),
+        left.tight_disk_view_with_summary(),
+        right.tight_disk_view_with_summary(),
+        left.disk_view.entries <= loose_disk.entries,
+        right.disk_view.entries <= loose_disk.entries,
+    ensures left == right,
+{
+    let left_ranking = left.the_ranking();
+    let right_ranking = right.the_ranking();
+    assert(left.disk_view.agrees_with_disk(right.disk_view)) by {
+        assert forall |addr: Address|
+            #[trigger] left.disk_view.entries.contains_key(addr)
+                && right.disk_view.entries.contains_key(addr)
+            implies left.disk_view.entries[addr]
+                == right.disk_view.entries[addr]
+        by {
+            assert(loose_disk.entries.contains_key(addr));
+            assert(left.disk_view.entries[addr] == loose_disk.entries[addr]);
+            assert(right.disk_view.entries[addr] == loose_disk.entries[addr]);
+        };
+    }
+    agreeable_branches_same_reachable(
+        left,
+        right,
+        left_ranking,
+        right_ranking,
+    );
+    assert(left.representation() == right.representation());
+    assert(left.root() == right.root());
+    assert(left.full_repr() == right.full_repr());
+    assert(left.disk_view.entries.dom() == right.disk_view.entries.dom());
+    assert_maps_equal!(left.disk_view.entries, right.disk_view.entries, addr => {
+        if left.disk_view.entries.contains_key(addr) {
+            assert(right.disk_view.entries.contains_key(addr));
+            assert(loose_disk.entries.contains_key(addr));
+        }
+        if right.disk_view.entries.contains_key(addr) {
+            assert(left.disk_view.entries.contains_key(addr));
+        }
+    });
+}
+
 pub proof fn tight_branch_of_equals_candidate(
     loose_disk: BufferDisk<BranchNode>,
     root: Address,
@@ -2049,6 +2107,7 @@ proof fn loaded_wip_branch_matches(
     new_disk: CachingDisk::State,
     allocs: Set<AU>,
     deallocs: Set<AU>,
+    guard_aus: Set<AU>,
     access: PageAccess,
     branch_idx: int,
     output_reads: crate::implementation::CachedBranch_v::LoadedBranch,
@@ -2063,6 +2122,7 @@ proof fn loaded_wip_branch_matches(
             new_disk,
             allocs,
             deallocs,
+            guard_aus,
             access.reads(),
             access.writes(),
         ),
@@ -2102,6 +2162,7 @@ proof fn loaded_wip_branch_matches(
         new_disk,
         allocs,
         deallocs,
+        guard_aus,
         access.reads(),
         access.writes(),
     );
@@ -2191,6 +2252,7 @@ proof fn loaded_compactor_reads_match_semantic(
     new_disk: CachingDisk::State,
     allocs: Set<AU>,
     deallocs: Set<AU>,
+    guard_aus: Set<AU>,
     access: PageAccess,
     input_idx: int,
     input_reads: crate::implementation::CachedBranch_v::LoadedBranch,
@@ -2203,6 +2265,7 @@ proof fn loaded_compactor_reads_match_semantic(
             new_disk,
             allocs,
             deallocs,
+            guard_aus,
             access.reads(),
             access.writes(),
         ),
@@ -2225,6 +2288,7 @@ proof fn loaded_compactor_reads_match_semantic(
         new_disk,
         allocs,
         deallocs,
+        guard_aus,
         access.reads(),
         access.writes(),
     );
@@ -4083,6 +4147,785 @@ pub proof fn tight_branch_of_is_candidate(
 }
 
 impl CachingDiskBranchBetree::State {
+    pub proof fn freeze_as_next_facts(
+        state: Self,
+        image: crate::implementation::CachedBranchBetree_v::FrozenBranchBetree,
+    )
+        requires CachingDiskBranchBetree::State::next(
+            state,
+            state,
+            CachingDiskBranchBetree::Label::FreezeAs{image},
+        )
+        ensures
+            state.betree.memtable.is_empty(),
+            image.root == state.betree.root,
+            image.seq_end == state.betree.memtable.seq_end,
+    {
+        reveal(CachingDiskBranchBetree::State::next);
+        reveal(CachingDiskBranchBetree::State::next_by);
+        let step = choose |step: CachingDiskBranchBetree::Step|
+            CachingDiskBranchBetree::State::next_by(
+                state,
+                state,
+                CachingDiskBranchBetree::Label::FreezeAs{image},
+                step,
+            );
+        match step {
+            CachingDiskBranchBetree::Step::freeze_as() => {
+                reveal(CachingDiskBranchBetree::State::freeze_as);
+                reveal(CachedBranchBetree::State::freeze_as);
+            }
+            _ => {
+                assert(false);
+            }
+        }
+    }
+
+    pub proof fn next_refines_cached(
+        pre: Self,
+        post: Self,
+        lbl: CachingDiskBranchBetree::Label,
+    )
+        requires CachingDiskBranchBetree::State::next(pre, post, lbl)
+        ensures CachedBranchBetree::State::next(
+            pre.betree,
+            post.betree,
+            lbl.cached_i(),
+        )
+    {
+        reveal(CachingDiskBranchBetree::State::next);
+        reveal(CachingDiskBranchBetree::State::next_by);
+        reveal(CachedBranchBetree::State::next);
+        reveal(CachedBranchBetree::State::next_by);
+        let step = choose |step: CachingDiskBranchBetree::Step|
+            CachingDiskBranchBetree::State::next_by(
+                pre,
+                post,
+                lbl,
+                step,
+            );
+        match step {
+            CachingDiskBranchBetree::Step::disk_internal(new_disk) => {
+                reveal(CachingDiskBranchBetree::State::disk_internal);
+                assert(CachedBranchBetree::State::next_by(
+                    pre.betree,
+                    post.betree,
+                    lbl.cached_i(),
+                    CachedBranchBetree::Step::internal_noop(),
+                ));
+            }
+            CachingDiskBranchBetree::Step::query(receipt, access) => {
+                reveal(CachingDiskBranchBetree::State::query);
+                assert(CachedBranchBetree::State::next_by(
+                    pre.betree,
+                    post.betree,
+                    lbl.cached_i(),
+                    CachedBranchBetree::Step::query(
+                        receipt,
+                        access.loaded_betree_reads(),
+                        access.loaded_branch_reads(),
+                    ),
+                ));
+            }
+            CachingDiskBranchBetree::Step::put(new_betree) => {
+                reveal(CachingDiskBranchBetree::State::put);
+                assert(CachedBranchBetree::State::next_by(
+                    pre.betree,
+                    post.betree,
+                    lbl.cached_i(),
+                    CachedBranchBetree::Step::put(),
+                ));
+            }
+            CachingDiskBranchBetree::Step::freeze_as() => {
+                reveal(CachingDiskBranchBetree::State::freeze_as);
+                assert(CachedBranchBetree::State::next_by(
+                    pre.betree,
+                    post.betree,
+                    lbl.cached_i(),
+                    CachedBranchBetree::Step::freeze_as(),
+                ));
+            }
+            CachingDiskBranchBetree::Step::branch_begin(new_betree) => {
+                reveal(CachingDiskBranchBetree::State::branch_begin);
+                assert(CachedBranchBetree::State::next_by(
+                    pre.betree,
+                    post.betree,
+                    lbl.cached_i(),
+                    CachedBranchBetree::Step::branch_begin(),
+                ));
+            }
+            CachingDiskBranchBetree::Step::branch_fill(
+                new_betree,
+                new_disk,
+                idx,
+                post_branch,
+            ) => {
+                reveal(CachingDiskBranchBetree::State::branch_fill);
+                assert(CachedBranchBetree::State::next_by(
+                    pre.betree,
+                    post.betree,
+                    lbl.cached_i(),
+                    CachedBranchBetree::Step::branch_build(
+                        idx,
+                        post_branch,
+                        CachedAllocationBranchEvent::AllocFill{},
+                    ),
+                ));
+            }
+            CachingDiskBranchBetree::Step::branch_build(
+                new_betree,
+                new_disk,
+                idx,
+                post_branch,
+                event,
+                access,
+            ) => {
+                reveal(CachingDiskBranchBetree::State::branch_build);
+                assert(CachedBranchBetree::State::next_by(
+                    pre.betree,
+                    post.betree,
+                    lbl.cached_i(),
+                    CachedBranchBetree::Step::branch_build(
+                        idx,
+                        post_branch,
+                        event.cached_event(access),
+                    ),
+                ));
+            }
+            CachingDiskBranchBetree::Step::branch_abort(
+                new_betree,
+                new_disk,
+                idx,
+            ) => {
+                reveal(CachingDiskBranchBetree::State::branch_abort);
+                assert(CachedBranchBetree::State::next_by(
+                    pre.betree,
+                    post.betree,
+                    lbl.cached_i(),
+                    CachedBranchBetree::Step::branch_abort(idx),
+                ));
+            }
+            CachingDiskBranchBetree::Step::flush_memtable(
+                new_betree,
+                new_disk,
+                branch_idx,
+                new_root_addr,
+                access,
+            ) => {
+                reveal(CachingDiskBranchBetree::State::flush_memtable);
+                assert(CachedBranchBetree::State::next_by(
+                    pre.betree,
+                    post.betree,
+                    lbl.cached_i(),
+                    CachedBranchBetree::Step::flush_memtable(
+                        branch_idx,
+                        new_root_addr,
+                        access.loaded_betree_reads(),
+                        access.loaded_betree_writes(),
+                        access.loaded_branch_reads(),
+                    ),
+                ));
+            }
+            CachingDiskBranchBetree::Step::grow(
+                new_betree,
+                new_disk,
+                new_root_addr,
+                access,
+            ) => {
+                reveal(CachingDiskBranchBetree::State::grow);
+                assert(CachedBranchBetree::State::next_by(
+                    pre.betree,
+                    post.betree,
+                    lbl.cached_i(),
+                    CachedBranchBetree::Step::grow(
+                        new_root_addr,
+                        access.loaded_betree_writes(),
+                    ),
+                ));
+            }
+            CachingDiskBranchBetree::Step::split(
+                new_betree,
+                new_disk,
+                path,
+                request,
+                new_addrs,
+                path_addrs,
+                access,
+            ) => {
+                reveal(CachingDiskBranchBetree::State::split);
+                assert(CachedBranchBetree::State::next_by(
+                    pre.betree,
+                    post.betree,
+                    lbl.cached_i(),
+                    CachedBranchBetree::Step::split(
+                        path,
+                        request,
+                        new_addrs,
+                        path_addrs,
+                        access.loaded_betree_reads(),
+                        access.loaded_betree_writes(),
+                    ),
+                ));
+            }
+            CachingDiskBranchBetree::Step::flush(
+                new_betree,
+                new_disk,
+                path,
+                child_idx,
+                buffer_gc,
+                new_addrs,
+                path_addrs,
+                access,
+            ) => {
+                reveal(CachingDiskBranchBetree::State::flush);
+                assert(CachedBranchBetree::State::next_by(
+                    pre.betree,
+                    post.betree,
+                    lbl.cached_i(),
+                    CachedBranchBetree::Step::flush(
+                        path,
+                        child_idx,
+                        buffer_gc,
+                        new_addrs,
+                        path_addrs,
+                        access.loaded_betree_reads(),
+                        access.loaded_betree_writes(),
+                    ),
+                ));
+            }
+            CachingDiskBranchBetree::Step::compact_begin(
+                new_betree,
+                path,
+                start,
+                end,
+                access,
+            ) => {
+                reveal(CachingDiskBranchBetree::State::compact_begin);
+                assert(CachedBranchBetree::State::next_by(
+                    pre.betree,
+                    post.betree,
+                    lbl.cached_i(),
+                    CachedBranchBetree::Step::compact_begin(
+                        path,
+                        start,
+                        end,
+                        access.loaded_betree_reads(),
+                    ),
+                ));
+            }
+            CachingDiskBranchBetree::Step::compact_abort(
+                new_betree,
+                new_disk,
+                input_idx,
+            ) => {
+                reveal(CachingDiskBranchBetree::State::compact_abort);
+                assert(CachedBranchBetree::State::next_by(
+                    pre.betree,
+                    post.betree,
+                    lbl.cached_i(),
+                    CachedBranchBetree::Step::compact_abort(input_idx),
+                ));
+            }
+            CachingDiskBranchBetree::Step::compact_complete(
+                new_betree,
+                new_disk,
+                input_idx,
+                branch_idx,
+                path,
+                start,
+                end,
+                new_node_addr,
+                path_addrs,
+                access,
+            ) => {
+                reveal(CachingDiskBranchBetree::State::compact_complete);
+                assert(CachedBranchBetree::State::next_by(
+                    pre.betree,
+                    post.betree,
+                    lbl.cached_i(),
+                    CachedBranchBetree::Step::compact_complete(
+                        input_idx,
+                        branch_idx,
+                        path,
+                        start,
+                        end,
+                        new_node_addr,
+                        path_addrs,
+                        access.loaded_betree_reads(),
+                        access.loaded_betree_writes(),
+                        access.loaded_branch_reads(),
+                    ),
+                ));
+            }
+            CachingDiskBranchBetree::Step::internal_noop() => {
+                reveal(CachingDiskBranchBetree::State::internal_noop);
+                assert(CachedBranchBetree::State::next_by(
+                    pre.betree,
+                    post.betree,
+                    lbl.cached_i(),
+                    CachedBranchBetree::Step::internal_noop(),
+                ));
+            }
+            _ => {
+                assert(false);
+            }
+        }
+    }
+
+    pub proof fn next_wip_alloc_aus_subset(
+        pre: Self,
+        post: Self,
+        lbl: CachingDiskBranchBetree::Label,
+    )
+        requires
+            pre.refinement_inv(),
+            CachingDiskBranchBetree::State::next(pre, post, lbl),
+        ensures
+            cached_branch_alloc_aus(post.betree.wip_branches)
+                <= cached_branch_alloc_aus(pre.betree.wip_branches)
+                    + lbl.allocs(),
+    {
+        Self::next_refines_cached(pre, post, lbl);
+        assert forall |idx: int| 0 <= idx < pre.betree.wip_branches.len()
+            implies (#[trigger] pre.betree.wip_branches[idx])
+                .mini_allocator.wf()
+        by {
+            assert(pre.i().wip_branches_inv());
+            assert(pre.i().wip_branches == pre.wip_branches_i());
+            assert(pre.i().wip_branches[idx] == pre.wip_branch_i(idx));
+            assert(pre.i().wip_branches[idx].inv());
+            assert(pre.wip_branch_i(idx).inv());
+            assert(pre.wip_branch_i(idx).mini_allocator
+                == pre.betree.wip_branches[idx].mini_allocator);
+        };
+        CachedBranchBetree::State::next_wip_alloc_aus_subset(
+            pre.betree,
+            post.betree,
+            lbl.cached_i(),
+        );
+        assert(lbl.cached_i().allocs() == lbl.allocs());
+    }
+
+    pub proof fn next_preserves_guarded_visible_aus(
+        pre: Self,
+        post: Self,
+        lbl: CachingDiskBranchBetree::Label,
+        stable_aus: Set<AU>,
+    )
+        requires
+            pre.refinement_inv(),
+            CachingDiskBranchBetree::State::next(pre, post, lbl),
+            !(lbl is FreezeAs),
+            stable_aus.disjoint(lbl.allocs()),
+            lbl is InternalAlloc ==>
+                stable_aus <= lbl.arrow_InternalAlloc_guard_aus(),
+            cached_branch_alloc_aus(pre.betree.wip_branches)
+                .disjoint(stable_aus),
+        ensures
+            post.disk.visible().restrict(addresses_in_aus(stable_aus))
+                == pre.disk.visible().restrict(addresses_in_aus(stable_aus)),
+    {
+        reveal(CachingDiskBranchBetree::State::next);
+        reveal(CachingDiskBranchBetree::State::next_by);
+        let step = choose |step: CachingDiskBranchBetree::Step|
+            CachingDiskBranchBetree::State::next_by(
+                pre,
+                post,
+                lbl,
+                step,
+            );
+        let stable_addrs = addresses_in_aus(stable_aus);
+        match step {
+            CachingDiskBranchBetree::Step::disk_internal(new_disk) => {
+                reveal(CachingDiskBranchBetree::State::disk_internal);
+                CachingDisk::State::internal_visible_unchanged(
+                    pre.disk,
+                    new_disk,
+                );
+            }
+            CachingDiskBranchBetree::Step::query(receipt, access) => {
+                reveal(CachingDiskBranchBetree::State::query);
+            }
+            CachingDiskBranchBetree::Step::put(new_betree) => {
+                reveal(CachingDiskBranchBetree::State::put);
+            }
+            CachingDiskBranchBetree::Step::freeze_as() => {
+                assert(false);
+            }
+            CachingDiskBranchBetree::Step::branch_begin(new_betree) => {
+                reveal(CachingDiskBranchBetree::State::branch_begin);
+            }
+            CachingDiskBranchBetree::Step::branch_fill(
+                new_betree,
+                new_disk,
+                idx,
+                post_branch,
+            ) => {
+                reveal(CachingDiskBranchBetree::State::branch_fill);
+                addresses_in_aus_preserves_disjointness(
+                    stable_aus,
+                    lbl.allocs(),
+                );
+                disk_extend_visible_outside_allocs(
+                    pre.disk,
+                    new_disk,
+                    lbl.allocs(),
+                    stable_addrs,
+                );
+            }
+            CachingDiskBranchBetree::Step::branch_build(
+                new_betree,
+                new_disk,
+                idx,
+                post_branch,
+                event,
+                access,
+            ) => {
+                reveal(CachingDiskBranchBetree::State::branch_build);
+                let selected_aus =
+                    pre.betree.wip_branches[idx].mini_allocator.all_aus();
+                let allocator_sets = Seq::new(
+                    pre.betree.wip_branches.len(),
+                    |i: int| pre.betree.wip_branches[i]
+                        .mini_allocator.all_aus(),
+                );
+                crate::betree::Utils_v::lemma_subset_union_seq_of_sets(
+                    allocator_sets,
+                    idx,
+                );
+                assert(selected_aus <= cached_branch_alloc_aus(
+                    pre.betree.wip_branches,
+                ));
+                assert(selected_aus.disjoint(stable_aus));
+                match event {
+                    BranchBuildEvent::Initialize{init_root, keys, msgs} => {
+                        Self::branch_initialize_refines(
+                            pre,
+                            post,
+                            lbl,
+                            new_betree,
+                            new_disk,
+                            idx,
+                            post_branch,
+                            init_root,
+                            keys,
+                            msgs,
+                            access,
+                        );
+                    }
+                    BranchBuildEvent::Append{receipt, keys, msgs} => {
+                        Self::branch_append_refines(
+                            pre,
+                            post,
+                            lbl,
+                            new_betree,
+                            new_disk,
+                            idx,
+                            post_branch,
+                            receipt,
+                            keys,
+                            msgs,
+                            access,
+                        );
+                    }
+                    BranchBuildEvent::Grow{new_root_addr} => {
+                        Self::branch_grow_refines(
+                            pre,
+                            post,
+                            lbl,
+                            new_betree,
+                            new_disk,
+                            idx,
+                            post_branch,
+                            new_root_addr,
+                            access,
+                        );
+                    }
+                    BranchBuildEvent::Split{
+                        new_child_addr,
+                        receipt,
+                        split_arg,
+                    } => {
+                        Self::branch_split_refines(
+                            pre,
+                            post,
+                            lbl,
+                            new_betree,
+                            new_disk,
+                            idx,
+                            post_branch,
+                            new_child_addr,
+                            receipt,
+                            split_arg,
+                            access,
+                        );
+                    }
+                    BranchBuildEvent::Seal{aux_ptr} => {
+                        Self::branch_seal_refines(
+                            pre,
+                            post,
+                            lbl,
+                            new_betree,
+                            new_disk,
+                            idx,
+                            post_branch,
+                            aux_ptr,
+                            access,
+                        );
+                    }
+                }
+                assert(lbl.allocs().is_empty());
+                addresses_in_aus_preserves_disjointness(
+                    stable_aus,
+                    selected_aus,
+                );
+                assert(stable_addrs.disjoint(access.writes().dom()));
+                disk_access_empty_alloc_visible_stable(
+                    pre.disk,
+                    new_disk,
+                    lbl.arrow_InternalAlloc_deallocs(),
+                    lbl.arrow_InternalAlloc_guard_aus(),
+                    access.reads(),
+                    access.writes(),
+                    stable_addrs,
+                );
+            }
+            CachingDiskBranchBetree::Step::branch_abort(
+                new_betree,
+                new_disk,
+                idx,
+            ) => {
+                reveal(CachingDiskBranchBetree::State::branch_abort);
+                let forgotten = lbl.arrow_InternalAlloc_deallocs()
+                    - lbl.arrow_InternalAlloc_guard_aus();
+                assert(stable_aus.disjoint(forgotten));
+                addresses_in_aus_preserves_disjointness(
+                    stable_aus,
+                    forgotten,
+                );
+                disk_forget_visible_outside_aus(
+                    pre.disk,
+                    new_disk,
+                    forgotten,
+                    stable_addrs,
+                );
+            }
+            CachingDiskBranchBetree::Step::flush_memtable(
+                new_betree,
+                new_disk,
+                branch_idx,
+                new_root_addr,
+                access,
+            ) => {
+                Self::flush_memtable_refines(
+                    pre,
+                    post,
+                    lbl,
+                    new_betree,
+                    new_disk,
+                    branch_idx,
+                    new_root_addr,
+                    access,
+                );
+                addresses_in_aus_preserves_disjointness(
+                    stable_aus,
+                    lbl.allocs(),
+                );
+                disk_access_for_alloc_visible_outside_alloc_dealloc(
+                    pre.disk,
+                    new_disk,
+                    lbl.allocs(),
+                    lbl.arrow_InternalAlloc_deallocs(),
+                    lbl.arrow_InternalAlloc_guard_aus(),
+                    access.reads(),
+                    access.writes(),
+                    stable_addrs,
+                );
+            }
+            CachingDiskBranchBetree::Step::grow(
+                new_betree,
+                new_disk,
+                new_root_addr,
+                access,
+            ) => {
+                Self::grow_refines(
+                    pre,
+                    post,
+                    lbl,
+                    new_betree,
+                    new_disk,
+                    new_root_addr,
+                    access,
+                );
+                addresses_in_aus_preserves_disjointness(
+                    stable_aus,
+                    lbl.allocs(),
+                );
+                disk_access_for_alloc_visible_outside_alloc_dealloc(
+                    pre.disk,
+                    new_disk,
+                    lbl.allocs(),
+                    lbl.arrow_InternalAlloc_deallocs(),
+                    lbl.arrow_InternalAlloc_guard_aus(),
+                    access.reads(),
+                    access.writes(),
+                    stable_addrs,
+                );
+            }
+            CachingDiskBranchBetree::Step::split(
+                new_betree,
+                new_disk,
+                path,
+                request,
+                new_addrs,
+                path_addrs,
+                access,
+            ) => {
+                Self::split_refines(
+                    pre,
+                    post,
+                    lbl,
+                    new_betree,
+                    new_disk,
+                    path,
+                    request,
+                    new_addrs,
+                    path_addrs,
+                    access,
+                );
+                addresses_in_aus_preserves_disjointness(
+                    stable_aus,
+                    lbl.allocs(),
+                );
+                disk_access_for_alloc_visible_outside_alloc_dealloc(
+                    pre.disk,
+                    new_disk,
+                    lbl.allocs(),
+                    lbl.arrow_InternalAlloc_deallocs(),
+                    lbl.arrow_InternalAlloc_guard_aus(),
+                    access.reads(),
+                    access.writes(),
+                    stable_addrs,
+                );
+            }
+            CachingDiskBranchBetree::Step::flush(
+                new_betree,
+                new_disk,
+                path,
+                child_idx,
+                buffer_gc,
+                new_addrs,
+                path_addrs,
+                access,
+            ) => {
+                Self::flush_refines(
+                    pre,
+                    post,
+                    lbl,
+                    new_betree,
+                    new_disk,
+                    path,
+                    child_idx,
+                    buffer_gc,
+                    new_addrs,
+                    path_addrs,
+                    access,
+                );
+                addresses_in_aus_preserves_disjointness(
+                    stable_aus,
+                    lbl.allocs(),
+                );
+                disk_access_for_alloc_visible_outside_alloc_dealloc(
+                    pre.disk,
+                    new_disk,
+                    lbl.allocs(),
+                    lbl.arrow_InternalAlloc_deallocs(),
+                    lbl.arrow_InternalAlloc_guard_aus(),
+                    access.reads(),
+                    access.writes(),
+                    stable_addrs,
+                );
+            }
+            CachingDiskBranchBetree::Step::compact_begin(
+                new_betree,
+                path,
+                start,
+                end,
+                access,
+            ) => {
+                reveal(CachingDiskBranchBetree::State::compact_begin);
+            }
+            CachingDiskBranchBetree::Step::compact_abort(
+                new_betree,
+                new_disk,
+                input_idx,
+            ) => {
+                reveal(CachingDiskBranchBetree::State::compact_abort);
+                let forgotten = lbl.arrow_InternalAlloc_deallocs()
+                    - lbl.arrow_InternalAlloc_guard_aus();
+                assert(stable_aus.disjoint(forgotten));
+                addresses_in_aus_preserves_disjointness(
+                    stable_aus,
+                    forgotten,
+                );
+                disk_forget_visible_outside_aus(
+                    pre.disk,
+                    new_disk,
+                    forgotten,
+                    stable_addrs,
+                );
+            }
+            CachingDiskBranchBetree::Step::compact_complete(
+                new_betree,
+                new_disk,
+                input_idx,
+                branch_idx,
+                path,
+                start,
+                end,
+                new_node_addr,
+                path_addrs,
+                access,
+            ) => {
+                Self::compact_complete_refines(
+                    pre,
+                    post,
+                    lbl,
+                    new_betree,
+                    new_disk,
+                    input_idx,
+                    branch_idx,
+                    path,
+                    start,
+                    end,
+                    new_node_addr,
+                    path_addrs,
+                    access,
+                );
+                addresses_in_aus_preserves_disjointness(
+                    stable_aus,
+                    lbl.allocs(),
+                );
+                disk_access_for_alloc_visible_outside_alloc_dealloc(
+                    pre.disk,
+                    new_disk,
+                    lbl.allocs(),
+                    lbl.arrow_InternalAlloc_deallocs(),
+                    lbl.arrow_InternalAlloc_guard_aus(),
+                    access.reads(),
+                    access.writes(),
+                    stable_addrs,
+                );
+            }
+            CachingDiskBranchBetree::Step::internal_noop() => {
+                reveal(CachingDiskBranchBetree::State::internal_noop);
+            }
+            _ => {
+                assert(false);
+            }
+        }
+    }
+
     proof fn branch_build_nonseal_preserves_shared_state(
         pre: Self,
         post: Self,
@@ -4123,6 +4966,7 @@ impl CachingDiskBranchBetree::State {
 
         let allocs = lbl.arrow_InternalAlloc_allocs();
         let deallocs = lbl.arrow_InternalAlloc_deallocs();
+        let guard_aus = lbl.arrow_InternalAlloc_guard_aus();
         let reads = access.reads();
         let writes = access.writes();
         let selected = pre.betree.wip_branches[idx];
@@ -4135,6 +4979,7 @@ impl CachingDiskBranchBetree::State {
         disk_access_without_alloc_or_dealloc(
             pre.disk,
             new_disk,
+            guard_aus,
             reads,
             writes,
         );
@@ -4159,6 +5004,7 @@ impl CachingDiskBranchBetree::State {
             pre.disk,
             new_disk,
             deallocs,
+            guard_aus,
             reads,
             writes,
             betree_addrs,
@@ -4167,6 +5013,7 @@ impl CachingDiskBranchBetree::State {
             pre.disk,
             new_disk,
             deallocs,
+            guard_aus,
             reads,
             writes,
             sealed_addrs,
@@ -4210,6 +5057,7 @@ impl CachingDiskBranchBetree::State {
                 pre.disk,
                 new_disk,
                 deallocs,
+                guard_aus,
                 reads,
                 writes,
                 stable,
@@ -4378,6 +5226,42 @@ impl CachingDiskBranchBetree::State {
 }
 
 impl CachingDiskBranchBetree::Label {
+    pub open spec fn allocs(self) -> Set<AU> {
+        match self {
+            CachingDiskBranchBetree::Label::InternalAlloc{allocs, ..} =>
+                allocs,
+            _ => Set::empty(),
+        }
+    }
+
+    pub open spec fn cached_i(self) -> CachedBranchBetree::Label {
+        match self {
+            CachingDiskBranchBetree::Label::Query{
+                end_lsn,
+                key,
+                value,
+            } => CachedBranchBetree::Label::Query{
+                end_lsn,
+                key,
+                value,
+            },
+            CachingDiskBranchBetree::Label::Put{puts} =>
+                CachedBranchBetree::Label::Put{puts},
+            CachingDiskBranchBetree::Label::FreezeAs{image} =>
+                CachedBranchBetree::Label::FreezeAs{image},
+            CachingDiskBranchBetree::Label::Internal =>
+                CachedBranchBetree::Label::Internal,
+            CachingDiskBranchBetree::Label::InternalAlloc{
+                allocs,
+                deallocs,
+                ..
+            } => CachedBranchBetree::Label::InternalAlloc{
+                allocs,
+                deallocs,
+            },
+        }
+    }
+
     pub open spec fn i(
         self,
         pre: CachingDiskBranchBetree::State,
@@ -4404,13 +5288,10 @@ impl CachingDiskBranchBetree::Label {
                 }
             }
             CachingDiskBranchBetree::Label::Internal => {
-                AllocationBranchBetree::Label::Internal {
-                    allocs: Set::empty(),
-                    deallocs: Set::empty(),
-                }
+                AllocationBranchBetree::Label::Internal
             }
-            CachingDiskBranchBetree::Label::InternalAlloc{allocs, deallocs} => {
-                AllocationBranchBetree::Label::Internal{allocs, deallocs}
+            CachingDiskBranchBetree::Label::InternalAlloc{..} => {
+                AllocationBranchBetree::Label::Internal
             }
         }
     }
@@ -4473,9 +5354,11 @@ pub open spec fn allocation_compact_complete_conditions(
             full_buffer_dv,
             new_summary_aus,
         );
+    let allocs =
+        seq_addrs_to_aus(path_addrs).insert(new_node_addr.au);
 
     &&& lbl is Internal
-    &&& pre.is_fresh(lbl.arrow_Internal_allocs())
+    &&& pre.is_fresh(allocs)
     &&& !seq_addrs_to_aus(path_addrs).contains(new_node_addr.au)
     &&& seq_addrs_disjoint_aus(path_addrs)
     &&& 0 <= input_idx < pre.compactors.len()
@@ -4499,10 +5382,6 @@ pub open spec fn allocation_compact_complete_conditions(
         linked_new_addrs,
         path_addrs,
     )
-    &&& lbl.arrow_Internal_allocs()
-        == seq_addrs_to_aus(path_addrs).insert(new_node_addr.au)
-    &&& lbl.arrow_Internal_deallocs()
-        == tree_deallocs + summary_deallocs_aus
     &&& crate::allocation_layer::Likes_v::restrict_domain_au(
         compacted.dv.entries,
         new_betree_aus.dom(),
@@ -4638,6 +5517,189 @@ pub open spec fn initial_refinement_witness_valid(
     )
 }
 
+pub open spec fn durable_recovery_disk(
+    state: CachingDiskBranchBetree::State,
+) -> CachingDisk::State {
+    CachingDisk::State {
+        cache: Map::empty(),
+        persistent: state.disk.visible().restrict(
+            addresses_in_aus(state.betree.durable_aus()),
+        ),
+        status: Map::empty(),
+    }
+}
+
+pub proof fn durable_recovery_witness_valid(
+    state: CachingDiskBranchBetree::State,
+)
+    requires
+        state.refinement_inv(),
+        state.betree.memtable.is_empty(),
+        state.betree.compactors.len() == 0,
+        state.betree.wip_branches.len() == 0,
+    ensures
+        initial_refinement_witness_valid(
+            durable_recovery_disk(state),
+            state.betree.root,
+            state.betree.memtable.seq_end,
+            state.betree.betree_aus,
+            state.betree.branch_aus,
+            state.betree.branch_summary,
+            state.i().betree,
+        ),
+{
+    let disk = durable_recovery_disk(state);
+    let initial = state.i().betree;
+    let durable_addrs = addresses_in_aus(
+        state.betree.durable_aus(),
+    );
+    let betree_addrs = addresses_in_aus(
+        state.betree.betree_aus.dom(),
+    );
+    let branch_addrs = addresses_in_aus(
+        summary_aus(state.betree.branch_summary),
+    );
+    CachingDisk::State::persistent_only_inv(disk.persistent);
+    assert(state.betree.betree_aus.dom()
+        <= state.betree.durable_aus());
+    assert(summary_aus(state.betree.branch_summary)
+        <= state.betree.durable_aus());
+    assert(betree_addrs <= durable_addrs) by {
+        assert forall |addr: Address|
+            #[trigger] betree_addrs.contains(addr)
+            implies durable_addrs.contains(addr) by {
+            assert(state.betree.betree_aus.dom().contains(addr.au));
+            assert(state.betree.durable_aus().contains(addr.au));
+        };
+    }
+    assert(branch_addrs <= durable_addrs) by {
+        assert forall |addr: Address|
+            #[trigger] branch_addrs.contains(addr)
+            implies durable_addrs.contains(addr) by {
+            assert(summary_aus(
+                state.betree.branch_summary,
+            ).contains(addr.au));
+            assert(state.betree.durable_aus().contains(addr.au));
+        };
+    }
+
+    assert(to_betree_nodes(disk.visible()).restrict(betree_addrs)
+        == state.visible_betree_entries()) by {
+        assert_maps_equal!(
+            to_betree_nodes(disk.visible()).restrict(betree_addrs),
+            state.visible_betree_entries(),
+            addr => {
+                if betree_addrs.contains(addr) {
+                    assert(durable_addrs.contains(addr));
+                    assert(disk.visible().contains_key(addr)
+                        <==> state.disk.visible().contains_key(addr));
+                    if state.disk.visible().contains_key(addr) {
+                        assert(disk.visible()[addr]
+                            == state.disk.visible()[addr]);
+                    }
+                }
+            }
+        );
+    }
+    assert(visible_branch_disk(
+        disk,
+        state.betree.branch_summary,
+    ) == state.visible_sealed_branch_disk()) by {
+        assert_maps_equal!(
+            visible_branch_disk(
+                disk,
+                state.betree.branch_summary,
+            ).entries,
+            state.visible_sealed_branch_disk().entries,
+            addr => {
+                if branch_addrs.contains(addr) {
+                    assert(durable_addrs.contains(addr));
+                    assert(disk.visible().contains_key(addr)
+                        <==> state.disk.visible().contains_key(addr));
+                    if state.disk.visible().contains_key(addr) {
+                        assert(disk.visible()[addr]
+                            == state.disk.visible()[addr]);
+                    }
+                }
+            }
+        );
+    }
+
+    state.linked_i_is_tight_candidate();
+    assert(initial_tight_tree(initial)
+        == state.tight_betree_i());
+    assert(initial.linked.buffer_dv
+        == state.semantic_sealed_branch_disk());
+    assert(CompactorInput::input_roots(
+        state.betree.compactors,
+    ) == Set::<Address>::empty());
+    assert(state.semantic_branch_roots()
+        == state.tight_betree_i().reachable_buffer_addrs());
+    assert(initial_tight_tree(initial).reachable_buffer_addrs()
+        == state.semantic_branch_roots());
+    assert(initial.memtable
+        == crate::betree::Memtable_v::Memtable::empty_memtable(
+            state.betree.memtable.seq_end,
+        ));
+    assert(initial.linked.buffer_dv
+        == tight_sealed_branch_disk(
+            visible_branch_disk(
+                disk,
+                state.betree.branch_summary,
+            ),
+            initial_tight_tree(initial).reachable_buffer_addrs(),
+            state.betree.branch_summary,
+        ));
+
+    reveal(AllocationBranchBetree::State::initialize);
+    reveal(LinkedBetreeVars::State::initialize);
+    reveal(AllocationBranchBetree::State::inv);
+    assert(initial.linked.inv());
+    assert(LinkedBetreeVars::State::initialize(
+        initial,
+        initial,
+    ));
+    assert(state.i().betree_aus
+        == to_au_likes(initial.linked.transitive_likes().0));
+    assert(state.i().branch_aus
+        == to_au_likes(initial.linked.transitive_likes().1));
+    assert(state.i().compactors == Seq::<CompactorInput>::empty());
+    assert(state.i().wip_branches
+        == Seq::<AllocationBranch>::empty()) by {
+        assert_seqs_equal!(
+            state.i().wip_branches,
+            Seq::<AllocationBranch>::empty(),
+            idx => {}
+        );
+    }
+    assert(CompactorInput::input_roots(state.i().compactors)
+        == Set::<Address>::empty());
+    assert(state.i().branch_summary =~=
+        initial.linked.buffer_dv.build_branch_summary(
+            initial.linked.transitive_likes().1.dom()
+                + CompactorInput::input_roots(state.i().compactors),
+        ));
+    assert(initial.linked.transitive_likes().1.dom()
+        + CompactorInput::input_roots(state.i().compactors)
+        =~= initial.linked.transitive_likes().1.dom());
+    assert(state.i().branch_summary =~=
+        initial.linked.buffer_dv.build_branch_summary(
+            initial.linked.transitive_likes().1.dom(),
+        ));
+    assert_maps_equal!(
+        state.i().branch_summary,
+        initial.linked.buffer_dv.build_branch_summary(
+            initial.linked.transitive_likes().1.dom(),
+        ),
+        au => {}
+    );
+    assert(AllocationBranchBetree::State::initialize(
+        state.i(),
+        initial,
+    ));
+    reveal(initial_refinement_witness_valid);
+}
+
 // -------------------------------------------------------------------------
 // Step refinements
 // -------------------------------------------------------------------------
@@ -4676,6 +5738,7 @@ impl CachingDiskBranchBetree::State {
             ),
         ensures
             post.refinement_inv(),
+            post.i().betree == initial_betree,
             AllocationBranchBetree::State::initialize(post.i(), post.i().betree),
     {
         reveal(CachingDiskBranchBetree::State::initialize);
@@ -5128,6 +6191,170 @@ impl CachingDiskBranchBetree::State {
         reveal(AllocationBranchBetree::State::internal_noop);
     }
 
+    pub proof fn reclaim_guarded_aus_refines_stutter(
+        pre: Self,
+        post: Self,
+        deallocs: Set<AU>,
+        guard_aus: Set<AU>,
+    )
+        requires
+            pre.refinement_inv(),
+            reclaim_guarded_aus(pre, post, deallocs, guard_aus),
+            (deallocs - guard_aus).disjoint(pre.betree.owned_aus()),
+        ensures
+            post.i() == pre.i(),
+            post.refinement_inv(),
+    {
+        reveal(reclaim_guarded_aus);
+        let aus = deallocs - guard_aus;
+        let betree_addrs =
+            addresses_in_aus(pre.betree.betree_aus.dom());
+        let sealed_addrs = addresses_in_aus(
+            summary_aus(pre.betree.branch_summary),
+        );
+        assert(aus.disjoint(pre.betree.betree_aus.dom()));
+        assert(aus.disjoint(summary_aus(pre.betree.branch_summary)));
+        addresses_in_aus_preserves_disjointness(
+            aus,
+            pre.betree.betree_aus.dom(),
+        );
+        addresses_in_aus_preserves_disjointness(
+            aus,
+            summary_aus(pre.betree.branch_summary),
+        );
+        disk_forget_visible_outside_aus(
+            pre.disk, post.disk, aus, betree_addrs,
+        );
+        disk_forget_visible_outside_aus(
+            pre.disk, post.disk, aus, sealed_addrs,
+        );
+        to_betree_nodes_restrict_agrees(
+            post.disk.visible(), pre.disk.visible(), betree_addrs,
+        );
+        to_branch_nodes_restrict_agrees(
+            post.disk.visible(), pre.disk.visible(), sealed_addrs,
+        );
+        assert(post.visible_betree_entries()
+            == pre.visible_betree_entries());
+        assert(post.visible_sealed_branch_entries()
+            == pre.visible_sealed_branch_entries());
+        assert_seqs_equal!(
+            post.wip_branches_i(),
+            pre.wip_branches_i(),
+            idx => {
+                let cached = pre.betree.wip_branches[idx];
+                let allocated = mini_allocator_allocated_addrs(
+                    cached.mini_allocator,
+                );
+                let allocator_sets = Seq::new(
+                    pre.betree.wip_branches.len(),
+                    |i: int| pre.betree.wip_branches[i]
+                        .mini_allocator.all_aus(),
+                );
+                crate::betree::Utils_v::lemma_subset_union_seq_of_sets(
+                    allocator_sets,
+                    idx,
+                );
+                assert(cached.mini_allocator.all_aus()
+                    <= cached_branch_alloc_aus(
+                        pre.betree.wip_branches,
+                    ));
+                assert(cached_branch_alloc_aus(
+                    pre.betree.wip_branches,
+                ) <= pre.betree.owned_aus());
+                mini_allocator_allocated_addrs_subset_all_aus(
+                    cached.mini_allocator,
+                );
+                addresses_in_aus_preserves_disjointness(
+                    aus,
+                    cached.mini_allocator.all_aus(),
+                );
+                disk_forget_visible_outside_aus(
+                    pre.disk, post.disk, aus, allocated,
+                );
+                to_branch_nodes_restrict_agrees(
+                    post.disk.visible(),
+                    pre.disk.visible(),
+                    allocated,
+                );
+            }
+        );
+        assert(post.i() == pre.i());
+        reclaim_guarded_aus_preserves_inv(
+            pre,
+            post,
+            deallocs,
+            guard_aus,
+        );
+        assert(post.refinement_inv());
+    }
+
+    pub proof fn internal_betree_unchanged_preserves_i(
+        pre: Self,
+        post: Self,
+    )
+        requires
+            pre.refinement_inv(),
+            CachingDiskBranchBetree::State::next(
+                pre,
+                post,
+                CachingDiskBranchBetree::Label::Internal,
+            ),
+            post.betree == pre.betree,
+        ensures
+            post.refinement_inv(),
+            post.i() == pre.i(),
+    {
+        reveal(CachingDiskBranchBetree::State::next);
+        reveal(CachingDiskBranchBetree::State::next_by);
+        let step = choose |step: CachingDiskBranchBetree::Step|
+            CachingDiskBranchBetree::State::next_by(
+                pre,
+                post,
+                CachingDiskBranchBetree::Label::Internal,
+                step,
+            );
+        match step {
+            CachingDiskBranchBetree::Step::disk_internal(new_disk) => {
+                Self::disk_internal_stutters(
+                    pre,
+                    post,
+                    CachingDiskBranchBetree::Label::Internal,
+                    new_disk,
+                );
+            }
+            CachingDiskBranchBetree::Step::compact_begin(
+                new_betree,
+                path,
+                start,
+                end,
+                access,
+            ) => {
+                reveal(CachingDiskBranchBetree::State::compact_begin);
+                reveal(CachedBranchBetree::State::compact_begin);
+                assert(post.betree.compactors.len()
+                    == pre.betree.compactors.len() + 1);
+                assert(false);
+            }
+            CachingDiskBranchBetree::Step::internal_noop() => {
+                Self::internal_noop_stutters(
+                    pre,
+                    post,
+                    CachingDiskBranchBetree::Label::Internal,
+                );
+            }
+            _ => {
+                assert(false);
+            }
+        }
+        CachingDiskBranchBetree::State::inv_next(
+            pre,
+            post,
+            CachingDiskBranchBetree::Label::Internal,
+        );
+        assert(post.refinement_inv());
+    }
+
     proof fn put_refines(
         pre: Self,
         post: Self,
@@ -5234,6 +6461,7 @@ impl CachingDiskBranchBetree::State {
             ),
         ensures
             post.semantic_selector_inv(),
+            access.writes().dom() <= addresses_in_aus(lbl.allocs()),
             AllocationBranchBetree::State::internal_grow(
                 pre.i(),
                 post.i(),
@@ -5247,6 +6475,7 @@ impl CachingDiskBranchBetree::State {
 
         let allocs = lbl.arrow_InternalAlloc_allocs();
         let deallocs = lbl.arrow_InternalAlloc_deallocs();
+        let guard_aus = lbl.arrow_InternalAlloc_guard_aus();
         let reads = access.reads();
         let writes = access.writes();
         let pre_tree = pre.tight_betree_i();
@@ -5260,10 +6489,11 @@ impl CachingDiskBranchBetree::State {
         let witness = disk_access_for_alloc_witness(
             pre.disk,
             new_disk,
-            allocs,
-            deallocs,
-            reads,
-            writes,
+        allocs,
+        deallocs,
+        guard_aus,
+        reads,
+        writes,
         );
 
         pre.linked_i_is_tight_candidate();
@@ -5309,10 +6539,11 @@ impl CachingDiskBranchBetree::State {
         disk_access_for_alloc_visible_outside_alloc_dealloc(
             pre.disk,
             new_disk,
-            allocs,
-            deallocs,
-            reads,
-            writes,
+        allocs,
+        deallocs,
+        guard_aus,
+        reads,
+        writes,
             sealed_addrs,
         );
         to_branch_nodes_restrict_agrees(
@@ -5422,10 +6653,11 @@ impl CachingDiskBranchBetree::State {
             disk_access_for_alloc_visible_outside_alloc_dealloc(
                 pre.disk,
                 new_disk,
-                allocs,
-                deallocs,
-                reads,
-                writes,
+        allocs,
+        deallocs,
+        guard_aus,
+        reads,
+        writes,
                 allocated,
             );
             to_branch_nodes_restrict_agrees(
@@ -5469,6 +6701,7 @@ impl CachingDiskBranchBetree::State {
             ),
         ensures
             post.semantic_selector_inv(),
+            access.writes().dom() <= addresses_in_aus(lbl.allocs()),
             AllocationBranchBetree::State::internal_flush_memtable(
                 pre.i(),
                 post.i(),
@@ -5488,6 +6721,7 @@ impl CachingDiskBranchBetree::State {
 
         let allocs = lbl.arrow_InternalAlloc_allocs();
         let deallocs = lbl.arrow_InternalAlloc_deallocs();
+        let guard_aus = lbl.arrow_InternalAlloc_guard_aus();
         let reads = access.reads();
         let writes = access.writes();
         let betree_reads = access.loaded_betree_reads();
@@ -5507,10 +6741,11 @@ impl CachingDiskBranchBetree::State {
         let witness = disk_access_for_alloc_witness(
             pre.disk,
             new_disk,
-            allocs,
-            deallocs,
-            reads,
-            writes,
+        allocs,
+        deallocs,
+        guard_aus,
+        reads,
+        writes,
         );
 
         assert(0 <= branch_idx < pre.betree.wip_branches.len());
@@ -5581,10 +6816,11 @@ impl CachingDiskBranchBetree::State {
         disk_access_for_alloc_visible_outside_alloc_dealloc(
             pre.disk,
             new_disk,
-            allocs,
-            deallocs,
-            reads,
-            writes,
+        allocs,
+        deallocs,
+        guard_aus,
+        reads,
+        writes,
             branch_allocated,
         );
         to_branch_nodes_restrict_agrees(
@@ -5930,10 +7166,11 @@ impl CachingDiskBranchBetree::State {
         disk_access_for_alloc_visible_outside_alloc_dealloc(
             pre.disk,
             new_disk,
-            allocs,
-            deallocs,
-            reads,
-            writes,
+        allocs,
+        deallocs,
+        guard_aus,
+        reads,
+        writes,
             stable_tree_addrs,
         );
         to_betree_nodes_restrict_agrees(
@@ -6095,10 +7332,11 @@ impl CachingDiskBranchBetree::State {
         disk_access_for_alloc_visible_outside_alloc_dealloc(
             pre.disk,
             new_disk,
-            allocs,
-            deallocs,
-            reads,
-            writes,
+        allocs,
+        deallocs,
+        guard_aus,
+        reads,
+        writes,
             pre_sealed_addrs,
         );
         to_branch_nodes_restrict_agrees(
@@ -6512,10 +7750,11 @@ impl CachingDiskBranchBetree::State {
                 disk_access_for_alloc_visible_outside_alloc_dealloc(
                     pre.disk,
                     new_disk,
-                    allocs,
-                    deallocs,
-                    reads,
-                    writes,
+        allocs,
+        deallocs,
+        guard_aus,
+        reads,
+        writes,
                     allocated,
                 );
                 to_branch_nodes_restrict_agrees(
@@ -6555,6 +7794,7 @@ impl CachingDiskBranchBetree::State {
             ),
         ensures
             post.semantic_selector_inv(),
+            access.writes().dom() <= addresses_in_aus(lbl.allocs()),
             AllocationBranchBetree::State::internal_split(
                 pre.i(),
                 post.i(),
@@ -6581,6 +7821,7 @@ impl CachingDiskBranchBetree::State {
 
         let allocs = lbl.arrow_InternalAlloc_allocs();
         let deallocs = lbl.arrow_InternalAlloc_deallocs();
+        let guard_aus = lbl.arrow_InternalAlloc_guard_aus();
         let reads = access.reads();
         let writes = access.writes();
         let betree_reads = access.loaded_betree_reads();
@@ -6595,10 +7836,11 @@ impl CachingDiskBranchBetree::State {
         let witness = disk_access_for_alloc_witness(
             pre.disk,
             new_disk,
-            allocs,
-            deallocs,
-            reads,
-            writes,
+        allocs,
+        deallocs,
+        guard_aus,
+        reads,
+        writes,
         );
 
         assert(access.only_betree());
@@ -6938,10 +8180,11 @@ impl CachingDiskBranchBetree::State {
         disk_access_for_alloc_visible_outside_alloc_dealloc(
             pre.disk,
             new_disk,
-            allocs,
-            deallocs,
-            reads,
-            writes,
+        allocs,
+        deallocs,
+        guard_aus,
+        reads,
+        writes,
             stable_addrs,
         );
         to_betree_nodes_restrict_agrees(
@@ -7063,10 +8306,11 @@ impl CachingDiskBranchBetree::State {
         disk_access_for_alloc_visible_outside_alloc_dealloc(
             pre.disk,
             new_disk,
-            allocs,
-            deallocs,
-            reads,
-            writes,
+        allocs,
+        deallocs,
+        guard_aus,
+        reads,
+        writes,
             sealed_addrs,
         );
         to_branch_nodes_restrict_agrees(
@@ -7114,10 +8358,11 @@ impl CachingDiskBranchBetree::State {
                 disk_access_for_alloc_visible_outside_alloc_dealloc(
                     pre.disk,
                     new_disk,
-                    allocs,
-                    deallocs,
-                    reads,
-                    writes,
+        allocs,
+        deallocs,
+        guard_aus,
+        reads,
+        writes,
                     allocated,
                 );
                 to_branch_nodes_restrict_agrees(
@@ -7245,6 +8490,7 @@ impl CachingDiskBranchBetree::State {
             ),
         ensures
             post.semantic_selector_inv(),
+            access.writes().dom() <= addresses_in_aus(lbl.allocs()),
             AllocationBranchBetree::State::internal_flush(
                 pre.i(),
                 post.i(),
@@ -7272,6 +8518,7 @@ impl CachingDiskBranchBetree::State {
 
         let allocs = lbl.arrow_InternalAlloc_allocs();
         let deallocs = lbl.arrow_InternalAlloc_deallocs();
+        let guard_aus = lbl.arrow_InternalAlloc_guard_aus();
         let reads = access.reads();
         let writes = access.writes();
         let betree_reads = access.loaded_betree_reads();
@@ -7286,10 +8533,11 @@ impl CachingDiskBranchBetree::State {
         let witness = disk_access_for_alloc_witness(
             pre.disk,
             new_disk,
-            allocs,
-            deallocs,
-            reads,
-            writes,
+        allocs,
+        deallocs,
+        guard_aus,
+        reads,
+        writes,
         );
 
         assert(access.only_betree());
@@ -7689,10 +8937,11 @@ impl CachingDiskBranchBetree::State {
         disk_access_for_alloc_visible_outside_alloc_dealloc(
             pre.disk,
             new_disk,
-            allocs,
-            deallocs,
-            reads,
-            writes,
+        allocs,
+        deallocs,
+        guard_aus,
+        reads,
+        writes,
             stable_addrs,
         );
         to_betree_nodes_restrict_agrees(
@@ -7709,7 +8958,7 @@ impl CachingDiskBranchBetree::State {
         CachingDisk::State::forget_effect(
             witness.accessed,
             new_disk,
-            deallocs,
+            deallocs - guard_aus,
         );
         flushed.tree_likes_domain(flushed.the_ranking());
         crate::allocation_layer::Likes_v::to_au_likes_domain(
@@ -7994,10 +9243,11 @@ impl CachingDiskBranchBetree::State {
         disk_access_for_alloc_visible_outside_alloc_dealloc(
             pre.disk,
             new_disk,
-            allocs,
-            deallocs,
-            reads,
-            writes,
+        allocs,
+        deallocs,
+        guard_aus,
+        reads,
+        writes,
             addresses_in_aus(post_summary_aus),
         );
         to_branch_nodes_restrict_agrees(
@@ -8080,10 +9330,11 @@ impl CachingDiskBranchBetree::State {
                     disk_access_for_alloc_visible_outside_alloc_dealloc(
                         pre.disk,
                         new_disk,
-                        allocs,
-                        deallocs,
-                        reads,
-                        writes,
+        allocs,
+        deallocs,
+        guard_aus,
+        reads,
+        writes,
                         allocated,
                     );
                     to_branch_nodes_restrict_agrees(
@@ -8095,8 +9346,6 @@ impl CachingDiskBranchBetree::State {
             );
         };
         assert(lbl.i(pre) is Internal);
-        assert(lbl.i(pre).arrow_Internal_allocs() == allocs);
-        assert(lbl.i(pre).arrow_Internal_deallocs() == deallocs);
         assert(pre.i().is_fresh(allocs));
         assert(new_addrs.addrs_in_disjoint_aus());
         assert(to_aus(new_addrs.repr()).disjoint(
@@ -8353,6 +9602,8 @@ impl CachingDiskBranchBetree::State {
 
         let allocs = lbl.arrow_InternalAlloc_allocs();
         let deallocs = lbl.arrow_InternalAlloc_deallocs();
+        let guard_aus = lbl.arrow_InternalAlloc_guard_aus();
+        let forgotten_aus = deallocs - guard_aus;
         let new_compactors = pre.betree.compactors.remove(input_idx);
         let released = read_ref_aus(pre.betree.compactors)
             - read_ref_aus(new_compactors);
@@ -8431,14 +9682,15 @@ impl CachingDiskBranchBetree::State {
             };
         };
         assert(pre.betree.betree_aus.dom().disjoint(deallocs));
+        assert(pre.betree.betree_aus.dom().disjoint(forgotten_aus));
         addresses_in_aus_preserves_disjointness(
             pre.betree.betree_aus.dom(),
-            deallocs,
+            forgotten_aus,
         );
         disk_forget_visible_outside_aus(
             pre.disk,
             new_disk,
-            deallocs,
+            forgotten_aus,
             addresses_in_aus(pre.betree.betree_aus.dom()),
         );
         to_betree_nodes_restrict_agrees(
@@ -8537,11 +9789,15 @@ impl CachingDiskBranchBetree::State {
             branch_deallocs,
         );
         assert(post_summary_aus.disjoint(deallocs));
-        addresses_in_aus_preserves_disjointness(post_summary_aus, deallocs);
+        assert(post_summary_aus.disjoint(forgotten_aus));
+        addresses_in_aus_preserves_disjointness(
+            post_summary_aus,
+            forgotten_aus,
+        );
         disk_forget_visible_outside_aus(
             pre.disk,
             new_disk,
-            deallocs,
+            forgotten_aus,
             addresses_in_aus(post_summary_aus),
         );
         to_branch_nodes_restrict_agrees(
@@ -8750,8 +10006,6 @@ impl CachingDiskBranchBetree::State {
         assert(post.i().compactors == new_compactors);
         assert(post.i().betree.memtable == pre.i().betree.memtable);
         assert(lbl.i(pre) is Internal);
-        assert(lbl.i(pre).arrow_Internal_allocs().is_empty());
-        assert(lbl.i(pre).arrow_Internal_deallocs() == deallocs);
         assert(read_ref_aus(pre.i().compactors)
             - read_ref_aus(post.i().compactors) == released);
         assert(released - pre.i().branch_aus.dom() == branch_deallocs);
@@ -8806,17 +10060,20 @@ impl CachingDiskBranchBetree::State {
                 assert(cached.mini_allocator.all_aus()
                     <= pre.i().branch_allocator_aus());
                 assert(deallocs.disjoint(cached.mini_allocator.all_aus()));
+                assert(forgotten_aus.disjoint(
+                    cached.mini_allocator.all_aus(),
+                ));
                 mini_allocator_allocated_addrs_subset_all_aus(
                     cached.mini_allocator,
                 );
                 addresses_in_aus_preserves_disjointness(
-                    deallocs,
+                    forgotten_aus,
                     cached.mini_allocator.all_aus(),
                 );
                 disk_forget_visible_outside_aus(
                     pre.disk,
                     new_disk,
-                    deallocs,
+                    forgotten_aus,
                     allocated,
                 );
                 to_branch_nodes_restrict_agrees(
@@ -8875,6 +10132,7 @@ impl CachingDiskBranchBetree::State {
             ),
         ensures
             post.semantic_selector_inv(),
+            access.writes().dom() <= addresses_in_aus(lbl.allocs()),
             AllocationBranchBetree::State::internal_compact_complete(
                 pre.i(),
                 post.i(),
@@ -8916,6 +10174,7 @@ impl CachingDiskBranchBetree::State {
         };
         let allocs = lbl.arrow_InternalAlloc_allocs();
         let deallocs = lbl.arrow_InternalAlloc_deallocs();
+        let guard_aus = lbl.arrow_InternalAlloc_guard_aus();
         let input_roots = pre.betree.compactors[input_idx]
             .input_buffers.addrs.to_set();
         let branch_reads = access.loaded_branch_reads();
@@ -9002,6 +10261,7 @@ impl CachingDiskBranchBetree::State {
             new_disk,
             allocs,
             deallocs,
+            guard_aus,
             access,
             branch_idx,
             output_branch_reads,
@@ -9011,6 +10271,7 @@ impl CachingDiskBranchBetree::State {
             new_disk,
             allocs,
             deallocs,
+            guard_aus,
             access,
             input_idx,
             input_branch_reads,
@@ -9025,10 +10286,11 @@ impl CachingDiskBranchBetree::State {
         let witness = disk_access_for_alloc_witness(
             pre.disk,
             new_disk,
-            allocs,
-            deallocs,
-            reads,
-            writes,
+        allocs,
+        deallocs,
+        guard_aus,
+        reads,
+        writes,
         );
         let loaded_output_branch = loaded_sealed_branch(
             branch_root,
@@ -9451,10 +10713,11 @@ impl CachingDiskBranchBetree::State {
         disk_access_for_alloc_visible_outside_alloc_dealloc(
             pre.disk,
             new_disk,
-            allocs,
-            deallocs,
-            reads,
-            writes,
+        allocs,
+        deallocs,
+        guard_aus,
+        reads,
+        writes,
             stable_tree_addrs,
         );
         to_betree_nodes_restrict_agrees(
@@ -9471,7 +10734,7 @@ impl CachingDiskBranchBetree::State {
         CachingDisk::State::forget_effect(
             witness.accessed,
             new_disk,
-            deallocs,
+            deallocs - guard_aus,
         );
         compacted.tree_likes_domain(compacted.the_ranking());
         crate::allocation_layer::Likes_v::to_au_likes_domain(
@@ -9917,10 +11180,11 @@ impl CachingDiskBranchBetree::State {
         disk_access_for_alloc_visible_outside_alloc_dealloc(
             pre.disk,
             new_disk,
-            allocs,
-            deallocs,
-            reads,
-            writes,
+        allocs,
+        deallocs,
+        guard_aus,
+        reads,
+        writes,
             addresses_in_aus(post_summary_aus),
         );
         to_branch_nodes_restrict_agrees(
@@ -10388,8 +11652,6 @@ impl CachingDiskBranchBetree::State {
         assert(post.i().betree.linked.buffer_dv.entries
             == full_buffer.entries.restrict(post_buffer_domain));
         assert(lbl.i(pre) is Internal);
-        assert(lbl.i(pre).arrow_Internal_allocs() == allocs);
-        assert(lbl.i(pre).arrow_Internal_deallocs() == deallocs);
         assert(AllocationBranchBetree::State::valid_compactor_input(
             linked_path,
             start,
@@ -10446,10 +11708,11 @@ impl CachingDiskBranchBetree::State {
                 disk_access_for_alloc_visible_outside_alloc_dealloc(
                     pre.disk,
                     new_disk,
-                    allocs,
-                    deallocs,
-                    reads,
-                    writes,
+        allocs,
+        deallocs,
+        guard_aus,
+        reads,
+        writes,
                     allocated,
                 );
                 to_branch_nodes_restrict_agrees(
@@ -10517,6 +11780,9 @@ impl CachingDiskBranchBetree::State {
             ),
         ensures
             post.semantic_selector_inv(),
+            access.writes().dom() <= addresses_in_aus(
+                pre.betree.wip_branches[idx].mini_allocator.all_aus(),
+            ),
             AllocationBranchBetree::State::branch_build(
                 pre.i(),
                 post.i(),
@@ -10537,6 +11803,7 @@ impl CachingDiskBranchBetree::State {
 
         let allocs = lbl.arrow_InternalAlloc_allocs();
         let deallocs = lbl.arrow_InternalAlloc_deallocs();
+        let guard_aus = lbl.arrow_InternalAlloc_guard_aus();
         let reads = access.reads();
         let writes = access.writes();
         let pre_cached = pre.betree.wip_branches[idx];
@@ -10545,10 +11812,11 @@ impl CachingDiskBranchBetree::State {
         let witness = disk_access_for_alloc_witness(
             pre.disk,
             new_disk,
-            allocs,
-            deallocs,
-            reads,
-            writes,
+        allocs,
+        deallocs,
+        guard_aus,
+        reads,
+        writes,
         );
 
         assert(allocs.is_empty());
@@ -10601,6 +11869,7 @@ impl CachingDiskBranchBetree::State {
             pre.disk,
             new_disk,
             deallocs,
+            guard_aus,
             reads,
             writes,
             betree_addrs,
@@ -10609,6 +11878,7 @@ impl CachingDiskBranchBetree::State {
             pre.disk,
             new_disk,
             deallocs,
+            guard_aus,
             reads,
             writes,
             sealed_addrs,
@@ -10673,6 +11943,9 @@ impl CachingDiskBranchBetree::State {
                 });
         }
         assert(post.wip_branch_i(idx) == expected);
+        assert(writes.dom() <= addresses_in_aus(
+            pre_cached.mini_allocator.all_aus(),
+        ));
 
         assert_seqs_equal!(
             post.wip_branches_i(),
@@ -10714,6 +11987,7 @@ impl CachingDiskBranchBetree::State {
                         pre.disk,
                         new_disk,
                         deallocs,
+                        guard_aus,
                         reads,
                         writes,
                         stable,
@@ -10725,6 +11999,14 @@ impl CachingDiskBranchBetree::State {
                     );
                 }
             }
+        );
+        AllocationBranchBetree::State::branch_build_delta_witness(
+            pre.i(),
+            idx,
+            post.i().wip_branches[idx],
+            BuildEvent::Initialize{addr: init_root, keys, msgs},
+            allocs,
+            deallocs,
         );
     }
 
@@ -10756,6 +12038,9 @@ impl CachingDiskBranchBetree::State {
             ),
         ensures
             post.semantic_selector_inv(),
+            access.writes().dom() <= addresses_in_aus(
+                pre.betree.wip_branches[idx].mini_allocator.all_aus(),
+            ),
             AllocationBranchBetree::State::branch_build(
                 pre.i(),
                 post.i(),
@@ -10784,6 +12069,7 @@ impl CachingDiskBranchBetree::State {
 
         let allocs = lbl.arrow_InternalAlloc_allocs();
         let deallocs = lbl.arrow_InternalAlloc_deallocs();
+        let guard_aus = lbl.arrow_InternalAlloc_guard_aus();
         let reads = access.reads();
         let writes = access.writes();
         let read_nodes = access.loaded_branch_reads();
@@ -10807,6 +12093,7 @@ impl CachingDiskBranchBetree::State {
         disk_access_without_alloc_or_dealloc(
             pre.disk,
             new_disk,
+            guard_aus,
             reads,
             writes,
         );
@@ -10919,6 +12206,14 @@ impl CachingDiskBranchBetree::State {
                 }
             }
         );
+        AllocationBranchBetree::State::branch_build_delta_witness(
+            pre.i(),
+            idx,
+            post.i().wip_branches[idx],
+            BuildEvent::Append{keys, msgs, path},
+            allocs,
+            deallocs,
+        );
     }
 
     proof fn branch_grow_refines(
@@ -10947,6 +12242,9 @@ impl CachingDiskBranchBetree::State {
             ),
         ensures
             post.semantic_selector_inv(),
+            access.writes().dom() <= addresses_in_aus(
+                pre.betree.wip_branches[idx].mini_allocator.all_aus(),
+            ),
             AllocationBranchBetree::State::branch_build(
                 pre.i(),
                 post.i(),
@@ -10967,6 +12265,7 @@ impl CachingDiskBranchBetree::State {
 
         let allocs = lbl.arrow_InternalAlloc_allocs();
         let deallocs = lbl.arrow_InternalAlloc_deallocs();
+        let guard_aus = lbl.arrow_InternalAlloc_guard_aus();
         let reads = access.reads();
         let writes = access.writes();
         let write_nodes = access.loaded_branch_writes();
@@ -11009,6 +12308,7 @@ impl CachingDiskBranchBetree::State {
         disk_access_without_alloc_or_dealloc(
             pre.disk,
             new_disk,
+            guard_aus,
             reads,
             writes,
         );
@@ -11071,6 +12371,14 @@ impl CachingDiskBranchBetree::State {
                 }
             }
         );
+        AllocationBranchBetree::State::branch_build_delta_witness(
+            pre.i(),
+            idx,
+            post.i().wip_branches[idx],
+            BuildEvent::Grow{addr: new_root_addr},
+            allocs,
+            deallocs,
+        );
     }
 
     proof fn branch_split_refines(
@@ -11105,6 +12413,9 @@ impl CachingDiskBranchBetree::State {
             ),
         ensures
             post.semantic_selector_inv(),
+            access.writes().dom() <= addresses_in_aus(
+                pre.betree.wip_branches[idx].mini_allocator.all_aus(),
+            ),
             AllocationBranchBetree::State::branch_build(
                 pre.i(),
                 post.i(),
@@ -11133,6 +12444,7 @@ impl CachingDiskBranchBetree::State {
 
         let allocs = lbl.arrow_InternalAlloc_allocs();
         let deallocs = lbl.arrow_InternalAlloc_deallocs();
+        let guard_aus = lbl.arrow_InternalAlloc_guard_aus();
         let reads = access.reads();
         let writes = access.writes();
         let read_nodes = access.loaded_branch_reads();
@@ -11167,6 +12479,7 @@ impl CachingDiskBranchBetree::State {
         disk_access_without_alloc_or_dealloc(
             pre.disk,
             new_disk,
+            guard_aus,
             reads,
             writes,
         );
@@ -11362,6 +12675,18 @@ impl CachingDiskBranchBetree::State {
                 }
             }
         );
+        AllocationBranchBetree::State::branch_build_delta_witness(
+            pre.i(),
+            idx,
+            post.i().wip_branches[idx],
+            BuildEvent::Split{
+                addr: new_child_addr,
+                path,
+                split_arg,
+            },
+            allocs,
+            deallocs,
+        );
     }
 
     proof fn branch_seal_refines(
@@ -11390,6 +12715,9 @@ impl CachingDiskBranchBetree::State {
             ),
         ensures
             post.semantic_selector_inv(),
+            access.writes().dom() <= addresses_in_aus(
+                pre.betree.wip_branches[idx].mini_allocator.all_aus(),
+            ),
             AllocationBranchBetree::State::branch_build(
                 pre.i(),
                 post.i(),
@@ -11410,6 +12738,7 @@ impl CachingDiskBranchBetree::State {
 
         let allocs = lbl.arrow_InternalAlloc_allocs();
         let deallocs = lbl.arrow_InternalAlloc_deallocs();
+        let guard_aus = lbl.arrow_InternalAlloc_guard_aus();
         let reads = access.reads();
         let writes = access.writes();
         let read_nodes = access.loaded_branch_reads();
@@ -11451,6 +12780,7 @@ impl CachingDiskBranchBetree::State {
             new_disk,
             allocs,
             deallocs,
+            guard_aus,
             reads,
             writes,
         );
@@ -11538,10 +12868,13 @@ impl CachingDiskBranchBetree::State {
             post_branch.mini_allocator,
         );
         assert(post_allocated == with_aux_allocated);
+        assert(post_allocated.disjoint(addresses_in_aus(
+            deallocs - guard_aus,
+        )));
         disk_forget_visible_outside_aus(
             witness.accessed,
             new_disk,
-            deallocs,
+            deallocs - guard_aus,
             post_allocated,
         );
         to_branch_nodes_restrict_agrees(
@@ -11647,6 +12980,7 @@ impl CachingDiskBranchBetree::State {
             pre.disk,
             new_disk,
             deallocs,
+            guard_aus,
             reads,
             writes,
             betree_addrs,
@@ -11655,6 +12989,7 @@ impl CachingDiskBranchBetree::State {
             pre.disk,
             new_disk,
             deallocs,
+            guard_aus,
             reads,
             writes,
             sealed_addrs,
@@ -11707,6 +13042,7 @@ impl CachingDiskBranchBetree::State {
                         pre.disk,
                         new_disk,
                         deallocs,
+                        guard_aus,
                         reads,
                         writes,
                         stable,
@@ -11718,6 +13054,14 @@ impl CachingDiskBranchBetree::State {
                     );
                 }
             }
+        );
+        AllocationBranchBetree::State::branch_build_delta_witness(
+            pre.i(),
+            idx,
+            post.i().wip_branches[idx],
+            BuildEvent::Seal{aux_ptr},
+            allocs,
+            deallocs,
         );
     }
 
@@ -11748,6 +13092,8 @@ impl CachingDiskBranchBetree::State {
         reveal(AllocationBranchBetree::State::branch_begin);
 
         let allocs = lbl.arrow_InternalAlloc_allocs();
+        let deallocs = lbl.arrow_InternalAlloc_deallocs();
+        let guard_aus = lbl.arrow_InternalAlloc_guard_aus();
         pre.wip_alloc_aus_agree();
         assert(pre.i().branch_allocator_aus()
             == cached_branch_alloc_aus(pre.betree.wip_branches));
@@ -11808,6 +13154,8 @@ impl CachingDiskBranchBetree::State {
         reveal(AllocationBranch::build_next);
 
         let allocs = lbl.arrow_InternalAlloc_allocs();
+        let deallocs = lbl.arrow_InternalAlloc_deallocs();
+        let guard_aus = lbl.arrow_InternalAlloc_guard_aus();
         let pre_cached = pre.betree.wip_branches[idx];
         let pre_branch = pre.wip_branch_i(idx);
         pre.wip_alloc_aus_agree();
@@ -11914,6 +13262,14 @@ impl CachingDiskBranchBetree::State {
                 }
             }
         );
+        AllocationBranchBetree::State::branch_build_delta_witness(
+            pre.i(),
+            idx,
+            post.i().wip_branches[idx],
+            BuildEvent::AllocFill{},
+            allocs,
+            deallocs,
+        );
     }
 
     proof fn branch_abort_refines(
@@ -11949,6 +13305,8 @@ impl CachingDiskBranchBetree::State {
 
         assert(post.disk == new_disk);
         let deallocs = lbl.arrow_InternalAlloc_deallocs();
+        let guard_aus = lbl.arrow_InternalAlloc_guard_aus();
+        let forgotten_aus = deallocs - guard_aus;
         let betree_addrs = addresses_in_aus(pre.betree.betree_aus.dom());
         let sealed_addrs = addresses_in_aus(
             summary_aus(pre.betree.branch_summary),
@@ -11958,21 +13316,28 @@ impl CachingDiskBranchBetree::State {
         assert(deallocs <= pre.i().branch_allocator_aus());
         assert(pre.i().betree_aus.dom().disjoint(deallocs));
         assert(summary_aus(pre.i().branch_summary).disjoint(deallocs));
-        addresses_in_aus_preserves_disjointness(deallocs, pre.betree.betree_aus.dom());
+        assert(forgotten_aus.disjoint(pre.betree.betree_aus.dom()));
+        assert(forgotten_aus.disjoint(
+            summary_aus(pre.betree.branch_summary),
+        ));
         addresses_in_aus_preserves_disjointness(
-            deallocs,
+            forgotten_aus,
+            pre.betree.betree_aus.dom(),
+        );
+        addresses_in_aus_preserves_disjointness(
+            forgotten_aus,
             summary_aus(pre.betree.branch_summary),
         );
         disk_forget_visible_outside_aus(
             pre.disk,
             new_disk,
-            deallocs,
+            forgotten_aus,
             betree_addrs,
         );
         disk_forget_visible_outside_aus(
             pre.disk,
             new_disk,
-            deallocs,
+            forgotten_aus,
             sealed_addrs,
         );
         to_betree_nodes_restrict_agrees(
@@ -12004,14 +13369,17 @@ impl CachingDiskBranchBetree::State {
                 assert(pre.i().wip_branches[pre_idx].mini_allocator.all_aus()
                     .disjoint(pre.i().wip_branches[idx].mini_allocator.all_aus()));
                 assert(cached.mini_allocator.all_aus().disjoint(deallocs));
+                assert(cached.mini_allocator.all_aus().disjoint(
+                    forgotten_aus,
+                ));
                 addresses_in_aus_preserves_disjointness(
-                    deallocs,
+                    forgotten_aus,
                     cached.mini_allocator.all_aus(),
                 );
                 disk_forget_visible_outside_aus(
                     pre.disk,
                     new_disk,
-                    deallocs,
+                    forgotten_aus,
                     allocated,
                 );
                 to_branch_nodes_restrict_agrees(

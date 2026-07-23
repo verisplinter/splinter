@@ -26,13 +26,13 @@ impl LikesBetree::State {
         self.betree
     }
 
-    proof fn init_refines(self, v: LinkedBetreeVars::State<SimpleBuffer>) 
+    pub proof fn init_refines(self, v: LinkedBetreeVars::State<SimpleBuffer>)
         requires LikesBetree::State::initialize(self, v)
         ensures LinkedBetreeVars::State::initialize(self.i(), v)
     {
     }
 
-    proof fn next_refines(pre: Self, post: Self, lbl: LikesBetree::Label) -> (istep: LinkedBetreeVars::Step<SimpleBuffer>)
+    pub proof fn next_refines(pre: Self, post: Self, lbl: LikesBetree::Label) -> (istep: LinkedBetreeVars::Step<SimpleBuffer>)
         requires 
         pre.inv(),
             post.inv(),

@@ -30,7 +30,7 @@ impl AllocationBranchBetree::Label {
     {
         match self {
             Self::Label{linked_lbl} => { AllocationBetree::Label::Label{linked_lbl} }
-            Self::Internal{..} =>  { AllocationBetree::Label::Label{linked_lbl: LinkedBetreeVars::Label::Internal{}} }
+            Self::Internal =>  { AllocationBetree::Label::Label{linked_lbl: LinkedBetreeVars::Label::Internal{}} }
         }
     }
 } // end impl AllocationBranchBetree::Label
@@ -418,7 +418,14 @@ impl AllocationBranchBetree::State {
         }
     }
 
-    proof fn init_refines(self, v: LinkedBetreeVars::State<BranchNode>) 
+    pub proof fn i_inv(self)
+        requires self.inv()
+        ensures self.i().inv()
+    {
+        self.betree.linked.i_valid();
+    }
+
+    pub proof fn init_refines(self, v: LinkedBetreeVars::State<BranchNode>)
         requires self.inv(), AllocationBranchBetree::State::initialize(self, v), 
         ensures AllocationBetree::State::initialize(self.i(), v.i()), 
     {
@@ -1073,7 +1080,7 @@ impl AllocationBranchBetree::State {
         ));
     }
 
-    proof fn next_refines(pre: Self, post: Self, lbl: AllocationBranchBetree::Label) 
+    pub proof fn next_refines(pre: Self, post: Self, lbl: AllocationBranchBetree::Label)
         requires 
             pre.inv(),
             post.inv(),

@@ -7,12 +7,12 @@ use vstd::prelude::*;
 use vstd::prelude::*;
 use vstd::map::*;
 use crate::spec::KeyType_t::Key;
-use crate::spec::Messages_t::{Message, default_value};
+use crate::spec::Messages_t::{Message, default_value, nop_delta};
 use crate::spec::TotalKMMap_t::TotalKMMap;
 use crate::abstract_system::StampedMap_v::{Stamped, StampedMap};
 use crate::abstract_system::MsgHistory_v::{KeyedMessage, MsgHistory};
 use crate::abstract_system::AbstractMap_v::AbstractMap;
-use crate::betree::PagedBetree_v::{BetreeNode, PagedBetree, Path, QueryReceipt, QueryReceiptLine, StampedBetree};
+use crate::betree::PagedBetree_v::{BetreeNode, ChildMap, PagedBetree, Path, QueryReceipt, QueryReceiptLine, StampedBetree};
 use crate::betree::Buffer_v::{Buffer, SimpleBuffer, all_keys, total_keys};
 use crate::betree::Memtable_v::Memtable;
 
@@ -72,6 +72,36 @@ impl BetreeNode {
     pub open spec(checked) fn i(self) -> TotalKMMap
     {
         TotalKMMap(Map::new(|k: Key| true, |k| self.i_at(k)))
+    }
+
+    pub proof fn empty_root_i_is_empty()
+        ensures Self::empty_root().i() == TotalKMMap::empty()
+    {
+        let root = Self::empty_root();
+        reveal(BetreeNode::wf);
+        reveal(ChildMap::wf);
+        assert(total_keys(root->children.map.dom()));
+        assert forall |key: Key|
+            (#[trigger] root->children.map[key]).wf() by {
+            assert(root->children.map[key] is Nil);
+        }
+        assert(root.wf());
+        assert_maps_equal!(
+            root.i().0,
+            TotalKMMap::empty().0,
+            key => {
+                let child = root.child(key);
+                assert(child is Nil);
+                let child_receipt = child.build_query_receipt(key);
+                assert(child_receipt.result() == Message::empty());
+                assert(root->buffer.query(key)
+                    == Message::Update{delta: nop_delta()});
+                assert(root.build_query_receipt(key).result()
+                    == Message::empty().merge(
+                        Message::Update{delta: nop_delta()},
+                    ));
+            }
+        );
     }
 
     proof fn memtable_distributes_over_betree(self, memtable: Memtable)
@@ -312,7 +342,18 @@ impl PagedBetree::State {
         AbstractMap::State{stamped_map: i_stamped_betree(self.root.push_memtable(self.memtable))}
     }
 
-    proof fn init_refines(self, stamped_betree: StampedBetree) 
+    pub proof fn empty_i_is_empty(self)
+        requires
+            self.root is Nil,
+            self.memtable == Memtable::empty_memtable(0),
+        ensures self.i().stamped_map == crate::abstract_system::StampedMap_v::empty()
+    {
+        BetreeNode::empty_root_i_is_empty();
+        assert(self.root.push_memtable(self.memtable).value
+            == BetreeNode::empty_root());
+    }
+
+    pub proof fn init_refines(self, stamped_betree: StampedBetree)
         requires PagedBetree::State::initialize(self, stamped_betree)
         ensures self.inv(), AbstractMap::State::initialize(self.i(), i_stamped_betree(stamped_betree))
     {
@@ -500,7 +541,7 @@ impl PagedBetree::State {
         assert(AbstractMap::State::next_by(self.i(), post.i(), lbl.i(), AbstractMap::Step::internal())); // trigger
     }
 
-    proof fn next_refines(self, post: Self, lbl: PagedBetree::Label)
+    pub proof fn next_refines(self, post: Self, lbl: PagedBetree::Label)
         requires self.inv(), PagedBetree::State::next(self, post, lbl),
         ensures post.inv(), AbstractMap::State::next(self.i(), post.i(), lbl.i()),
     {

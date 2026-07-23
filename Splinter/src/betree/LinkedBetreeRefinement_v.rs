@@ -885,7 +885,14 @@ impl LinkedBetreeVars::State<SimpleBuffer> {
         FilteredBetree::State{root: self.linked.i(), memtable: self.memtable}
     }
 
-    proof fn init_refines(self, v: Self) 
+    pub proof fn i_inv(self)
+        requires self.inv()
+        ensures self.i().inv()
+    {
+        self.linked.i_wf();
+    }
+
+    pub proof fn init_refines(self, v: Self)
         requires
             LinkedBetreeVars::State::initialize(self, v)
         ensures
@@ -1084,7 +1091,7 @@ impl LinkedBetreeVars::State<SimpleBuffer> {
         self.linked.i_wf();
     }
 
-    proof fn next_by_refines(self, post: Self, lbl: LinkedBetreeVars::Label, step: LinkedBetreeVars::Step<SimpleBuffer>)
+    pub proof fn next_by_refines(self, post: Self, lbl: LinkedBetreeVars::Label, step: LinkedBetreeVars::Step<SimpleBuffer>)
         requires 
             self.inv(), 
             post.inv(), 

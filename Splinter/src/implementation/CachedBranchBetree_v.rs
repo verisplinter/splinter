@@ -591,6 +591,307 @@ pub open spec fn cached_branch_alloc_aus(branches: Seq<CachedAllocationBranch>) 
     crate::betree::Utils_v::union_seq_of_sets(aus)
 }
 
+pub proof fn cached_branch_alloc_aus_contains(
+    branches: Seq<CachedAllocationBranch>,
+    au: AU,
+) -> (idx: int)
+    requires cached_branch_alloc_aus(branches).contains(au)
+    ensures
+        0 <= idx < branches.len(),
+        branches[idx].mini_allocator.all_aus().contains(au),
+{
+    let sets = Seq::new(
+        branches.len(),
+        |i: int| branches[i].mini_allocator.all_aus(),
+    );
+    crate::betree::Utils_v::lemma_union_seq_of_sets_contains(
+        sets,
+        au,
+    );
+    let idx = choose |idx: int|
+        0 <= idx < sets.len() && sets[idx].contains(au);
+    idx
+}
+
+pub proof fn cached_branch_alloc_aus_update_subset(
+    branches: Seq<CachedAllocationBranch>,
+    idx: int,
+    update: CachedAllocationBranch,
+    extra: Set<AU>,
+)
+    requires
+        0 <= idx < branches.len(),
+        update.mini_allocator.all_aus()
+            <= branches[idx].mini_allocator.all_aus() + extra,
+    ensures
+        cached_branch_alloc_aus(branches.update(idx, update))
+            <= cached_branch_alloc_aus(branches) + extra,
+{
+    let updated = branches.update(idx, update);
+    assert forall |au: AU|
+        #[trigger] cached_branch_alloc_aus(updated).contains(au)
+        implies (cached_branch_alloc_aus(branches) + extra).contains(au)
+    by {
+        let source_idx = cached_branch_alloc_aus_contains(updated, au);
+        if source_idx == idx {
+            if !extra.contains(au) {
+                let sets = Seq::new(
+                    branches.len(),
+                    |i: int| branches[i].mini_allocator.all_aus(),
+                );
+                assert(sets[idx].contains(au));
+                crate::betree::Utils_v::lemma_set_subset_of_union_seq_of_sets(
+                    sets,
+                    au,
+                );
+            }
+        } else {
+            let sets = Seq::new(
+                branches.len(),
+                |i: int| branches[i].mini_allocator.all_aus(),
+            );
+            assert(updated[source_idx] == branches[source_idx]);
+            assert(sets[source_idx].contains(au));
+            crate::betree::Utils_v::lemma_set_subset_of_union_seq_of_sets(
+                sets,
+                au,
+            );
+        }
+    };
+}
+
+pub proof fn cached_branch_alloc_aus_remove_subset(
+    branches: Seq<CachedAllocationBranch>,
+    idx: int,
+)
+    requires 0 <= idx < branches.len()
+    ensures
+        cached_branch_alloc_aus(branches.remove(idx))
+            <= cached_branch_alloc_aus(branches),
+{
+    let removed = branches.remove(idx);
+    assert forall |au: AU|
+        #[trigger] cached_branch_alloc_aus(removed).contains(au)
+        implies cached_branch_alloc_aus(branches).contains(au)
+    by {
+        let removed_idx = cached_branch_alloc_aus_contains(removed, au);
+        let source_idx = if removed_idx < idx {
+            removed_idx
+        } else {
+            removed_idx + 1
+        };
+        assert(0 <= source_idx < branches.len());
+        assert(branches[source_idx] == removed[removed_idx]);
+        let sets = Seq::new(
+            branches.len(),
+            |i: int| branches[i].mini_allocator.all_aus(),
+        );
+        assert(sets[source_idx].contains(au));
+        crate::betree::Utils_v::lemma_set_subset_of_union_seq_of_sets(
+            sets,
+            au,
+        );
+    };
+}
+
+pub proof fn cached_branch_alloc_aus_push_subset(
+    branches: Seq<CachedAllocationBranch>,
+    append: CachedAllocationBranch,
+    extra: Set<AU>,
+)
+    requires append.mini_allocator.all_aus() <= extra
+    ensures
+        cached_branch_alloc_aus(branches.push(append))
+            <= cached_branch_alloc_aus(branches) + extra,
+{
+    let pushed = branches.push(append);
+    assert forall |au: AU|
+        #[trigger] cached_branch_alloc_aus(pushed).contains(au)
+        implies (cached_branch_alloc_aus(branches) + extra).contains(au)
+    by {
+        let pushed_idx = cached_branch_alloc_aus_contains(pushed, au);
+        if pushed_idx < branches.len() {
+            assert(pushed[pushed_idx] == branches[pushed_idx]);
+            let sets = Seq::new(
+                branches.len(),
+                |i: int| branches[i].mini_allocator.all_aus(),
+            );
+            assert(sets[pushed_idx].contains(au));
+            crate::betree::Utils_v::lemma_set_subset_of_union_seq_of_sets(
+                sets,
+                au,
+            );
+        } else {
+            assert(pushed_idx == branches.len());
+            assert(pushed[pushed_idx] == append);
+        }
+    };
+}
+
+pub proof fn cached_allocation_branch_build_all_aus_subset(
+    pre: CachedAllocationBranch,
+    post: CachedAllocationBranch,
+    event: CachedAllocationBranchEvent,
+    allocs: Set<AU>,
+    deallocs: Set<AU>,
+)
+    requires
+        pre.mini_allocator.wf(),
+        CachedAllocationBranch::build_next(
+            pre,
+            post,
+            event,
+            allocs,
+            deallocs,
+        ),
+    ensures
+        post.mini_allocator.all_aus()
+            <= pre.mini_allocator.all_aus() + allocs,
+{
+    reveal(CachedAllocationBranch::build_next);
+    match event {
+        CachedAllocationBranchEvent::AllocFill{} => {
+            crate::implementation::AllocationBranchStack_v::
+                mini_allocator_add_aus_preserves_all_aus(
+                    pre.mini_allocator,
+                    allocs,
+                );
+        }
+        CachedAllocationBranchEvent::Append{..} => {}
+        CachedAllocationBranchEvent::Initialize{init_root, ..} => {
+            reveal(CachedBranch::State::next);
+            reveal(CachedBranch::State::next_by);
+            let step = choose |step: CachedBranch::Step|
+                CachedBranch::State::next_by(
+                    pre.branch,
+                    post.branch,
+                    CachedBranch::Label::Initialize{
+                        mini_allocator: pre.mini_allocator,
+                        init_root,
+                        keys: event.arrow_Initialize_keys(),
+                        msgs: event.arrow_Initialize_msgs(),
+                        write_nodes: event.arrow_Initialize_write_nodes(),
+                    },
+                    step,
+                );
+            match step {
+                CachedBranch::Step::initialize_branch() => {
+                    reveal(CachedBranch::State::initialize_branch);
+                    reveal(CachedBranch::State::can_initialize);
+                }
+                _ => {
+                    assert(false);
+                }
+            }
+            crate::implementation::AllocationBranchStack_v::
+                mini_allocator_allocate_preserves_all_aus(
+                    pre.mini_allocator,
+                    init_root,
+                );
+        }
+        CachedAllocationBranchEvent::Grow{new_root_addr, ..} => {
+            reveal(CachedBranch::State::next);
+            reveal(CachedBranch::State::next_by);
+            let step = choose |step: CachedBranch::Step|
+                CachedBranch::State::next_by(
+                    pre.branch,
+                    post.branch,
+                    CachedBranch::Label::Grow{
+                        mini_allocator: pre.mini_allocator,
+                        new_root_addr,
+                        read_nodes: event.arrow_Grow_read_nodes(),
+                        write_nodes: event.arrow_Grow_write_nodes(),
+                    },
+                    step,
+                );
+            match step {
+                CachedBranch::Step::grow_step() => {
+                    reveal(CachedBranch::State::grow_step);
+                    reveal(CachedBranch::State::can_grow);
+                }
+                _ => {
+                    assert(false);
+                }
+            }
+            crate::implementation::AllocationBranchStack_v::
+                mini_allocator_allocate_preserves_all_aus(
+                    pre.mini_allocator,
+                    new_root_addr,
+                );
+        }
+        CachedAllocationBranchEvent::Split{new_child_addr, ..} => {
+            reveal(CachedBranch::State::next);
+            reveal(CachedBranch::State::next_by);
+            let step = choose |step: CachedBranch::Step|
+                CachedBranch::State::next_by(
+                    pre.branch,
+                    post.branch,
+                    CachedBranch::Label::Split{
+                        mini_allocator: pre.mini_allocator,
+                        new_child_addr,
+                        receipt: event.arrow_Split_receipt(),
+                        split_arg: event.arrow_Split_split_arg(),
+                        read_nodes: event.arrow_Split_read_nodes(),
+                        write_nodes: event.arrow_Split_write_nodes(),
+                    },
+                    step,
+                );
+            match step {
+                CachedBranch::Step::split_step() => {
+                    reveal(CachedBranch::State::split_step);
+                    reveal(CachedBranch::State::can_split);
+                }
+                _ => {
+                    assert(false);
+                }
+            }
+            crate::implementation::AllocationBranchStack_v::
+                mini_allocator_allocate_preserves_all_aus(
+                    pre.mini_allocator,
+                    new_child_addr,
+                );
+        }
+        CachedAllocationBranchEvent::Seal{aux_ptr, ..} => {
+            let with_aux = if aux_ptr is Some {
+                pre.mini_allocator.allocate(aux_ptr.unwrap())
+            } else {
+                pre.mini_allocator
+            };
+            if aux_ptr is Some {
+                reveal(CachedBranch::State::next);
+                reveal(CachedBranch::State::next_by);
+                let step = choose |step: CachedBranch::Step|
+                    CachedBranch::State::next_by(
+                        pre.branch,
+                        post.branch,
+                        CachedBranch::Label::Seal{
+                            mini_allocator: pre.mini_allocator,
+                            aux_ptr,
+                            read_nodes: event.arrow_Seal_read_nodes(),
+                            write_nodes: event.arrow_Seal_write_nodes(),
+                        },
+                        step,
+                    );
+                match step {
+                    CachedBranch::Step::seal_step() => {
+                        reveal(CachedBranch::State::seal_step);
+                        reveal(CachedBranch::State::can_seal);
+                    }
+                    _ => {
+                        assert(false);
+                    }
+                }
+                crate::implementation::AllocationBranchStack_v::
+                    mini_allocator_allocate_preserves_all_aus(
+                        pre.mini_allocator,
+                        aux_ptr.unwrap(),
+                    );
+            }
+            with_aux.prune_preserves_wf(deallocs);
+        }
+    }
+}
+
 pub struct FrozenBranchBetree {
     pub root: Pointer,
     pub seq_end: LSN,
@@ -619,6 +920,19 @@ state_machine! { CachedBranchBetree {
         &&& self.betree_aus.dom().disjoint(aus)
         &&& summary_aus(self.branch_summary).disjoint(aus)
         &&& cached_branch_alloc_aus(self.wip_branches).disjoint(aus)
+    }
+
+    pub open spec fn owned_aus(self) -> Set<AU> {
+        self.betree_aus.dom()
+            + self.branch_aus.dom()
+            + summary_aus(self.branch_summary)
+            + cached_branch_alloc_aus(self.wip_branches)
+    }
+
+    pub open spec fn durable_aus(self) -> Set<AU> {
+        self.betree_aus.dom()
+            + self.branch_aus.dom()
+            + summary_aus(self.branch_summary)
     }
 
     init! { initialize(
@@ -974,5 +1288,115 @@ state_machine! { CachedBranchBetree {
         require lbl is Internal;
     }}
 }}
+
+impl CachedBranchBetree::Label {
+    pub open spec fn allocs(self) -> Set<AU> {
+        match self {
+            CachedBranchBetree::Label::InternalAlloc{allocs, ..} =>
+                allocs,
+            _ => Set::empty(),
+        }
+    }
+}
+
+impl CachedBranchBetree::State {
+    pub proof fn next_wip_alloc_aus_subset(
+        pre: Self,
+        post: Self,
+        lbl: CachedBranchBetree::Label,
+    )
+        requires
+            CachedBranchBetree::State::next(pre, post, lbl),
+            forall |idx: int| 0 <= idx < pre.wip_branches.len() ==>
+                (#[trigger] pre.wip_branches[idx]).mini_allocator.wf(),
+        ensures
+            cached_branch_alloc_aus(post.wip_branches)
+                <= cached_branch_alloc_aus(pre.wip_branches)
+                    + lbl.allocs(),
+    {
+        reveal(CachedBranchBetree::State::next);
+        reveal(CachedBranchBetree::State::next_by);
+        let step = choose |step: CachedBranchBetree::Step|
+            CachedBranchBetree::State::next_by(
+                pre,
+                post,
+                lbl,
+                step,
+            );
+        match step {
+            CachedBranchBetree::Step::branch_begin() => {
+                reveal(CachedBranchBetree::State::branch_begin);
+                let appended = CachedAllocationBranch::new(Set::empty());
+                assert(appended.mini_allocator.all_aus().is_empty());
+                cached_branch_alloc_aus_push_subset(
+                    pre.wip_branches,
+                    appended,
+                    lbl.allocs(),
+                );
+            }
+            CachedBranchBetree::Step::branch_build(
+                idx,
+                post_branch,
+                event,
+            ) => {
+                reveal(CachedBranchBetree::State::branch_build);
+                cached_allocation_branch_build_all_aus_subset(
+                    pre.wip_branches[idx],
+                    post_branch,
+                    event,
+                    lbl.allocs(),
+                    lbl.arrow_InternalAlloc_deallocs(),
+                );
+                cached_branch_alloc_aus_update_subset(
+                    pre.wip_branches,
+                    idx,
+                    post_branch,
+                    lbl.allocs(),
+                );
+            }
+            CachedBranchBetree::Step::branch_abort(idx) => {
+                reveal(CachedBranchBetree::State::branch_abort);
+                cached_branch_alloc_aus_remove_subset(
+                    pre.wip_branches,
+                    idx,
+                );
+            }
+            CachedBranchBetree::Step::flush_memtable(
+                branch_idx,
+                new_root_addr,
+                betree_reads,
+                betree_writes,
+                branch_reads,
+            ) => {
+                reveal(CachedBranchBetree::State::flush_memtable);
+                cached_branch_alloc_aus_remove_subset(
+                    pre.wip_branches,
+                    branch_idx,
+                );
+            }
+            CachedBranchBetree::Step::compact_complete(
+                input_idx,
+                branch_idx,
+                path,
+                start,
+                end,
+                new_node_addr,
+                path_addrs,
+                betree_reads,
+                betree_writes,
+                branch_reads,
+            ) => {
+                reveal(CachedBranchBetree::State::compact_complete);
+                cached_branch_alloc_aus_remove_subset(
+                    pre.wip_branches,
+                    branch_idx,
+                );
+            }
+            _ => {
+                assert(post.wip_branches == pre.wip_branches);
+            }
+        }
+    }
+}
 
 } // verus!

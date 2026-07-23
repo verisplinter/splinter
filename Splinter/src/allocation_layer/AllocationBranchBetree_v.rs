@@ -180,7 +180,7 @@ state_machine!{ AllocationBranchBetree {
     pub enum Label
     {
         Label{linked_lbl: LinkedBetreeVars::Label},
-        Internal{allocs: Set<AU>, deallocs: Set<AU>}, // internal label
+        Internal,
     }
 
     pub open spec fn is_fresh(self, aus: Set<AU>) -> bool
@@ -231,26 +231,30 @@ state_machine!{ AllocationBranchBetree {
 
     transition!{ internal_noop(lbl: Label) {
         require lbl is Internal;
-        require lbl->allocs.is_empty();
-        require lbl->deallocs.is_empty();
     }}
 
     transition!{ branch_begin(lbl: Label) {
         require lbl is Internal;
-        require lbl->allocs.is_empty();
-        require lbl->deallocs.is_empty();
 
         let branch = AllocationBranch::new(Set::empty());
         update wip_branches = pre.wip_branches.push(branch);
     }}
 
     // may involve allocation and deallocation
-    transition!{ branch_build(lbl: Label, idx: int, post_branch: AllocationBranch, event: BuildEvent) {
+    transition!{ branch_build(
+        lbl: Label,
+        idx: int,
+        post_branch: AllocationBranch,
+        event: BuildEvent,
+    ) {
         require lbl is Internal;
-        require pre.is_fresh(lbl->allocs);
         require 0 <= idx < pre.wip_branches.len();
-
-        require AllocationBranch::build_next(pre.wip_branches[idx], post_branch, event, lbl->allocs, lbl->deallocs);
+        require exists |allocs: Set<AU>, deallocs: Set<AU>| {
+            &&& pre.is_fresh(allocs)
+            &&& AllocationBranch::build_next(
+                pre.wip_branches[idx], post_branch, event, allocs, deallocs,
+            )
+        };
         update wip_branches = pre.wip_branches.update(idx, post_branch);
     }}
 
@@ -258,14 +262,12 @@ state_machine!{ AllocationBranchBetree {
     transition!{ branch_abort(lbl: Label, idx: int) {
         require lbl is Internal;
         require 0 <= idx < pre.wip_branches.len();
-        require lbl->allocs.is_empty();
-        require lbl->deallocs == pre.wip_branches[idx].mini_allocator.all_aus();
         update wip_branches = pre.wip_branches.remove(idx);
     }}
 
     transition!{ internal_flush_memtable(lbl: Label, new_betree: LinkedBetreeVars::State<BranchNode>, branch_idx: int, new_root_addr: Address) {
         require lbl is Internal;
-        require pre.is_fresh(lbl->allocs);
+        require pre.is_fresh(Set::empty().insert(new_root_addr.au));
         require 0 <= branch_idx < pre.wip_branches.len();
         require pre.wip_branches[branch_idx].branch_sealed();
 
@@ -279,9 +281,6 @@ state_machine!{ AllocationBranchBetree {
         let (new_betree_aus, new_branch_aus) = AllocationBetree::State::flush_memtable_au_likes(
                 pre.betree, new_betree, linked_new_addrs, pre.betree_aus, pre.branch_aus);
         let new_branch_summary = pre.branch_summary.insert(new_branch.root.au, new_branch.get_summary());
-
-        require lbl->allocs == Set::empty().insert(new_root_addr.au);
-        require lbl->deallocs == pre.betree_aus.dom() - new_betree_aus.dom();
 
         // define the domain removing old betree root
         let pre_buffer_dv = pre.betree.linked.buffer_dv;
@@ -297,9 +296,7 @@ state_machine!{ AllocationBranchBetree {
 
     transition!{ internal_grow(lbl: Label, new_betree: LinkedBetreeVars::State<BranchNode>, new_root_addr: Address) {
         require lbl is Internal;
-        require pre.is_fresh(lbl->allocs);
-        require lbl->allocs == Set::empty().insert(new_root_addr.au);
-        require lbl->deallocs.is_empty();
+        require pre.is_fresh(Set::empty().insert(new_root_addr.au));
 
         require LinkedBetreeVars::State::internal_grow(pre.betree, new_betree, Internal, new_root_addr);
 
@@ -310,7 +307,9 @@ state_machine!{ AllocationBranchBetree {
     transition!{ internal_split(lbl: Label, new_betree: LinkedBetreeVars::State<BranchNode>, path: Path<BranchNode>, 
         request: SplitRequest, new_addrs: SplitAddrs, path_addrs: PathAddrs) {
         require lbl is Internal;
-        require pre.is_fresh(lbl->allocs);
+        require pre.is_fresh(
+            to_aus(new_addrs.repr()) + seq_addrs_to_aus(path_addrs),
+        );
         require new_addrs.addrs_in_disjoint_aus();
         require to_aus(new_addrs.repr()).disjoint(seq_addrs_to_aus(path_addrs));
         require seq_addrs_disjoint_aus(path_addrs);
@@ -321,9 +320,6 @@ state_machine!{ AllocationBranchBetree {
         let splitted = LinkedBetreeVars::State::post_split(path, request, new_addrs, path_addrs);
         let (new_betree_aus, new_branch_aus) = AllocationBetree::State::internal_split_au_likes(
             path, request, new_addrs, path_addrs, pre.betree_aus, pre.branch_aus);
-
-        require lbl->allocs == to_aus(new_addrs.repr()) + seq_addrs_to_aus(path_addrs);
-        require lbl->deallocs == pre.betree_aus.dom() - new_betree_aus.dom();
 
         require restrict_domain_au(splitted.dv.entries, new_betree_aus.dom()) == new_betree.linked.dv.entries.dom();
         require pre.betree.linked.buffer_dv == new_betree.linked.buffer_dv;
@@ -336,7 +332,9 @@ state_machine!{ AllocationBranchBetree {
     transition!{ internal_flush(lbl: Label, new_betree: LinkedBetreeVars::State<BranchNode>, path: Path<BranchNode>, 
         child_idx: nat, buffer_gc: nat, new_addrs: TwoAddrs, path_addrs: PathAddrs) {
         require lbl is Internal;
-        require pre.is_fresh(lbl->allocs);
+        require pre.is_fresh(
+            to_aus(new_addrs.repr()) + seq_addrs_to_aus(path_addrs),
+        );
         require new_addrs.addrs_in_disjoint_aus();
         require to_aus(new_addrs.repr()).disjoint(seq_addrs_to_aus(path_addrs));
         require seq_addrs_disjoint_aus(path_addrs);
@@ -355,9 +353,6 @@ state_machine!{ AllocationBranchBetree {
 
         let dealloc_branch_summary = pre.branch_summary.restrict(branch_deallocs);
         let summary_deallocs_aus = summary_aus(dealloc_branch_summary);
-
-        require lbl->allocs == to_aus(new_addrs.repr()) + seq_addrs_to_aus(path_addrs);
-        require lbl->deallocs == tree_deallocs + summary_deallocs_aus;
 
         require restrict_domain_au(flushed.dv.entries, new_betree_aus.dom()) == new_betree.linked.dv.entries.dom();
         require restrict_domain_au(pre.betree.linked.buffer_dv.entries, new_summary_aus) == new_betree.linked.buffer_dv.repr();
@@ -386,8 +381,6 @@ state_machine!{ AllocationBranchBetree {
 
     transition!{ internal_compact_begin(lbl: Label, path: Path<BranchNode>, start: nat, end: nat, input: CompactorInput) {
         require lbl is Internal;
-        require lbl->allocs.is_empty();
-        require lbl->deallocs.is_empty();
 
         require path.linked == pre.betree.linked;
         require Self::valid_compactor_input(path, start, end, input);
@@ -405,9 +398,6 @@ state_machine!{ AllocationBranchBetree {
         let new_branch_summary = pre.branch_summary.remove_keys(dealloc_read_refs);
         let dealloc_branch_summary = pre.branch_summary.restrict(dealloc_read_refs);
         let new_summary_aus = summary_aus(new_branch_summary);
-
-        require lbl->allocs.is_empty();
-        require lbl->deallocs == summary_aus(dealloc_branch_summary);
 
         let pre_buffer_dv = pre.betree.linked.buffer_dv;
         let new_domain = restrict_domain_au(pre_buffer_dv.entries, new_summary_aus);
@@ -431,7 +421,9 @@ state_machine!{ AllocationBranchBetree {
     transition!{ internal_compact_complete(lbl: Label, new_betree: LinkedBetreeVars::State<BranchNode>, 
         path: Path<BranchNode>, start: nat, end: nat, input_idx: int, branch_idx: int, new_node_addr: Address, path_addrs: PathAddrs) {
         require lbl is Internal;
-        require pre.is_fresh(lbl->allocs);
+        require pre.is_fresh(
+            seq_addrs_to_aus(path_addrs).insert(new_node_addr.au),
+        );
         require !seq_addrs_to_aus(path_addrs).contains(new_node_addr.au);
         require seq_addrs_disjoint_aus(path_addrs);
 
@@ -463,9 +455,6 @@ state_machine!{ AllocationBranchBetree {
         let dealloc_branch_summary = pre.branch_summary.restrict(branch_deallocs);
         let summary_deallocs_aus = summary_aus(dealloc_branch_summary);
 
-        require lbl->allocs == seq_addrs_to_aus(path_addrs).insert(new_node_addr.au);
-        require lbl->deallocs == tree_deallocs + summary_deallocs_aus;
-
         // domain should just 
         let pre_buffer_dv = pre.betree.linked.buffer_dv;
         let full_buffer_dv = pre_buffer_dv.entries.union_prefer_right(new_branch.disk_view.entries);
@@ -481,6 +470,57 @@ state_machine!{ AllocationBranchBetree {
         update compactors = new_compactors;
         update wip_branches = pre.wip_branches.remove(branch_idx);
     }}
+
+    pub proof fn branch_build_delta_witness(
+        pre: Self,
+        idx: int,
+        post_branch: AllocationBranch,
+        event: BuildEvent,
+        allocs: Set<AU>,
+        deallocs: Set<AU>,
+    )
+        requires
+            pre.is_fresh(allocs),
+            0 <= idx < pre.wip_branches.len(),
+            AllocationBranch::build_next(
+                pre.wip_branches[idx],
+                post_branch,
+                event,
+                allocs,
+                deallocs,
+            ),
+        ensures
+            exists |witness_allocs: Set<AU>, witness_deallocs: Set<AU>| {
+                &&& pre.is_fresh(witness_allocs)
+                &&& AllocationBranch::build_next(
+                    pre.wip_branches[idx],
+                    post_branch,
+                    event,
+                    witness_allocs,
+                    witness_deallocs,
+                )
+            },
+    {
+        assert(exists |witness_allocs: Set<AU>, witness_deallocs: Set<AU>| {
+            &&& pre.is_fresh(witness_allocs)
+            &&& AllocationBranch::build_next(
+                pre.wip_branches[idx],
+                post_branch,
+                event,
+                witness_allocs,
+                witness_deallocs,
+            )
+        }) by {
+            assert(pre.is_fresh(allocs));
+            assert(AllocationBranch::build_next(
+                pre.wip_branches[idx],
+                post_branch,
+                event,
+                allocs,
+                deallocs,
+            ));
+        };
+    }
 
     pub open spec fn wip_branches_inv(self) -> bool
     {
@@ -574,29 +614,44 @@ state_machine!{ AllocationBranchBetree {
 
         AllocationBranch::alloc_aus_append(pre.wip_branches, post.wip_branches.last());
         post.wip_branches.last().alloc_aus_singleton();
-        assert(post.branch_allocator_aus() == pre.branch_allocator_aus() + lbl->allocs);
+        assert(post.branch_allocator_aus() == pre.branch_allocator_aus());
 
         broadcast use AllocationBranch::alloc_aus_ensures;
         assert(post.inv());
     }
    
     #[inductive(branch_build)]
-    fn branch_build_inductive(pre: Self, post: Self, lbl: Label, idx: int, post_branch: AllocationBranch, event: BuildEvent) {
-        AllocationBranch::build_next_preserves_inv(pre.wip_branches[idx], post_branch, event, lbl->allocs, lbl->deallocs);
+    fn branch_build_inductive(
+        pre: Self,
+        post: Self,
+        lbl: Label,
+        idx: int,
+        post_branch: AllocationBranch,
+        event: BuildEvent,
+    ) {
+        let (allocs, deallocs) = choose |allocs: Set<AU>, deallocs: Set<AU>| {
+            &&& pre.is_fresh(allocs)
+            &&& AllocationBranch::build_next(
+                pre.wip_branches[idx], post_branch, event, allocs, deallocs,
+            )
+        };
+        AllocationBranch::build_next_preserves_inv(
+            pre.wip_branches[idx], post_branch, event, allocs, deallocs,
+        );
         broadcast use AllocationBranch::alloc_aus_ensures;
 
         match event {
             BuildEvent::AllocFill{} => {
-                assert(post_branch.mini_allocator.all_aus() - lbl->allocs == pre.wip_branches[idx].mini_allocator.all_aus());
+                assert(post_branch.mini_allocator.all_aus() - allocs == pre.wip_branches[idx].mini_allocator.all_aus());
                 AllocationBranch::alloc_aus_update(pre.wip_branches, idx, post_branch);
-                assert(pre.branch_allocator_aus() + lbl->allocs =~= post.branch_allocator_aus());
+                assert(pre.branch_allocator_aus() + allocs =~= post.branch_allocator_aus());
                 assert(post.wip_branches_disjoint());
             }
             BuildEvent::Seal{aux_ptr} => {
-                assert(pre.wip_branches[idx].mini_allocator.all_aus() - lbl->deallocs == post_branch.mini_allocator.all_aus());
+                assert(pre.wip_branches[idx].mini_allocator.all_aus() - deallocs == post_branch.mini_allocator.all_aus());
                 AllocationBranch::alloc_aus_update(post.wip_branches, idx, pre.wip_branches[idx]);
                 assert(post.wip_branches.update(idx, pre.wip_branches[idx]) == pre.wip_branches); // trigger
-                assert(pre.branch_allocator_aus() =~= post.branch_allocator_aus() + lbl->deallocs);
+                assert(pre.branch_allocator_aus() =~= post.branch_allocator_aus() + deallocs);
 
                 assert(forall |i|  0 <= i < post.wip_branches.len() ==> 
                     #[trigger] post.wip_branches[i].mini_allocator.all_aus() 
@@ -834,10 +889,11 @@ state_machine!{ AllocationBranchBetree {
             assert(add_betree_likes(new_addrs, path_addrs).dom() =~= new_addrs.repr() + path_addrs.to_set());
             to_au_likes_domain(add_betree_likes(new_addrs, path_addrs));
         }
-        assert(lbl->allocs =~= to_aus(new_addrs.repr() + path_addrs.to_set())) by {
+        let allocs = to_aus(new_addrs.repr()) + seq_addrs_to_aus(path_addrs);
+        assert(allocs =~= to_aus(new_addrs.repr() + path_addrs.to_set())) by {
             to_aus_additive(new_addrs.repr(), path_addrs.to_set());
         }
-        assert(add_betree_aus.dom() == lbl->allocs);
+        assert(add_betree_aus.dom() == allocs);
         assert(post.inv());
     }
     
@@ -921,7 +977,8 @@ state_machine!{ AllocationBranchBetree {
             to_au_likes_domain(add_betree_likes(new_addrs, path_addrs));
         }
 
-        assert(lbl->allocs =~= to_aus(new_addrs.repr() + path_addrs.to_set())) by {
+        let allocs = to_aus(new_addrs.repr()) + seq_addrs_to_aus(path_addrs);
+        assert(allocs =~= to_aus(new_addrs.repr() + path_addrs.to_set())) by {
             to_aus_additive(new_addrs.repr(), path_addrs.to_set());
         }
 
@@ -1160,7 +1217,8 @@ state_machine!{ AllocationBranchBetree {
         let add_betree_aus = to_au_likes(compact_add_betree(linked_new_addrs, path_addrs));
         // assert(post.betree_aus <= pre.betree_aus.add(add_betree_aus));
         // assert(post.betree_aus.dom() <= pre.betree_aus.add(add_betree_aus).dom());
-        assert(lbl->allocs =~= add_betree_aus.dom()) by {
+        let allocs = seq_addrs_to_aus(path_addrs).insert(new_node_addr.au);
+        assert(allocs =~= add_betree_aus.dom()) by {
             path_addrs.to_multiset_ensures();
             to_au_likes_domain(compact_add_betree(linked_new_addrs, path_addrs));
             assert(compact_add_betree(linked_new_addrs, path_addrs).dom() 

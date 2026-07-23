@@ -726,7 +726,14 @@ impl PivotBetree::State {
         PagedBetree::State{root: self.root.i(), memtable: self.memtable}
     }
 
-    proof fn init_refines(self, stamped_betree: StampedBetree) 
+    pub proof fn i_inv(self)
+        requires self.inv()
+        ensures self.i().inv()
+    {
+        self.root.i_wf();
+    }
+
+    pub proof fn init_refines(self, stamped_betree: StampedBetree)
         requires PivotBetree::State::initialize(self, stamped_betree)
         ensures PagedBetree::State::initialize(self.i(), i_stamped_betree(stamped_betree))
     {
@@ -856,7 +863,7 @@ impl PivotBetree::State {
         assert(PagedBetree::State::next_by(self.i(), post.i(), lbl.i(), PagedBetree::Step::internal_noop())); // trigger
     }
 
-    proof fn next_refines(self, post: Self, lbl: PivotBetree::Label)
+    pub proof fn next_refines(self, post: Self, lbl: PivotBetree::Label)
         requires self.inv(), PivotBetree::State::next(self, post, lbl),
         ensures post.inv(), PagedBetree::State::next(self.i(), post.i(), lbl.i()),
     {

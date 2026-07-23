@@ -195,6 +195,7 @@ pub open spec fn disk_access_for_alloc(
     post: CachingDisk::State,
     allocs: Set<AU>,
     deallocs: Set<AU>,
+    guard_aus: Set<AU>,
     reads: Map<Address, RawPage>,
     writes: Map<Address, RawPage>,
 ) -> bool {
@@ -208,7 +209,7 @@ pub open spec fn disk_access_for_alloc(
         &&& CachingDisk::State::next(
             witness.accessed,
             post,
-            CachingDisk::Label::Forget{aus: deallocs},
+            CachingDisk::Label::Forget{aus: deallocs - guard_aus},
         )
     }
 }
@@ -218,10 +219,13 @@ pub proof fn disk_access_for_alloc_preserves_inv(
     post: CachingDisk::State,
     allocs: Set<AU>,
     deallocs: Set<AU>,
+    guard_aus: Set<AU>,
     reads: Map<Address, RawPage>,
     writes: Map<Address, RawPage>,
 )
-    requires disk_access_for_alloc(pre, post, allocs, deallocs, reads, writes)
+    requires disk_access_for_alloc(
+        pre, post, allocs, deallocs, guard_aus, reads, writes,
+    )
     ensures post.inv()
 {
     let witness = choose |witness: DiskAccessWitness| {
@@ -234,7 +238,7 @@ pub proof fn disk_access_for_alloc_preserves_inv(
         &&& CachingDisk::State::next(
             witness.accessed,
             post,
-            CachingDisk::Label::Forget{aus: deallocs},
+            CachingDisk::Label::Forget{aus: deallocs - guard_aus},
         )
     };
     CachingDisk::State::inv_next(
@@ -245,7 +249,7 @@ pub proof fn disk_access_for_alloc_preserves_inv(
     CachingDisk::State::inv_next(
         witness.accessed,
         post,
-        CachingDisk::Label::Forget{aus: deallocs},
+        CachingDisk::Label::Forget{aus: deallocs - guard_aus},
     );
 }
 
@@ -254,10 +258,13 @@ pub proof fn disk_access_for_alloc_witness(
     post: CachingDisk::State,
     allocs: Set<AU>,
     deallocs: Set<AU>,
+    guard_aus: Set<AU>,
     reads: Map<Address, RawPage>,
     writes: Map<Address, RawPage>,
 ) -> (witness: DiskAccessWitness)
-    requires disk_access_for_alloc(pre, post, allocs, deallocs, reads, writes)
+    requires disk_access_for_alloc(
+        pre, post, allocs, deallocs, guard_aus, reads, writes,
+    )
     ensures
         disk_extend_for_alloc(pre, witness.expanded, allocs),
         CachingDisk::State::next(
@@ -268,13 +275,13 @@ pub proof fn disk_access_for_alloc_witness(
         CachingDisk::State::next(
             witness.accessed,
             post,
-            CachingDisk::Label::Forget{aus: deallocs},
+            CachingDisk::Label::Forget{aus: deallocs - guard_aus},
         ),
         reads <= witness.expanded.cache,
         witness.accessed.visible()
             == witness.expanded.visible().union_prefer_right(writes),
         post.visible() == witness.accessed.visible().remove_keys(
-            addresses_in_aus(deallocs),
+            addresses_in_aus(deallocs - guard_aus),
         ),
 {
     let witness = choose |witness: DiskAccessWitness| {
@@ -287,7 +294,7 @@ pub proof fn disk_access_for_alloc_witness(
         &&& CachingDisk::State::next(
             witness.accessed,
             post,
-            CachingDisk::Label::Forget{aus: deallocs},
+            CachingDisk::Label::Forget{aus: deallocs - guard_aus},
         )
     };
     CachingDisk::State::access_visible_effect(
@@ -296,7 +303,11 @@ pub proof fn disk_access_for_alloc_witness(
         reads,
         writes,
     );
-    CachingDisk::State::forget_effect(witness.accessed, post, deallocs);
+    CachingDisk::State::forget_effect(
+        witness.accessed,
+        post,
+        deallocs - guard_aus,
+    );
     witness
 }
 
@@ -305,22 +316,25 @@ pub proof fn disk_access_for_alloc_visible_outside_alloc_dealloc(
     post: CachingDisk::State,
     allocs: Set<AU>,
     deallocs: Set<AU>,
+    guard_aus: Set<AU>,
     reads: Map<Address, RawPage>,
     writes: Map<Address, RawPage>,
     stable_addrs: Set<Address>,
 )
     requires
         pre.inv(),
-        disk_access_for_alloc(pre, post, allocs, deallocs, reads, writes),
+        disk_access_for_alloc(
+            pre, post, allocs, deallocs, guard_aus, reads, writes,
+        ),
         writes.dom() <= addresses_in_aus(allocs),
         stable_addrs.disjoint(addresses_in_aus(allocs)),
-        stable_addrs.disjoint(addresses_in_aus(deallocs)),
+        stable_addrs.disjoint(addresses_in_aus(deallocs - guard_aus)),
     ensures
         post.visible().restrict(stable_addrs)
             == pre.visible().restrict(stable_addrs),
 {
     let witness = disk_access_for_alloc_witness(
-        pre, post, allocs, deallocs, reads, writes,
+        pre, post, allocs, deallocs, guard_aus, reads, writes,
     );
     disk_extend_visible_outside_allocs(
         pre,
@@ -335,7 +349,9 @@ pub proof fn disk_access_for_alloc_visible_outside_alloc_dealloc(
             if stable_addrs.contains(addr) {
                 assert(!addresses_in_aus(allocs).contains(addr));
                 assert(!writes.contains_key(addr));
-                assert(!addresses_in_aus(deallocs).contains(addr));
+                assert(!addresses_in_aus(
+                    deallocs - guard_aus,
+                ).contains(addr));
                 assert(witness.accessed.visible()
                     == witness.expanded.visible().union_prefer_right(writes));
                 if pre.visible().contains_key(addr) {
@@ -351,7 +367,7 @@ pub proof fn disk_access_for_alloc_visible_outside_alloc_dealloc(
                 if post.visible().contains_key(addr) {
                     assert(post.visible()
                         == witness.accessed.visible().remove_keys(
-                            addresses_in_aus(deallocs),
+                            addresses_in_aus(deallocs - guard_aus),
                         ));
                     assert(witness.accessed.visible().contains_key(addr));
                     assert(witness.expanded.visible().contains_key(addr));
@@ -369,6 +385,7 @@ pub proof fn disk_access_empty_alloc_visible_stable(
     pre: CachingDisk::State,
     post: CachingDisk::State,
     deallocs: Set<AU>,
+    guard_aus: Set<AU>,
     reads: Map<Address, RawPage>,
     writes: Map<Address, RawPage>,
     stable_addrs: Set<Address>,
@@ -380,11 +397,12 @@ pub proof fn disk_access_empty_alloc_visible_stable(
             post,
             Set::empty(),
             deallocs,
+            guard_aus,
             reads,
             writes,
         ),
         stable_addrs.disjoint(writes.dom()),
-        stable_addrs.disjoint(addresses_in_aus(deallocs)),
+        stable_addrs.disjoint(addresses_in_aus(deallocs - guard_aus)),
     ensures
         post.visible().restrict(stable_addrs)
             == pre.visible().restrict(stable_addrs),
@@ -394,6 +412,7 @@ pub proof fn disk_access_empty_alloc_visible_stable(
         post,
         Set::empty(),
         deallocs,
+        guard_aus,
         reads,
         writes,
     );
@@ -404,9 +423,47 @@ pub proof fn disk_access_empty_alloc_visible_stable(
         addr => {
             if stable_addrs.contains(addr) {
                 assert(!writes.contains_key(addr));
-                assert(!addresses_in_aus(deallocs).contains(addr));
+                assert(!addresses_in_aus(
+                    deallocs - guard_aus,
+                ).contains(addr));
             }
         }
+    );
+}
+
+pub open spec fn reclaim_guarded_aus(
+    pre: CachingDiskBranchBetree::State,
+    post: CachingDiskBranchBetree::State,
+    deallocs: Set<AU>,
+    guard_aus: Set<AU>,
+) -> bool {
+    &&& post.betree == pre.betree
+    &&& CachingDisk::State::next(
+        pre.disk,
+        post.disk,
+        CachingDisk::Label::Forget{
+            aus: deallocs - guard_aus,
+        },
+    )
+}
+
+pub proof fn reclaim_guarded_aus_preserves_inv(
+    pre: CachingDiskBranchBetree::State,
+    post: CachingDiskBranchBetree::State,
+    deallocs: Set<AU>,
+    guard_aus: Set<AU>,
+)
+    requires
+        pre.inv(),
+        reclaim_guarded_aus(pre, post, deallocs, guard_aus),
+    ensures post.inv(),
+{
+    CachingDisk::State::inv_next(
+        pre.disk,
+        post.disk,
+        CachingDisk::Label::Forget{
+            aus: deallocs - guard_aus,
+        },
     );
 }
 
@@ -645,7 +702,11 @@ state_machine! { CachingDiskBranchBetree {
         Put{puts: MsgHistory},
         FreezeAs{image: FrozenBranchBetree},
         Internal,
-        InternalAlloc{allocs: Set<AU>, deallocs: Set<AU>},
+        InternalAlloc{
+            allocs: Set<AU>,
+            deallocs: Set<AU>,
+            guard_aus: Set<AU>,
+        },
     }
 
     init! { initialize(
@@ -721,7 +782,9 @@ state_machine! { CachingDiskBranchBetree {
         lbl: Label,
         new_betree: CachedBranchBetree::State,
     ) {
-        require let Label::InternalAlloc{allocs, deallocs} = lbl;
+        require let Label::InternalAlloc{
+            allocs, deallocs, guard_aus,
+        } = lbl;
         require CachedBranchBetree::State::branch_begin(
             pre.betree,
             new_betree,
@@ -738,7 +801,9 @@ state_machine! { CachingDiskBranchBetree {
         idx: int,
         post_branch: CachedAllocationBranch,
     ) {
-        require let Label::InternalAlloc{allocs, deallocs} = lbl;
+        require let Label::InternalAlloc{
+            allocs, deallocs, guard_aus,
+        } = lbl;
         require CachedBranchBetree::State::branch_build(
             pre.betree,
             new_betree,
@@ -762,13 +827,16 @@ state_machine! { CachingDiskBranchBetree {
         event: BranchBuildEvent,
         access: PageAccess,
     ) {
-        require let Label::InternalAlloc{allocs, deallocs} = lbl;
+        require let Label::InternalAlloc{
+            allocs, deallocs, guard_aus,
+        } = lbl;
         require access.only_branch();
         require disk_access_for_alloc(
             pre.disk,
             new_disk,
             allocs,
             deallocs,
+            guard_aus,
             access.reads(),
             access.writes(),
         );
@@ -791,7 +859,9 @@ state_machine! { CachingDiskBranchBetree {
         new_disk: CachingDisk::State,
         idx: int,
     ) {
-        require let Label::InternalAlloc{allocs, deallocs} = lbl;
+        require let Label::InternalAlloc{
+            allocs, deallocs, guard_aus,
+        } = lbl;
         require CachedBranchBetree::State::branch_abort(
             pre.betree,
             new_betree,
@@ -801,7 +871,9 @@ state_machine! { CachingDiskBranchBetree {
         require CachingDisk::State::next(
             pre.disk,
             new_disk,
-            CachingDisk::Label::Forget{aus: deallocs},
+            CachingDisk::Label::Forget{
+                aus: deallocs - guard_aus,
+            },
         );
 
         update betree = new_betree;
@@ -816,7 +888,9 @@ state_machine! { CachingDiskBranchBetree {
         new_root_addr: Address,
         access: PageAccess,
     ) {
-        require let Label::InternalAlloc{allocs, deallocs} = lbl;
+        require let Label::InternalAlloc{
+            allocs, deallocs, guard_aus,
+        } = lbl;
         require access.wf();
         require access.branch_writes.is_empty();
         require disk_access_for_alloc(
@@ -824,6 +898,7 @@ state_machine! { CachingDiskBranchBetree {
             new_disk,
             allocs,
             deallocs,
+            guard_aus,
             access.reads(),
             access.writes(),
         );
@@ -849,13 +924,16 @@ state_machine! { CachingDiskBranchBetree {
         new_root_addr: Address,
         access: PageAccess,
     ) {
-        require let Label::InternalAlloc{allocs, deallocs} = lbl;
+        require let Label::InternalAlloc{
+            allocs, deallocs, guard_aus,
+        } = lbl;
         require access.only_betree();
         require disk_access_for_alloc(
             pre.disk,
             new_disk,
             allocs,
             deallocs,
+            guard_aus,
             access.reads(),
             access.writes(),
         );
@@ -881,13 +959,16 @@ state_machine! { CachingDiskBranchBetree {
         path_addrs: PathAddrs,
         access: PageAccess,
     ) {
-        require let Label::InternalAlloc{allocs, deallocs} = lbl;
+        require let Label::InternalAlloc{
+            allocs, deallocs, guard_aus,
+        } = lbl;
         require access.only_betree();
         require disk_access_for_alloc(
             pre.disk,
             new_disk,
             allocs,
             deallocs,
+            guard_aus,
             access.reads(),
             access.writes(),
         );
@@ -918,13 +999,16 @@ state_machine! { CachingDiskBranchBetree {
         path_addrs: PathAddrs,
         access: PageAccess,
     ) {
-        require let Label::InternalAlloc{allocs, deallocs} = lbl;
+        require let Label::InternalAlloc{
+            allocs, deallocs, guard_aus,
+        } = lbl;
         require access.only_betree();
         require disk_access_for_alloc(
             pre.disk,
             new_disk,
             allocs,
             deallocs,
+            guard_aus,
             access.reads(),
             access.writes(),
         );
@@ -980,7 +1064,9 @@ state_machine! { CachingDiskBranchBetree {
         new_disk: CachingDisk::State,
         input_idx: int,
     ) {
-        require let Label::InternalAlloc{allocs, deallocs} = lbl;
+        require let Label::InternalAlloc{
+            allocs, deallocs, guard_aus,
+        } = lbl;
         require CachedBranchBetree::State::compact_abort(
             pre.betree,
             new_betree,
@@ -990,7 +1076,9 @@ state_machine! { CachingDiskBranchBetree {
         require CachingDisk::State::next(
             pre.disk,
             new_disk,
-            CachingDisk::Label::Forget{aus: deallocs},
+            CachingDisk::Label::Forget{
+                aus: deallocs - guard_aus,
+            },
         );
 
         update betree = new_betree;
@@ -1010,7 +1098,9 @@ state_machine! { CachingDiskBranchBetree {
         path_addrs: PathAddrs,
         access: PageAccess,
     ) {
-        require let Label::InternalAlloc{allocs, deallocs} = lbl;
+        require let Label::InternalAlloc{
+            allocs, deallocs, guard_aus,
+        } = lbl;
         require access.wf();
         require access.branch_writes.is_empty();
         require disk_access_for_alloc(
@@ -1018,6 +1108,7 @@ state_machine! { CachingDiskBranchBetree {
             new_disk,
             allocs,
             deallocs,
+            guard_aus,
             access.reads(),
             access.writes(),
         );
@@ -1152,6 +1243,7 @@ state_machine! { CachingDiskBranchBetree {
             new_disk,
             lbl.arrow_InternalAlloc_allocs(),
             lbl.arrow_InternalAlloc_deallocs(),
+            lbl.arrow_InternalAlloc_guard_aus(),
             access.reads(),
             access.writes(),
         );
@@ -1171,7 +1263,8 @@ state_machine! { CachingDiskBranchBetree {
             pre.disk,
             new_disk,
             CachingDisk::Label::Forget{
-                aus: lbl.arrow_InternalAlloc_deallocs(),
+                aus: lbl.arrow_InternalAlloc_deallocs()
+                    - lbl.arrow_InternalAlloc_guard_aus(),
             },
         );
         assert(post.disk == new_disk);
@@ -1193,6 +1286,7 @@ state_machine! { CachingDiskBranchBetree {
             new_disk,
             lbl.arrow_InternalAlloc_allocs(),
             lbl.arrow_InternalAlloc_deallocs(),
+            lbl.arrow_InternalAlloc_guard_aus(),
             access.reads(),
             access.writes(),
         );
@@ -1214,6 +1308,7 @@ state_machine! { CachingDiskBranchBetree {
             new_disk,
             lbl.arrow_InternalAlloc_allocs(),
             lbl.arrow_InternalAlloc_deallocs(),
+            lbl.arrow_InternalAlloc_guard_aus(),
             access.reads(),
             access.writes(),
         );
@@ -1238,6 +1333,7 @@ state_machine! { CachingDiskBranchBetree {
             new_disk,
             lbl.arrow_InternalAlloc_allocs(),
             lbl.arrow_InternalAlloc_deallocs(),
+            lbl.arrow_InternalAlloc_guard_aus(),
             access.reads(),
             access.writes(),
         );
@@ -1263,6 +1359,7 @@ state_machine! { CachingDiskBranchBetree {
             new_disk,
             lbl.arrow_InternalAlloc_allocs(),
             lbl.arrow_InternalAlloc_deallocs(),
+            lbl.arrow_InternalAlloc_guard_aus(),
             access.reads(),
             access.writes(),
         );
@@ -1296,7 +1393,8 @@ state_machine! { CachingDiskBranchBetree {
             pre.disk,
             new_disk,
             CachingDisk::Label::Forget{
-                aus: lbl.arrow_InternalAlloc_deallocs(),
+                aus: lbl.arrow_InternalAlloc_deallocs()
+                    - lbl.arrow_InternalAlloc_guard_aus(),
             },
         );
         assert(post.disk == new_disk);
@@ -1323,6 +1421,7 @@ state_machine! { CachingDiskBranchBetree {
             new_disk,
             lbl.arrow_InternalAlloc_allocs(),
             lbl.arrow_InternalAlloc_deallocs(),
+            lbl.arrow_InternalAlloc_guard_aus(),
             access.reads(),
             access.writes(),
         );

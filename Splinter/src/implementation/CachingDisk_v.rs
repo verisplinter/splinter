@@ -239,6 +239,32 @@ state_machine!{ CachingDisk {
         reveal(CachingDisk::State::aus_clean_or_evictable);
     }
 
+    pub proof fn aus_clean_or_evictable_implies_persistent_visible_agree(
+        self,
+        aus: Set<AU>,
+    )
+        requires
+            self.inv(),
+            self.aus_clean_or_evictable(aus),
+        ensures
+            self.persistent_visible_agree_on(addresses_in_aus(aus)),
+    {
+        let addrs = addresses_in_aus(aus);
+        assert_maps_equal!(
+            self.persistent.restrict(addrs),
+            self.visible().restrict(addrs),
+            addr => {
+                if addrs.contains(addr)
+                    && self.cache.contains_key(addr)
+                {
+                    assert(aus.contains(addr.au));
+                    self.au_clean_or_evictable(aus, addr);
+                    self.clean_page_agrees(addr);
+                }
+            }
+        );
+    }
+
     pub proof fn addr_clean_or_evictable(self, addrs: Set<Address>, addr: Address)
         requires
             self.addrs_clean_or_evictable(addrs),

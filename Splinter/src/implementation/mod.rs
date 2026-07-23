@@ -31,6 +31,8 @@ pub mod CachedBranch_v;
 pub mod CachedBranchBetree_v;
 pub mod CachingDiskBranchBetree_v;
 pub mod CachingDiskBranchBetreeRefinement_v;
+pub mod CrashAwareCachingDiskBranchBetree_v;
+pub mod CrashAwareCachingDiskBranchBetreeRefinement_v;
 pub mod AllocationBranchStack_v;
 pub mod AllocationBranchStackRefinement_v;
 pub mod CrashAwareAllocationBranchStack_v;

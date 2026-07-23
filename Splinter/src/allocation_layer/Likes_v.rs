@@ -33,6 +33,11 @@ verus!{
         }
     }
 
+    pub proof fn to_au_likes_empty()
+        ensures to_au_likes(Multiset::empty()) == Multiset::<AU>::empty()
+    {
+    }
+
     pub proof fn to_au_likes_domain(likes: Likes)
         ensures 
             forall |addr| #[trigger] likes.contains(addr) ==> 
@@ -241,4 +246,3 @@ verus!{
     //     }
     // }
 }
-
