@@ -63,7 +63,8 @@ use crate::implementation::JournalImpl_v::{
     UnifiedRecoverIndexResult, UnifiedRecoverMapResult,
 };
 use crate::implementation::SuperblockTypes_v::{
-    ISuperblock, ISuperblockBranchImage, ISuperblockJournalImage,
+    ISuperblock, ISuperblockBetreeImage, ISuperblockBranchImage,
+    ISuperblockJournalImage,
 };
 use crate::implementation::JournalTypes_v::{journal_marshall_labels, to_journal_records};
 use crate::implementation::MiniAllocatorImpl_v::MiniAllocatorImpl;
@@ -72,7 +73,7 @@ use crate::implementation::UnifiedCacheProgramModel_v::UnifiedCacheProgramModel;
 use crate::implementation::UnifiedCacheJournalRefinement_v as UnifiedCacheJournalRefinement;
 use crate::implementation::UnifiedCacheSystemRefinement_v as UnifiedCacheSystemRefinement;
 use crate::implementation::UnifiedCacheSystem_v::{
-    AtomicSyncPhase, UnifiedCacheSystem, cache_write_response_addrs, valid_request_reply_pair,
+    AtomicSyncPhase, UnifiedCacheSystem, valid_request_reply_pair,
 };
 use crate::spec::AsyncDisk_t::{DiskRequest, DiskResponse, RawPage};
 use crate::spec::ImplDisk_t::{IAddress, IAU, IPage, IDiskGeometry, IDiskRequest, IDiskResponse};
@@ -3563,7 +3564,10 @@ impl Implementation {
                 },
                 branch: ISuperblockBranchImage {
                     roots,
-                    seq_end: branch_seq_end as u64,
+                    betree: ISuperblockBetreeImage {
+                        root: None,
+                        seq_end: branch_seq_end as u64,
+                    },
                 },
             },
         };
@@ -6776,7 +6780,8 @@ impl Implementation {
                 let bootstrap_au = bootstrap_alloc_au(self.disk_au_count);
                 self.persistent_journal_seq_end = superblock.payload.journal.seq_end;
                 self.journal = JournalImpl::new(superblock.payload.journal.snapshot, bootstrap_au);
-                let branch_seq_end = superblock.payload.branch.seq_end;
+                let branch_seq_end =
+                    superblock.payload.branch.betree.seq_end;
                 let initial_persisted_root_count = superblock.payload.branch.roots.len();
                 proof {
                     let image = layout.spec_parse(raw_page@);
@@ -7845,8 +7850,6 @@ impl Implementation {
                                 cache: self.cache@,
                                 outstanding_cache_reqs:
                                     pre_state.state.outstanding_cache_reqs.remove_keys(resp_map.dom()),
-                                disk_backed_addrs:
-                                    pre_state.state.disk_backed_addrs + cache_write_response_addrs(cache_resps),
                                 ..pre_state.state
                             }
                         };
@@ -7990,8 +7993,6 @@ impl Implementation {
                                 cache: self.cache@,
                                 outstanding_cache_reqs:
                                     pre_state.state.outstanding_cache_reqs.remove_keys(resp_map.dom()),
-                                disk_backed_addrs:
-                                    pre_state.state.disk_backed_addrs + cache_write_response_addrs(cache_resps),
                                 ..pre_state.state
                             }
                         };
@@ -8755,7 +8756,6 @@ impl KVStoreTrait for Implementation {
             recovery_state: RecoveryState::Begin,
             cache: cache@,
             outstanding_cache_reqs: Map::<ID, Address>::empty(),
-            disk_backed_addrs: Set::<Address>::empty().insert(spec_superblock_addr()),
             free_aus,
             journal: AtomicJournalState::State::empty(),
             branch: AtomicBranchState::State::empty(),

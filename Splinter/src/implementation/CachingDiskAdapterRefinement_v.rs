@@ -1687,6 +1687,14 @@ pub proof fn cache_internal_post_filled_addr_was_pre_filled(
         cache_filled_addr(post_cache, addr),
     ensures
         cache_filled_addr(pre_cache, addr),
+        filled_cache_status(pre_cache)
+            .contains_key(addr),
+        filled_cache_status(post_cache)
+            .contains_key(addr),
+        filled_cache_status(post_cache)[addr]
+            == filled_cache_status(pre_cache)[addr],
+        cache_filled_page(post_cache, addr)
+            == cache_filled_page(pre_cache, addr),
 {
     Cache::State::inv_next(pre_cache, post_cache, Cache::Label::Internal{});
     pre_cache.build_lookup_map_ensures();

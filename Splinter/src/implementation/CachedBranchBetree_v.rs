@@ -302,6 +302,48 @@ pub open spec fn substitute_writes(
     }
 }
 
+pub proof fn substitute_writes_dom_subset(
+    path: LoadedBetreePath,
+    new_subtree_root: Address,
+    replacement_writes: LoadedBetree,
+    path_addrs: PathAddrs,
+)
+    requires
+        path.lines.len() > 0,
+        path_addrs.len() == path.depth(),
+    ensures
+        substitute_writes(
+            path,
+            new_subtree_root,
+            replacement_writes,
+            path_addrs,
+        ).dom()
+            <= replacement_writes.dom() + path_addrs.to_set(),
+    decreases path.depth(),
+{
+    if path.depth() == 0 {
+        assert(path_addrs == Seq::<Address>::empty());
+    } else {
+        let tail = path.tail();
+        let tail_addrs = path_addrs.skip(1);
+        substitute_writes_dom_subset(
+            tail,
+            new_subtree_root,
+            replacement_writes,
+            tail_addrs,
+        );
+        assert(path_addrs
+            == seq![path_addrs[0]] + tail_addrs);
+        crate::betree::Utils_v::
+            lemma_to_set_distributes_over_plus(
+                seq![path_addrs[0]],
+                tail_addrs,
+            );
+        assert(path_addrs.to_set()
+            == set![path_addrs[0]] + tail_addrs.to_set());
+    }
+}
+
 pub open spec fn path_discard_likes(path: LoadedBetreePath) -> Likes
     recommends path.lines.len() > 0
 {
@@ -660,6 +702,120 @@ pub proof fn cached_branch_alloc_aus_update_subset(
     };
 }
 
+pub proof fn cached_branch_alloc_aus_update_remove_exact(
+    branches: Seq<CachedAllocationBranch>,
+    idx: int,
+    update: CachedAllocationBranch,
+    removed: Set<AU>,
+)
+    requires
+        0 <= idx < branches.len(),
+        update.mini_allocator.all_aus()
+            == branches[idx].mini_allocator.all_aus()
+                - removed,
+        removed
+            <= branches[idx].mini_allocator.all_aus(),
+        forall |left: int, right: int|
+            0 <= left < right < branches.len()
+            ==> (#[trigger] branches[left])
+                .mini_allocator.all_aus().disjoint(
+                    (#[trigger] branches[right])
+                        .mini_allocator.all_aus(),
+                ),
+    ensures
+        cached_branch_alloc_aus(
+            branches.update(idx, update),
+        ) == cached_branch_alloc_aus(branches) - removed,
+{
+    let updated = branches.update(idx, update);
+    cached_branch_alloc_aus_update_subset(
+        branches,
+        idx,
+        update,
+        Set::empty(),
+    );
+    assert forall |au: AU|
+        #[trigger] cached_branch_alloc_aus(updated)
+            .contains(au)
+        <==> (cached_branch_alloc_aus(branches)
+            - removed).contains(au)
+    by {
+        if cached_branch_alloc_aus(updated).contains(au) {
+            let source_idx =
+                cached_branch_alloc_aus_contains(
+                    updated,
+                    au,
+                );
+            if source_idx == idx {
+                assert(update.mini_allocator.all_aus()
+                    .contains(au));
+                assert(branches[idx].mini_allocator
+                    .all_aus().contains(au));
+                assert(!removed.contains(au));
+            } else {
+                assert(updated[source_idx]
+                    == branches[source_idx]);
+                assert(branches[source_idx]
+                    .mini_allocator.all_aus().contains(au));
+                if branches[idx].mini_allocator
+                    .all_aus().contains(au)
+                {
+                    let (left, right) =
+                        if source_idx < idx {
+                            (source_idx, idx)
+                        } else {
+                            (idx, source_idx)
+                        };
+                    assert(branches[left]
+                        .mini_allocator.all_aus().disjoint(
+                            branches[right]
+                                .mini_allocator.all_aus(),
+                        ));
+                    assert(false);
+                }
+                assert(!removed.contains(au));
+            }
+        } else if cached_branch_alloc_aus(branches)
+            .contains(au) && !removed.contains(au)
+        {
+            let source_idx =
+                cached_branch_alloc_aus_contains(
+                    branches,
+                    au,
+                );
+            if source_idx == idx {
+                assert(update.mini_allocator.all_aus()
+                    .contains(au));
+                let sets = Seq::new(
+                    updated.len(),
+                    |i: int| updated[i]
+                        .mini_allocator.all_aus(),
+                );
+                assert(sets[idx].contains(au));
+                crate::betree::Utils_v::
+                    lemma_set_subset_of_union_seq_of_sets(
+                        sets,
+                        au,
+                    );
+            } else {
+                assert(updated[source_idx]
+                    == branches[source_idx]);
+                let sets = Seq::new(
+                    updated.len(),
+                    |i: int| updated[i]
+                        .mini_allocator.all_aus(),
+                );
+                assert(sets[source_idx].contains(au));
+                crate::betree::Utils_v::
+                    lemma_set_subset_of_union_seq_of_sets(
+                        sets,
+                        au,
+                    );
+            }
+        }
+    }
+}
+
 pub proof fn cached_branch_alloc_aus_remove_subset(
     branches: Seq<CachedAllocationBranch>,
     idx: int,
@@ -692,6 +848,95 @@ pub proof fn cached_branch_alloc_aus_remove_subset(
             au,
         );
     };
+}
+
+pub proof fn cached_branch_alloc_aus_remove_exact(
+    branches: Seq<CachedAllocationBranch>,
+    idx: int,
+)
+    requires
+        0 <= idx < branches.len(),
+        forall |left: int, right: int|
+            0 <= left < right < branches.len()
+            ==> (#[trigger] branches[left])
+                .mini_allocator.all_aus().disjoint(
+                    (#[trigger] branches[right])
+                        .mini_allocator.all_aus(),
+                ),
+    ensures
+        cached_branch_alloc_aus(branches.remove(idx))
+            == cached_branch_alloc_aus(branches)
+                - branches[idx].mini_allocator.all_aus(),
+{
+    let removed = branches.remove(idx);
+    cached_branch_alloc_aus_remove_subset(branches, idx);
+    assert forall |au: AU|
+        #[trigger] cached_branch_alloc_aus(removed)
+            .contains(au)
+        <==> (cached_branch_alloc_aus(branches)
+            - branches[idx].mini_allocator.all_aus())
+            .contains(au)
+    by {
+        if cached_branch_alloc_aus(removed)
+            .contains(au)
+        {
+            let removed_idx =
+                cached_branch_alloc_aus_contains(
+                    removed,
+                    au,
+                );
+            let source_idx = if removed_idx < idx {
+                removed_idx
+            } else {
+                removed_idx + 1
+            };
+            assert(branches[source_idx]
+                .mini_allocator.all_aus().contains(au));
+            assert(source_idx != idx);
+            let (left, right) = if source_idx < idx {
+                (source_idx, idx)
+            } else {
+                (idx, source_idx)
+            };
+            assert(branches[left].mini_allocator
+                .all_aus().disjoint(
+                    branches[right].mini_allocator
+                        .all_aus(),
+                ));
+            assert(!branches[idx].mini_allocator
+                .all_aus().contains(au));
+        } else if cached_branch_alloc_aus(branches)
+            .contains(au)
+            && !branches[idx].mini_allocator
+                .all_aus().contains(au)
+        {
+            let source_idx =
+                cached_branch_alloc_aus_contains(
+                    branches,
+                    au,
+                );
+            assert(source_idx != idx);
+            let removed_idx = if source_idx < idx {
+                source_idx
+            } else {
+                source_idx - 1
+            };
+            assert(0 <= removed_idx < removed.len());
+            assert(removed[removed_idx]
+                == branches[source_idx]);
+            let sets = Seq::new(
+                removed.len(),
+                |i: int| removed[i]
+                    .mini_allocator.all_aus(),
+            );
+            assert(sets[removed_idx].contains(au));
+            crate::betree::Utils_v::
+                lemma_set_subset_of_union_seq_of_sets(
+                    sets,
+                    au,
+                );
+        }
+    }
 }
 
 pub proof fn cached_branch_alloc_aus_push_subset(
@@ -747,6 +992,8 @@ pub proof fn cached_allocation_branch_build_all_aus_subset(
     ensures
         post.mini_allocator.all_aus()
             <= pre.mini_allocator.all_aus() + allocs,
+        post.mini_allocator.all_aus()
+            == (pre.mini_allocator.all_aus() + allocs) - deallocs,
 {
     reveal(CachedAllocationBranch::build_next);
     match event {
@@ -890,6 +1137,8 @@ pub proof fn cached_allocation_branch_build_all_aus_subset(
             with_aux.prune_preserves_wf(deallocs);
         }
     }
+    assert(post.mini_allocator.all_aus()
+        == (pre.mini_allocator.all_aus() + allocs) - deallocs);
 }
 
 pub struct FrozenBranchBetree {
@@ -1035,6 +1284,7 @@ state_machine! { CachedBranchBetree {
         require betree_writes == flush_memtable_writes(
             pre.root, branch_root, new_root_addr, betree_reads,
         );
+        require betree_writes.dom() <= Set::new(|addr: Address| addr.wf());
         let old_root_likes = if pre.root is Some {
             Multiset::singleton(pre.root.unwrap())
         } else {
@@ -1062,6 +1312,7 @@ state_machine! { CachedBranchBetree {
         require deallocs.is_empty();
         require pre.is_fresh(allocs);
         require betree_writes == grow_writes(pre.root, new_root_addr);
+        require betree_writes.dom() <= Set::new(|addr: Address| addr.wf());
         update root = Some(new_root_addr);
         update betree_aus = pre.betree_aus.insert(new_root_addr.au);
     }}
@@ -1093,6 +1344,7 @@ state_machine! { CachedBranchBetree {
         };
         let replacement = split_replacement(path, betree_reads, request, new_addrs);
         require betree_writes == substitute_writes(path, new_addrs.parent, replacement, path_addrs);
+        require betree_writes.dom() <= Set::new(|addr: Address| addr.wf());
         let discarded = path_discard_likes(path).insert(child_addr);
         let added = added_path_likes(new_addrs, path_addrs);
         let new_betree_aus = pre.betree_aus.sub(to_au_likes(discarded)).add(to_au_likes(added));
@@ -1130,6 +1382,7 @@ state_machine! { CachedBranchBetree {
         require betree_reads.contains_key(child_addr);
         let replacement = flush_replacement(path, betree_reads, child_idx, buffer_gc, new_addrs);
         require betree_writes == substitute_writes(path, new_addrs.addr1, replacement, path_addrs);
+        require betree_writes.dom() <= Set::new(|addr: Address| addr.wf());
         let discarded = path_discard_likes(path).insert(child_addr);
         let added = added_path_likes(new_addrs, path_addrs);
         let new_betree_aus = pre.betree_aus.sub(to_au_likes(discarded)).add(to_au_likes(added));
@@ -1258,6 +1511,7 @@ state_machine! { CachedBranchBetree {
             path, start, end, branch_root, new_addrs,
         );
         require betree_writes == substitute_writes(path, new_node_addr, replacement, path_addrs);
+        require betree_writes.dom() <= Set::new(|addr: Address| addr.wf());
         let new_compactors = pre.compactors.remove(input_idx);
         let discarded = path_discard_likes(path);
         let added = path_addrs.to_multiset().insert(new_node_addr);

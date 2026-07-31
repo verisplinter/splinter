@@ -1,14 +1,20 @@
-// The active implementation path is the unified cache system. The old concrete
-// and monolithic atomic models have been removed from the module graph.
-pub mod Implementation_v;
+// The Betree-backed unified-cache proof stack is active. The executable still
+// targets the retired stack-backed system, so keep it out of the module graph
+// until its Betree replacement is ready.
+// pub mod Implementation_v;
 pub mod MultisetMapRelation_v;
 pub mod AtomicJournalState_v;
-pub mod AtomicBranchState_v;
-pub mod UnifiedCacheSystem_v;
-pub mod UnifiedCacheProgramModel_v;
-pub mod UnifiedCacheSystemRefinement_v;
+// pub mod AtomicBranchState_v;
+pub mod AtomicBranchBetreeState_v;
+// pub mod UnifiedCacheSystem_v;
+pub mod UnifiedCacheBetreeSystem_v;
+// pub mod UnifiedCacheProgramModel_v;
+pub mod UnifiedCacheBetreeProgramModel_v;
+// pub mod UnifiedCacheSystemRefinement_v;
+pub mod UnifiedCacheBetreeSystemRefinement_v;
 pub mod UnifiedCacheJournalRefinement_v;
-pub mod UnifiedCacheBranchRefinement_v;
+// pub mod UnifiedCacheBranchRefinement_v;
+pub mod UnifiedCacheBranchBetreeRefinement_v;
 pub mod AbstractSuperblock_v;
 pub mod RecoveryState_v;
 pub mod DiskLayout_v;
@@ -20,8 +26,8 @@ pub mod CachingDiskJournal_v;
 pub mod CachingDiskJournalRefinement_v;
 pub mod CachingDiskBranch_v;
 pub mod CachingDiskBranchRefinement_v;
-pub mod CrashAwareCachingDiskBranch_v;
-pub mod CrashAwareCachingDiskBranchRefinement_v;
+// pub mod CrashAwareCachingDiskBranch_v;
+// pub mod CrashAwareCachingDiskBranchRefinement_v;
 pub mod CrashAwareCachingDiskJournal_v;
 pub mod CrashAwareCachingDiskJournalRefinement_v;
 pub mod CachedJournal_v;
@@ -35,11 +41,14 @@ pub mod CrashAwareCachingDiskBranchBetree_v;
 pub mod CrashAwareCachingDiskBranchBetreeRefinement_v;
 pub mod AllocationBranchStack_v;
 pub mod AllocationBranchStackRefinement_v;
-pub mod CrashAwareAllocationBranchStack_v;
-pub mod CrashAwareAllocationBranchStackRefinement_v;
+// pub mod CrashAwareAllocationBranchStack_v;
+// pub mod CrashAwareAllocationBranchStackRefinement_v;
 pub mod IBranchNode_v;
-pub mod CrashAwareCachingDiskSystem_v;
-pub mod CrashAwareCachingDiskSystemRefinement_v;
+pub mod SuperblockStore_v;
+// pub mod CrashAwareCachingDiskSystem_v;
+pub mod CrashAwareCachingDiskBetreeSystem_v;
+pub mod CrashAwareCachingDiskBetreeSystemRefinement_v;
+// pub mod CrashAwareCachingDiskSystemRefinement_v;
 pub mod VecMap_v;
 pub mod JournalTypes_v;
 pub mod SuperblockTypes_v;
@@ -47,6 +56,6 @@ pub mod OverflowFiction_v;
 pub mod PageAllocator_v;
 pub mod MiniAllocatorImpl_v;
 pub mod AuPoolImpl_v;
-pub mod BranchImpl_v;
-pub mod BranchStackImpl_v;
+// pub mod BranchImpl_v;
+// pub mod BranchStackImpl_v;
 // pub mod AllocationBranchImpl_v;

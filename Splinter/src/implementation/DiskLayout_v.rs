@@ -8,8 +8,8 @@ use crate::spec::ImplDisk_t::{IAddress, IAU, IPage, IPageData};
 // use crate::spec::FloatingSeq_t::*;
 use crate::implementation::SuperblockTypes_v::{
     ASuperblock, ASuperblockGeometry, ASuperblockPayload, ISuperblock,
-    ISuperblockBranchImage, ISuperblockGeometry, ISuperblockJournalImage,
-    ISuperblockPayload, Superblock,
+    ISuperblockGeometry, ISuperblockJournalImage, ISuperblockPayload,
+    Superblock,
 };
 use crate::implementation::CachedJournal_v::JournalSnapshot;
 use crate::implementation::JournalImpl_v;
@@ -92,25 +92,7 @@ impl DiskLayout {
             out ==> self.fmt.marshallable(sb.parsedv()),
             out ==> self.fmt.impl_marshallable(*sb),
     {
-        let roots_fit = sb.payload.branch.roots.len()
-            <= self.fmt.field2_fmt.field2_fmt.field1_fmt.max_length;
-        if !roots_fit {
-            return false;
-        }
         proof {
-            assert(sb.payload.branch@.roots.len()
-                <= self.fmt.field2_fmt.field2_fmt.field1_fmt.max_length);
-            branch_roots_format_max_length_fits_u8(&self.fmt);
-            assert(sb.payload.branch@.roots.len() <= u8::MAX as int);
-            assert forall |i: int| 0 <= i < sb.payload.branch@.roots.len()
-                implies self.fmt.field2_fmt.field2_fmt.field1_fmt.marshallable_at(
-                    sb.payload.branch@.roots,
-                    i,
-                ) by {
-            }
-            assert(self.fmt.field2_fmt.field2_fmt.field1_fmt.marshallable(
-                sb.payload.branch@.roots,
-            ));
             assert(self.fmt.marshallable(sb.parsedv()));
             assert(self.fmt.impl_marshallable(*sb));
         }
@@ -188,8 +170,7 @@ impl DiskLayout {
                 root: None,
             },
             journal_seq_end: 0,
-            branch_roots: Seq::empty(),
-            branch_seq_end: 0,
+            betree_root: None,
             } == self.spec_parse(disk[spec_superblock_addr()])
     }
 
@@ -216,8 +197,7 @@ impl DiskLayout {
                 root: None,
             },
             journal_seq_end: 0,
-            branch_roots: Seq::empty(),
-            branch_seq_end: 0,
+            betree_root: None,
         }),
     {
         let journal_snapshot = JournalImpl_v::IJournalSnapshot {
@@ -229,14 +209,7 @@ impl DiskLayout {
             snapshot: journal_snapshot,
             seq_end: 0,
         };
-        let roots = Vec::<IAddress>::new();
-        proof {
-            assert(Parsedview::<Seq<Address>>::parsedv(&roots) =~= Seq::<Address>::empty());
-        }
-        let branch = ISuperblockBranchImage {
-            roots,
-            seq_end: 0,
-        };
+        let branch = Option::<IAddress>::None;
         let geometry = ISuperblockGeometry {
             pages_per_au,
             formatted_au_count: physical_au_count,
@@ -245,7 +218,6 @@ impl DiskLayout {
         let sb = ISuperblock { geometry, payload };
         let out = self.marshall(&sb);
         proof {
-            assert(sb@@.branch_roots =~= Seq::<Address>::empty());
             assert(sb@.wf());
             assert(self.spec_parse_inner(out@) == sb@);
         }

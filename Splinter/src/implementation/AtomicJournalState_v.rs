@@ -65,7 +65,6 @@ state_machine!{ AtomicJournalState {
         pub mini_allocator: MiniAllocator,
         pub persistent_seq_end: LSN,
         pub in_flight: Option<AtomicJournalImage>,
-        pub prepared: bool,
     }
 
     pub enum Label {
@@ -96,7 +95,6 @@ state_machine!{ AtomicJournalState {
         init mini_allocator = MiniAllocator::empty();
         init persistent_seq_end = initial_persistent_seq_end;
         init in_flight = None;
-        init prepared = false;
     }}
 
     transition!{ put(lbl: Label, new_journal: CachedJournal::State) {
@@ -196,7 +194,6 @@ state_machine!{ AtomicJournalState {
         );
 
         update in_flight = Option::Some(AtomicJournalImage{snapshot, seq_end});
-        update prepared = false;
     }}
 
     transition!{ commit_prepared(lbl: Label) {
@@ -206,8 +203,6 @@ state_machine!{ AtomicJournalState {
         require pre.journal.status is Some;
         require image.snapshot.freshest_rec() is Some ==>
             image.seq_end <= pre.journal.clean_watermark();
-
-        update prepared = true;
     }}
 
     transition!{ commit_complete(lbl: Label, new_journal: CachedJournal::State) {
@@ -216,7 +211,6 @@ state_machine!{ AtomicJournalState {
             discarded_aus,
         } = lbl;
         require pre.in_flight is Some;
-        require pre.prepared;
         let image = pre.in_flight.unwrap();
         require CachedJournal::State::next(
             pre.journal,
@@ -232,7 +226,6 @@ state_machine!{ AtomicJournalState {
         update persistent_seq_end = image.seq_end;
         update mini_allocator = pre.mini_allocator.prune(discarded_aus);
         update in_flight = Option::None;
-        update prepared = false;
     }}
 }}
 
@@ -249,6 +242,32 @@ pub open spec fn journal_snapshot_seq_end_from_reads(
 }
 
 impl AtomicJournalState::State {
+    pub open spec fn internal_access_next(
+        pre: Self,
+        post: Self,
+        lbl: AtomicJournalState::Label,
+        reads: Map<Address, RawPage>,
+        raw_writes: Map<Address, RawPage>,
+    ) -> bool {
+        match lbl {
+            AtomicJournalState::Label::JournalMarshal{
+                addr,
+                writes,
+            } => {
+                &&& reads.is_empty()
+                &&& raw_writes.dom() == set![addr]
+                &&& to_journal_records(raw_writes) == writes
+                &&& AtomicJournalState::State::journal_marshal(
+                    pre,
+                    post,
+                    lbl,
+                    post.journal,
+                )
+            },
+            _ => false,
+        }
+    }
+
     pub open spec fn empty() -> Self
     {
         AtomicJournalState::State{
@@ -259,7 +278,6 @@ impl AtomicJournalState::State {
             mini_allocator: MiniAllocator::empty(),
             persistent_seq_end: 0,
             in_flight: None,
-            prepared: false,
         }
     }
 
@@ -287,7 +305,6 @@ impl AtomicJournalState::State {
         &&& self.journal.wf()
         &&& self.mini_allocator.wf()
         &&& self.in_flight is Some ==> self.in_flight.unwrap().wf()
-        &&& self.prepared ==> self.in_flight is Some
     }
 
     pub proof fn wf_next(pre: Self, post: Self, lbl: AtomicJournalState::Label)
@@ -383,10 +400,7 @@ impl AtomicJournalState::State {
             },
             AtomicJournalState::Step::commit_prepared() => {
                 assert(AtomicJournalState::State::commit_prepared(pre, post, lbl));
-                assert(post == AtomicJournalState::State{
-                    prepared: true,
-                    ..pre
-                });
+                assert(post == pre);
                 assert(post.wf());
             },
             AtomicJournalState::Step::commit_complete(new_journal) => {
@@ -430,7 +444,6 @@ impl AtomicJournalState::State {
             pre.in_flight is Some,
             post.persistent_seq_end == pre.in_flight.unwrap().seq_end,
             post.in_flight is None,
-            post.prepared == false,
             post.mini_allocator == pre.mini_allocator.prune(lbl->discarded_aus),
             lbl->discarded_aus == pre.journal.status.unwrap().lsn_au_index.values()
                 - post.journal.status.unwrap().lsn_au_index.values(),
@@ -509,7 +522,6 @@ impl AtomicJournalState::State {
                 snapshot: lbl->snapshot,
                 seq_end: lbl->seq_end,
             }),
-            post.prepared == false,
     {
         reveal(AtomicJournalState::State::next);
         reveal(AtomicJournalState::State::next_by);
@@ -532,7 +544,6 @@ impl AtomicJournalState::State {
             post.journal == pre.journal,
             post.persistent_seq_end == pre.persistent_seq_end,
             post.in_flight == pre.in_flight,
-            post.prepared == pre.prepared,
             post.mini_allocator == pre.mini_allocator.add_aus(match lbl {
                 AtomicJournalState::Label::FillAUs{aus} => aus,
                 _ => arbitrary(),

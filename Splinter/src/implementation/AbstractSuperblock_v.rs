@@ -25,8 +25,7 @@ pub open spec fn empty_abstract_superblock_image() -> AbstractSuperblockImage
     Superblock{
         journal_snapshot: JournalSnapshot{boundary_lsn: 0, root: None},
         journal_seq_end: 0,
-        branch_roots: Seq::empty(),
-        branch_seq_end: 0,
+        betree_root: None,
     }
 }
 
@@ -51,6 +50,22 @@ pub open spec fn abstract_superblock_raw_wf(raw: RawPage) -> bool
 {
     &&& DiskLayout::spec_new().fmt.parsable(raw)
     &&& DiskLayout::spec_new().spec_parse_inner(raw).wf()
+}
+
+pub proof fn superblock_matches_image_wf(
+    raw: RawPage,
+    image: AbstractSuperblockImage,
+)
+    requires
+        superblock_matches(raw, image),
+    ensures
+        image.wf(),
+{
+    let parsed =
+        DiskLayout::spec_new().spec_parse_inner(raw);
+    assert(parsed.wf());
+    assert(parsed@ == image);
+    assert(image.wf());
 }
 
 } // verus!

@@ -1646,6 +1646,62 @@ impl<T> LinkedBetree<T> {
         }
     }
 
+    pub proof fn closed_set_contains_reachable(
+        self,
+        ranking: Ranking,
+        addrs: Set<Address>,
+    )
+        requires
+            self.valid_ranking(ranking),
+            self.has_root() ==> addrs.contains(self.root.unwrap()),
+            forall |addr: Address| #[trigger] addrs.contains(addr)
+                && self.dv.entries.contains_key(addr)
+                ==> forall |idx: nat|
+                    #[trigger] self.dv.entries[addr].valid_child_index(idx)
+                    && self.dv.entries[addr].children[idx as int] is Some
+                    ==> addrs.contains(
+                        self.dv.entries[addr].children[idx as int].unwrap(),
+                    ),
+        ensures
+            self.reachable_betree_addrs_using_ranking(ranking) <= addrs,
+        decreases self.get_rank(ranking),
+    {
+        if self.has_root() {
+            self.reachable_betree_addrs_using_ranking_closed(ranking);
+            assert forall |addr: Address|
+                #[trigger] self.reachable_betree_addrs_using_ranking(
+                    ranking,
+                ).contains(addr)
+                implies addrs.contains(addr) by {
+                if addr != self.root.unwrap() {
+                    assert(self.exists_child_subtree_contains_addr(
+                        ranking,
+                        addr,
+                        0,
+                    ));
+                    let child_idx = self.child_containing_reachable_addr(
+                        ranking,
+                        addr,
+                        0,
+                    );
+                    let child = self.child_at_idx(child_idx);
+                    assert(child.valid_ranking(ranking));
+                    assert(child.root is Some);
+                    assert(self.root().valid_child_index(child_idx));
+                    assert(self.root().children[child_idx as int]
+                        == child.root);
+                    assert(addrs.contains(self.root.unwrap()));
+                    assert(addrs.contains(child.root.unwrap()));
+                    assert(child.get_rank(ranking) < self.get_rank(ranking));
+                    child.closed_set_contains_reachable(ranking, addrs);
+                    assert(child.reachable_betree_addrs_using_ranking(
+                        ranking,
+                    ).contains(addr));
+                }
+            };
+        }
+    }
+
     proof fn reachable_betree_addrs_using_ranking_recur_subset_ranking(
         self,
         ranking: Ranking,

@@ -82,6 +82,16 @@ impl CachingDiskBranchBetreeMetadata {
 }
 
 #[verifier::ext_equal]
+pub struct BetreeMetadataRecoveryCore {
+    pub betree_nodes: Map<Address, BetreeNode>,
+    pub pending_betree: Set<Address>,
+    pub branch_roots: Set<Address>,
+    pub pending_branch_roots: Set<Address>,
+    pub pending_branch_aux: Map<Address, Address>,
+    pub branch_summary: Map<AU, Summary>,
+}
+
+#[verifier::ext_equal]
 pub struct BetreeMetadataRecovery {
     pub disk: CachingDisk::State,
     pub betree_nodes: Map<Address, BetreeNode>,
@@ -118,7 +128,225 @@ pub open spec fn betree_buffer_roots(node: BetreeNode) -> Set<Address> {
     node.buffers.addrs.to_set()
 }
 
+impl BetreeMetadataRecoveryCore {
+    pub open spec fn start(
+        metadata: CachingDiskBranchBetreeMetadata,
+    ) -> Self {
+        Self {
+            betree_nodes: Map::empty(),
+            pending_betree: if metadata.root is Some {
+                set![metadata.root.unwrap()]
+            } else {
+                Set::empty()
+            },
+            branch_roots: Set::empty(),
+            pending_branch_roots: Set::empty(),
+            pending_branch_aux: Map::empty(),
+            branch_summary: Map::empty(),
+        }
+    }
+
+    pub open spec fn read_betree(
+        self,
+        addr: Address,
+        node: BetreeNode,
+    ) -> Self {
+        let betree_nodes = self.betree_nodes.insert(addr, node);
+        let new_branch_roots =
+            betree_buffer_roots(node) - self.branch_roots;
+        Self {
+            betree_nodes,
+            pending_betree:
+                (self.pending_betree.remove(addr)
+                    + betree_child_addrs(node))
+                    - betree_nodes.dom(),
+            branch_roots:
+                self.branch_roots + new_branch_roots,
+            pending_branch_roots:
+                self.pending_branch_roots + new_branch_roots,
+            ..self
+        }
+    }
+
+    pub open spec fn read_branch_root(
+        self,
+        root: Address,
+        node: BranchNode,
+    ) -> Self
+        recommends
+            self.pending_branch_roots.contains(root),
+            node is Leaf || node is Index,
+            node is Index ==> node.arrow_Index_aux_ptr() is Some,
+    {
+        match node {
+            BranchNodeValue::Leaf{..} => Self {
+                pending_branch_roots:
+                    self.pending_branch_roots.remove(root),
+                branch_summary:
+                    self.branch_summary.insert(root.au, set![root.au]),
+                ..self
+            },
+            BranchNodeValue::Index{aux_ptr, ..} => Self {
+                pending_branch_roots:
+                    self.pending_branch_roots.remove(root),
+                pending_branch_aux:
+                    self.pending_branch_aux.insert(
+                        root,
+                        aux_ptr.unwrap(),
+                    ),
+                ..self
+            },
+            BranchNodeValue::Auxiliary{..} => self,
+        }
+    }
+
+    pub open spec fn read_branch_aux(
+        self,
+        root: Address,
+        node: BranchNode,
+    ) -> Self
+        recommends
+            self.pending_branch_aux.contains_key(root),
+            node is Auxiliary,
+    {
+        Self {
+            pending_branch_aux:
+                self.pending_branch_aux.remove(root),
+            branch_summary:
+                self.branch_summary.insert(
+                    root.au,
+                    node.arrow_Auxiliary_0(),
+                ),
+            ..self
+        }
+    }
+
+    pub open spec fn next(
+        pre: Self,
+        post: Self,
+        lbl: BetreeMetadataRecoveryLabel,
+    ) -> bool {
+        match lbl {
+            BetreeMetadataRecoveryLabel::DiskInternal => {
+                post == pre
+            },
+            BetreeMetadataRecoveryLabel::ReadBetree{addr, reads} => {
+                &&& pre.pending_betree.contains(addr)
+                &&& reads.dom() == set![addr]
+                &&& post == pre.read_betree(
+                    addr,
+                    to_betree_nodes(reads)[addr],
+                )
+            },
+            BetreeMetadataRecoveryLabel::ReadBranchRoot{root, reads} => {
+                let node = to_branch_nodes(reads)[root];
+                &&& pre.pending_branch_roots.contains(root)
+                &&& reads.dom() == set![root]
+                &&& node is Leaf || node is Index
+                &&& node is Index ==>
+                    node.arrow_Index_aux_ptr() is Some
+                &&& post == pre.read_branch_root(root, node)
+            },
+            BetreeMetadataRecoveryLabel::ReadBranchAux{root, reads} => {
+                let aux = pre.pending_branch_aux[root];
+                let node = to_branch_nodes(reads)[aux];
+                &&& pre.pending_branch_aux.contains_key(root)
+                &&& reads.dom() == set![aux]
+                &&& node is Auxiliary
+                &&& post == pre.read_branch_aux(root, node)
+            },
+        }
+    }
+
+    pub open spec fn complete(self) -> bool {
+        &&& self.pending_betree.is_empty()
+        &&& self.pending_branch_roots.is_empty()
+        &&& self.pending_branch_aux.dom().is_empty()
+    }
+
+    pub open spec fn recovered_likes_tree(
+        self,
+        metadata: CachingDiskBranchBetreeMetadata,
+    ) -> LinkedBetree<BranchNode> {
+        LinkedBetree {
+            root: metadata.root,
+            dv: BetreeDiskView {
+                entries: self.betree_nodes,
+            },
+            // Transitive likes are determined by Betree nodes and their
+            // branch-root pointers. Physical branch contents are supplied
+            // and validated by the enclosing caching-disk refinement.
+            buffer_dv: BufferDisk::empty_disk(),
+        }
+    }
+
+    pub open spec fn betree_aus(
+        self,
+        metadata: CachingDiskBranchBetreeMetadata,
+    ) -> AULikes {
+        let tree = self.recovered_likes_tree(metadata);
+        if tree.acyclic() {
+            to_au_likes(tree.transitive_likes().0)
+        } else {
+            Multiset::empty()
+        }
+    }
+
+    pub open spec fn branch_aus(
+        self,
+        metadata: CachingDiskBranchBetreeMetadata,
+    ) -> AULikes {
+        let tree = self.recovered_likes_tree(metadata);
+        if tree.acyclic() {
+            to_au_likes(tree.transitive_likes().1)
+        } else {
+            Multiset::empty()
+        }
+    }
+
+    pub open spec fn loaded_betree(
+        self,
+        metadata: CachingDiskBranchBetreeMetadata,
+    ) -> CachedBranchBetree::State {
+        CachedBranchBetree::State {
+            root: metadata.root,
+            memtable: Memtable::empty_memtable(metadata.seq_end),
+            betree_aus: self.betree_aus(metadata),
+            branch_aus: self.branch_aus(metadata),
+            branch_summary: self.branch_summary,
+            compactors: Seq::empty(),
+            wip_branches: Seq::empty(),
+        }
+    }
+}
+
 impl BetreeMetadataRecovery {
+    pub open spec fn from_core(
+        disk: CachingDisk::State,
+        core: BetreeMetadataRecoveryCore,
+    ) -> Self {
+        Self {
+            disk,
+            betree_nodes: core.betree_nodes,
+            pending_betree: core.pending_betree,
+            branch_roots: core.branch_roots,
+            pending_branch_roots: core.pending_branch_roots,
+            pending_branch_aux: core.pending_branch_aux,
+            branch_summary: core.branch_summary,
+        }
+    }
+
+    pub open spec fn core(self) -> BetreeMetadataRecoveryCore {
+        BetreeMetadataRecoveryCore {
+            betree_nodes: self.betree_nodes,
+            pending_betree: self.pending_betree,
+            branch_roots: self.branch_roots,
+            pending_branch_roots: self.pending_branch_roots,
+            pending_branch_aux: self.pending_branch_aux,
+            branch_summary: self.branch_summary,
+        }
+    }
+
     pub open spec fn start(image: CachingDiskBranchBetreeImage) -> Self {
         Self {
             disk: image.disk(),
@@ -676,15 +904,26 @@ state_machine! { CrashAwareCachingDiskBranchBetree {
         init prepared = Option::None;
     }}
 
-    transition! { load_ephemeral(lbl: Label) {
+    transition! { load_ephemeral(
+        lbl: Label,
+        initial_disk: CachingDisk::State,
+    ) {
         require lbl is LoadEphemeral;
         require pre.ephemeral is Unknown;
         require pre.persistent.valid();
+        require initial_disk.inv();
+        require initial_disk.persistent
+            == pre.persistent.persistent;
+        require initial_disk.visible()
+            == pre.persistent.disk().visible();
 
         update ephemeral =
             EphemeralCachingDiskBranchBetree::Loading {
-                recovery: BetreeMetadataRecovery::start(
-                    pre.persistent,
+                recovery: BetreeMetadataRecovery::from_core(
+                    initial_disk,
+                    BetreeMetadataRecoveryCore::start(
+                        pre.persistent.metadata,
+                    ),
                 ),
             };
     }}
@@ -856,9 +1095,13 @@ state_machine! { CrashAwareCachingDiskBranchBetree {
     }
 
     #[inductive(load_ephemeral)]
-    fn load_ephemeral_inductive(pre: Self, post: Self, lbl: Label) {
-        assert(post.ephemeral->recovery.disk
-            == pre.persistent.disk());
+    fn load_ephemeral_inductive(
+        pre: Self,
+        post: Self,
+        lbl: Label,
+        initial_disk: CachingDisk::State,
+    ) {
+        assert(post.ephemeral->recovery.disk == initial_disk);
         assert(post.ephemeral->recovery.disk.inv());
     }
 
@@ -968,8 +1211,15 @@ state_machine! { CrashAwareCachingDiskBranchBetree {
                 pre, post, lbl, step,
             );
         match step {
-            CrashAwareCachingDiskBranchBetree::Step::load_ephemeral() => {
-                Self::load_ephemeral_inductive(pre, post, lbl);
+            CrashAwareCachingDiskBranchBetree::Step::load_ephemeral(
+                initial_disk,
+            ) => {
+                Self::load_ephemeral_inductive(
+                    pre,
+                    post,
+                    lbl,
+                    initial_disk,
+                );
             }
             CrashAwareCachingDiskBranchBetree::Step::recover_metadata(
                 new_recovery,

@@ -60,13 +60,6 @@ pub open spec fn valid_request_reply_pair(req: Request, reply: Reply) -> bool
     &&& req.input is NoopInput <==> reply.output is NoopOutput
 }
 
-pub open spec fn cache_write_response_addrs(
-    responses: Map<Address, DiskResponse>,
-) -> Set<Address>
-{
-    Set::new(|addr: Address| responses.contains_key(addr) && responses[addr] is WriteResp)
-}
-
 pub open spec fn cache_filled_addr_raw(cache: Cache::State, addr: Address) -> bool
 {
     &&& cache.lookup_map.contains_key(addr)
@@ -111,7 +104,6 @@ state_machine!{ UnifiedCacheSystem {
         pub recovery_state: RecoveryState,
         pub cache: Cache::State,
         pub outstanding_cache_reqs: Map<ID, Address>,
-        pub disk_backed_addrs: Set<Address>,
         pub free_aus: Set<AU>,
         pub journal: AtomicJournalState::State,
         pub branch: AtomicBranchState::State,
@@ -134,7 +126,6 @@ state_machine!{ UnifiedCacheSystem {
         init recovery_state = RecoveryState::Begin;
         init cache = Cache::State::empty(cache_slots);
         init outstanding_cache_reqs = Map::empty();
-        init disk_backed_addrs = Set::<Address>::empty().insert(spec_superblock_addr());
         init free_aus = free_aus;
         init journal = AtomicJournalState::State::empty();
         init branch = AtomicBranchState::State::empty();
@@ -448,8 +439,6 @@ state_machine!{ UnifiedCacheSystem {
             |addr| finished.contains_key(addr),
             |addr| resp_map[finished[addr]],
         );
-        let write_resp_addrs = cache_write_response_addrs(cache_resps);
-
         require !(pre.recovery_state is Begin);
         require !(pre.recovery_state is AwaitingSuperblock);
         require reqs.is_empty();
@@ -461,7 +450,6 @@ state_machine!{ UnifiedCacheSystem {
         );
         update cache = new_cache;
         update outstanding_cache_reqs = new_outstanding;
-        update disk_backed_addrs = pre.disk_backed_addrs + write_resp_addrs;
     }}
 
     transition!{ cache_internal(lbl: Label, new_cache: Cache::State) {

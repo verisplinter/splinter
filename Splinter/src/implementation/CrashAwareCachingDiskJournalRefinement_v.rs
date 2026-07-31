@@ -194,6 +194,54 @@ impl CrashAwareCachingDiskJournal::State {
         }
     }
 
+    pub proof fn ephemeral_i_wf(self)
+        requires
+            self.refinement_inv(),
+            self.ephemeral is Known,
+        ensures
+            self.i_abstract().ephemeral is Known,
+            self.i_abstract().ephemeral->v.wf(),
+    {
+        self.ephemeral->v.semantic_inv_implies_i_inv();
+        let allocation = self.ephemeral->v.i();
+        assert(allocation.inv());
+        assert(allocation.semantic_inv());
+        assert(allocation.refinement_inv());
+        allocation.i_inv();
+
+        let likes = allocation.i();
+        assert(likes.inv());
+        likes.i_inv();
+
+        let linked = likes.i();
+        assert(linked.inv());
+        linked.i_wf();
+
+        let paged = linked.i();
+        assert(paged.wf());
+        let prefix = paged.truncated_journal.i();
+        if paged.truncated_journal.freshest_rec is Some {
+            let rec =
+                paged.truncated_journal.freshest_rec.unwrap();
+            rec.i_lemma(
+                paged.truncated_journal.boundary_lsn,
+            );
+        } else {
+            assert(prefix == MsgHistory::empty_history_at(
+                paged.truncated_journal.boundary_lsn,
+            ));
+        }
+        assert(prefix.wf());
+        assert(prefix.seq_end
+            == paged.truncated_journal.seq_end());
+        assert(prefix.seq_end
+            == paged.unmarshalled_tail.seq_start);
+        prefix.concat_lemma(paged.unmarshalled_tail);
+        assert(paged.i().wf());
+        assert(self.i_abstract().ephemeral->v
+            == allocation.i_abstract());
+    }
+
     proof fn loaded_internal_preserves_frozen_i(
         pre: CachingDiskJournal::State,
         post: CachingDiskJournal::State,

@@ -136,7 +136,7 @@ state_machine!{ CachingDisk {
     transition!{ access(lbl: Label) {
         require let Label::Access{reads, writes} = lbl;
         require reads <= pre.cache;
-        require forall |addr: Address| #[trigger] writes.contains_key(addr) && pre.status.contains_key(addr)
+        require forall |addr: Address| writes.contains_key(addr) && #[trigger] pre.status.contains_key(addr)
             ==> !(pre.status[addr] == PageStatus::Writeback);
 
         let status_updates = status_map(writes.dom(), PageStatus::Dirty);

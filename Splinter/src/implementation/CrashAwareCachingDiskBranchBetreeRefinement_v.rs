@@ -8,6 +8,7 @@
 
 use vstd::prelude::*;
 use vstd::assert_maps_equal;
+use vstd::assert_sets_equal;
 
 use crate::abstract_system::AbstractCrashAwareMap_v::{
     AbstractCrashAwareMap, Ephemeral as AbstractEphemeral,
@@ -23,10 +24,11 @@ use crate::allocation_layer::Likes_v::AULikes;
 use crate::allocation_layer::LikesBetree_v::LikesBetree;
 use crate::betree::BufferDisk_v::BufferDisk;
 use crate::betree::Buffer_v::SimpleBuffer;
-use crate::betree::LinkedBetree_v::LinkedBetreeVars;
+use crate::betree::LinkedBetree_v::{LinkedBetree, LinkedBetreeVars};
 use crate::betree::PagedBetree_v::PagedBetree;
 use crate::disk::GenericDisk_v::{
-    set_addrs_disjoint_aus, to_aus, AU, Address,
+    addrs_with_different_au, set_addrs_disjoint_aus, to_aus, AU,
+    Address,
 };
 use crate::implementation::CachedBranchBetree_v::{
     cached_branch_alloc_aus, CachedBranchBetree,
@@ -42,7 +44,7 @@ use crate::implementation::CrashAwareCachingDiskBranchBetree_v::*;
 
 verus! {
 
-proof fn abstract_internal_stutters(
+pub proof fn abstract_internal_stutters(
     pre: AbstractMap::State,
     post: AbstractMap::State,
 )
@@ -72,7 +74,7 @@ proof fn abstract_internal_stutters(
     }
 }
 
-proof fn abstract_query_stutters(
+pub proof fn abstract_query_stutters(
     pre: AbstractMap::State,
     post: AbstractMap::State,
     lbl: AbstractMap::Label,
@@ -362,6 +364,86 @@ pub open spec fn loaded_branch_roots(
         && betree_buffer_roots(betree_nodes[tree_addr]).contains(root))
 }
 
+pub proof fn loaded_branch_roots_empty()
+    ensures
+        loaded_branch_roots(
+            Map::<Address, crate::betree::LinkedBetree_v::BetreeNode>::empty(),
+        ).is_empty(),
+{
+    reveal(loaded_branch_roots);
+}
+
+pub proof fn recovery_core_next_preserves_loaded_branch_roots(
+    pre: BetreeMetadataRecoveryCore,
+    post: BetreeMetadataRecoveryCore,
+    lbl: BetreeMetadataRecoveryLabel,
+)
+    requires
+        BetreeMetadataRecoveryCore::next(pre, post, lbl),
+        pre.branch_roots == loaded_branch_roots(pre.betree_nodes),
+        pre.betree_nodes.dom().disjoint(pre.pending_betree),
+    ensures
+        post.branch_roots == loaded_branch_roots(post.betree_nodes),
+{
+    reveal(BetreeMetadataRecoveryCore::next);
+    reveal(loaded_branch_roots);
+    match lbl {
+        BetreeMetadataRecoveryLabel::DiskInternal => {}
+        BetreeMetadataRecoveryLabel::ReadBetree{addr, reads} => {
+            reveal(BetreeMetadataRecoveryCore::read_betree);
+            let node = to_betree_nodes(reads)[addr];
+            assert(!pre.betree_nodes.contains_key(addr));
+            assert_sets_equal!(
+                post.branch_roots,
+                loaded_branch_roots(post.betree_nodes),
+                root => {
+                    if post.branch_roots.contains(root) {
+                        if pre.branch_roots.contains(root) {
+                            let tree_addr = choose |tree_addr: Address|
+                                pre.betree_nodes.contains_key(tree_addr)
+                                && betree_buffer_roots(
+                                    pre.betree_nodes[tree_addr],
+                                ).contains(root);
+                            assert(post.betree_nodes.contains_key(tree_addr));
+                            assert(post.betree_nodes[tree_addr]
+                                == pre.betree_nodes[tree_addr]);
+                        } else {
+                            assert(betree_buffer_roots(node).contains(root));
+                            assert(post.betree_nodes.contains_key(addr));
+                            assert(post.betree_nodes[addr] == node);
+                        }
+                    }
+                    if loaded_branch_roots(
+                        post.betree_nodes,
+                    ).contains(root) {
+                        let tree_addr = choose |tree_addr: Address|
+                            post.betree_nodes.contains_key(tree_addr)
+                            && betree_buffer_roots(
+                                post.betree_nodes[tree_addr],
+                            ).contains(root);
+                        if tree_addr == addr {
+                            assert(post.betree_nodes[tree_addr] == node);
+                        } else {
+                            assert(pre.betree_nodes.contains_key(tree_addr));
+                            assert(pre.betree_nodes[tree_addr]
+                                == post.betree_nodes[tree_addr]);
+                            assert(loaded_branch_roots(
+                                pre.betree_nodes,
+                            ).contains(root));
+                        }
+                    }
+                }
+            );
+        }
+        BetreeMetadataRecoveryLabel::ReadBranchRoot{..} => {
+            reveal(BetreeMetadataRecoveryCore::read_branch_root);
+        }
+        BetreeMetadataRecoveryLabel::ReadBranchAux{..} => {
+            reveal(BetreeMetadataRecoveryCore::read_branch_aux);
+        }
+    }
+}
+
 pub open spec fn recovery_frontier_inv(
     recovery: BetreeMetadataRecovery,
     image: CachingDiskBranchBetreeImage,
@@ -417,6 +499,855 @@ pub open spec fn recovery_frontier_inv(
                     )
             }
         }
+}
+
+pub proof fn recovery_frontier_start_with_disk(
+    image: CachingDiskBranchBetreeImage,
+    initial_disk: CachingDisk::State,
+)
+    requires
+        image.valid(),
+        initial_disk.inv(),
+        initial_disk.visible() == image.disk().visible(),
+    ensures
+        BetreeMetadataRecovery::from_core(
+            initial_disk,
+            BetreeMetadataRecoveryCore::start(image.metadata),
+        ).refinement_inv(image),
+{
+    image.recovery_witness_valid();
+    let witness = image.recovery_witness();
+    let tree = initial_tight_tree(witness.initial_betree);
+    let recovery = BetreeMetadataRecovery::from_core(
+        initial_disk,
+        BetreeMetadataRecoveryCore::start(image.metadata),
+    );
+    reveal(initial_refinement_witness_valid);
+    reveal(tight_betree_candidate);
+    reveal(BetreeMetadataRecovery::from_core);
+    reveal(BetreeMetadataRecoveryCore::start);
+    reveal(recovery_frontier_inv);
+    loaded_branch_roots_empty();
+    if image.metadata.root is Some {
+        assert(tree.dv.entries.contains_key(
+            image.metadata.root.unwrap(),
+        ));
+    }
+}
+
+pub proof fn recovery_frontier_start(
+    image: CachingDiskBranchBetreeImage,
+)
+    requires image.valid()
+    ensures BetreeMetadataRecovery::start(image).refinement_inv(image)
+{
+    recovery_frontier_start_with_disk(image, image.disk());
+}
+
+pub proof fn recovery_frontier_pending_reads_persistent(
+    recovery: BetreeMetadataRecovery,
+    image: CachingDiskBranchBetreeImage,
+)
+    requires recovery.refinement_inv(image)
+    ensures
+        recovery.pending_betree <= image.persistent.dom(),
+        recovery.pending_branch_roots <= image.persistent.dom(),
+        forall |root: Address|
+            #[trigger] recovery.pending_branch_aux.contains_key(root)
+            ==> image.persistent.contains_key(
+                recovery.pending_branch_aux[root],
+            ),
+{
+    reveal(BetreeMetadataRecovery::refinement_inv);
+    reveal(recovery_frontier_inv);
+    recovery_witness_branch_facts(image);
+    let witness = image.recovery_witness();
+    let tree = initial_tight_tree(witness.initial_betree);
+    let roots = tree.reachable_buffer_addrs();
+    let buffer = witness.initial_betree.linked.buffer_dv;
+    let loose_branches = visible_branch_disk(
+        image.disk(),
+        witness.branch_summary,
+    );
+
+    image.recovery_witness_valid();
+    reveal(initial_refinement_witness_valid);
+    reveal(tight_betree_candidate);
+    assert(tree.dv.entries
+        <= to_betree_nodes(image.disk().visible()));
+    assert(image.disk().visible() == image.persistent) by {
+        reveal(CachingDiskBranchBetreeImage::disk);
+        reveal(CachingDisk::State::visible);
+        reveal(CachingDisk::State::visible_cache);
+    }
+    assert(recovery.pending_betree
+        <= image.persistent.dom()) by {
+        assert forall |addr: Address|
+            #[trigger] recovery.pending_betree.contains(addr)
+            implies image.persistent.contains_key(addr) by {
+            assert(tree.dv.entries.contains_key(addr));
+            assert(to_betree_nodes(
+                image.disk().visible(),
+            ).contains_key(addr));
+        }
+    }
+
+    assert(buffer.entries
+        <= to_branch_nodes(image.disk().visible())) by {
+        assert(buffer == tight_sealed_branch_disk(
+            loose_branches,
+            roots,
+            witness.branch_summary,
+        ));
+    }
+    assert(recovery.pending_branch_roots
+        <= image.persistent.dom()) by {
+        assert forall |root: Address|
+            #[trigger] recovery.pending_branch_roots.contains(root)
+            implies image.persistent.contains_key(root) by {
+            assert(recovery.branch_roots.contains(root));
+            assert(roots.contains(root));
+            buffer.sealed_branch_roots_contains(roots, root);
+            let branch = buffer.get_branch(root);
+            assert(branch.valid_sealed_branch());
+            assert(branch.has_root());
+            assert(branch.disk_view.entries.contains_key(root));
+            assert(buffer.entries.contains_key(root));
+            assert(to_branch_nodes(
+                image.disk().visible(),
+            ).contains_key(root));
+        }
+    }
+
+    assert forall |root: Address|
+        #[trigger] recovery.pending_branch_aux.contains_key(root)
+        implies image.persistent.contains_key(
+            recovery.pending_branch_aux[root],
+        ) by {
+        let aux = recovery.pending_branch_aux[root];
+        assert(recovery.branch_roots.contains(root));
+        assert(roots.contains(root));
+        buffer.sealed_branch_roots_contains(roots, root);
+        let branch = buffer.get_branch(root);
+        assert(branch.valid_sealed_branch());
+        assert(branch.sealed_root());
+        assert(buffer.entries.contains_key(root));
+        assert(buffer.entries[root] is Index);
+        assert(buffer.entries[root].arrow_Index_aux_ptr()
+            == Option::Some(aux));
+        assert(branch.root() == buffer.entries[root]);
+        assert(branch.root()->aux_ptr == Option::Some(aux));
+        assert(branch.disk_view.valid_address(aux));
+        assert(buffer.entries.contains_key(aux));
+        assert(to_branch_nodes(
+            image.disk().visible(),
+        ).contains_key(aux));
+    }
+}
+
+pub proof fn same_betree_root_disk_same_transitive_likes(
+    left: LinkedBetree<BranchNode>,
+    right: LinkedBetree<BranchNode>,
+)
+    requires
+        left.acyclic(),
+        right.acyclic(),
+        left.root == right.root,
+        left.dv == right.dv,
+    ensures
+        left.transitive_likes() == right.transitive_likes(),
+{
+    let ranking = right.the_ranking();
+    assert(left.valid_ranking(ranking));
+    left.subdisk_implies_same_tree_likes(right, ranking);
+    left.tree_likes_ignore_ranking(
+        ranking,
+        left.the_ranking(),
+    );
+    right.tree_likes_ignore_ranking(
+        ranking,
+        right.the_ranking(),
+    );
+    let tree_likes = left.tree_likes(left.the_ranking());
+    assert(tree_likes
+        == right.tree_likes(right.the_ranking()));
+    left.tree_likes_domain(left.the_ranking());
+    left.subdisk_implies_same_buffer_likes(
+        right,
+        tree_likes,
+    );
+    assert(left.transitive_likes()
+        == right.transitive_likes()) by {
+        reveal(LinkedBetree::transitive_likes);
+    }
+}
+
+pub proof fn recovery_core_loaded_betree_matches(
+    recovery: BetreeMetadataRecovery,
+    image: CachingDiskBranchBetreeImage,
+)
+    requires
+        recovery.refinement_inv(image),
+        recovery.complete(),
+    ensures
+        recovery.core().loaded_betree(image.metadata)
+            == recovery.loaded_state(image).betree,
+{
+    recovery_complete_witness_valid(recovery, image);
+    let core = recovery.core();
+    let core_tree = core.recovered_likes_tree(image.metadata);
+    let full_tree = recovery.recovered_tree(image);
+    let recovered =
+        RecoveredCachingDiskBranchBetreeMetadata {
+            betree_aus: recovery.betree_aus(image),
+            branch_aus: recovery.branch_aus(image),
+            branch_summary: recovery.branch_summary,
+            initial_betree: recovery.initial_betree(image),
+        };
+
+    reveal(RecoveredCachingDiskBranchBetreeMetadata::valid_for);
+    reveal(initial_refinement_witness_valid);
+    assert(recovered.valid_for(image));
+    assert(full_tree.acyclic());
+    assert(core_tree.root == full_tree.root);
+    assert(core_tree.dv == full_tree.dv);
+    assert(core_tree.acyclic()) by {
+        reveal(LinkedBetree::acyclic);
+        reveal(LinkedBetree::valid_ranking);
+    }
+    same_betree_root_disk_same_transitive_likes(
+        core_tree,
+        full_tree,
+    );
+
+    reveal(BetreeMetadataRecovery::core);
+    reveal(BetreeMetadataRecoveryCore::loaded_betree);
+    reveal(BetreeMetadataRecoveryCore::betree_aus);
+    reveal(BetreeMetadataRecoveryCore::branch_aus);
+    reveal(BetreeMetadataRecovery::loaded_state);
+    reveal(CachingDiskBranchBetreeImage::cached_betree);
+    reveal(BetreeMetadataRecovery::betree_aus);
+    reveal(BetreeMetadataRecovery::branch_aus);
+}
+
+pub proof fn recovery_complete_metadata_matches_image(
+    recovery: BetreeMetadataRecovery,
+    image: CachingDiskBranchBetreeImage,
+)
+    requires
+        recovery.refinement_inv(image),
+        recovery.complete(),
+    ensures ({
+        let recovered =
+            RecoveredCachingDiskBranchBetreeMetadata {
+                betree_aus: recovery.betree_aus(image),
+                branch_aus: recovery.branch_aus(image),
+                branch_summary: recovery.branch_summary,
+                initial_betree: recovery.initial_betree(image),
+            };
+        recovered == image.recovery_witness()
+    }),
+{
+    recovery_complete_witness_valid(recovery, image);
+    image.recovery_witness_valid();
+    let recovered =
+        RecoveredCachingDiskBranchBetreeMetadata {
+            betree_aus: recovery.betree_aus(image),
+            branch_aus: recovery.branch_aus(image),
+            branch_summary: recovery.branch_summary,
+            initial_betree: recovery.initial_betree(image),
+        };
+    let canonical = image.recovery_witness();
+    recovery_witnesses_same_initial(
+        image,
+        recovered,
+        canonical,
+    );
+    reveal(RecoveredCachingDiskBranchBetreeMetadata::valid_for);
+    reveal(initial_refinement_witness_valid);
+    reveal(AllocationBranchBetree::State::initialize);
+    assert(recovered.betree_aus == canonical.betree_aus);
+    assert(recovered.branch_aus == canonical.branch_aus);
+    assert(recovered.branch_summary == canonical.branch_summary);
+}
+
+pub proof fn recovery_witness_branch_facts(
+    image: CachingDiskBranchBetreeImage,
+)
+    requires image.valid()
+    ensures ({
+        let witness = image.recovery_witness();
+        let tree = initial_tight_tree(witness.initial_betree);
+        let roots = tree.reachable_buffer_addrs();
+        let buffer = witness.initial_betree.linked.buffer_dv;
+        &&& tree.dv.entries
+            <= to_betree_nodes(image.disk().visible())
+        &&& buffer.sealed_branch_roots(roots)
+        &&& witness.branch_summary
+            == buffer.build_branch_summary(roots)
+        &&& set_addrs_disjoint_aus(roots)
+    })
+{
+    image.recovery_witness_valid();
+    let witness = image.recovery_witness();
+    let tree = initial_tight_tree(witness.initial_betree);
+    let linked = witness.initial_betree.linked;
+    let roots = tree.reachable_buffer_addrs();
+    let buffer = linked.buffer_dv;
+    let visible_tree = to_betree_nodes(image.disk().visible()).restrict(
+        crate::implementation::CachingDisk_v::addresses_in_aus(
+            witness.betree_aus.dom(),
+        ),
+    );
+    let target = initial_allocation_state(
+        witness.initial_betree,
+        witness.betree_aus,
+        witness.branch_aus,
+        witness.branch_summary,
+    );
+    reveal(initial_refinement_witness_valid);
+    reveal(tight_betree_candidate);
+    reveal(AllocationBranchBetree::State::initialize);
+    assert(tree.dv.entries <= visible_tree);
+    assert(visible_tree <= to_betree_nodes(image.disk().visible()));
+    vstd::map_lib::lemma_submap_of_trans(
+        tree.dv.entries,
+        visible_tree,
+        to_betree_nodes(image.disk().visible()),
+    );
+
+    assert(linked.acyclic());
+    assert(tree.acyclic());
+    assert(linked.dv == tree.dv);
+    assert(linked.valid_view(tree)) by {
+        reveal(initial_tight_tree);
+    }
+    linked.valid_view_ensures(tree);
+    assert(linked.reachable_buffer_addrs() == roots);
+
+    linked.tree_likes_domain(linked.the_ranking());
+    let linked_tree_likes = linked.tree_likes(linked.the_ranking());
+    linked.buffer_likes_domain(linked_tree_likes);
+    assert(linked.transitive_likes().1.dom()
+        == linked.reachable_buffer_addrs());
+    assert(linked.transitive_likes().1.dom() == roots);
+    assert(buffer.sealed_branch_roots(roots));
+    assert(witness.branch_summary
+        == buffer.build_branch_summary(roots));
+    assert(set_addrs_disjoint_aus(roots));
+}
+
+pub proof fn recovery_frontier_next(
+    pre: BetreeMetadataRecovery,
+    post: BetreeMetadataRecovery,
+    image: CachingDiskBranchBetreeImage,
+    lbl: BetreeMetadataRecoveryLabel,
+)
+    requires
+        pre.refinement_inv(image),
+        BetreeMetadataRecovery::next(pre, post, lbl),
+    ensures
+        post.refinement_inv(image),
+{
+    image.recovery_witness_valid();
+    let witness = image.recovery_witness();
+    let tree = initial_tight_tree(witness.initial_betree);
+    let roots = tree.reachable_buffer_addrs();
+    let summary = witness.branch_summary;
+    let buffer = witness.initial_betree.linked.buffer_dv;
+    recovery_witness_branch_facts(image);
+    reveal(BetreeMetadataRecovery::next);
+    reveal(recovery_frontier_inv);
+    reveal(tight_betree_candidate);
+    assert(buffer.sealed_branch_roots(roots));
+    assert(summary == buffer.build_branch_summary(roots));
+    assert(set_addrs_disjoint_aus(roots));
+
+    match lbl {
+        BetreeMetadataRecoveryLabel::DiskInternal => {
+            CachingDisk::State::inv_next(
+                pre.disk,
+                post.disk,
+                CachingDisk::Label::Internal{},
+            );
+            CachingDisk::State::internal_visible_unchanged(
+                pre.disk,
+                post.disk,
+            );
+            assert(post.disk.inv());
+            assert(recovery_frontier_inv(post, image));
+        }
+        BetreeMetadataRecoveryLabel::ReadBetree{addr, reads} => {
+            assert(post.disk == pre.disk);
+            assert(post.disk.inv());
+            CachingDisk::State::access_effect(
+                pre.disk,
+                pre.disk,
+                reads,
+                Map::empty(),
+            );
+            assert(tree.dv.entries.contains_key(addr));
+            assert(to_betree_nodes(image.disk().visible())
+                .contains_key(addr));
+            assert(pre.disk.visible().contains_key(addr));
+            CachingDisk::State::access_read_matches_visible(
+                pre.disk,
+                pre.disk,
+                reads,
+                Map::empty(),
+                addr,
+            );
+            assert(reads[addr] == pre.disk.visible()[addr]);
+            assert(pre.disk.visible()[addr]
+                == image.disk().visible()[addr]);
+            assert(to_betree_nodes(reads)[addr]
+                == tree.dv.entries[addr]);
+            let node = tree.dv.entries[addr];
+            assert(betree_child_addrs(node)
+                <= tree.dv.entries.dom()) by {
+                assert forall |child: Address|
+                    #[trigger] betree_child_addrs(node).contains(child)
+                    implies tree.dv.entries.dom().contains(child) by {
+                    reveal(betree_child_addrs);
+                    let i = choose |i: int|
+                        0 <= i
+                        && i < node.children.len()
+                        && node.children[i] == Option::Some(child);
+                    assert(node.valid_child_index(i as nat));
+                    assert(tree.dv.node_has_nondangling_child_ptrs(node));
+                    assert(tree.dv.is_nondangling_ptr(
+                        node.children[i],
+                    ));
+                };
+            }
+            recovery_core_next_preserves_loaded_branch_roots(
+                pre.core(),
+                post.core(),
+                lbl,
+            );
+            reveal(BetreeMetadataRecovery::read_betree);
+            assert(post.betree_nodes <= tree.dv.entries);
+            assert(post.pending_betree <= tree.dv.entries.dom());
+            assert(post.betree_nodes.dom()
+                .disjoint(post.pending_betree));
+            assert(post.branch_roots <= roots) by {
+                assert forall |root: Address|
+                    #[trigger] post.branch_roots.contains(root)
+                    implies roots.contains(root) by {
+                    if !pre.branch_roots.contains(root) {
+                        assert(betree_buffer_roots(node)
+                            .contains(root));
+                        reveal(betree_buffer_roots);
+                        reveal(
+                            crate::betree::LinkedBetree_v::LinkedBetree::<
+                                _
+                            >::reachable_buffer_addrs,
+                        );
+                        reveal(
+                            crate::betree::LinkedBetree_v::LinkedBetree::<
+                                _
+                            >::reachable_buffer,
+                        );
+                        assert(tree.reachable_betree_addrs()
+                            .contains(addr));
+                        assert(exists |tree_addr: Address|
+                            tree.reachable_buffer(tree_addr, root)) by {
+                            assert(tree.reachable_buffer(addr, root));
+                        };
+                    }
+                };
+            }
+            assert(pre.branch_roots <= post.branch_roots);
+            crate::disk::GenericDisk_v::to_aus_preserves_lte(
+                pre.branch_roots,
+                post.branch_roots,
+            );
+            assert(post.branch_summary == pre.branch_summary);
+            assert(post.branch_summary.dom()
+                <= to_aus(post.branch_roots));
+            assert forall |pending_root: Address|
+                #[trigger] post.pending_branch_roots.contains(pending_root)
+                implies !post.branch_summary.contains_key(
+                    pending_root.au,
+                ) by {
+                if pre.pending_branch_roots.contains(pending_root) {
+                    assert(!pre.branch_summary.contains_key(
+                        pending_root.au,
+                    ));
+                } else {
+                    assert(!pre.branch_roots.contains(pending_root));
+                    if post.branch_summary.contains_key(
+                        pending_root.au,
+                    ) {
+                        assert(to_aus(pre.branch_roots).contains(
+                            pending_root.au,
+                        ));
+                        let old_root =
+                            crate::disk::GenericDisk_v::to_aus_get_addr(
+                                pre.branch_roots,
+                                pending_root.au,
+                            );
+                        assert(post.branch_roots.contains(old_root));
+                        assert(post.branch_roots.contains(pending_root));
+                        if old_root != pending_root {
+                            assert(addrs_with_different_au(
+                                old_root,
+                                pending_root,
+                            ));
+                            assert(old_root.au != pending_root.au);
+                        }
+                    }
+                }
+            };
+            assert(recovery_frontier_inv(post, image));
+        }
+        BetreeMetadataRecoveryLabel::ReadBranchRoot{root, reads} => {
+            let node = to_branch_nodes(reads)[root];
+            assert(post.disk == pre.disk);
+            assert(post.disk.inv());
+            assert(roots.contains(root));
+            assert(buffer.entries.contains_key(root)) by {
+                assert(buffer.sealed_branch_roots(roots));
+                buffer.sealed_branch_roots_contains(roots, root);
+                assert(buffer.get_branch(root).has_root());
+            }
+            assert(to_branch_nodes(image.disk().visible())
+                .contains_key(root));
+            assert(image.disk().visible().contains_key(root));
+            CachingDisk::State::access_read_matches_visible(
+                pre.disk,
+                pre.disk,
+                reads,
+                Map::empty(),
+                root,
+            );
+            assert(node == buffer.entries[root]);
+            buffer.build_branch_summary_contains(roots, root);
+            assert(summary.contains_key(root.au));
+            assert(summary[root.au]
+                == buffer.get_branch(root).get_summary());
+            reveal(BetreeMetadataRecovery::read_branch_root);
+            if node is Leaf {
+                assert(buffer.get_branch(root).get_summary()
+                    == set![root.au]);
+            } else {
+                assert(node is Index);
+                assert(node.arrow_Index_aux_ptr() is Some);
+            }
+            assert(pre.branch_roots == post.branch_roots);
+            crate::disk::GenericDisk_v::to_aus_domain(
+                post.branch_roots,
+            );
+            assert(post.branch_summary.dom()
+                <= to_aus(post.branch_roots)) by {
+                assert forall |au: AU|
+                    #[trigger] post.branch_summary.dom().contains(au)
+                    implies to_aus(post.branch_roots).contains(au) by {
+                    if !pre.branch_summary.contains_key(au) {
+                        assert(au == root.au);
+                        assert(post.branch_roots.contains(root));
+                    } else {
+                        assert(pre.branch_summary.dom()
+                            .contains(au));
+                        assert(to_aus(pre.branch_roots)
+                            .contains(au));
+                    }
+                };
+            }
+            assert forall |pending_root: Address|
+                #[trigger] post.pending_branch_roots.contains(pending_root)
+                implies !post.branch_summary.contains_key(
+                    pending_root.au,
+                ) by {
+                assert(pre.pending_branch_roots.contains(pending_root));
+                assert(!pre.branch_summary.contains_key(
+                    pending_root.au,
+                ));
+                if post.branch_summary.contains_key(
+                    pending_root.au,
+                ) {
+                    assert(pending_root.au == root.au);
+                    assert(post.branch_roots.contains(pending_root));
+                    assert(post.branch_roots.contains(root));
+                    assert(pending_root != root);
+                    assert(addrs_with_different_au(pending_root, root));
+                }
+            };
+            assert forall |aux_root: Address|
+                #[trigger] post.pending_branch_aux.contains_key(aux_root)
+                implies !post.branch_summary.contains_key(
+                    aux_root.au,
+                ) by {
+                if pre.pending_branch_aux.contains_key(aux_root) {
+                    assert(!pre.branch_summary.contains_key(aux_root.au));
+                    if post.branch_summary.contains_key(aux_root.au) {
+                        assert(aux_root.au == root.au);
+                        assert(post.branch_roots.contains(aux_root));
+                        assert(post.branch_roots.contains(root));
+                        assert(aux_root != root) by {
+                            if aux_root == root {
+                                assert(!pre.pending_branch_aux
+                                    .contains_key(root));
+                            }
+                        }
+                        assert(addrs_with_different_au(aux_root, root));
+                    }
+                } else {
+                    assert(aux_root == root);
+                    assert(node is Index);
+                    assert(post.branch_summary == pre.branch_summary);
+                    assert(!pre.branch_summary.contains_key(root.au));
+                }
+            };
+            assert(recovery_frontier_inv(post, image));
+        }
+        BetreeMetadataRecoveryLabel::ReadBranchAux{root, reads} => {
+            let aux = pre.pending_branch_aux[root];
+            let node = to_branch_nodes(reads)[aux];
+            assert(post.disk == pre.disk);
+            assert(post.disk.inv());
+            assert(roots.contains(root));
+            assert(buffer.entries.contains_key(root));
+            assert(buffer.entries[root] is Index);
+            assert(buffer.entries[root].arrow_Index_aux_ptr()
+                == Option::Some(aux));
+            assert(buffer.get_branch(root).valid_sealed_branch()) by {
+                assert(buffer.sealed_branch_roots(roots));
+                buffer.sealed_branch_roots_contains(roots, root);
+            }
+            assert(buffer.entries.contains_key(aux));
+            assert(to_branch_nodes(image.disk().visible())
+                .contains_key(aux));
+            assert(image.disk().visible().contains_key(aux));
+            CachingDisk::State::access_read_matches_visible(
+                pre.disk,
+                pre.disk,
+                reads,
+                Map::empty(),
+                aux,
+            );
+            assert(node == buffer.entries[aux]);
+            buffer.build_branch_summary_contains(roots, root);
+            assert(summary.contains_key(root.au));
+            assert(summary[root.au]
+                == buffer.get_branch(root).get_summary());
+            assert(buffer.get_branch(root).get_summary()
+                == node.arrow_Auxiliary_0());
+            reveal(BetreeMetadataRecovery::read_branch_aux);
+            assert(pre.branch_roots == post.branch_roots);
+            crate::disk::GenericDisk_v::to_aus_domain(
+                post.branch_roots,
+            );
+            assert(post.branch_summary.dom()
+                <= to_aus(post.branch_roots)) by {
+                assert forall |au: AU|
+                    #[trigger] post.branch_summary.dom().contains(au)
+                    implies to_aus(post.branch_roots).contains(au) by {
+                    if !pre.branch_summary.contains_key(au) {
+                        assert(au == root.au);
+                        assert(post.branch_roots.contains(root));
+                    } else {
+                        assert(pre.branch_summary.dom()
+                            .contains(au));
+                        assert(to_aus(pre.branch_roots)
+                            .contains(au));
+                    }
+                };
+            }
+            assert forall |pending_root: Address|
+                #[trigger] post.pending_branch_roots.contains(pending_root)
+                implies !post.branch_summary.contains_key(
+                    pending_root.au,
+                ) by {
+                assert(pre.pending_branch_roots.contains(pending_root));
+                assert(!pre.branch_summary.contains_key(
+                    pending_root.au,
+                ));
+                if post.branch_summary.contains_key(
+                    pending_root.au,
+                ) {
+                    assert(pending_root.au == root.au);
+                    assert(pre.branch_roots.contains(pending_root));
+                    assert(pre.branch_roots.contains(root));
+                    assert(pending_root != root) by {
+                        if pending_root == root {
+                            assert(!pre.pending_branch_aux
+                                .contains_key(root));
+                        }
+                    }
+                    assert(addrs_with_different_au(pending_root, root));
+                }
+            };
+            assert forall |aux_root: Address|
+                #[trigger] post.pending_branch_aux.contains_key(aux_root)
+                implies !post.branch_summary.contains_key(
+                    aux_root.au,
+                ) by {
+                assert(pre.pending_branch_aux.contains_key(aux_root));
+                assert(aux_root != root);
+                assert(!pre.branch_summary.contains_key(aux_root.au));
+                if post.branch_summary.contains_key(aux_root.au) {
+                    assert(aux_root.au == root.au);
+                    assert(post.branch_roots.contains(aux_root));
+                    assert(post.branch_roots.contains(root));
+                    assert(addrs_with_different_au(aux_root, root));
+                }
+            };
+            assert(recovery_frontier_inv(post, image));
+        }
+    }
+    assert(post.refinement_inv(image));
+}
+
+pub proof fn recovery_complete_witness_valid(
+    recovery: BetreeMetadataRecovery,
+    image: CachingDiskBranchBetreeImage,
+)
+    requires
+        recovery.refinement_inv(image),
+        recovery.complete(),
+    ensures ({
+        let recovered = RecoveredCachingDiskBranchBetreeMetadata {
+            betree_aus: recovery.betree_aus(image),
+            branch_aus: recovery.branch_aus(image),
+            branch_summary: recovery.branch_summary,
+            initial_betree: recovery.initial_betree(image),
+        };
+        recovered.valid_for(image)
+    })
+{
+    image.recovery_witness_valid();
+    recovery_witness_branch_facts(image);
+    let witness = image.recovery_witness();
+    let tree = initial_tight_tree(witness.initial_betree);
+    let roots = tree.reachable_buffer_addrs();
+    let buffer = witness.initial_betree.linked.buffer_dv;
+    let loaded = recovery.betree_nodes.dom();
+    let ranking = tree.the_ranking();
+    reveal(recovery_frontier_inv);
+    reveal(BetreeMetadataRecovery::complete);
+    reveal(tight_betree_candidate);
+
+    assert(recovery.pending_betree.is_empty());
+    assert(tree.has_root() ==> loaded.contains(tree.root.unwrap())) by {
+        if tree.has_root() {
+            assert(image.metadata.root is Some);
+            assert(tree.root == image.metadata.root);
+        }
+    }
+    assert forall |addr: Address, idx: nat|
+        #[trigger] loaded.contains(addr)
+            && tree.dv.entries.contains_key(addr)
+            && #[trigger] tree.dv.entries[addr].valid_child_index(idx)
+            && tree.dv.entries[addr].children[idx as int] is Some
+        implies loaded.contains(
+                tree.dv.entries[addr].children[idx as int].unwrap(),
+            ) by {
+        let child =
+            tree.dv.entries[addr].children[idx as int].unwrap();
+        assert(recovery.betree_nodes[addr]
+            == tree.dv.entries[addr]);
+        assert(betree_child_addrs(
+            recovery.betree_nodes[addr],
+        ).contains(child)) by {
+            reveal(betree_child_addrs);
+            assert(exists |i: int|
+                0 <= i
+                && i < recovery.betree_nodes[addr].children.len()
+                && recovery.betree_nodes[addr].children[i]
+                    == Option::Some(child)) by {
+                assert(recovery.betree_nodes[addr]
+                    .children[idx as int] == Option::Some(child));
+            };
+        }
+    };
+    tree.closed_set_contains_reachable(ranking, loaded);
+    tree.reachable_betree_addrs_ignore_ranking(
+        ranking,
+        tree.the_ranking(),
+    );
+    assert(tree.dv.entries.dom() <= loaded);
+    assert(loaded == tree.dv.entries.dom());
+    assert_maps_equal!(
+        recovery.betree_nodes,
+        tree.dv.entries,
+        addr => {}
+    );
+
+    assert_sets_equal!(
+        recovery.branch_roots,
+        roots,
+        root => {
+            reveal(loaded_branch_roots);
+            reveal(
+                crate::betree::LinkedBetree_v::LinkedBetree::<
+                    _
+                >::reachable_buffer_addrs,
+            );
+            reveal(
+                crate::betree::LinkedBetree_v::LinkedBetree::<
+                    _
+                >::reachable_buffer,
+            );
+        }
+    );
+    assert(recovery.branch_roots == roots);
+
+    assert(recovery.pending_branch_roots.is_empty());
+    assert(recovery.pending_branch_aux.dom().is_empty());
+    assert(to_aus(roots) <= recovery.branch_summary.dom()) by {
+        assert forall |au: AU|
+            #[trigger] to_aus(roots).contains(au)
+            implies recovery.branch_summary.dom().contains(au) by {
+            let root = crate::disk::GenericDisk_v::to_aus_get_addr(
+                roots,
+                au,
+            );
+            assert(recovery.branch_roots.contains(root));
+        };
+    }
+    assert(recovery.branch_summary.dom() == to_aus(roots));
+    buffer.build_branch_domain(roots);
+    assert(witness.branch_summary.dom() == to_aus(roots));
+    assert_maps_equal!(
+        recovery.branch_summary,
+        witness.branch_summary,
+        au => {}
+    );
+
+    assert(recovery.recovered_tree(image)
+        == witness.initial_betree.linked) by {
+        reveal(BetreeMetadataRecovery::recovered_tree);
+        reveal(BetreeMetadataRecovery::initial_betree);
+        reveal(initial_tight_tree);
+    }
+    assert(recovery.initial_betree(image)
+        == witness.initial_betree) by {
+        reveal(BetreeMetadataRecovery::initial_betree);
+    }
+
+    let recovered = RecoveredCachingDiskBranchBetreeMetadata {
+        betree_aus: recovery.betree_aus(image),
+        branch_aus: recovery.branch_aus(image),
+        branch_summary: recovery.branch_summary,
+        initial_betree: recovery.initial_betree(image),
+    };
+    let target = initial_allocation_state(
+        witness.initial_betree,
+        witness.betree_aus,
+        witness.branch_aus,
+        witness.branch_summary,
+    );
+    reveal(AllocationBranchBetree::State::initialize);
+    reveal(BetreeMetadataRecovery::betree_aus);
+    reveal(BetreeMetadataRecovery::branch_aus);
+    assert(recovery.recovered_tree(image).acyclic());
+    assert(recovered.betree_aus == witness.betree_aus);
+    assert(recovered.branch_aus == witness.branch_aus);
+    assert(recovered.branch_summary == witness.branch_summary);
+    assert(recovered.initial_betree == witness.initial_betree);
+    assert(recovered == witness);
+    assert(recovered.valid_for(image));
 }
 
 impl BetreeMetadataRecovery {
@@ -772,6 +1703,34 @@ pub proof fn recovery_witnesses_same_initial(
         == right.initial_betree.linked.buffer_dv);
 }
 
+pub proof fn valid_recovery_allocation_matches_image(
+    image: CachingDiskBranchBetreeImage,
+    recovered: RecoveredCachingDiskBranchBetreeMetadata,
+)
+    requires
+        image.valid(),
+        recovered.valid_for(image),
+    ensures ({
+        let canonical = image.recovery_witness();
+        &&& recovered.betree_aus == canonical.betree_aus
+        &&& recovered.branch_aus == canonical.branch_aus
+        &&& recovered.branch_summary
+            == canonical.branch_summary
+    }),
+{
+    image.recovery_witness_valid();
+    let canonical = image.recovery_witness();
+    recovery_witnesses_same_initial(
+        image,
+        recovered,
+        canonical,
+    );
+    reveal(RecoveredCachingDiskBranchBetreeMetadata::
+        valid_for);
+    reveal(initial_refinement_witness_valid);
+    reveal(AllocationBranchBetree::State::initialize);
+}
+
 pub proof fn valid_recovery_matches_image(
     image: CachingDiskBranchBetreeImage,
     recovered: RecoveredCachingDiskBranchBetreeMetadata,
@@ -848,6 +1807,10 @@ pub proof fn frozen_image_from_current_refines(
         CachingDiskBranchBetreeImage::materialized_from_visible(
             state,
             frozen,
+        ).load().betree.durable_aus() == frozen.aus,
+        CachingDiskBranchBetreeImage::materialized_from_visible(
+            state,
+            frozen,
         ).i_abstract() == state.i_abstract(),
 {
     let image =
@@ -892,6 +1855,17 @@ pub proof fn frozen_image_from_current_refines(
         };
     }
     valid_recovery_matches_image(image, recovered);
+    valid_recovery_allocation_matches_image(
+        image,
+        recovered,
+    );
+    reveal(CachingDiskBranchBetreeImage::load);
+    reveal(CachingDiskBranchBetreeImage::cached_betree);
+    reveal(CachedBranchBetree::State::durable_aus);
+    assert(image.load().betree.durable_aus()
+        == state.betree.durable_aus());
+    assert(image.load().betree.durable_aus()
+        == frozen.aus);
     let recovered_state = image.load_metadata(
         recovered.betree_aus,
         recovered.branch_aus,
@@ -970,8 +1944,15 @@ impl CrashAwareCachingDiskBranchBetree::State {
             self.ephemeral->recovery.refinement_inv(self.persistent)
         &&& self.ephemeral is Known ==>
             self.ephemeral->v.refinement_inv()
+        &&& self.ephemeral is Known ==> {
+            self.ephemeral->persistent_aus
+                == self.persistent.load().betree.durable_aus()
+        }
         &&& self.frozen is Some ==>
             self.frozen_image().valid()
+        &&& self.frozen is Some ==>
+            self.frozen_image().load().betree.durable_aus()
+                == self.frozen.unwrap().aus
         &&& self.frozen is Some ==>
             cached_branch_alloc_aus(
                 self.ephemeral->v.betree.wip_branches,
@@ -980,6 +1961,9 @@ impl CrashAwareCachingDiskBranchBetree::State {
             &&& self.ephemeral is Known
             &&& self.prepared.unwrap().i_abstract()
                 == self.frozen_image().i_abstract()
+            &&& self.prepared.unwrap().load().betree
+                .durable_aus()
+                == self.frozen.unwrap().aus
         }
     }
 
@@ -1088,6 +2072,8 @@ impl CrashAwareCachingDiskBranchBetree::State {
         }
         assert(post.prepared.unwrap() == self.frozen_image());
         assert(post.frozen_image() == self.frozen_image());
+        assert(post.prepared.unwrap().load().betree
+            .durable_aus() == post.frozen.unwrap().aus);
         assert(post.refinement_inv());
         assert(AbstractMap::State::next_by(
             self.ephemeral->v.i_abstract(),
@@ -1140,8 +2126,14 @@ impl CrashAwareCachingDiskBranchBetree::State {
                 step,
             );
         match step {
-            CrashAwareCachingDiskBranchBetree::Step::load_ephemeral() => {
+            CrashAwareCachingDiskBranchBetree::Step::load_ephemeral(
+                initial_disk,
+            ) => {
                 reveal(CrashAwareCachingDiskBranchBetree::State::load_ephemeral);
+                recovery_frontier_start_with_disk(
+                    self.persistent,
+                    initial_disk,
+                );
                 self.persistent.valid_refines();
                 self.persistent.i_abstract_seq_end();
                 reveal(AbstractCrashAwareMap::State::load_ephemeral_from_persistent);
@@ -1163,6 +2155,12 @@ impl CrashAwareCachingDiskBranchBetree::State {
                 new_recovery,
             ) => {
                 reveal(CrashAwareCachingDiskBranchBetree::State::recover_metadata);
+                recovery_frontier_next(
+                    self.ephemeral->recovery,
+                    new_recovery,
+                    self.persistent,
+                    lbl->recovery_op,
+                );
                 reveal(AbstractCrashAwareMap::State::ephemeral_internal);
                 reveal(AbstractMap::State::next);
                 reveal(AbstractMap::State::next_by);
@@ -1193,6 +2191,10 @@ impl CrashAwareCachingDiskBranchBetree::State {
                 let branch_aus =
                     recovery.branch_aus(self.persistent);
                 let branch_summary = recovery.branch_summary;
+                recovery_complete_witness_valid(
+                    recovery,
+                    self.persistent,
+                );
                 CachingDiskBranchBetree::State::init_refines(
                     loaded,
                     recovery.disk,
@@ -1217,6 +2219,18 @@ impl CrashAwareCachingDiskBranchBetree::State {
                     self.persistent,
                     recovered,
                 );
+                valid_recovery_allocation_matches_image(
+                    self.persistent,
+                    recovered,
+                );
+                reveal(CachingDiskBranchBetreeImage::load);
+                reveal(CachingDiskBranchBetreeImage::cached_betree);
+                reveal(CachedBranchBetree::State::durable_aus);
+                assert(post.ephemeral->persistent_aus
+                    == post.ephemeral->v.betree.durable_aus());
+                assert(post.ephemeral->persistent_aus
+                    == self.persistent.load().betree
+                        .durable_aus());
                 assert(loaded.i_abstract()
                     == self.persistent.i_abstract());
                 reveal(AbstractCrashAwareMap::State::ephemeral_internal);
@@ -1371,6 +2385,8 @@ impl CrashAwareCachingDiskBranchBetree::State {
                     old_ephemeral,
                     frozen,
                 );
+                assert(post.frozen_image().load().betree
+                    .durable_aus() == frozen.aus);
                 assert(cached_branch_alloc_aus(
                     post.ephemeral->v.betree.wip_branches,
                 ).is_empty());
@@ -1423,6 +2439,12 @@ impl CrashAwareCachingDiskBranchBetree::State {
                 assert(self.prepared.unwrap().i_abstract()
                     == self.frozen_image().i_abstract());
                 assert(post.persistent_i() == self.frozen_i().unwrap());
+                assert(post.ephemeral->persistent_aus
+                    == self.frozen.unwrap().aus);
+                assert(post.persistent == self.prepared.unwrap());
+                assert(post.ephemeral->persistent_aus
+                    == post.persistent.load().betree
+                        .durable_aus());
                 assert(AbstractCrashAwareMap::State::next_by(
                     self.i_abstract(),
                     post.i_abstract(),

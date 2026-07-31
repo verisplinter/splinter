@@ -146,7 +146,7 @@ proof fn two_addrs_repr_likes(addrs: TwoAddrs)
     };
 }
 
-proof fn summary_partition_disjoint(
+pub proof fn summary_partition_disjoint(
     summary: Map<AU, Summary>,
     removed: Set<AU>,
 )
@@ -160,6 +160,9 @@ proof fn summary_partition_disjoint(
         summary_aus(summary.remove_keys(removed)).disjoint(
             summary_aus(summary.restrict(removed)),
         ),
+        summary_aus(summary)
+            == summary_aus(summary.remove_keys(removed))
+                + summary_aus(summary.restrict(removed)),
 {
     let kept = summary.remove_keys(removed);
     let dropped = summary.restrict(removed);
@@ -197,6 +200,77 @@ proof fn summary_partition_disjoint(
         assert(kept_key != dropped_key);
         assert(summary[kept_key].disjoint(summary[dropped_key]));
     };
+    assert(summary_aus(summary)
+        == summary_aus(kept) + summary_aus(dropped)) by {
+        assert forall |au: AU|
+            #[trigger] summary_aus(summary).contains(au)
+            <==> (summary_aus(kept)
+                + summary_aus(dropped)).contains(au)
+        by {
+            if summary_aus(summary).contains(au) {
+                let member =
+                    crate::betree::Utils_v::
+                        lemma_union_set_of_sets_contains(
+                            summary.values(),
+                            au,
+                        );
+                let key = choose |key: AU|
+                    summary.contains_key(key)
+                        && summary[key] == member;
+                if removed.contains(key) {
+                    assert(dropped.contains_key(key));
+                    assert(dropped.values().contains(member));
+                    crate::betree::Utils_v::
+                        lemma_union_set_of_sets_subset(
+                            dropped.values(),
+                            member,
+                        );
+                } else {
+                    assert(kept.contains_key(key));
+                    assert(kept.values().contains(member));
+                    crate::betree::Utils_v::
+                        lemma_union_set_of_sets_subset(
+                            kept.values(),
+                            member,
+                        );
+                }
+            } else if summary_aus(kept).contains(au) {
+                let member =
+                    crate::betree::Utils_v::
+                        lemma_union_set_of_sets_contains(
+                            kept.values(),
+                            au,
+                        );
+                let key = choose |key: AU|
+                    kept.contains_key(key)
+                        && kept[key] == member;
+                assert(summary.contains_key(key));
+                assert(summary.values().contains(member));
+                crate::betree::Utils_v::
+                    lemma_union_set_of_sets_subset(
+                        summary.values(),
+                        member,
+                    );
+            } else if summary_aus(dropped).contains(au) {
+                let member =
+                    crate::betree::Utils_v::
+                        lemma_union_set_of_sets_contains(
+                            dropped.values(),
+                            au,
+                        );
+                let key = choose |key: AU|
+                    dropped.contains_key(key)
+                        && dropped[key] == member;
+                assert(summary.contains_key(key));
+                assert(summary.values().contains(member));
+                crate::betree::Utils_v::
+                    lemma_union_set_of_sets_subset(
+                        summary.values(),
+                        member,
+                    );
+            }
+        }
+    }
 }
 
 proof fn direct_au_restrict_is_domain<V>(
@@ -639,7 +713,7 @@ proof fn grow_preserves_tight_domain(
     };
 }
 
-proof fn betree_read_node_matches_visible(
+pub proof fn betree_read_node_matches_visible(
     disk: CachingDisk::State,
     reads: Map<Address, RawPage>,
     addr: Address,
@@ -667,7 +741,7 @@ proof fn betree_read_node_matches_visible(
     }
 }
 
-proof fn loaded_betree_path_tail_valid(
+pub proof fn loaded_betree_path_tail_valid(
     loaded: LoadedBetreePath,
     reads: Map<Address, crate::betree::LinkedBetree_v::BetreeNode>,
 )
@@ -737,7 +811,7 @@ proof fn loaded_betree_path_tail_valid(
     };
 }
 
-proof fn loaded_betree_path_wf_child(loaded: LoadedBetreePath, i: int)
+pub proof fn loaded_betree_path_wf_child(loaded: LoadedBetreePath, i: int)
     requires
         loaded.wf(),
         0 <= i < loaded.lines.len() - 1,
@@ -864,7 +938,7 @@ proof fn loaded_path_reads_come_from_pre_cache(
     }
 }
 
-proof fn loaded_betree_path_matches_linked(
+pub proof fn loaded_betree_path_matches_linked(
     disk: CachingDisk::State,
     linked: LinkedBetree<BranchNode>,
     reads: Map<Address, RawPage>,
@@ -5070,7 +5144,7 @@ impl CachingDiskBranchBetree::State {
         };
     }
 
-    proof fn wip_alloc_aus_agree(self)
+    pub proof fn wip_alloc_aus_agree(self)
         ensures
             AllocationBranch::alloc_aus(self.wip_branches_i())
                 == cached_branch_alloc_aus(self.betree.wip_branches),
@@ -5813,7 +5887,7 @@ impl CachingDiskBranchBetree::State {
         assert(post.semantic_selector_inv());
     }
 
-    proof fn linked_i_tight_tree_facts(self)
+    pub proof fn linked_i_tight_tree_facts(self)
         requires self.refinement_inv()
         ensures
             self.linked_i().dv.entries.dom()
@@ -10771,6 +10845,27 @@ impl CachingDiskBranchBetree::State {
                     assert(to_betree_nodes(new_disk.visible()).restrict(
                         stable_tree_addrs,
                     ).contains_key(addr));
+                    assert(to_betree_nodes(new_disk.visible()).restrict(
+                        stable_tree_addrs,
+                    ) == to_betree_nodes(
+                        pre.disk.visible(),
+                    ).restrict(stable_tree_addrs));
+                    assert(to_betree_nodes(new_disk.visible()).restrict(
+                        stable_tree_addrs,
+                    )[addr] == to_betree_nodes(
+                        pre.disk.visible(),
+                    ).restrict(stable_tree_addrs)[addr]);
+                    assert(to_betree_nodes(new_disk.visible()).restrict(
+                        stable_tree_addrs,
+                    )[addr] == to_betree_nodes(
+                        new_disk.visible(),
+                    )[addr]);
+                    assert(to_betree_nodes(
+                        pre.disk.visible(),
+                    ).restrict(stable_tree_addrs)[addr]
+                        == to_betree_nodes(
+                            pre.disk.visible(),
+                        )[addr]);
                     assert(compacted.dv.entries[addr]
                         == pre_linked.dv.entries[addr]);
                     assert(pre_linked.dv.entries[addr]

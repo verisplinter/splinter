@@ -796,6 +796,7 @@ state_machine!{ CrashAwareCachingDiskSystem {
                 journal_snapshot: self.journal.frozen.unwrap().snapshot,
                 journal_seq_end: self.journal.frozen.unwrap().seq_end,
                 branch_roots: self.branch.frozen.unwrap().sealed_roots,
+                betree_root: None,
                 branch_seq_end: self.branch.frozen.unwrap().seq_end,
             }
         } else {

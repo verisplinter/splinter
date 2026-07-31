@@ -106,6 +106,24 @@ pub proof fn to_aus_domain(addrs: Set<Address>)
     }
 }
 
+pub proof fn to_aus_get_addr(
+    addrs: Set<Address>,
+    au: AU,
+) -> (addr: Address)
+    requires to_aus(addrs).contains(au)
+    ensures
+        addrs.contains(addr),
+        addr.au == au,
+{
+    let m = Map::new(
+        |addr| addrs.contains(addr),
+        |addr: Address| addr.au,
+    );
+    let addr = choose |addr: Address|
+        m.contains_key(addr) && m[addr] == au;
+    addr
+}
+
 pub proof fn to_aus_preserves_lte(addrs: Set<Address>, big_addrs: Set<Address>)
     requires addrs <= big_addrs
     ensures to_aus(addrs) <= to_aus(big_addrs)

@@ -83,7 +83,7 @@ use crate::implementation::UnifiedCacheJournalRefinement_v as UnifiedCacheJourna
 use crate::implementation::UnifiedCacheProgramModel_v::UnifiedCacheProgramModel;
 use crate::implementation::UnifiedCacheSystem_v::{
     AtomicSyncPhase, UnifiedCacheSystem,
-    cache_filled_addr_raw, cache_filled_page_raw, cache_write_response_addrs,
+    cache_filled_addr_raw, cache_filled_page_raw,
 };
 use crate::implementation::RecoveryState_v::RecoveryState;
 use crate::spec::AsyncDisk_t::{AsyncDisk, DiskRequest, DiskResponse, RawPage};
@@ -231,16 +231,6 @@ pub closed spec fn unified_cache_outstanding_cache_reqs_disk_backed_inv(
 {
     let state = model.program.state;
     outstanding_cache_io_wf(state.cache, model.disk, state.outstanding_cache_reqs)
-}
-
-pub closed spec fn unified_cache_disk_backed_addrs_inv(
-    model: SystemModel::State<UnifiedCacheProgramModel>,
-) -> bool
-{
-    let state = model.program.state;
-    &&& state.disk_backed_addrs.contains(spec_superblock_addr())
-    &&& forall |addr: Address| #[trigger] state.disk_backed_addrs.contains(addr)
-        ==> model.disk.content.contains_key(addr)
 }
 
 pub closed spec fn unified_cache_recovery_superblock_io_inv(
@@ -828,7 +818,6 @@ pub open spec fn inv(model: SystemModel::State<UnifiedCacheProgramModel>) -> boo
     &&& unified_cache_shared_cache_disk_inv(model)
     &&& unified_cache_cache_request_wf(model)
     &&& unified_cache_outstanding_cache_reqs_disk_backed_inv(model)
-    &&& unified_cache_disk_backed_addrs_inv(model)
     &&& unified_cache_recovery_superblock_io_inv(model)
     &&& unified_cache_recovery_cache_quiescent_inv(model)
     &&& unified_cache_system_i(model).inv()
@@ -1945,7 +1934,6 @@ pub proof fn cache_access_preserves_outstanding_cache_reqs_disk_backed(
         post.disk.responses == pre.disk.responses,
         post.program.state.outstanding_cache_reqs
             == pre.program.state.outstanding_cache_reqs,
-        post.program.state.disk_backed_addrs == pre.program.state.disk_backed_addrs,
     ensures
         unified_cache_outstanding_cache_reqs_disk_backed_inv(post),
 {
@@ -2724,7 +2712,6 @@ pub proof fn cache_internal_preserves_outstanding_cache_reqs_disk_backed(
         ),
         post.program.state.outstanding_cache_reqs
             == pre.program.state.outstanding_cache_reqs,
-        post.program.state.disk_backed_addrs == pre.program.state.disk_backed_addrs,
         post.disk.requests == pre.disk.requests,
         post.disk.responses == pre.disk.responses,
     ensures
@@ -3664,7 +3651,6 @@ pub proof fn outstanding_cache_reqs_disk_backed_unchanged(
         post.program.state.cache == pre.program.state.cache,
         post.program.state.outstanding_cache_reqs
             == pre.program.state.outstanding_cache_reqs,
-        post.program.state.disk_backed_addrs =~= pre.program.state.disk_backed_addrs,
         post.disk.requests == pre.disk.requests,
         post.disk.responses == pre.disk.responses,
     ensures
@@ -3711,7 +3697,6 @@ pub proof fn outstanding_cache_reqs_disk_backed_request_added(
         post.program.state.cache == pre.program.state.cache,
         post.program.state.outstanding_cache_reqs
             == pre.program.state.outstanding_cache_reqs,
-        post.program.state.disk_backed_addrs == pre.program.state.disk_backed_addrs,
         req_map.dom().disjoint(pre.program.state.outstanding_cache_reqs.dom()),
         post.disk.requests == pre.disk.requests.union_prefer_right(req_map),
         post.disk.responses == pre.disk.responses,
@@ -3777,7 +3762,6 @@ pub proof fn cache_io_begin_preserves_outstanding_cache_reqs_disk_backed(
             |id| req_map.contains_key(id),
             |id| req_map[id].addr(),
         ).contains_value(spec_superblock_addr()),
-        post.program.state.disk_backed_addrs == pre.program.state.disk_backed_addrs,
         post.disk.requests == pre.disk.requests.union_prefer_right(req_map),
         post.disk.responses == pre.disk.responses,
         req_map.dom().disjoint(pre.disk.requests.dom()),
@@ -3987,19 +3971,6 @@ pub proof fn cache_io_end_preserves_outstanding_cache_reqs_disk_backed(
         ),
         post.program.state.outstanding_cache_reqs
             == pre.program.state.outstanding_cache_reqs.remove_keys(resp_map.dom()),
-        post.program.state.disk_backed_addrs
-            == pre.program.state.disk_backed_addrs + cache_write_response_addrs(
-                Map::new(
-                    |addr| pre.program.state.outstanding_cache_reqs.restrict(
-                        resp_map.dom(),
-                    ).invert().contains_key(addr),
-                    |addr| resp_map[
-                        pre.program.state.outstanding_cache_reqs.restrict(
-                            resp_map.dom(),
-                        ).invert()[addr]
-                    ],
-                ),
-            ),
         post.disk.requests == pre.disk.requests,
         post.disk.responses == pre.disk.responses.remove_keys(resp_map.dom()),
     ensures
@@ -4076,7 +4047,6 @@ pub proof fn outstanding_cache_reqs_disk_backed_response_removed(
         post.program.state.cache == pre.program.state.cache,
         post.program.state.outstanding_cache_reqs
             == pre.program.state.outstanding_cache_reqs,
-        post.program.state.disk_backed_addrs == pre.program.state.disk_backed_addrs,
         post.disk.requests == pre.disk.requests,
         post.disk.responses == pre.disk.responses.remove(removed_id),
     ensures
@@ -7931,13 +7901,11 @@ pub proof fn program_disk_cache_io_end_refines(
         |addr| finished.contains_key(addr),
         |addr| resp_map[finished[addr]],
     );
-    let write_resp_addrs = cache_write_response_addrs(cache_resps);
     cache_resps_coherent_from_disk_response_inv(pre, resp_map, cache_resps);
     let cache_lbl = Cache::Label::DiskOps{requests: Set::empty(), responses: cache_resps};
     assert(post_state == UnifiedCacheSystem::State{
         cache: new_cache,
         outstanding_cache_reqs: new_outstanding,
-        disk_backed_addrs: pre_state.disk_backed_addrs + write_resp_addrs,
         ..pre_state
     });
     assert(Cache::State::next(pre_state.cache, post_state.cache, cache_lbl));
