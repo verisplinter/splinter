@@ -1,6 +1,8 @@
 // Copyright 2018-2024 VMware, Inc., Microsoft Inc., Carnegie Mellon University, ETH Zurich, University of Washington
 // SPDX-License-Identifier: BSD-2-Clause
 use vstd::prelude::*;
+use vstd::assert_maps_equal;
+use vstd::assert_sets_equal;
 use vstd::hash_map::HashMapWithView;
 use crate::spec::MapSpec_t::{ID};
 use crate::spec::KeyType_t::*;
@@ -98,11 +100,56 @@ pub enum ReserveWriteResult {
     CacheFull,
 }
 
+pub enum ReserveTwoWriteResult {
+    Reserved {
+        first_handle: MutHandle,
+        second_handle: MutHandle,
+    },
+    CacheFull,
+}
+
+pub enum PrepareTwoWriteResult {
+    Ready {
+        first_handle: MutHandle,
+        second_handle: MutHandle,
+        prepared_cache: Ghost<Cache::State>,
+    },
+    CacheFull,
+    Blocked,
+}
+
 pub enum WritebackAcquireResult {
     NotPresent,
     NotDirty,
     Busy, // page is dirty but currently borrowed by another handle
     Acquired{handle: WritebackHandle},
+}
+
+pub enum AuSetWritebackResult {
+    Acquired { addr: IAddress, handle: WritebackHandle },
+    Complete,
+    Busy,
+}
+
+fn iau_vec_contains(aus: &Vec<IAU>, target: IAU) -> (out: bool)
+    ensures
+        out <==> iau_vec_set(aus@).contains(target as nat),
+{
+    let mut index = 0usize;
+    while index < aus.len()
+        invariant
+            index <= aus.len(),
+            forall |i: int| 0 <= i < index ==> {
+                #[trigger] aus@[i] != target
+            },
+        decreases aus.len() - index,
+    {
+        if aus[index] == target {
+            return true;
+        }
+        index += 1;
+    }
+    false
 }
 
 pub open spec fn cache_load_label(addr: &IAddress) -> Cache::Label
@@ -121,6 +168,155 @@ impl FracCacheImpl {
     pub open spec fn total_slots(&self) -> Slot
     {
         CACHE_SIZE_RECS
+    }
+
+    pub open spec fn restored_write_entry(
+        &self,
+        addr: &IAddress,
+        handle: MutHandle,
+    ) -> Entry
+        recommends self.valid_write_handle(addr, handle)
+    {
+        if self.slot_entry(handle.idx) is Reserved {
+            Entry::Reserved { addr: addr@ }
+        } else {
+            Entry::Filled { addr: addr@, data: handle.rec@ }
+        }
+    }
+
+    pub open spec fn restored_two_write_state(
+        &self,
+        first_addr: &IAddress,
+        first_handle: MutHandle,
+        second_addr: &IAddress,
+        second_handle: MutHandle,
+    ) -> Cache::State
+        recommends
+            self.valid_write_handle(first_addr, first_handle),
+            self.valid_write_handle(second_addr, second_handle),
+            first_handle.idx != second_handle.idx,
+    {
+        Cache::State {
+            entries: self@.entries
+                .insert(
+                    first_handle.idx,
+                    self.restored_write_entry(first_addr, first_handle),
+                )
+                .insert(
+                    second_handle.idx,
+                    self.restored_write_entry(second_addr, second_handle),
+                ),
+            status_map: self@.status_map,
+            lookup_map: self@.lookup_map,
+        }
+    }
+
+    pub open spec fn prepared_two_write_state_matches(
+        &self,
+        prepared: Cache::State,
+        first_addr: &IAddress,
+        first_slot: Slot,
+        second_addr: &IAddress,
+        second_slot: Slot,
+    ) -> bool {
+        &&& first_addr != second_addr
+        &&& first_slot != second_slot
+        &&& prepared.lookup_map == self@.lookup_map
+        &&& prepared.status_map == self@.status_map
+        &&& prepared.lookup_map.contains_key(first_addr@)
+        &&& prepared.lookup_map[first_addr@] == first_slot
+        &&& prepared.lookup_map.contains_key(second_addr@)
+        &&& prepared.lookup_map[second_addr@] == second_slot
+        &&& prepared.entries.contains_key(first_slot)
+        &&& prepared.entries.contains_key(second_slot)
+        &&& prepared.entries == self@.entries
+            .insert(first_slot, prepared.entries[first_slot])
+            .insert(second_slot, prepared.entries[second_slot])
+        &&& prepared.entries[first_slot].get_addr()
+            == self@.entries[first_slot].get_addr()
+        &&& prepared.entries[second_slot].get_addr()
+            == self@.entries[second_slot].get_addr()
+        &&& (prepared.entries[first_slot] is Filled)
+            == (self@.entries[first_slot] is Filled)
+        &&& (prepared.entries[second_slot] is Filled)
+            == (self@.entries[second_slot] is Filled)
+        &&& (prepared.entries[first_slot] is Empty)
+            == (self@.entries[first_slot] is Empty)
+        &&& (prepared.entries[second_slot] is Empty)
+            == (self@.entries[second_slot] is Empty)
+    }
+
+    proof fn restored_two_write_state_matches(
+        &self,
+        first_addr: &IAddress,
+        first_handle: MutHandle,
+        second_addr: &IAddress,
+        second_handle: MutHandle,
+    )
+        requires
+            self.wf(),
+            self.entry_fetched(first_addr),
+            self.entry_fetched(second_addr),
+            self.valid_write_handle(first_addr, first_handle),
+            self.valid_write_handle(second_addr, second_handle),
+            first_addr != second_addr,
+            first_handle.idx != second_handle.idx,
+        ensures
+            self.prepared_two_write_state_matches(
+                self.restored_two_write_state(
+                    first_addr,
+                    first_handle,
+                    second_addr,
+                    second_handle,
+                ),
+                first_addr,
+                first_handle.idx,
+                second_addr,
+                second_handle.idx,
+            ),
+    {
+
+
+        Self::valid_write_handle_model_valid_write(
+            self,
+            first_addr,
+            first_handle,
+        );
+        Self::valid_write_handle_model_valid_write(
+            self,
+            second_addr,
+            second_handle,
+        );
+        assert(self.prepared_two_write_state_matches(
+            self.restored_two_write_state(
+                first_addr,
+                first_handle,
+                second_addr,
+                second_handle,
+            ),
+            first_addr,
+            first_handle.idx,
+            second_addr,
+            second_handle.idx,
+        )) by {
+
+            assert_maps_equal!(
+                self.restored_two_write_state(
+                    first_addr,
+                    first_handle,
+                    second_addr,
+                    second_handle,
+                ).entries,
+                self@.entries.insert(
+                    first_handle.idx,
+                    self.restored_write_entry(first_addr, first_handle),
+                ).insert(
+                    second_handle.idx,
+                    self.restored_write_entry(second_addr, second_handle),
+                ),
+                slot => {}
+            );
+        }
     }
 
     pub closed spec fn entry_available_for_fetch(self, addr: &IAddress) -> bool
@@ -150,6 +346,14 @@ impl FracCacheImpl {
         ensures
             new.entry_available_for_fetch(addr),
     {
+        assert(old.entry_fetched(addr)) by {
+
+            reveal(FracCacheImpl::lookup_addr_slot);
+        }
+        assert(new.entry_fetched(addr) == old.entry_fetched(addr)) by {
+
+            assert(*addr != *except);
+        }
         assert(new.entry_fetched(addr));
         assert(new.lookup_addr_slot(addr) == old.lookup_addr_slot(addr));
         assert(new.lookup_addr_slot(addr) != except_slot) by {
@@ -193,6 +397,64 @@ impl FracCacheImpl {
         assert(new.metadata[slot as int] == old.metadata[slot as int]);
     }
 
+    pub proof fn valid_write_handle_preserved_except(
+        old: Self,
+        new: Self,
+        addr: &IAddress,
+        handle: MutHandle,
+        except: &IAddress,
+        except_slot: Slot,
+    )
+        requires
+            old.wf(),
+            new.wf(),
+            old.entry_fetched(addr),
+            old.valid_write_handle(addr, handle),
+            *addr != *except,
+            new.entry_fetched(except),
+            new.lookup_addr_slot(except) == except_slot,
+            new.entry_fetched_same_except(old, except),
+            except_slot < new.total_slots(),
+            new.entries_same_except(old, except_slot),
+            new.entry_token_unchanged(old),
+        ensures
+            new.valid_write_handle(addr, handle),
+    {
+
+        assert(new.entry_fetched(addr) == old.entry_fetched(addr));
+        assert(new.entry_fetched(addr));
+        assert(new.lookup_addr_slot(addr) == old.lookup_addr_slot(addr));
+        assert(handle.idx == old.lookup_addr_slot(addr));
+        assert(handle.idx != except_slot) by {
+            reveal(FracCacheImpl::lookup_map_injective);
+            assert(new.lookup_map@.is_injective());
+        }
+        Self::slot_entry_same_except(old, new, except_slot, handle.idx);
+        assert(new.metadata@[handle.idx as int]
+            == old.metadata@[handle.idx as int]) by {
+            reveal(FracCacheImpl::entries_same_except);
+            assert(0 <= (handle.idx as int));
+            assert((handle.idx as int) < (new.total_slots() as int));
+            assert((handle.idx as int) != (except_slot as int));
+            assert(new.perms@[handle.idx as int]
+                == old.perms@[handle.idx as int]);
+            assert(new.internal_slots[handle.idx as int]
+                == old.internal_slots[handle.idx as int]);
+            assert(new.metadata[handle.idx as int]
+                == old.metadata[handle.idx as int]);
+        }
+        assert(new.valid_handle(handle)) by {
+
+            assert(new.entry_token_id(handle.idx)
+                == old.entry_token_id(handle.idx));
+            assert(new@.status_map[handle.idx]
+                == old@.status_map[handle.idx]) by {
+                reveal(FracCacheImpl::view_state);
+            }
+        }
+
+    }
+
     closed spec fn perms_inv(self) -> bool
     {
         forall |i| 0 <= i < self.total_slots() ==> 
@@ -203,6 +465,35 @@ impl FracCacheImpl {
     {
         forall |i| 0 <= i < self.total_slots() && self.internal_slots[i] is Some
             ==> #[trigger] self.internal_slots[i].unwrap().len() == PAGE_SIZE_BYTES
+    }
+
+    proof fn slots_inv_preserved_except(
+        old: Self,
+        new: Self,
+        slot: Slot,
+    )
+        requires
+            old.slots_inv(),
+            new.total_slots() == old.total_slots(),
+            slot < new.total_slots(),
+            forall |i: int| 0 <= i < new.total_slots() && i != slot as int
+                ==> new.internal_slots[i] == old.internal_slots[i],
+            new.internal_slots[slot as int] is Some
+                ==> new.internal_slots[slot as int].unwrap().len()
+                    == PAGE_SIZE_BYTES,
+        ensures
+            new.slots_inv(),
+    {
+        reveal(FracCacheImpl::slots_inv);
+        assert forall |i: int|
+            0 <= i < new.total_slots()
+                && new.internal_slots[i] is Some
+            implies #[trigger] new.internal_slots[i].unwrap().len()
+                == PAGE_SIZE_BYTES by {
+            if i != slot as int {
+                assert(new.internal_slots[i] == old.internal_slots[i]);
+            }
+        }
     }
 
     closed spec fn writeback_loans_inv(self) -> bool
@@ -388,6 +679,46 @@ impl FracCacheImpl {
         out
     }
 
+    pub exec fn available_for_fetch(&self, addr: &IAddress) -> (out: bool)
+        requires self.wf(),
+        ensures out == self.entry_available_for_fetch(addr),
+    {
+        if !self.lookup_map.contains_key(addr) {
+            proof {
+                reveal(FracCacheImpl::entry_available_for_fetch);
+                reveal(FracCacheImpl::entry_fetched);
+            }
+            return false;
+        }
+        let slot = *self.lookup_map.get(addr).unwrap();
+        proof {
+            reveal(FracCacheImpl::wf);
+            assert(self.metadata.len() == self.total_slots());
+            assert(self.internal_slots.len() == self.total_slots());
+            reveal(FracCacheImpl::entry_fetched);
+            reveal(FracCacheImpl::lookup_map_inv);
+            assert(self.lookup_map@.contains_value(slot));
+            assert(slot < self.total_slots());
+        }
+        if slot >= self.metadata.len() || slot >= self.internal_slots.len() {
+            proof { assert(false); }
+            return false;
+        }
+        let available_status = match self.metadata[slot].status {
+            Status::Writeback => false,
+            _ => true,
+        };
+        let out = slot < CACHE_SIZE_RECS
+            && self.internal_slots[slot].is_some()
+            && available_status;
+        proof {
+            reveal(FracCacheImpl::entry_available_for_fetch);
+            reveal(FracCacheImpl::entry_fetched);
+            reveal(FracCacheImpl::lookup_addr_slot);
+        }
+        out
+    }
+
     pub proof fn valid_write_handle_model_entry(cache: &FracCacheImpl, addr: &IAddress, handle: MutHandle)
     requires
         cache.wf(),
@@ -399,14 +730,62 @@ impl FracCacheImpl {
         cache@.lookup_map[addr@] == handle.idx,
         cache@.valid_write(addr@),
     {
-        reveal(FracCacheImpl::valid_write_handle);
-        reveal(FracCacheImpl::valid_handle);
         reveal(FracCacheImpl::entry_fetched);
         reveal(FracCacheImpl::lookup_addr_slot);
         reveal(FracCacheImpl::slot_entry);
         reveal(FracCacheImpl::view_state);
         reveal(FracCacheImpl::view_entries);
         reveal(FracCacheImpl::wf);
+    }
+
+    pub proof fn valid_write_handle_model_valid_write(
+        cache: &FracCacheImpl,
+        addr: &IAddress,
+        handle: MutHandle,
+    )
+        requires
+            cache.wf(),
+            cache.entry_fetched(addr),
+            cache.valid_write_handle(addr, handle),
+        ensures
+            cache@.lookup_map.contains_key(addr@),
+            cache@.lookup_map[addr@] == handle.idx,
+            cache@.valid_write(addr@),
+    {
+
+
+        reveal(FracCacheImpl::entry_fetched);
+        reveal(FracCacheImpl::lookup_addr_slot);
+        reveal(FracCacheImpl::slot_entry);
+        reveal(FracCacheImpl::view_state);
+        reveal(FracCacheImpl::view_entries);
+        reveal(FracCacheImpl::wf);
+        match cache.metadata@[handle.idx as int].entry {
+            IEntry::Reserved { addr: entry_addr }
+            | IEntry::Filled { addr: entry_addr } => {
+                assert(entry_addr == *addr) by {
+                    reveal(FracCacheImpl::lookup_map_bijection);
+                    reveal(FracCacheImpl::lookup_map_injective);
+                    assert(cache@.entries.contains_key(handle.idx));
+                    assert(cache@.entries[handle.idx].get_addr()
+                        == entry_addr@);
+                    assert(match cache@.entries[handle.idx] {
+                        Entry::Reserved { addr }
+                        | Entry::Loading { addr }
+                        | Entry::Filled { addr, .. } => {
+                            cache.lookup_map@.contains_key(addr)
+                                && cache.lookup_map@[addr] == handle.idx
+                        },
+                        Entry::Empty => true,
+                    });
+                    assert(cache.lookup_map@.contains_key(entry_addr@));
+                    assert(cache.lookup_map@[entry_addr@] == handle.idx);
+                    assert(cache.lookup_map@[addr@] == handle.idx);
+                    assert(cache.lookup_map@.is_injective());
+                }
+            },
+            _ => {},
+        }
     }
 
     pub proof fn valid_writeback_handle_model_entry(cache: &FracCacheImpl, addr: &IAddress, handle: WritebackHandle)
@@ -1025,7 +1404,6 @@ impl FracCacheImpl {
 
         proof {
             let lbl = Cache::Label::EvictableCheck{aus: set![addr@.au]};
-            reveal(Cache::State::evictable);
             reveal(FracCacheImpl::wf);
             reveal(FracCacheImpl::lookup_map_bijection);
             reveal(FracCacheImpl::lookup_map_injective);
@@ -1106,7 +1484,6 @@ impl FracCacheImpl {
             let lbl = Cache::Label::EvictableCheck{aus: iau_vec_set(aus@)};
             reveal(Cache::State::next);
             reveal(Cache::State::next_by);
-            reveal(Cache::State::evictable);
             assert forall |addr: Address| lbl->aus.contains(addr.au)
                 && #[trigger] self@.lookup_map.contains_key(addr)
                 implies {
@@ -1123,6 +1500,126 @@ impl FracCacheImpl {
             assert(Cache::State::next(self@, self@, lbl));
         }
         true
+    }
+
+    pub exec fn begin_writeback_for_aus(
+        &mut self,
+        aus: &Vec<IAU>,
+    ) -> (out: AuSetWritebackResult)
+        requires
+            old(self).wf(),
+        ensures
+            self.wf(),
+            self.valid_load_handles_preserved(*old(self)),
+            self.valid_writeback_handles_preserved(*old(self)),
+            match out {
+                AuSetWritebackResult::Acquired { addr, handle } => {
+                    &&& iau_vec_set(aus@).contains(addr@.au)
+                    &&& self.entry_fetched(&addr)
+                    &&& self.valid_writeback_handle(&addr, handle)
+                    &&& Cache::State::next(
+                        old(self)@,
+                        self@,
+                        Cache::Label::DiskOps {
+                            requests: set![DiskRequest::WriteReq {
+                                to: addr@,
+                                data: handle.rec@,
+                            }],
+                            responses: Map::empty(),
+                        },
+                    )
+                },
+                AuSetWritebackResult::Complete => {
+                    &&& *self == *old(self)
+                    &&& Cache::State::next(
+                        self@,
+                        self@,
+                        Cache::Label::EvictableCheck {
+                            aus: iau_vec_set(aus@),
+                        },
+                    )
+                },
+                AuSetWritebackResult::Busy => *self == *old(self),
+            },
+    {
+        let mut slot: Slot = 0;
+        while slot < CACHE_SIZE_RECS
+            invariant
+                self.wf(),
+                *self == *old(self),
+                slot <= CACHE_SIZE_RECS,
+            decreases CACHE_SIZE_RECS - slot,
+        {
+            let entry = self.metadata[slot].entry;
+            let status = self.metadata[slot].status;
+            match entry {
+                IEntry::Reserved { addr }
+                | IEntry::Loading { addr } => {
+                    if iau_vec_contains(aus, addr.au) {
+                        proof {
+                            Self::valid_writeback_handles_preserved_if_same(
+                                *old(self),
+                                *self,
+                            );
+                        }
+                        return AuSetWritebackResult::Busy;
+                    }
+                },
+                IEntry::Filled { addr } => {
+                    if iau_vec_contains(aus, addr.au) {
+                        match status {
+                            Status::Dirty => {
+                                match self.begin_writeback(&addr) {
+                                    WritebackAcquireResult::Acquired {
+                                        handle,
+                                    } => {
+                                        return AuSetWritebackResult::Acquired {
+                                            addr,
+                                            handle,
+                                        };
+                                    },
+                                    WritebackAcquireResult::NotPresent
+                                    | WritebackAcquireResult::NotDirty
+                                    | WritebackAcquireResult::Busy => {
+                                        return AuSetWritebackResult::Busy;
+                                    },
+                                }
+                            },
+                            Status::Clean => {},
+                            Status::Writeback | Status::NotFilled => {
+                                proof {
+                                    Self::valid_writeback_handles_preserved_if_same(
+                                        *old(self),
+                                        *self,
+                                    );
+                                }
+                                return AuSetWritebackResult::Busy;
+                            },
+                        }
+                    }
+                },
+                IEntry::Empty => {},
+            }
+            slot += 1;
+        }
+
+        if self.evictable_aus(aus) {
+            proof {
+                Self::valid_writeback_handles_preserved_if_same(
+                    *old(self),
+                    *self,
+                );
+            }
+            AuSetWritebackResult::Complete
+        } else {
+            proof {
+                Self::valid_writeback_handles_preserved_if_same(
+                    *old(self),
+                    *self,
+                );
+            }
+            AuSetWritebackResult::Busy
+        }
     }
 
     pub exec fn find_unmapped_empty_slot(&self) -> (out: Option<Slot>)
@@ -1158,6 +1655,48 @@ impl FracCacheImpl {
         None
     }
 
+    pub exec fn find_unmapped_empty_slot_except(
+        &self,
+        excluded: Slot,
+    ) -> (out: Option<Slot>)
+        requires
+            self.wf(),
+        ensures
+            out is Some ==> {
+                let slot = out.unwrap();
+                &&& slot < self.total_slots()
+                &&& slot != excluded
+                &&& self.slot_entry(slot) is Empty
+                &&& !self@.lookup_map.contains_value(slot)
+            },
+            out is None ==> forall |slot: Slot| #![auto]
+                slot < self.total_slots() && slot != excluded
+                ==> !(self.slot_entry(slot) is Empty),
+    {
+        let mut slot: Slot = 0;
+        while slot < CACHE_SIZE_RECS
+            invariant
+                self.wf(),
+                slot <= self.total_slots(),
+                forall |candidate: Slot| #![auto]
+                    candidate < slot && candidate != excluded
+                    ==> !(self.slot_entry(candidate) is Empty),
+            decreases CACHE_SIZE_RECS - slot,
+        {
+            if slot != excluded {
+                if let IEntry::Empty = self.metadata[slot].entry {
+                    proof {
+                        reveal(FracCacheImpl::lookup_map_consistent_with_slots);
+                        assert(!self.lookup_map@.contains_value(slot));
+                    }
+                    return Some(slot);
+                }
+            }
+            slot = slot + 1;
+        }
+        None
+    }
+
     // views might not work if it has to do with handle access
     pub exec fn fetch(&mut self, addr: &IAddress, load: bool) -> (err: FetchErrorCode)
         requires old(self).wf()
@@ -1166,8 +1705,9 @@ impl FracCacheImpl {
             self.valid_load_handles_preserved(*old(self)),
             !load ==> !(err is LoadInitiate),
             old(self).entry_available_for_fetch(addr) ==> err is Success,
+            (err is Success) ==> old(self).entry_available_for_fetch(addr),
             match err {
-                FetchErrorCode::Awaiting => old(self)@ =~= self@,
+                FetchErrorCode::Awaiting => *old(self) == *self,
                 FetchErrorCode::Success{slot_handle} => {
                     &&& self.entry_fetched(addr)
                     &&& self.valid_handle(slot_handle)
@@ -1197,6 +1737,12 @@ impl FracCacheImpl {
                     &&& self.entry_token_unchanged(*old(self))
                     &&& self.entry_fetched_same_except(*old(self), addr)
                     &&& self.entries_same_except(*old(self), slot_handle.idx)
+                    &&& forall |read_addr: Address, data: RawPage|
+                        old(self)@.valid_read(read_addr, data)
+                        ==> self@.valid_read(read_addr, data)
+                    &&& forall |read_addr: Address, data: RawPage|
+                        self@.valid_read(read_addr, data)
+                        ==> old(self)@.valid_read(read_addr, data)
                     &&& Cache::State::next(old(self)@, self@, cache_load_label(addr))
                 }
             }
@@ -1214,16 +1760,32 @@ impl FracCacheImpl {
                 },
                 _ => {},
             }
+            match &self.internal_slots[slot] {
+                None => {
+                    proof {
+                        assert(!old(self).entry_available_for_fetch(addr));
+                        Self::valid_load_handles_preserved_if_maps_same(
+                            *old(self),
+                            *self,
+                        );
+                    }
+                    return FetchErrorCode::Awaiting;
+                },
+                Some(_) => {},
+            }
             self.internal_slots.push(None);
 
             let taken = self.internal_slots.swap_remove(slot);
             let slot_handle = match taken {
+                /* Old post-mutation path retained for reference:
                 None => { 
                     proof {
                         assert(!old(self).entry_available_for_fetch(addr));
                     }
                     return FetchErrorCode::Awaiting;
                 },
+                */
+                None => unreached::<MutHandle>(),
                 Some(rec) => {
                     let tracked perm = self.perms.borrow_mut().tracked_remove(slot as int);
                     let tracked handle_perm = perm.split(1);
@@ -1238,6 +1800,16 @@ impl FracCacheImpl {
                 }
             };
             proof {
+                assert(self.internal_slots[slot as int] is None);
+                assert forall |i: int|
+                    0 <= i < self.total_slots() && i != slot as int
+                    implies self.internal_slots[i]
+                        == old(self).internal_slots[i] by {}
+                Self::slots_inv_preserved_except(
+                    *old(self),
+                    *self,
+                    slot,
+                );
                 match old(self).metadata[slot as int].entry {
                     IEntry::Empty{} => { },
                     IEntry::Filled{..} => {
@@ -1251,9 +1823,7 @@ impl FracCacheImpl {
                 }
                 reveal(FracCacheImpl::entry_fetched);
                 reveal(FracCacheImpl::lookup_addr_slot);
-                reveal(FracCacheImpl::valid_write_handle);
                 reveal(FracCacheImpl::slot_entry);
-                reveal(FracCacheImpl::valid_handle);
                 reveal(FracCacheImpl::view_state);
                 reveal(FracCacheImpl::view_entries);
             }
@@ -1314,6 +1884,16 @@ impl FracCacheImpl {
                     };
 
                 proof {
+                    assert(self.internal_slots[slot as int] is None);
+                    assert forall |i: int|
+                        0 <= i < self.total_slots() && i != slot as int
+                        implies self.internal_slots[i]
+                            == old(self).internal_slots[i] by {}
+                    Self::slots_inv_preserved_except(
+                        *old(self),
+                        *self,
+                        slot,
+                    );
                     let ghost new_slots_mapping = Self::single_slot_mapping(slot, addr@);
                     let ghost updated_entries = Map::new(
                         |s| new_slots_mapping.contains_key(s),
@@ -1330,6 +1910,70 @@ impl FracCacheImpl {
                     Self::prove_load_handle_preservation_after_new_mapping(
                         *old(self), *self, *addr, slot_handle.idx
                     );
+                    assert forall |read_addr: Address, data: RawPage|
+                        old(self)@.valid_read(read_addr, data)
+                        implies self@.valid_read(read_addr, data) by {
+                        let read_slot = old(self)@.lookup_map[read_addr];
+                        assert(read_slot < old(self).total_slots()) by {
+                            assert(old(self).lookup_map_inv());
+                            assert(old(self).lookup_map@.contains_value(read_slot));
+                        }
+                        assert(read_slot < self.total_slots());
+                        assert(old(self)@.entries[read_slot] is Filled);
+                        assert(data == old(self)@.entries[read_slot]->data);
+                        assert(read_slot != slot) by {
+                            if read_slot == slot {
+                                assert(old(self)@.lookup_map.contains_value(slot));
+                                assert(false);
+                            }
+                        }
+                        assert(self@.lookup_map[read_addr] == read_slot);
+                        assert(!new_slots_mapping.contains_key(read_slot));
+                        assert(!updated_entries.contains_key(read_slot));
+                        assert(self.entries_same_except(*old(self), slot));
+                        Self::slot_entry_same_except(
+                            *old(self),
+                            *self,
+                            slot,
+                            read_slot,
+                        );
+                        reveal(FracCacheImpl::view_entries);
+                        assert(self@.entries[read_slot]
+                            == old(self)@.entries[read_slot]);
+                    }
+                    assert forall |read_addr: Address, data: RawPage|
+                        self@.valid_read(read_addr, data)
+                        implies old(self)@.valid_read(read_addr, data) by {
+                        let read_slot = self@.lookup_map[read_addr];
+                        assert(read_slot < self.total_slots()) by {
+                            assert(self.lookup_map_inv());
+                            assert(self.lookup_map@.contains_value(read_slot));
+                        }
+                        if read_addr == addr@ {
+                            assert(self@.lookup_map[read_addr] == slot);
+                            assert(self@.entries[slot] is Loading);
+                            assert(false);
+                        }
+                        assert(old(self)@.lookup_map.contains_key(read_addr));
+                        assert(old(self)@.lookup_map[read_addr] == read_slot);
+                        assert(read_slot != slot) by {
+                            if read_slot == slot {
+                                assert(self@.lookup_map[addr@] == slot);
+                                assert(self@.lookup_map.is_injective());
+                                assert(false);
+                            }
+                        }
+                        assert(self.entries_same_except(*old(self), slot));
+                        Self::slot_entry_same_except(
+                            *old(self),
+                            *self,
+                            slot,
+                            read_slot,
+                        );
+                        reveal(FracCacheImpl::view_entries);
+                        assert(self@.entries[read_slot]
+                            == old(self)@.entries[read_slot]);
+                    }
                 }
                 return FetchErrorCode::LoadInitiate{slot_handle};
             },
@@ -1346,11 +1990,27 @@ impl FracCacheImpl {
             self.valid_writeback_handles_preserved(*old(self)),
             match result {
                 ReserveWriteResult::Reserved{slot_handle} => {
+                    let mapping = map![slot_handle.idx => addr@];
+                    let updated_entries = Map::new(
+                        |slot| mapping.contains_key(slot),
+                        |slot| Entry::Reserved { addr: mapping[slot] },
+                    );
                     &&& self.entry_fetched(addr)
+                    &&& old(self).slot_entry(slot_handle.idx) is Empty
+                    &&& self.slot_entry(slot_handle.idx) is Reserved
                     &&& self.valid_write_handle(addr, slot_handle)
                     &&& self@.valid_write(addr@)
                     &&& self.entry_fetched_same_except(*old(self), addr)
                     &&& self.entries_same_except(*old(self), slot_handle.idx)
+                    &&& self.entry_token_unchanged(*old(self))
+                    &&& self@.lookup_map
+                        == old(self)@.lookup_map.insert(
+                            addr@,
+                            slot_handle.idx,
+                        )
+                    &&& self@.entries == old(self)@.entries
+                        .union_prefer_right(updated_entries)
+                    &&& self@.status_map == old(self)@.status_map
                     &&& forall |read_addr: Address, data: RawPage|
                         read_addr != addr@
                         && old(self)@.valid_read(read_addr, data)
@@ -1359,6 +2019,9 @@ impl FracCacheImpl {
                 },
                 ReserveWriteResult::CacheFull => {
                     &&& *old(self) == *self
+                    &&& forall |slot: Slot| #![auto]
+                        slot < old(self).total_slots()
+                        ==> !(old(self).slot_entry(slot) is Empty)
                 },
             },
     {
@@ -1367,6 +2030,15 @@ impl FracCacheImpl {
                 proof {
                     Self::valid_load_handles_preserved_if_maps_same(*old(self), *self);
                     Self::valid_writeback_handles_preserved_if_same(*old(self), *self);
+                    reveal(FracCacheImpl::lookup_map_consistent_with_slots);
+                    assert forall |slot: Slot| #![auto]
+                        slot < old(self).total_slots()
+                        implies !(old(self).slot_entry(slot) is Empty) by {
+                        if old(self).slot_entry(slot) is Empty {
+                            assert(!old(self)@.lookup_map.contains_value(slot));
+                            assert(false);
+                        }
+                    }
                 }
                 ReserveWriteResult::CacheFull
             },
@@ -1398,6 +2070,16 @@ impl FracCacheImpl {
                     };
 
                 proof {
+                    assert(self.internal_slots[slot as int] is None);
+                    assert forall |i: int|
+                        0 <= i < self.total_slots() && i != slot as int
+                        implies self.internal_slots[i]
+                            == old(self).internal_slots[i] by {}
+                    Self::slots_inv_preserved_except(
+                        *old(self),
+                        *self,
+                        slot,
+                    );
                     let ghost new_slots_mapping = Self::single_slot_mapping(slot, addr@);
                     let ghost updated_entries = Map::new(
                         |s| new_slots_mapping.contains_key(s),
@@ -1443,6 +2125,755 @@ impl FracCacheImpl {
         }
     }
 
+    pub exec fn reserve_two_for_write_absent(
+        &mut self,
+        first_addr: &IAddress,
+        second_addr: &IAddress,
+    ) -> (result: ReserveTwoWriteResult)
+        requires
+            old(self).wf(),
+            first_addr != second_addr,
+            !old(self).entry_fetched(first_addr),
+            !old(self).entry_fetched(second_addr),
+        ensures
+            self.wf(),
+            self.valid_load_handles_preserved(*old(self)),
+            match result {
+                ReserveTwoWriteResult::Reserved {
+                    first_handle,
+                    second_handle,
+                } => {
+                    &&& first_handle.idx != second_handle.idx
+                    &&& self.slot_entry(first_handle.idx) is Reserved
+                    &&& self.slot_entry(second_handle.idx) is Reserved
+                    &&& self.valid_write_handle(first_addr, first_handle)
+                    &&& self.valid_write_handle(second_addr, second_handle)
+                    &&& self@.valid_write(first_addr@)
+                    &&& self@.valid_write(second_addr@)
+                    &&& forall |read_addr: Address, data: RawPage|
+                        read_addr != first_addr@
+                        && read_addr != second_addr@
+                        && old(self)@.valid_read(read_addr, data)
+                        ==> self@.valid_read(read_addr, data)
+                    &&& Cache::State::next(
+                        old(self)@,
+                        self@,
+                        Cache::Label::Internal,
+                    )
+                },
+                ReserveTwoWriteResult::CacheFull => {
+                    *self == *old(self)
+                },
+            },
+    {
+        let first_slot = match self.find_unmapped_empty_slot() {
+            Some(slot) => slot,
+            None => return ReserveTwoWriteResult::CacheFull,
+        };
+        let second_slot = match self.find_unmapped_empty_slot_except(
+            first_slot,
+        ) {
+            Some(slot) => slot,
+            None => return ReserveTwoWriteResult::CacheFull,
+        };
+        let ghost cache0 = *self;
+        let first_handle = match self.reserve_for_write_absent(first_addr) {
+            ReserveWriteResult::Reserved { slot_handle } => {
+                proof {
+                    assert(self.entries_same_except(
+                        cache0,
+                        slot_handle.idx,
+                    ));
+                    assert(self.entry_token_unchanged(cache0));
+                    assert(cache0.slot_entry(slot_handle.idx) is Empty);
+                }
+                slot_handle
+            },
+            ReserveWriteResult::CacheFull => {
+                proof {
+                    assert(cache0.slot_entry(first_slot) is Empty);
+                    assert(false);
+                }
+                return ReserveTwoWriteResult::CacheFull;
+            },
+        };
+        let ghost cache1 = *self;
+        proof {
+            assert(cache1.entries_same_except(
+                cache0,
+                first_handle.idx,
+            ));
+            assert(cache1.entry_token_unchanged(cache0));
+        }
+        let remaining_slot = if first_handle.idx == first_slot {
+            second_slot
+        } else {
+            first_slot
+        };
+        proof {
+            assert(remaining_slot != first_handle.idx);
+            assert(cache0.slot_entry(remaining_slot) is Empty);
+            assert(cache1.entries_same_except(
+                cache0,
+                first_handle.idx,
+            ));
+            assert(first_handle.idx < cache1.total_slots());
+            assert(remaining_slot < cache1.total_slots());
+            Self::slot_entry_same_except(
+                cache0,
+                cache1,
+                first_handle.idx,
+                remaining_slot,
+            );
+            assert(cache1.slot_entry(remaining_slot) is Empty);
+        }
+        let second_handle = match self.reserve_for_write_absent(second_addr) {
+            ReserveWriteResult::Reserved { slot_handle } => {
+                proof {
+                    assert(self.entries_same_except(
+                        cache1,
+                        slot_handle.idx,
+                    ));
+                    assert(self.entry_token_unchanged(cache1));
+                    assert(cache1.slot_entry(slot_handle.idx) is Empty);
+                }
+                slot_handle
+            },
+            ReserveWriteResult::CacheFull => {
+                proof {
+                    assert(cache1.slot_entry(remaining_slot) is Empty);
+                    assert(false);
+                }
+                return ReserveTwoWriteResult::CacheFull;
+            },
+        };
+        proof {
+            assert(self.entries_same_except(cache1, second_handle.idx));
+            assert(self.entry_token_unchanged(cache1));
+            let first_slot = first_handle.idx;
+            let second_slot = second_handle.idx;
+            assert(cache0.slot_entry(first_slot) is Empty);
+            assert(cache1.slot_entry(second_slot) is Empty);
+            assert(first_slot != second_slot) by {
+                if first_slot == second_slot {
+                    assert(self.lookup_addr_slot(first_addr) == first_slot);
+                    assert(self.lookup_addr_slot(second_addr) == second_slot);
+                    reveal(FracCacheImpl::lookup_map_injective);
+                    assert(self.lookup_map@.is_injective());
+                    assert(first_addr@ != second_addr@);
+                }
+            }
+            assert(self.entry_token_unchanged(cache1));
+            assert(self.entries_same_except(cache1, second_slot));
+            assert(self.entry_fetched_same_except(cache1, second_addr));
+            assert(self.entry_fetched(first_addr));
+            assert(self.lookup_addr_slot(first_addr) == first_slot);
+            assert(second_slot < self.total_slots());
+            assert(first_slot < self.total_slots());
+            Self::slot_entry_same_except(
+                cache1,
+                *self,
+                second_slot,
+                first_slot,
+            );
+            assert(self.valid_handle(first_handle)) by {
+
+                assert(self.entry_token_id(first_slot)
+                    == cache1.entry_token_id(first_slot));
+            }
+            assert(self.valid_write_handle(first_addr, first_handle));
+            assert(cache0.slot_entry(second_slot) is Empty) by {
+                assert(cache1.entries_same_except(cache0, first_slot));
+                Self::slot_entry_same_except(
+                    cache0,
+                    cache1,
+                    first_slot,
+                    second_slot,
+                );
+            }
+
+            let first_mapping = map![first_slot => first_addr@];
+            let second_mapping = map![second_slot => second_addr@];
+            let mapping = map![
+                first_slot => first_addr@,
+                second_slot => second_addr@
+            ];
+            let updated_entries = Map::new(
+                |slot| mapping.contains_key(slot),
+                |slot| Entry::Reserved { addr: mapping[slot] },
+            );
+            assert(cache0@.valid_new_slots_mapping(mapping)) by {
+
+                assert(mapping.is_injective()) by {
+                    assert forall |left: Slot, right: Slot|
+                        mapping.contains_key(left)
+                        && mapping.contains_key(right)
+                        && #[trigger] mapping[left]
+                            == #[trigger] mapping[right]
+                        implies left == right by {}
+                }
+                assert(mapping.dom() <= cache0@.entries.dom());
+                assert(mapping.values().disjoint(
+                    cache0@.lookup_map.dom(),
+                ));
+                assert forall |slot: Slot|
+                    #[trigger] mapping.contains_key(slot)
+                    implies cache0@.entries[slot] is Empty by {
+                    reveal(FracCacheImpl::view_entries);
+                    if slot == first_slot {
+                        assert(cache0.slot_entry(first_slot) is Empty);
+                    } else {
+                        assert(slot == second_slot);
+                        assert(cache0.slot_entry(second_slot) is Empty);
+                    }
+                }
+            }
+            assert(self@.status_map == cache0@.status_map);
+            assert(self@.entries
+                == cache0@.entries.union_prefer_right(updated_entries)) by {
+                assert_maps_equal!(
+                    self@.entries,
+                    cache0@.entries.union_prefer_right(updated_entries),
+                    slot => {}
+                );
+            }
+            assert(self@.lookup_map
+                == cache0@.lookup_map.union_prefer_right(
+                    mapping.invert(),
+                )) by {
+                assert(mapping.invert()
+                    == map![
+                        first_addr@ => first_slot,
+                        second_addr@ => second_slot
+                    ]) by {
+
+                    assert(mapping.is_injective());
+                    assert(mapping.contains_pair(
+                        first_slot,
+                        first_addr@,
+                    ));
+                    assert(mapping.contains_pair(
+                        second_slot,
+                        second_addr@,
+                    ));
+                    assert_maps_equal!(
+                        mapping.invert(),
+                        map![
+                            first_addr@ => first_slot,
+                            second_addr@ => second_slot
+                        ],
+                        addr => {}
+                    );
+                }
+                assert_maps_equal!(
+                    self@.lookup_map,
+                    cache0@.lookup_map.union_prefer_right(
+                        mapping.invert(),
+                    ),
+                    addr => {}
+                );
+            }
+            reveal(Cache::State::next);
+            reveal(Cache::State::next_by);
+            assert(Cache::State::next_by(
+                cache0@,
+                self@,
+                Cache::Label::Internal,
+                Cache::Step::reserve(mapping),
+            ));
+            Self::valid_load_handles_preserved_transitive(
+                cache0,
+                cache1,
+                *self,
+            );
+            assert forall |read_addr: Address, data: RawPage|
+                read_addr != first_addr@
+                && read_addr != second_addr@
+                && cache0@.valid_read(read_addr, data)
+                implies self@.valid_read(read_addr, data) by {
+                assert(cache1@.valid_read(read_addr, data));
+            }
+        }
+        ReserveTwoWriteResult::Reserved {
+            first_handle,
+            second_handle,
+        }
+    }
+
+    proof fn prove_prepared_single_reserve(
+        pre: Cache::State,
+        post: Cache::State,
+        addr: Address,
+        slot: Slot,
+    )
+        requires
+            pre.entries.contains_key(slot),
+            pre.entries[slot] is Empty,
+            !pre.lookup_map.contains_key(addr),
+            post.entries == pre.entries.insert(
+                slot,
+                Entry::Reserved { addr },
+            ),
+            post.status_map == pre.status_map,
+            post.lookup_map == pre.lookup_map.insert(addr, slot),
+        ensures
+            post.valid_write(addr),
+            Cache::State::next(pre, post, Cache::Label::Internal),
+            forall |read_addr: Address, data: RawPage|
+                read_addr != addr
+                && pre.valid_read(read_addr, data)
+                ==> post.valid_read(read_addr, data),
+    {
+        let mapping = map![slot => addr];
+        let updated_entries = Map::new(
+            |candidate: Slot| mapping.contains_key(candidate),
+            |candidate: Slot| Entry::Reserved {
+                addr: mapping[candidate],
+            },
+        );
+        assert(pre.valid_new_slots_mapping(mapping)) by {
+            assert(mapping.is_injective());
+        }
+        assert(post.entries
+            == pre.entries.union_prefer_right(updated_entries)) by {
+            assert_maps_equal!(
+                post.entries,
+                pre.entries.union_prefer_right(updated_entries),
+                candidate => {}
+            );
+        }
+        assert(mapping.invert() == map![addr => slot]) by {
+
+            assert(mapping.is_injective());
+            assert(mapping.contains_pair(slot, addr));
+            assert_maps_equal!(mapping.invert(), map![addr => slot], candidate => {});
+        }
+        assert(post.lookup_map
+            == pre.lookup_map.union_prefer_right(mapping.invert())) by {
+            assert_maps_equal!(
+                post.lookup_map,
+                pre.lookup_map.union_prefer_right(mapping.invert()),
+                candidate => {}
+            );
+        }
+        reveal(Cache::State::next);
+        reveal(Cache::State::next_by);
+        assert(Cache::State::next_by(
+            pre,
+            post,
+            Cache::Label::Internal,
+            Cache::Step::reserve(mapping),
+        ));
+        assert(post.valid_write(addr));
+        assert forall |read_addr: Address, data: RawPage|
+            read_addr != addr
+            && pre.valid_read(read_addr, data)
+            implies post.valid_read(read_addr, data) by {
+            assert(pre.lookup_map[read_addr] != slot) by {
+                if pre.lookup_map[read_addr] == slot {
+                    assert(pre.entries[slot] is Filled);
+                    assert(false);
+                }
+            }
+        }
+    }
+
+    pub exec fn prepare_two_for_write(
+        &mut self,
+        first_addr: &IAddress,
+        second_addr: &IAddress,
+    ) -> (result: PrepareTwoWriteResult)
+        requires
+            old(self).wf(),
+            old(self)@.inv(),
+            first_addr != second_addr,
+        ensures
+            self.wf(),
+            self.valid_load_handles_preserved(*old(self)),
+            match result {
+                PrepareTwoWriteResult::Ready {
+                    first_handle,
+                    second_handle,
+                    prepared_cache,
+                } => {
+                    &&& first_handle.idx != second_handle.idx
+                    &&& self.entry_fetched(first_addr)
+                    &&& self.entry_fetched(second_addr)
+                    &&& self.valid_write_handle(first_addr, first_handle)
+                    &&& self.valid_write_handle(second_addr, second_handle)
+                    &&& prepared_cache@ == self.restored_two_write_state(
+                        first_addr,
+                        first_handle,
+                        second_addr,
+                        second_handle,
+                    )
+                    &&& prepared_cache@.valid_write(first_addr@)
+                    &&& prepared_cache@.valid_write(second_addr@)
+                    &&& prepared_cache@.inv()
+                    &&& self.prepared_two_write_state_matches(
+                        prepared_cache@,
+                        first_addr,
+                        first_handle.idx,
+                        second_addr,
+                        second_handle.idx,
+                    )
+                    &&& Cache::State::next(
+                        old(self)@,
+                        prepared_cache@,
+                        Cache::Label::Internal,
+                    )
+                    &&& forall |read_addr: Address, data: RawPage|
+                        read_addr != first_addr@
+                        && read_addr != second_addr@
+                        && old(self)@.valid_read(read_addr, data)
+                        ==> prepared_cache@.valid_read(read_addr, data)
+                },
+                PrepareTwoWriteResult::CacheFull
+                | PrepareTwoWriteResult::Blocked => {
+                    self@ == old(self)@
+                },
+            },
+    {
+        let ghost cache0 = *self;
+        let first_present = self.contains_addr(first_addr);
+        let second_present = self.contains_addr(second_addr);
+
+        if !first_present && !second_present {
+            return match self.reserve_two_for_write_absent(
+                first_addr,
+                second_addr,
+            ) {
+                ReserveTwoWriteResult::Reserved {
+                    first_handle,
+                    second_handle,
+                } => {
+                    let ghost prepared = self.restored_two_write_state(
+                        first_addr,
+                        first_handle,
+                        second_addr,
+                        second_handle,
+                    );
+                    proof {
+                        Self::restored_two_write_state_matches(
+                            self,
+                            first_addr,
+                            first_handle,
+                            second_addr,
+                            second_handle,
+                        );
+                        assert(prepared == self@) by {
+                            assert(self.slot_entry(first_handle.idx)
+                                is Reserved);
+                            assert(self.slot_entry(second_handle.idx)
+                                is Reserved);
+                            assert_maps_equal!(prepared.entries, self@.entries, slot => {});
+                        }
+                        Cache::State::inv_next(
+                            cache0@,
+                            prepared,
+                            Cache::Label::Internal,
+                        );
+                    }
+                    PrepareTwoWriteResult::Ready {
+                        first_handle,
+                        second_handle,
+                        prepared_cache: Ghost(prepared),
+                    }
+                },
+                ReserveTwoWriteResult::CacheFull => {
+                    PrepareTwoWriteResult::CacheFull
+                },
+            };
+        }
+
+        if first_present {
+            let first_handle = match self.fetch(first_addr, false) {
+                FetchErrorCode::Success { slot_handle } => slot_handle,
+                FetchErrorCode::CacheFull => {
+                    return PrepareTwoWriteResult::CacheFull;
+                },
+                FetchErrorCode::Awaiting
+                | FetchErrorCode::NotPresent => {
+                    return PrepareTwoWriteResult::Blocked;
+                },
+                FetchErrorCode::LoadInitiate { slot_handle: _ } => {
+                    proof { assert(false); }
+                    return PrepareTwoWriteResult::Blocked;
+                },
+            };
+            let ghost cache1 = *self;
+            if second_present {
+                let second_handle = match self.fetch(second_addr, false) {
+                    FetchErrorCode::Success { slot_handle } => slot_handle,
+                    FetchErrorCode::CacheFull => {
+                        self.handle_release(first_addr, first_handle);
+                        proof { assert(self@ == cache0@); }
+                        return PrepareTwoWriteResult::CacheFull;
+                    },
+                    FetchErrorCode::Awaiting
+                    | FetchErrorCode::NotPresent => {
+                        self.handle_release(first_addr, first_handle);
+                        proof { assert(self@ == cache0@); }
+                        return PrepareTwoWriteResult::Blocked;
+                    },
+                    FetchErrorCode::LoadInitiate { slot_handle: _ } => {
+                        proof { assert(false); }
+                        self.handle_release(first_addr, first_handle);
+                        return PrepareTwoWriteResult::Blocked;
+                    },
+                };
+                proof {
+                    Self::valid_write_handle_preserved_except(
+                        cache1,
+                        *self,
+                        first_addr,
+                        first_handle,
+                        second_addr,
+                        second_handle.idx,
+                    );
+                }
+                let ghost prepared = self.restored_two_write_state(
+                    first_addr,
+                    first_handle,
+                    second_addr,
+                    second_handle,
+                );
+                proof {
+                    assert(first_handle.idx != second_handle.idx);
+                    Self::restored_two_write_state_matches(
+                        self,
+                        first_addr,
+                        first_handle,
+                        second_addr,
+                        second_handle,
+                    );
+                    assert(prepared == cache0@) by {
+                        assert_maps_equal!(prepared.entries, cache0@.entries, slot => {});
+                    }
+                    reveal(Cache::State::next);
+                    reveal(Cache::State::next_by);
+                    assert(Cache::State::next_by(
+                        cache0@,
+                        prepared,
+                        Cache::Label::Internal,
+                        Cache::Step::noop(),
+                    ));
+                    Cache::State::inv_next(
+                        cache0@,
+                        prepared,
+                        Cache::Label::Internal,
+                    );
+                    Self::valid_load_handles_preserved_transitive(
+                        cache0,
+                        cache1,
+                        *self,
+                    );
+                }
+                return PrepareTwoWriteResult::Ready {
+                    first_handle,
+                    second_handle,
+                    prepared_cache: Ghost(prepared),
+                };
+            } else {
+                let second_handle = match self.reserve_for_write_absent(
+                    second_addr,
+                ) {
+                    ReserveWriteResult::Reserved { slot_handle } => slot_handle,
+                    ReserveWriteResult::CacheFull => {
+                        self.handle_release(first_addr, first_handle);
+                        proof { assert(self@ == cache0@); }
+                        return PrepareTwoWriteResult::CacheFull;
+                    },
+                };
+                proof {
+                    Self::valid_write_handle_preserved_except(
+                        cache1,
+                        *self,
+                        first_addr,
+                        first_handle,
+                        second_addr,
+                        second_handle.idx,
+                    );
+                }
+                let ghost prepared = self.restored_two_write_state(
+                    first_addr,
+                    first_handle,
+                    second_addr,
+                    second_handle,
+                );
+                proof {
+                    Self::restored_two_write_state_matches(
+                        self,
+                        first_addr,
+                        first_handle,
+                        second_addr,
+                        second_handle,
+                    );
+                    assert(cache0@.entries.contains_key(second_handle.idx));
+                    assert(cache0@.entries[second_handle.idx] is Empty) by {
+                        assert(cache1.slot_entry(second_handle.idx) is Empty);
+                        assert(second_handle.idx != first_handle.idx);
+                        assert(cache1.entries_same_except(
+                            cache0,
+                            first_handle.idx,
+                        ));
+                        Self::slot_entry_same_except(
+                            cache0,
+                            cache1,
+                            first_handle.idx,
+                            second_handle.idx,
+                        );
+                        reveal(FracCacheImpl::view_entries);
+                    }
+                    assert(!cache0@.lookup_map.contains_key(second_addr@));
+                    assert(prepared.entries == cache0@.entries.insert(
+                        second_handle.idx,
+                        Entry::Reserved { addr: second_addr@ },
+                    )) by {
+                        assert_maps_equal!(
+                            prepared.entries,
+                            cache0@.entries.insert(
+                                second_handle.idx,
+                                Entry::Reserved { addr: second_addr@ },
+                            ),
+                            slot => {}
+                        );
+                    }
+                    assert(prepared.status_map == cache0@.status_map);
+                    assert(prepared.lookup_map == cache0@.lookup_map.insert(
+                        second_addr@,
+                        second_handle.idx,
+                    ));
+                    Self::prove_prepared_single_reserve(
+                        cache0@,
+                        prepared,
+                        second_addr@,
+                        second_handle.idx,
+                    );
+                    Cache::State::inv_next(
+                        cache0@,
+                        prepared,
+                        Cache::Label::Internal,
+                    );
+                    Self::valid_load_handles_preserved_transitive(
+                        cache0,
+                        cache1,
+                        *self,
+                    );
+                }
+                return PrepareTwoWriteResult::Ready {
+                    first_handle,
+                    second_handle,
+                    prepared_cache: Ghost(prepared),
+                };
+            }
+        }
+
+        let second_handle = match self.fetch(second_addr, false) {
+            FetchErrorCode::Success { slot_handle } => slot_handle,
+            FetchErrorCode::CacheFull => {
+                return PrepareTwoWriteResult::CacheFull;
+            },
+            FetchErrorCode::Awaiting | FetchErrorCode::NotPresent => {
+                return PrepareTwoWriteResult::Blocked;
+            },
+            FetchErrorCode::LoadInitiate { slot_handle: _ } => {
+                proof { assert(false); }
+                return PrepareTwoWriteResult::Blocked;
+            },
+        };
+        let ghost cache1 = *self;
+        let first_handle = match self.reserve_for_write_absent(first_addr) {
+            ReserveWriteResult::Reserved { slot_handle } => slot_handle,
+            ReserveWriteResult::CacheFull => {
+                self.handle_release(second_addr, second_handle);
+                proof { assert(self@ == cache0@); }
+                return PrepareTwoWriteResult::CacheFull;
+            },
+        };
+        proof {
+            Self::valid_write_handle_preserved_except(
+                cache1,
+                *self,
+                second_addr,
+                second_handle,
+                first_addr,
+                first_handle.idx,
+            );
+        }
+        let ghost prepared = self.restored_two_write_state(
+            first_addr,
+            first_handle,
+            second_addr,
+            second_handle,
+        );
+        proof {
+            Self::restored_two_write_state_matches(
+                self,
+                first_addr,
+                first_handle,
+                second_addr,
+                second_handle,
+            );
+            assert(cache0@.entries.contains_key(first_handle.idx));
+            assert(cache0@.entries[first_handle.idx] is Empty) by {
+                assert(cache1.slot_entry(first_handle.idx) is Empty);
+                assert(first_handle.idx != second_handle.idx);
+                assert(cache1.entries_same_except(
+                    cache0,
+                    second_handle.idx,
+                ));
+                Self::slot_entry_same_except(
+                    cache0,
+                    cache1,
+                    second_handle.idx,
+                    first_handle.idx,
+                );
+                reveal(FracCacheImpl::view_entries);
+            }
+            assert(!cache0@.lookup_map.contains_key(first_addr@));
+            assert(prepared.entries == cache0@.entries.insert(
+                first_handle.idx,
+                Entry::Reserved { addr: first_addr@ },
+            )) by {
+                assert_maps_equal!(
+                    prepared.entries,
+                    cache0@.entries.insert(
+                        first_handle.idx,
+                        Entry::Reserved { addr: first_addr@ },
+                    ),
+                    slot => {}
+                );
+            }
+            assert(prepared.status_map == cache0@.status_map);
+            assert(prepared.lookup_map == cache0@.lookup_map.insert(
+                first_addr@,
+                first_handle.idx,
+            ));
+            Self::prove_prepared_single_reserve(
+                cache0@,
+                prepared,
+                first_addr@,
+                first_handle.idx,
+            );
+            Cache::State::inv_next(
+                cache0@,
+                prepared,
+                Cache::Label::Internal,
+            );
+            Self::valid_load_handles_preserved_transitive(
+                cache0,
+                cache1,
+                *self,
+            );
+        }
+        PrepareTwoWriteResult::Ready {
+            first_handle,
+            second_handle,
+            prepared_cache: Ghost(prepared),
+        }
+    }
+
     pub exec fn load_release(&mut self, addr: &IAddress, handle: MutHandle)
         requires 
             old(self).wf(),
@@ -1454,6 +2885,9 @@ impl FracCacheImpl {
             &&& self.release_common_post(*old(self), addr)
             &&& self.valid_load_handles_preserved_except(*old(self), *addr)
             &&& self.valid_writeback_handles_preserved(*old(self))
+            &&& forall |read_addr: Address, data: RawPage|
+                old(self)@.valid_read(read_addr, data)
+                ==> self@.valid_read(read_addr, data)
             &&& Cache::State::next(old(self)@, self@, cache_lbl)
         })
     {
@@ -1473,6 +2907,16 @@ impl FracCacheImpl {
             entry: IEntry::Filled{addr: *addr}};
 
         proof {
+            assert(rec@.len() == PAGE_SIZE_BYTES);
+            assert forall |i: int|
+                0 <= i < self.total_slots() && i != idx as int
+                implies self.internal_slots[i]
+                    == old(self).internal_slots[i] by {}
+            Self::slots_inv_preserved_except(
+                *old(self),
+                *self,
+                idx,
+            );
             let resp = DiskResponse::ReadResp{data: handle.rec@};
             let cache_lbl = Cache::Label::DiskOps{requests: set!{}, responses: map!{addr@ => resp}};
 
@@ -1481,7 +2925,6 @@ impl FracCacheImpl {
                 // the restrict map has exactly the pair (addr@ -> idx), so its invert is (idx -> addr@)
                 assert(old(self)@.lookup_map.restrict(cache_lbl->responses.dom()).contains_pair(addr@, idx));
 
-                reveal(Map::invert);
                 // show slot_addr_map maps idx to addr@
                 // show there are no other keys
             }
@@ -1499,7 +2942,48 @@ impl FracCacheImpl {
                 |slot| Status::Clean
             );
             assert(self@.entries =~= old(self)@.entries.union_prefer_right(updated_entries));
+            assert(self@.entries
+                == old(self)@.entries.union_prefer_right(updated_entries)) by {
+                assert_maps_equal!(
+                    self@.entries,
+                    old(self)@.entries.union_prefer_right(updated_entries),
+                    slot => {}
+                );
+            }
             assert(self@.status_map =~= old(self)@.status_map.union_prefer_right(updated_status_map));
+            assert(self@.lookup_map == old(self)@.lookup_map);
+            reveal(FracCacheImpl::wf);
+            reveal(FracCacheImpl::lookup_map_inv);
+            reveal(FracCacheImpl::view_state);
+            reveal(FracCacheImpl::view_entries);
+            assert forall |read_addr: Address, data: RawPage|
+                old(self)@.valid_read(read_addr, data)
+                implies self@.valid_read(read_addr, data) by {
+                let read_slot = old(self)@.lookup_map[read_addr];
+                assert(old(self)@.lookup_map.contains_key(read_addr));
+                assert(old(self)@.lookup_map.contains_value(read_slot));
+                assert(old(self).lookup_map_inv());
+                assert(read_slot < old(self).total_slots());
+                if read_addr == addr@ {
+
+                    reveal(FracCacheImpl::entry_fetched);
+                    reveal(FracCacheImpl::lookup_addr_slot);
+                    assert(read_slot == idx);
+                    assert(old(self)@.entries[read_slot] is Loading);
+                    assert(false);
+                } else {
+                    assert(old(self)@.entries.contains_key(read_slot));
+                    assert(read_slot != idx) by {
+                        assert(old(self)@.lookup_map.is_injective());
+                    }
+                    assert(self.internal_slots[read_slot as int]
+                        == old(self).internal_slots[read_slot as int]);
+                    assert(self.metadata[read_slot as int]
+                        == old(self).metadata[read_slot as int]);
+                    assert(self@.entries[read_slot]
+                        == old(self)@.entries[read_slot]);
+                }
+            }
             reveal(Cache::State::next_by);
             assert(Cache::State::next_by(old(self)@, self@, cache_lbl, Cache::Step::load_complete()));
             reveal(Cache::State::next);
@@ -1523,6 +3007,8 @@ impl FracCacheImpl {
             &&& self.valid_load_handles_preserved(*old(self))
             &&& self.valid_writeback_handles_preserved(*old(self))
             &&& self.entries_same_except(*old(self), handle.idx)
+            &&& self@.lookup_map == old(self)@.lookup_map
+            &&& self@.valid_read(addr@, handle.rec@)
             &&& Cache::State::next(old(self)@, self@, cache_lbl)
         })
     {
@@ -1550,13 +3036,22 @@ impl FracCacheImpl {
         };
 
         proof {
+            assert(rec@.len() == PAGE_SIZE_BYTES);
+            assert forall |i: int|
+                0 <= i < self.total_slots() && i != idx as int
+                implies self.internal_slots[i]
+                    == old(self).internal_slots[i] by {}
+            Self::slots_inv_preserved_except(
+                *old(self),
+                *self,
+                idx,
+            );
             let cache_lbl = cache_write_label(addr, recv);
             let updated_entries = old(self)@.write_updated_entries(cache_lbl->writes);
             let updated_status_map = old(self)@.write_updated_status(cache_lbl->writes);
             let slot_addr_map = old(self)@.lookup_map.restrict(cache_lbl->writes.dom()).invert();
             assert(slot_addr_map =~= map!{idx => addr@}) by {
                 assert(old(self)@.lookup_map.restrict(cache_lbl->writes.dom()).contains_pair(addr@, idx));
-                reveal(Map::invert);
             }
             let updated_entries2 = Map::new(
                 |slot| slot_addr_map.contains_key(slot),
@@ -1573,11 +3068,172 @@ impl FracCacheImpl {
             assert(updated_status_map =~= updated_status_map2);
             assert(self@.entries =~= old(self)@.entries.union_prefer_right(updated_entries));
             assert(self@.status_map =~= old(self)@.status_map.union_prefer_right(updated_status_map));
-            assert(self@.lookup_map =~= old(self)@.lookup_map);
+            assert(self@.lookup_map == old(self)@.lookup_map) by {
+                assert_maps_equal!(
+                    self@.lookup_map,
+                    old(self)@.lookup_map,
+                    candidate => {}
+                );
+            }
+            assert(self@.lookup_map[addr@] == idx);
+            assert(self@.entries[idx]
+                == Entry::Filled { addr: addr@, data: recv });
+            assert(self@.valid_read(addr@, recv));
             reveal(Cache::State::next_by);
             assert(Cache::State::next_by(old(self)@, self@, cache_lbl, Cache::Step::access()));
             reveal(Cache::State::next);
         }
+    }
+
+    pub proof fn two_write_releases_refine_access(
+        prepared_cache: Cache::State,
+        borrowed_cache: Self,
+        after_first: Self,
+        after_second: Self,
+        first_addr: &IAddress,
+        first_slot: Slot,
+        first_data: RawPage,
+        second_addr: &IAddress,
+        second_slot: Slot,
+        second_data: RawPage,
+    )
+        requires
+            borrowed_cache.wf(),
+            first_addr != second_addr,
+            first_slot != second_slot,
+            borrowed_cache.prepared_two_write_state_matches(
+                prepared_cache,
+                first_addr,
+                first_slot,
+                second_addr,
+                second_slot,
+            ),
+            prepared_cache.valid_write(first_addr@),
+            prepared_cache.valid_write(second_addr@),
+            prepared_cache.inv(),
+            borrowed_cache@.valid_write(first_addr@),
+            borrowed_cache@.valid_write(second_addr@),
+            Cache::State::next(
+                borrowed_cache@,
+                after_first@,
+                Cache::Label::Access {
+                    reads: Map::empty(),
+                    writes: map![first_addr@ => first_data],
+                },
+            ),
+            Cache::State::next(
+                after_first@,
+                after_second@,
+                Cache::Label::Access {
+                    reads: Map::empty(),
+                    writes: map![second_addr@ => second_data],
+                },
+            ),
+        ensures
+            Cache::State::next(
+                prepared_cache,
+                after_second@,
+                Cache::Label::Access {
+                    reads: Map::empty(),
+                    writes: map![
+                        first_addr@ => first_data,
+                        second_addr@ => second_data
+                    ],
+                },
+            ),
+            after_second@.valid_read(first_addr@, first_data),
+            after_second@.valid_read(second_addr@, second_data),
+    {
+        reveal(FracCacheImpl::view_state);
+        reveal(FracCacheImpl::view_entries);
+        assert(prepared_cache.lookup_map == borrowed_cache@.lookup_map);
+        assert(prepared_cache.status_map == borrowed_cache@.status_map);
+        assert(prepared_cache.entries == borrowed_cache@.entries
+            .insert(first_slot, prepared_cache.entries[first_slot])
+            .insert(second_slot, prepared_cache.entries[second_slot])) by {
+            assert_maps_equal!(
+                prepared_cache.entries,
+                borrowed_cache@.entries.insert(
+                    first_slot,
+                    prepared_cache.entries[first_slot],
+                ).insert(
+                    second_slot,
+                    prepared_cache.entries[second_slot],
+                ),
+                slot => {}
+            );
+        }
+        assert(prepared_cache.entries[first_slot].get_addr()
+            == borrowed_cache@.entries[first_slot].get_addr());
+        assert(prepared_cache.entries[second_slot].get_addr()
+            == borrowed_cache@.entries[second_slot].get_addr());
+        assert((prepared_cache.entries[first_slot] is Filled)
+            == (borrowed_cache@.entries[first_slot] is Filled));
+        assert((prepared_cache.entries[second_slot] is Filled)
+            == (borrowed_cache@.entries[second_slot] is Filled));
+        assert((prepared_cache.entries[first_slot] is Empty)
+            == (borrowed_cache@.entries[first_slot] is Empty));
+        assert((prepared_cache.entries[second_slot] is Empty)
+            == (borrowed_cache@.entries[second_slot] is Empty));
+        Cache::State::two_borrowed_write_slots_preserve_inv(
+            prepared_cache,
+            borrowed_cache@,
+            first_slot,
+            second_slot,
+        );
+        let first_write = map![first_addr@ => first_data];
+        let second_write = map![second_addr@ => second_data];
+        let writes = map![
+            first_addr@ => first_data,
+            second_addr@ => second_data
+        ];
+        assert(first_write.union_prefer_right(second_write) == writes) by {
+            assert_maps_equal!(
+                first_write.union_prefer_right(second_write),
+                writes,
+                addr => {}
+            );
+        }
+        Cache::State::access_compose_disjoint_writes(
+            borrowed_cache@,
+            after_first@,
+            after_second@,
+            first_write,
+            second_write,
+        );
+        assert(Cache::State::next(
+            borrowed_cache@,
+            after_second@,
+            Cache::Label::Access {
+                reads: Map::empty(),
+                writes,
+            },
+        ));
+        Cache::State::access_from_two_borrowed_write_slots(
+            prepared_cache,
+            borrowed_cache@,
+            after_second@,
+            first_addr@,
+            first_slot,
+            first_data,
+            second_addr@,
+            second_slot,
+            second_data,
+        );
+        Cache::State::access_write_valid(
+            prepared_cache,
+            after_second@,
+            Map::empty(),
+            writes,
+            first_addr@,
+        );
+        Cache::State::access_write_valid(
+            prepared_cache,
+            after_second@,
+            Map::empty(),
+            writes,
+            second_addr@,
+        );
     }
 
     // Returns a borrowed filled-page handle without modeling a cache write transition.
@@ -1615,10 +3271,19 @@ impl FracCacheImpl {
         }
         self.internal_slots[idx] = Some(rec);
         proof {
+            assert(rec@.len() == PAGE_SIZE_BYTES);
+            assert forall |i: int|
+                0 <= i < self.total_slots() && i != idx as int
+                implies self.internal_slots[i]
+                    == old(self).internal_slots[i] by {}
+            Self::slots_inv_preserved_except(
+                *old(self),
+                *self,
+                idx,
+            );
             reveal(FracCacheImpl::view_entries);
             assert(self@.entries == old(self)@.entries.insert(idx, Entry::Filled{addr: addr@, data: rec@}));
             reveal(FracCacheImpl::entry_available_for_fetch);
-            reveal(FracCacheImpl::valid_handle);
             reveal(FracCacheImpl::lookup_addr_slot);
             assert(self.lookup_map@ == old(self).lookup_map@);
             assert(self.lookup_addr_slot(addr) == idx);
@@ -1785,6 +3450,16 @@ impl FracCacheImpl {
             status: Status::Writeback
         };
         proof {
+            assert(self.internal_slots[slot as int] is None);
+            assert forall |i: int|
+                0 <= i < self.total_slots() && i != slot as int
+                implies self.internal_slots[i]
+                    == old(self).internal_slots[i] by {}
+            Self::slots_inv_preserved_except(
+                *old(self),
+                *self,
+                slot,
+            );
             reveal(Cache::State::next_by);
             reveal(Cache::State::next);
             let req = DiskRequest::WriteReq{to: addr@, data: rec@};
@@ -1827,10 +3502,8 @@ impl FracCacheImpl {
                         assert(req_slot_map.contains_key(req));
                         assert(req_slot_map[req] == slot);
                         assert(req_slot_map.values().contains(slot)) by {
-                            reveal(Map::values);
                         }
                         assert(writeback_slots.contains(s));
-                        reveal(Map::values);
                     }
                 };
             };
@@ -1869,6 +3542,9 @@ impl FracCacheImpl {
             &&& self.wf()
             &&& self.valid_load_handles_preserved(*old(self))
             &&& self.valid_writeback_handles_preserved_except(*old(self), *addr)
+            &&& forall |read_addr: Address, data: RawPage|
+                old(self)@.valid_read(read_addr, data)
+                ==> self@.valid_read(read_addr, data)
             &&& Cache::State::next(old(self)@, self@, cache_lbl)
         })
     {
@@ -1890,13 +3566,22 @@ impl FracCacheImpl {
         };
 
         proof {
+            assert(rec@.len() == PAGE_SIZE_BYTES);
+            assert forall |i: int|
+                0 <= i < self.total_slots() && i != idx as int
+                implies self.internal_slots[i]
+                    == old(self).internal_slots[i] by {}
+            Self::slots_inv_preserved_except(
+                *old(self),
+                *self,
+                idx,
+            );
             let resp = DiskResponse::WriteResp{};
             let cache_lbl = Cache::Label::DiskOps{requests: set!{}, responses: map!{addr@ => resp}};
 
             let slot_addr_map = old(self)@.lookup_map.restrict(cache_lbl->responses.dom()).invert();
             assert(slot_addr_map =~= map!{idx => addr@}) by {
                 assert(old(self)@.lookup_map.restrict(cache_lbl->responses.dom()).contains_pair(addr@, idx));
-                reveal(Map::invert);
             }
 
             let updated_status_map = Map::new(
@@ -1904,6 +3589,10 @@ impl FracCacheImpl {
                 |slot| Status::Clean
             );
             assert(self@.entries =~= old(self)@.entries);
+            assert(self@.lookup_map == old(self)@.lookup_map);
+            assert forall |read_addr: Address, data: RawPage|
+                old(self)@.valid_read(read_addr, data)
+                implies self@.valid_read(read_addr, data) by {}
             assert(self@.status_map =~= old(self)@.status_map.union_prefer_right(updated_status_map));
             reveal(Cache::State::next_by);
             assert(Cache::State::next_by(old(self)@, self@, cache_lbl, Cache::Step::writeback_complete()));

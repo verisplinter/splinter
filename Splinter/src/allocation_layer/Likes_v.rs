@@ -22,6 +22,36 @@ verus!{
         forall |e| #[trigger] m.contains(e) ==> m.count(e) == 1
     }
 
+    pub proof fn singleton_all_elems_single<V>(e: V)
+        ensures all_elems_single(Multiset::singleton(e)),
+    {
+        broadcast use vstd::multiset::group_multiset_axioms;
+    }
+
+    pub proof fn all_elems_single_add_disjoint<V>(
+        left: Multiset<V>,
+        right: Multiset<V>,
+    )
+        requires
+            all_elems_single(left),
+            all_elems_single(right),
+            left.dom().disjoint(right.dom()),
+        ensures all_elems_single(left.add(right)),
+    {
+        broadcast use vstd::multiset::group_multiset_axioms;
+        assert forall |e: V|
+            #[trigger] left.add(right).contains(e)
+            implies left.add(right).count(e) == 1 by {
+            if left.contains(e) {
+                assert(!right.dom().contains(e));
+                assert(!right.contains(e));
+            } else {
+                assert(right.contains(e));
+                assert(!left.contains(e));
+            }
+        }
+    }
+
     pub closed spec(checked) fn to_au_likes(likes: Likes) -> AULikes
         decreases likes.len()
     {
@@ -127,9 +157,9 @@ verus!{
     {
         let aus = to_au_likes(likes);
         let kept_addrs = restrict_domain_au(m, aus.dom());
-    
+
         to_au_likes_domain(likes);
-    
+
         assert forall |addr| #[trigger] likes.dom().contains(addr)
         implies kept_addrs.contains(addr) 
         by {

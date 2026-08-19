@@ -84,7 +84,6 @@ pub proof fn page_walk_reads_cover_build_bounds_matches_full_by_value(
     decreases depth,
 {
     let full_dv = DiskView{boundary_lsn, entries};
-    reveal(DiskView::build_au_page_bounds_page_walk);
     if root is None {
         assert_maps_equal!(
             build_au_page_bounds_from_reads_page_walk_depth(reads, boundary_lsn, root, depth),
@@ -157,7 +156,6 @@ pub proof fn au_walk_reads_cover_build_bounds_matches_full_by_value(
     decreases au_depth,
 {
     let full_dv = DiskView{boundary_lsn, entries};
-    reveal(DiskView::build_au_page_bounds_au_walk);
     if root is None {
         assert_maps_equal!(
             build_au_page_bounds_from_reads_au_walk_depth(
@@ -297,7 +295,6 @@ pub proof fn load_index_au_page_bounds_matches_loose_full(
     let step = choose |step| CachedJournal::State::next_by(pre_journal, new_journal, lbl, step);
     match step {
         CachedJournal::Step::load_index(au_depth, page_depth) => {
-            reveal(CachedJournal::State::load_index);
             assert(CachedJournal::State::load_index(
                 pre_journal,
                 new_journal,
@@ -481,7 +478,11 @@ impl DiskView {
                     assert(ranking.insert(fresh_addr, fresh_rank)[next.unwrap()]
                         < ranking.insert(fresh_addr, fresh_rank)[addr]);
                 }
-                reveal_with_fuel(DiskView::path_valid_ranking, 2);
+
+                self.path_valid_ranking_equation(
+                    root,
+                    ranking.insert(fresh_addr, fresh_rank),
+                );
                 assert(self.path_valid_ranking(root, ranking.insert(fresh_addr, fresh_rank)));
             },
         }
@@ -971,7 +972,6 @@ state_machine!{ CachingDiskJournal {
             CachedJournal::State::next_by(pre.journal, post.journal, journal_lbl, step);
         match cj_step {
             CachedJournal::Step::internal_journal_marshal(cut, hidden_addr) => {
-                reveal(CachedJournal::State::internal_journal_marshal);
                 assert(to_journal_records(writes).contains_key(hidden_addr));
                 assert(writes.contains_key(hidden_addr));
                 assert(writes.dom().contains(hidden_addr));
@@ -1090,7 +1090,6 @@ state_machine!{ CachingDiskJournal {
             CachedJournal::State::next_by(pre.journal, post.journal, journal_lbl, step);
         match cj_step {
             CachedJournal::Step::discard_old() => {
-                reveal(CachedJournal::State::discard_old);
             },
             _ => { assert(false); },
         }
@@ -1398,6 +1397,7 @@ impl CachingDiskJournal::State {
             addr.page <= self.clean_watermark_au_page_bounds_i()[addr.au],
     {
         reveal(CachingDiskJournal::State::clean_watermark_records_bounded_by_clean_au_page_bounds);
+
     }
 
     pub proof fn clean_watermark_records_bounded_by_clean_au_page_bounds_from_forall(
@@ -1417,6 +1417,7 @@ impl CachingDiskJournal::State {
             self.clean_watermark_records_bounded_by_clean_au_page_bounds(),
     {
         reveal(CachingDiskJournal::State::clean_watermark_records_bounded_by_clean_au_page_bounds);
+
     }
 
     pub open spec fn frozen_domain(self, snapshot: JournalSnapshot) -> Set<Address> {
@@ -1518,7 +1519,6 @@ impl CachingDiskJournal::State {
         match step {
             CachingDiskJournal::Step::caching_disk_internal(new_disk) => {
                 assert(CachingDiskJournal::State::caching_disk_internal(pre, post, lbl, new_disk)) by {
-                    reveal(CachingDiskJournal::State::caching_disk_internal);
                 }
                 CachingDisk::State::internal_visible_unchanged(pre.disk, post.disk);
                 assert(post.journal == pre.journal);
@@ -1527,7 +1527,6 @@ impl CachingDiskJournal::State {
             },
             CachingDiskJournal::Step::journal_marshal(new_journal, new_disk, addr, writes) => {
                 assert(CachingDiskJournal::State::journal_marshal(pre, post, lbl, new_journal, new_disk, addr, writes)) by {
-                    reveal(CachingDiskJournal::State::journal_marshal);
                 }
                 CachingDisk::State::access_visible_effect(pre.disk, post.disk, Map::empty(), writes);
                 assert(pre.mini_allocator.can_allocate(addr));
@@ -1551,7 +1550,6 @@ impl CachingDiskJournal::State {
                             CachedJournal::State::next_by(pre.journal, post.journal, journal_lbl, step);
                         match journal_step {
                             CachedJournal::Step::internal_journal_marshal(cut, marshalled_addr) => {
-                                reveal(CachedJournal::State::internal_journal_marshal);
                                 let marshalled_msgs =
                                     pre.journal.status.unwrap().unmarshalled_tail.discard_recent(cut);
                                 Self::lsn_au_index_append_record_values_subset(
@@ -1586,7 +1584,6 @@ impl CachingDiskJournal::State {
             },
             CachingDiskJournal::Step::internal_noop() => {
                 assert(CachingDiskJournal::State::internal_noop(pre, post, lbl)) by {
-                    reveal(CachingDiskJournal::State::internal_noop);
                 }
                 assert(post == pre);
             },
@@ -1618,7 +1615,6 @@ impl CachingDiskJournal::State {
             CachingDiskJournal::State::next_by(pre, post, lbl, step);
         match step {
             CachingDiskJournal::Step::load_index(new_journal, reads) => {
-                reveal(CachingDiskJournal::State::load_index);
                 let disk_lbl = CachingDisk::Label::Access{reads, writes: Map::empty()};
                 CachingDisk::State::access_effect(pre.disk, pre.disk, reads, Map::empty());
                 CachedJournal::State::load_index_effect(
@@ -1792,7 +1788,6 @@ impl CachingDiskJournal::State {
         match step {
             CachingDiskJournal::Step::discard_old(new_journal, new_disk) => {
                 assert(CachingDiskJournal::State::discard_old(pre, post, lbl, new_journal, new_disk)) by {
-                    reveal(CachingDiskJournal::State::discard_old);
                 }
                 let old_au_index = cj_lsn_au_index(pre.journal);
                 let new_au_index = lsn_au_index_discard_up_to(old_au_index, start_lsn);
@@ -1813,7 +1808,6 @@ impl CachingDiskJournal::State {
                     CachedJournal::State::next_by(pre.journal, new_journal, journal_lbl, step);
                 match journal_step {
                     CachedJournal::Step::discard_old() => {
-                        reveal(CachedJournal::State::discard_old);
                     },
                     _ => { assert(false); },
                 }
@@ -1886,7 +1880,6 @@ impl CachingDiskJournal::State {
         match step {
             CachingDiskJournal::Step::mini_allocator_fill(new_disk) => {
                 assert(CachingDiskJournal::State::mini_allocator_fill(pre, post, lbl, new_disk)) by {
-                    reveal(CachingDiskJournal::State::mini_allocator_fill);
                 }
                 assert(deallocs == Set::<AU>::empty());
                 mini_allocator_add_aus_preserves_all_aus(pre.mini_allocator, allocs);
@@ -1905,7 +1898,6 @@ impl CachingDiskJournal::State {
             },
             CachingDiskJournal::Step::mini_allocator_prune(new_disk) => {
                 assert(CachingDiskJournal::State::mini_allocator_prune(pre, post, lbl, new_disk)) by {
-                    reveal(CachingDiskJournal::State::mini_allocator_prune);
                 }
                 CachingDisk::State::forget_effect(pre.disk, post.disk, deallocs);
                 assert(allocs == Set::<AU>::empty());
@@ -2090,7 +2082,6 @@ impl CachingDiskJournal::State {
             CachingDiskJournal::State::next_by(self, self, lbl, step);
         let reads = match step {
             CachingDiskJournal::Step::freeze_for_commit(reads) => {
-                reveal(CachingDiskJournal::State::freeze_for_commit);
                 reads
             },
             _ => {
@@ -2106,7 +2097,6 @@ impl CachingDiskJournal::State {
             CachingDisk::State::next_by(self.disk, self.disk, disk_lbl, step);
         match disk_step {
             CachingDisk::Step::access() => {
-                reveal(CachingDisk::State::access);
             },
             _ => {
                 assert(false);
@@ -2122,7 +2112,6 @@ impl CachingDiskJournal::State {
             CachedJournal::State::next_by(self.journal, self.journal, journal_lbl, step);
         match cj_step {
             CachedJournal::Step::freeze_for_commit() => {
-                reveal(CachedJournal::State::freeze_for_commit);
             },
             _ => {
                 assert(false);
@@ -2172,7 +2161,6 @@ impl CachingDiskJournal::State {
             CachingDiskJournal::State::next_by(pre, post, lbl, step);
         match step {
             CachingDiskJournal::Step::load_index(new_journal, reads) => {
-                reveal(CachingDiskJournal::State::load_index);
                 CachedJournal::State::load_index_effect(
                     pre.journal,
                     post.journal,
@@ -2210,7 +2198,6 @@ impl CachingDiskJournal::State {
             CachingDiskJournal::State::next_by(pre, post, lbl, step);
         match step {
             CachingDiskJournal::Step::observe_clean_aus(new_journal) => {
-                reveal(CachingDiskJournal::State::observe_clean_aus);
                 CachedJournal::State::observe_clean_aus_effect(
                     pre.journal,
                     post.journal,
@@ -2254,7 +2241,6 @@ impl CachingDiskJournal::State {
             CachingDiskJournal::State::next_by(pre, post, lbl, step);
         match step {
             CachingDiskJournal::Step::put(new_journal) => {
-                reveal(CachingDiskJournal::State::put);
                 CachedJournal::State::put_effect(pre.journal, post.journal, messages);
             },
             _ => {
@@ -2284,7 +2270,6 @@ impl CachingDiskJournal::State {
             CachingDiskJournal::State::next_by(pre, post, lbl, step);
         match step {
             CachingDiskJournal::Step::load_index(new_journal, reads) => {
-                reveal(CachingDiskJournal::State::load_index);
                 reveal(CachedJournal::State::next);
                 reveal(CachedJournal::State::next_by);
                 let journal_lbl = CachedJournal::Label::LoadIndex{
@@ -2295,7 +2280,6 @@ impl CachingDiskJournal::State {
                     CachedJournal::State::next_by(pre.journal, post.journal, journal_lbl, step);
                 match journal_step {
                     CachedJournal::Step::load_index(_, _) => {
-                        reveal(CachedJournal::State::load_index);
                     },
                     _ => {
                         assert(false);
@@ -2336,7 +2320,6 @@ impl CachingDiskJournal::State {
             CachingDiskJournal::State::next_by(pre, post, lbl, step);
         match step {
             CachingDiskJournal::Step::observe_clean_aus(new_journal) => {
-                reveal(CachingDiskJournal::State::observe_clean_aus);
                 CachedJournal::State::observe_clean_aus_effect(pre.journal, post.journal, aus);
             },
             _ => {
@@ -2367,7 +2350,6 @@ impl CachingDiskJournal::State {
             CachingDiskJournal::State::next_by(state, state, lbl, step);
         match step {
             CachingDiskJournal::Step::commit_prepared() => {
-                reveal(CachingDiskJournal::State::commit_prepared);
             },
             _ => {
                 assert(false);
@@ -2400,7 +2382,6 @@ impl CachingDiskJournal::State {
             CachingDiskJournal::State::next_by(pre, post, lbl, step);
         match step {
             CachingDiskJournal::Step::load_index(new_journal, reads) => {
-                reveal(CachingDiskJournal::State::load_index);
                 assert(post.disk == pre.disk);
             },
             _ => {
@@ -2445,7 +2426,6 @@ impl CachingDiskJournal::State {
             CachingDiskJournal::State::next_by(pre, post, lbl, step);
         match step {
             CachingDiskJournal::Step::observe_clean_aus(new_journal) => {
-                reveal(CachingDiskJournal::State::observe_clean_aus);
             },
             _ => {
                 assert(false);
@@ -2461,7 +2441,6 @@ impl CachingDiskJournal::State {
                     CachedJournal::State::next_by(pre.journal, post.journal, journal_lbl, step);
                 match journal_step {
                     CachedJournal::Step::advance_watermark(target_lsn) => {
-                        reveal(CachedJournal::State::advance_watermark);
                         let flushed_lsns = Set::new(
                             |lsn: LSN| pre.journal.clean_watermark() <= lsn < target_lsn,
                         );
@@ -2495,7 +2474,6 @@ impl CachingDiskJournal::State {
                     CachingDisk::State::next_by(pre.disk, pre.disk, disk_lbl, step);
                 match disk_step {
                     CachingDisk::Step::observe_clean_aus() => {
-                        reveal(CachingDisk::State::observe_clean_aus);
                     },
                     _ => {
                         assert(false);
@@ -2580,7 +2558,6 @@ impl CachingDiskJournal::State {
             CachingDiskJournal::State::next_by(pre, post, lbl, step);
         match step {
             CachingDiskJournal::Step::put(new_journal) => {
-                reveal(CachingDiskJournal::State::put);
                 reveal(CachedJournal::State::next);
                 reveal(CachedJournal::State::next_by);
                 let journal_lbl = CachedJournal::Label::Put{messages: records};
@@ -2588,7 +2565,6 @@ impl CachingDiskJournal::State {
                     CachedJournal::State::next_by(pre.journal, post.journal, journal_lbl, step);
                 match journal_step {
                     CachedJournal::Step::put() => {
-                        reveal(CachedJournal::State::put);
                     },
                     _ => {
                         assert(false);
@@ -2652,7 +2628,6 @@ impl CachingDiskJournal::State {
             CachingDiskJournal::State::next_by(pre, post, lbl, step);
         match step {
             CachingDiskJournal::Step::discard_old(new_journal, new_disk) => {
-                reveal(CachingDiskJournal::State::discard_old);
                 reveal(CachedJournal::State::next);
                 reveal(CachedJournal::State::next_by);
                 let journal_lbl = CachedJournal::Label::DiscardOld{
@@ -2664,7 +2639,6 @@ impl CachingDiskJournal::State {
                     CachedJournal::State::next_by(pre.journal, post.journal, journal_lbl, step);
                 match journal_step {
                     CachedJournal::Step::discard_old() => {
-                        reveal(CachedJournal::State::discard_old);
                     },
                     _ => {
                         assert(false);
@@ -2735,11 +2709,9 @@ impl CachingDiskJournal::State {
             CachingDiskJournal::State::next_by(pre, post, lbl, step);
         match step {
             CachingDiskJournal::Step::caching_disk_internal(new_disk) => {
-                reveal(CachingDiskJournal::State::caching_disk_internal);
                 assert(post.journal == pre.journal);
             },
             CachingDiskJournal::Step::journal_marshal(new_journal, new_disk, addr, writes) => {
-                reveal(CachingDiskJournal::State::journal_marshal);
                 reveal(CachedJournal::State::next);
                 reveal(CachedJournal::State::next_by);
                 let journal_lbl = CachedJournal::Label::JournalMarshal{
@@ -2749,7 +2721,6 @@ impl CachingDiskJournal::State {
                     CachedJournal::State::next_by(pre.journal, post.journal, journal_lbl, step);
                 match journal_step {
                     CachedJournal::Step::internal_journal_marshal(cut, hidden_addr) => {
-                        reveal(CachedJournal::State::internal_journal_marshal);
                     },
                     _ => {
                         assert(false);
@@ -2757,7 +2728,6 @@ impl CachingDiskJournal::State {
                 }
             },
             CachingDiskJournal::Step::internal_noop() => {
-                reveal(CachingDiskJournal::State::internal_noop);
                 assert(post == pre);
             },
             _ => {
@@ -2787,7 +2757,6 @@ impl CachingDiskJournal::State {
             CachingDiskJournal::State::next_by(pre, post, lbl, step);
         match step {
             CachingDiskJournal::Step::caching_disk_internal(new_disk) => {
-                reveal(CachingDiskJournal::State::caching_disk_internal);
                 CachingDisk::State::internal_preserves_cache_clean_or_evictable(
                     pre.disk,
                     post.disk,
@@ -2795,7 +2764,6 @@ impl CachingDiskJournal::State {
                 assert(post.journal == pre.journal);
             },
             CachingDiskJournal::Step::internal_noop() => {
-                reveal(CachingDiskJournal::State::internal_noop);
                 assert(post == pre);
             },
             _ => {
@@ -2827,10 +2795,8 @@ impl CachingDiskJournal::State {
             CachingDiskJournal::State::next_by(pre, post, lbl, step);
         match step {
             CachingDiskJournal::Step::mini_allocator_fill(new_disk) => {
-                reveal(CachingDiskJournal::State::mini_allocator_fill);
             },
             CachingDiskJournal::Step::mini_allocator_prune(new_disk) => {
-                reveal(CachingDiskJournal::State::mini_allocator_prune);
             },
             _ => {
                 assert(false);
@@ -2862,11 +2828,9 @@ impl CachingDiskJournal::State {
             CachingDiskJournal::State::next_by(pre, post, lbl, step);
         match step {
             CachingDiskJournal::Step::mini_allocator_fill(new_disk) => {
-                reveal(CachingDiskJournal::State::mini_allocator_fill);
                 assert(post.journal == pre.journal);
             },
             CachingDiskJournal::Step::mini_allocator_prune(new_disk) => {
-                reveal(CachingDiskJournal::State::mini_allocator_prune);
                 assert(post.journal == pre.journal);
             },
             _ => {
@@ -2901,7 +2865,6 @@ impl CachingDiskJournal::State {
             CachingDiskJournal::State::next_by(pre, post, lbl, step);
         match step {
             CachingDiskJournal::Step::mini_allocator_fill(new_disk) => {
-                reveal(CachingDiskJournal::State::mini_allocator_fill);
                 assert(post.journal == pre.journal);
                 assert(post.clean_watermark_au_page_bounds_i()
                     == pre.clean_watermark_au_page_bounds_i());
@@ -2947,7 +2910,6 @@ impl CachingDiskJournal::State {
                 );
             },
             CachingDiskJournal::Step::mini_allocator_prune(new_disk) => {
-                reveal(CachingDiskJournal::State::mini_allocator_prune);
                 CachingDisk::State::forget_preserves_addrs_clean_or_evictable(
                     pre.disk,
                     post.disk,

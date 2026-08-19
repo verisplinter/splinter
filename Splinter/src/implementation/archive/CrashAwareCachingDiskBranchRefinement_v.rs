@@ -297,7 +297,6 @@ impl CrashAwareCachingDiskBranch::State {
         ensures
             post.i() == self.i(),
     {
-        reveal(CrashAwareCachingDiskBranch::State::freeze_prepared);
         assert(post.ephemeral == self.ephemeral);
         assert(post.persistent == self.persistent);
         assert(post.frozen == self.frozen);
@@ -321,8 +320,6 @@ impl CrashAwareCachingDiskBranch::State {
         ensures
             CrashAwareAllocationBranchStack::State::initialize(self.i()),
     {
-        reveal(CrashAwareCachingDiskBranch::State::initialize);
-        reveal(CrashAwareAllocationBranchStack::State::initialize);
         empty_caching_disk_branch_image_wf();
         let image = empty_caching_disk_branch_image();
         assert(self.persistent == PersistentCachingDiskBranch::Image{image});
@@ -751,7 +748,6 @@ impl CrashAwareCachingDiskBranch::State {
         let step = choose |step| CrashAwareCachingDiskBranch::State::next_by(self, post, lbl, step);
         match step {
             CrashAwareCachingDiskBranch::Step::load_ephemeral(new_ephemeral) => {
-                reveal(CrashAwareCachingDiskBranch::State::load_ephemeral);
                 match lbl {
                     CrashAwareCachingDiskBranch::Label::LoadEphemeral => {
                         let image = self.persistent->image;
@@ -767,8 +763,6 @@ impl CrashAwareCachingDiskBranch::State {
                         assert(post.i().persistent == self.i().persistent);
                         assert(post.i().persistent_branch_summary == self.i().persistent_branch_summary);
                         assert(post.i().persistent_seq_end == self.i().persistent_seq_end);
-                        reveal(CrashAwareAllocationBranchStack::State::load_ephemeral);
-                        reveal(AllocationBranchStack::State::initialize);
                         assert(post.i().ephemeral == EphemeralAllocationBranchStack::Known{ v: new_ephemeral.i() });
                         assert(new_ephemeral.i() == load_stack(
                             self.i().persistent,
@@ -792,7 +786,6 @@ impl CrashAwareCachingDiskBranch::State {
                 }
             },
             CrashAwareCachingDiskBranch::Step::load_metadata(new_ephemeral) => {
-                reveal(CrashAwareCachingDiskBranch::State::load_metadata);
                 match lbl {
                     CrashAwareCachingDiskBranch::Label::LoadMetadata{root, discovered_aus} => {
                         let branch_lbl = CachingDiskBranch::Label::LoadMetadata{root, discovered_aus};
@@ -802,7 +795,6 @@ impl CrashAwareCachingDiskBranch::State {
                 }
             },
             CrashAwareCachingDiskBranch::Step::query(msg) => {
-                reveal(CrashAwareCachingDiskBranch::State::query);
                 match lbl {
                     CrashAwareCachingDiskBranch::Label::Query{key, value} => {
                         self.lift_loaded_query_refines(post, self.ephemeral->v, key, value, msg);
@@ -811,7 +803,6 @@ impl CrashAwareCachingDiskBranch::State {
                 }
             },
             CrashAwareCachingDiskBranch::Step::append(new_ephemeral) => {
-                reveal(CrashAwareCachingDiskBranch::State::append);
                 match lbl {
                     CrashAwareCachingDiskBranch::Label::Append{keys, msgs} => {
                         self.lift_loaded_append_refines(post, self.ephemeral->v, new_ephemeral, keys, msgs);
@@ -820,11 +811,9 @@ impl CrashAwareCachingDiskBranch::State {
                 }
             },
             CrashAwareCachingDiskBranch::Step::internal(new_ephemeral) => {
-                reveal(CrashAwareCachingDiskBranch::State::internal);
                 self.lift_loaded_internal_refines(post, self.ephemeral->v, new_ephemeral, CachingDiskBranch::Label::Internal);
             },
             CrashAwareCachingDiskBranch::Step::internal_alloc(new_ephemeral) => {
-                reveal(CrashAwareCachingDiskBranch::State::internal_alloc);
                 match lbl {
                     CrashAwareCachingDiskBranch::Label::InternalAlloc{allocs, deallocs} => {
                         let branch_lbl = CachingDiskBranch::Label::InternalAlloc{allocs, deallocs};
@@ -835,7 +824,6 @@ impl CrashAwareCachingDiskBranch::State {
             },
             CrashAwareCachingDiskBranch::Step::commit_start() => {
                 assert(CrashAwareCachingDiskBranch::State::commit_start(self, post, lbl)) by {
-                    reveal(CrashAwareCachingDiskBranch::State::commit_start);
                 }
                 match lbl {
                     CrashAwareCachingDiskBranch::Label::CommitStart{new_boundary_lsn, sealed_roots} => {
@@ -879,7 +867,6 @@ impl CrashAwareCachingDiskBranch::State {
                                 );
                             match branch_step {
                                 CachingDiskBranch::Step::freeze_as() => {
-                                    reveal(CachingDiskBranch::State::freeze_as);
                                 },
                                 _ => { assert(false); },
                             }
@@ -905,7 +892,6 @@ impl CrashAwareCachingDiskBranch::State {
             },
             CrashAwareCachingDiskBranch::Step::freeze_prepared() => {
                 assert(CrashAwareCachingDiskBranch::State::freeze_prepared(self, post, lbl)) by {
-                    reveal(CrashAwareCachingDiskBranch::State::freeze_prepared);
                 }
                 match lbl {
                     CrashAwareCachingDiskBranch::Label::FreezePrepared => {
@@ -934,7 +920,6 @@ impl CrashAwareCachingDiskBranch::State {
             },
             CrashAwareCachingDiskBranch::Step::commit_complete() => {
                 assert(CrashAwareCachingDiskBranch::State::commit_complete(self, post, lbl)) by {
-                    reveal(CrashAwareCachingDiskBranch::State::commit_complete);
                 }
                 let frozen = self.frozen.unwrap();
                 let prepared_image = CachingDiskBranchImage::materialized_from_persistent(
@@ -973,7 +958,6 @@ impl CrashAwareCachingDiskBranch::State {
                 ));
             },
             CrashAwareCachingDiskBranch::Step::crash() => {
-                reveal(CrashAwareCachingDiskBranch::State::crash);
                 match lbl {
                     CrashAwareCachingDiskBranch::Label::Crash{keep_in_flight} => {
                         let prepared_image = if keep_in_flight && self.ephemeral is Known {
@@ -1042,7 +1026,6 @@ impl CrashAwareCachingDiskBranch::State {
                                         self.ephemeral->v,
                                         branch_lbl,
                                     )) by {
-                                        reveal(CachingDiskBranch::State::freeze_prepared);
                                     };
                                     assert(CachingDiskBranch::State::next_by(
                                         self.ephemeral->v,

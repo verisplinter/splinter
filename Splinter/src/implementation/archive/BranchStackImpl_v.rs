@@ -2287,7 +2287,6 @@ impl BranchStackImpl {
                 aus: iau_vec_set(aus@),
             };
             assert(AtomicBranchState::State::fill_aus(old(self)@, self@, lbl)) by {
-                reveal(AtomicBranchState::State::fill_aus);
             }
             reveal(AtomicBranchState::State::next);
             reveal(AtomicBranchState::State::next_by);
@@ -4179,7 +4178,6 @@ impl BranchStackImpl {
                         self.active_branch_i(),
                         cached_branch_lbl,
                     )) by {
-                        reveal(CachedBranch::State::grow_step);
                     }
                     reveal(CachedBranch::State::next);
                     reveal(CachedBranch::State::next_by);
@@ -4205,7 +4203,6 @@ impl BranchStackImpl {
                         atomic_lbl,
                         self.active_branch_i(),
                     )) by {
-                        reveal(AtomicBranchState::State::grow);
                     }
                     reveal(AtomicBranchState::State::next);
                     reveal(AtomicBranchState::State::next_by);
@@ -4402,7 +4399,6 @@ impl BranchStackImpl {
                                 self.active_branch_i(),
                                 cached_branch_lbl,
                             )) by {
-                                reveal(CachedBranch::State::grow_step);
                             }
                             reveal(CachedBranch::State::next);
                             reveal(CachedBranch::State::next_by);
@@ -4428,7 +4424,6 @@ impl BranchStackImpl {
                                 atomic_lbl,
                                 self.active_branch_i(),
                             )) by {
-                                reveal(AtomicBranchState::State::grow);
                             }
                             reveal(AtomicBranchState::State::next);
                             reveal(AtomicBranchState::State::next_by);
@@ -4903,7 +4898,6 @@ impl BranchStackImpl {
                             self.active_branch_i(),
                             cached_branch_lbl,
                         )) by {
-                            reveal(CachedBranch::State::append_step);
                         }
                         reveal(CachedBranch::State::next);
                         reveal(CachedBranch::State::next_by);
@@ -4932,7 +4926,6 @@ impl BranchStackImpl {
                             atomic_lbl,
                             self.active_branch_i(),
                         )) by {
-                            reveal(AtomicBranchState::State::append_nonempty);
                         }
                         reveal(AtomicBranchState::State::next);
                         reveal(AtomicBranchState::State::next_by);
@@ -5244,7 +5237,6 @@ impl BranchStackImpl {
 	                        self.active_branch_i(),
 	                        cached_branch_lbl,
 	                    )) by {
-	                        reveal(CachedBranch::State::initialize_branch);
 	                    }
 	                    reveal(CachedBranch::State::next);
 	                    reveal(CachedBranch::State::next_by);
@@ -5273,7 +5265,6 @@ impl BranchStackImpl {
 	                        atomic_lbl,
 	                        self.active_branch_i(),
 	                    )) by {
-	                        reveal(AtomicBranchState::State::append_empty);
 	                    }
 	                    reveal(AtomicBranchState::State::next);
 	                    reveal(AtomicBranchState::State::next_by);
@@ -5433,7 +5424,6 @@ impl BranchStackImpl {
 	                                self.active_branch_i(),
 	                                cached_branch_lbl,
 	                            )) by {
-	                                reveal(CachedBranch::State::initialize_branch);
 	                            }
 	                            reveal(CachedBranch::State::next);
 	                            reveal(CachedBranch::State::next_by);
@@ -5463,7 +5453,6 @@ impl BranchStackImpl {
 	                                atomic_lbl,
 	                                self.active_branch_i(),
 	                            )) by {
-	                                reveal(AtomicBranchState::State::append_empty);
 	                            }
 	                            reveal(AtomicBranchState::State::next);
 	                            reveal(AtomicBranchState::State::next_by);
@@ -6601,7 +6590,6 @@ impl BranchStackImpl {
                 pre_stack.active_branch_i(),
                 cached_lbl,
             )) by {
-                reveal(CachedBranch::State::seal_step);
                 assert(pre_stack.active_branch_i().ready_for_mutation(
                     pre_stack.mini_allocator.i(),
                 ));
@@ -6630,7 +6618,6 @@ impl BranchStackImpl {
                 self@,
                 atomic_lbl,
             )) by {
-                reveal(AtomicBranchState::State::seal);
                 assert(self.image@.sealed_roots
                     == pre_stack.image@.sealed_roots.push(root@));
                 assert(self.active_branch_i() == CachedBranch::State::empty_active());
@@ -6920,7 +6907,6 @@ impl BranchStackImpl {
             }
             assert(aux != root);
             assert(cache.lookup_addr_slot(&aux) == aux_slot) by {
-                reveal(FracCacheImpl::valid_write_handle);
             }
             FracCacheImpl::entry_available_preserved_except(
                 before_aux_fetch,
@@ -7154,7 +7140,6 @@ impl BranchStackImpl {
                     pre_stack.active_branch_i(),
                     cached_lbl,
                 )) by {
-                    reveal(CachedBranch::State::seal_step);
                 }
                 assert(CachedBranch::State::next_by(
                     pre_stack.active_branch_i(),
@@ -7170,7 +7155,6 @@ impl BranchStackImpl {
                 write_nodes: to_branch_nodes(writes),
             };
             assert(AtomicBranchState::State::seal(pre_stack@, self@, atomic_lbl)) by {
-                reveal(AtomicBranchState::State::seal);
                 assert(self.image@.sealed_roots
                     == pre_stack.image@.sealed_roots.push(root@));
                 assert(self.active_branch_i() == CachedBranch::State::empty_active());
@@ -7288,7 +7272,6 @@ impl BranchStackImpl {
                     target_count: target_count as nat,
                 },
             )) by {
-                reveal(AtomicBranchState::State::observe_persisted_roots);
             }
             assert(AtomicBranchState::State::next_by(
                 old(self)@,
@@ -7382,7 +7365,6 @@ impl BranchStackImpl {
                 self@,
                 AtomicBranchState::Label::CommitStart{branch_image},
             )) by {
-                reveal(AtomicBranchState::State::commit_start);
                 assert(old(self)@.persistent_image == old(self).persistent_image_i());
                 if persistent_match {
                     assert(prefix_len == old(self).persistent_prefix_len);
@@ -7464,7 +7446,6 @@ impl BranchStackImpl {
                         self@,
                         AtomicBranchState::Label::CommitPrepared,
                     )) by {
-                        reveal(AtomicBranchState::State::commit_prepared);
                     }
                     assert(AtomicBranchState::State::next_by(
                         old(self)@,
@@ -7529,7 +7510,6 @@ impl BranchStackImpl {
                         self@,
                         AtomicBranchState::Label::CommitComplete,
                     )) by {
-                        reveal(AtomicBranchState::State::commit_complete);
                     }
                     assert(AtomicBranchState::State::next_by(
                         old(self)@,

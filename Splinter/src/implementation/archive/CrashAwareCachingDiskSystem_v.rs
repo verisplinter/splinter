@@ -144,16 +144,12 @@ impl SuperblockStore::State {
         let step = choose |step| SuperblockStore::State::next_by(pre, post, lbl, step);
         match step {
             SuperblockStore::Step::write() => {
-                reveal(SuperblockStore::State::write);
             },
             SuperblockStore::Step::land() => {
-                reveal(SuperblockStore::State::land);
             },
             SuperblockStore::Step::complete() => {
-                reveal(SuperblockStore::State::complete);
             },
             SuperblockStore::Step::crash() => {
-                reveal(SuperblockStore::State::crash);
             },
             SuperblockStore::Step::dummy_to_use_type_params(_) => {
                 assert(false);
@@ -832,7 +828,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
         journal: CrashAwareCachingDiskJournal::State,
         branch: CrashAwareCachingDiskBranch::State,
     ) {
-        reveal(CrashAwareCachingDiskJournal::State::initialize);
         JournalImage::empty_is_valid_image();
         assert(journal.persistent is Image);
         assert(journal.persistent->image == CachingDiskJournalImage::empty());
@@ -840,7 +835,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
         assert(journal.persistent->image.wf());
         assert(journal.inv());
         journal.init_refines();
-        reveal(CrashAwareCachingDiskBranch::State::initialize);
         empty_caching_disk_branch_image_wf();
         assert(branch.persistent == PersistentCachingDiskBranch::Image{
             image: empty_caching_disk_branch_image(),
@@ -966,7 +960,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
                     _ => { assert(false); },
                 }
             }
-            reveal(CrashAwareCachingDiskBranch::State::internal);
             let new_b = post_branch.ephemeral->v;
             if new_b.metadata_loaded {
                 assert(Self::branch_state_allocation_known_aus(post_branch)
@@ -1040,7 +1033,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
                         CrashAwareCachingDiskBranch::State::next_by(pre.branch, new_branch, branch_lbl, step);
                     match step {
                         CrashAwareCachingDiskBranch::Step::query(msg) => {
-                            reveal(CrashAwareCachingDiskBranch::State::query);
                         },
                         _ => {
                             assert(false);
@@ -1257,10 +1249,8 @@ state_machine!{ CrashAwareCachingDiskSystem {
                         CachingDiskJournal::State::next_by(old_e, new_e, CachingDiskJournal::Label::Internal, step);
                     match step {
                         CachingDiskJournal::Step::caching_disk_internal(new_disk) => {
-                            reveal(CachingDiskJournal::State::caching_disk_internal);
                         },
                         CachingDiskJournal::Step::journal_marshal(new_journal, new_disk, addr, writes) => {
-                            reveal(CachingDiskJournal::State::journal_marshal);
                             reveal(CachedJournal::State::next);
                             reveal(CachedJournal::State::next_by);
                             let journal_lbl = CachedJournal::Label::JournalMarshal{
@@ -1270,13 +1260,11 @@ state_machine!{ CrashAwareCachingDiskSystem {
                                 CachedJournal::State::next_by(old_e.journal, new_journal, journal_lbl, step);
                             match journal_step {
                                 CachedJournal::Step::internal_journal_marshal(cut, hidden_addr) => {
-                                    reveal(CachedJournal::State::internal_journal_marshal);
                                 },
                                 _ => { assert(false); },
                             }
                         },
                         CachingDiskJournal::Step::internal_noop() => {
-                            reveal(CachingDiskJournal::State::internal_noop);
                         },
                         _ => { assert(false); },
                     }
@@ -1333,7 +1321,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
                             cj_lbl,
                             new_cached_journal,
                         ));
-                        reveal(CachingDiskJournal::State::observe_clean_aus);
                         CachedJournal::State::observe_clean_aus_effect(
                             old_e.journal,
                             new_e.journal,
@@ -1379,7 +1366,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
                     CachingDiskJournal::State::next_by(old_e, new_e, cj_lbl, step);
                 match step {
                     CachingDiskJournal::Step::observe_clean_aus(new_cached_journal) => {
-                        reveal(CachingDiskJournal::State::observe_clean_aus);
                         CachedJournal::State::observe_clean_aus_effect(
                             old_e.journal,
                             new_cached_journal,
@@ -1702,10 +1688,8 @@ state_machine!{ CrashAwareCachingDiskSystem {
                         CachingDiskJournal::State::next_by(old_e, new_e, CachingDiskJournal::Label::Internal, step);
                     match step {
                         CachingDiskJournal::Step::caching_disk_internal(new_disk) => {
-                            reveal(CachingDiskJournal::State::caching_disk_internal);
                         },
                         CachingDiskJournal::Step::journal_marshal(new_journal, new_disk, addr, writes) => {
-                            reveal(CachingDiskJournal::State::journal_marshal);
                             reveal(CachedJournal::State::next);
                             reveal(CachedJournal::State::next_by);
                             let journal_lbl = CachedJournal::Label::JournalMarshal{
@@ -1715,13 +1699,11 @@ state_machine!{ CrashAwareCachingDiskSystem {
                                 CachedJournal::State::next_by(old_e.journal, new_journal, journal_lbl, step);
                             match journal_step {
                                 CachedJournal::Step::internal_journal_marshal(cut, hidden_addr) => {
-                                    reveal(CachedJournal::State::internal_journal_marshal);
                                 },
                                 _ => { assert(false); },
                             }
                         },
                         CachingDiskJournal::Step::internal_noop() => {
-                            reveal(CachingDiskJournal::State::internal_noop);
                         },
                         _ => { assert(false); },
                     }
@@ -1785,7 +1767,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
                 _ => { assert(false); },
             }
         }
-        reveal(CrashAwareCachingDiskBranch::State::load_metadata);
         if pre.branch.ephemeral is Known {
             let old_b = pre.branch.ephemeral->v;
             let new_b = new_branch.ephemeral->v;
@@ -1803,7 +1784,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
                     _ => { assert(false); },
                 }
             }
-            reveal(CachingDiskBranch::State::load_metadata);
             CachingDiskBranch::State::load_metadata_preserves_semantic_owned_aus(
                 old_b,
                 new_b,
@@ -1960,8 +1940,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
         CachingDiskBranch::State::load_from_persistent_accessible_aus(
             pre.branch.persistent->image,
         );
-        reveal(CrashAwareCachingDiskJournal::State::load_ephemeral);
-        reveal(CrashAwareCachingDiskBranch::State::load_ephemeral);
         assert(new_journal.persistent == PersistentCachingDiskJournal::Metadata{
             meta: journal_image.metadata(),
         });
@@ -1976,7 +1954,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
             new_branch.ephemeral->v,
             pre.branch.persistent->image,
         ));
-        reveal(CachingDiskBranch::State::initialize);
         let branch_image = pre.branch.persistent->image;
         CachingDiskBranch::State::initialize_inductive(
             new_branch.ephemeral->v,
@@ -2175,10 +2152,8 @@ state_machine!{ CrashAwareCachingDiskSystem {
         assert(post.free_aus == pre.free_aus);
         assert(post.journal_owned_aus() <= pre.journal_owned_aus());
         assert(pre.journal.frozen is None) by {
-            reveal(CrashAwareCachingDiskJournal::State::commit_start);
         }
         assert(pre.branch.frozen is None) by {
-            reveal(CrashAwareCachingDiskBranch::State::commit_start);
         }
         assert(!pre.commit_started());
         assert(pre.superblockstore.in_flight is None) by {
@@ -2230,7 +2205,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
                 _ => { assert(false); },
             }
         }
-        reveal(CrashAwareCachingDiskJournal::State::commit_prepared);
         assert(new_journal.persistent == pre.journal.persistent);
         assert(new_journal.ephemeral == pre.journal.ephemeral);
         assert(new_journal.frozen == pre.journal.frozen);
@@ -2245,7 +2219,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
                 _ => { assert(false); },
             }
         }
-        reveal(CrashAwareCachingDiskBranch::State::freeze_prepared);
         assert(new_branch.persistent == pre.branch.persistent);
         assert(new_branch.ephemeral == pre.branch.ephemeral);
         assert(new_branch.frozen == pre.branch.frozen);
@@ -2275,7 +2248,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
                 _ => { assert(false); },
             }
         }
-        reveal(CachingDiskBranch::State::freeze_prepared);
         assert(post.journal == new_journal);
         assert(post.branch == new_branch);
         assert(post.free_aus == pre.free_aus);
@@ -2320,7 +2292,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
                 SuperblockStore::Label::Land,
                 SuperblockStore::Step::land(),
             ));
-            reveal(SuperblockStore::State::land);
         }
         assert(pre.commit_started()) by {
             assert(pre.superblock_commit_wf());
@@ -2437,7 +2408,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
                 SuperblockStore::Label::Complete,
                 SuperblockStore::Step::complete(),
             ));
-            reveal(SuperblockStore::State::complete);
         }
         assert(post.superblock_commit_wf());
     }
@@ -2555,7 +2525,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
                     pre.branch.ephemeral->v,
                     cb_lbl,
                 )) by {
-                    reveal(CachingDiskBranch::State::freeze_prepared);
                 };
                 assert(CachingDiskBranch::State::next_by(
                     pre.branch.ephemeral->v,
@@ -2638,7 +2607,6 @@ state_machine!{ CrashAwareCachingDiskSystem {
                 SuperblockStore::Label::Crash,
                 SuperblockStore::Step::crash(),
             ));
-            reveal(SuperblockStore::State::crash);
         }
         assert(post.superblock_commit_wf());
     }

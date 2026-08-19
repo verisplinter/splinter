@@ -11,7 +11,7 @@ use crate::abstract_system::AbstractCrashAwareMap_v::{
 };
 use crate::abstract_system::AbstractMap_v::AbstractMap;
 use crate::abstract_system::StampedMap_v::{empty, StampedMap};
-use crate::allocation_layer::AllocationBranch_v::Summary;
+use crate::allocation_layer::BranchTypes_v::Summary;
 use crate::betree::LinkedBranch_v::{Path, SplitArg};
 use crate::disk::GenericDisk_v::{AU, Address, Pointer};
 use crate::implementation::AllocationBranchStack_v::{
@@ -181,6 +181,7 @@ impl CrashAwareAllocationBranchStack::State {
             AbstractCrashAwareMap::State::initialize(self.abstract_i()),
     {
         reveal(AbstractCrashAwareMap::State::init_by);
+
         Self::empty_sealed_stack_refines_to_empty();
         assert(AbstractCrashAwareMap::State::init_by(
             self.abstract_i(),
@@ -202,6 +203,7 @@ impl CrashAwareAllocationBranchStack::State {
         reveal(AbstractCrashAwareMap::State::next);
         reveal(AbstractCrashAwareMap::State::next_by);
         reveal(AbstractMap::State::init_by);
+
 
         match lbl {
             CrashAwareAllocationBranchStack::Label::LoadEphemeral{free_aus} => {
@@ -259,7 +261,6 @@ impl CrashAwareAllocationBranchStack::State {
                 let stack_lbl = AllocationBranchStack::Label::QueryLabel{key, msg};
                 old_stack.query_refines(new_stack, stack_lbl);
                 assert(value == crate::implementation::AllocationBranchStack_v::normalize_value(msg)) by {
-                    reveal(CrashAwareAllocationBranchStack::State::query);
                 }
                 assert(AbstractCrashAwareMap::State::next_by(
                     self.abstract_i(),
@@ -460,7 +461,7 @@ impl CrashAwareAllocationBranchStack::State {
         lbl: CrashAwareAllocationBranchStack::Label,
         new_stack: AllocationBranchStack::State,
         aux_ptr: Pointer,
-        loose_active_disk: crate::betree::BufferDisk_v::BufferDisk<crate::allocation_layer::AllocationBranch_v::BranchNode>,
+        loose_active_disk: crate::betree::BufferDisk_v::BufferDisk<crate::allocation_layer::BranchTypes_v::BranchNode>,
     )
         requires
             self.inv(),
@@ -540,7 +541,6 @@ impl CrashAwareAllocationBranchStack::State {
     {
         reveal(AbstractCrashAwareMap::State::next);
         reveal(AbstractCrashAwareMap::State::next_by);
-        reveal(CrashAwareAllocationBranchStack::State::commit_start_ephemeral);
         let stack = self.ephemeral->v;
         let frozen_stack = lbl->frozen_stack;
         let stack_lbl = AllocationBranchStack::Label::FreezeAsLabel{
@@ -573,7 +573,6 @@ impl CrashAwareAllocationBranchStack::State {
     {
         reveal(AbstractCrashAwareMap::State::next);
         reveal(AbstractCrashAwareMap::State::next_by);
-        reveal(CrashAwareAllocationBranchStack::State::commit_start_persistent);
         let frozen_stack = lbl->frozen_stack;
         assert(sealed_store_i(
             frozen_stack.sealed_stack,

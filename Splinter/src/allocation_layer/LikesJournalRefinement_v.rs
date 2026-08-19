@@ -54,6 +54,8 @@ impl LikesJournal::State {
         reveal(LinkedJournal_v::TruncatedJournal::index_domain_valid);
         reveal(LinkedJournal_v::DiskView::index_keys_map_to_valid_entries);
 
+
+
         let tight_tj = self.tj().build_tight();
         assert(index == self.tj().build_lsn_addr_index());
         self.tj().disk_view.build_tight_ensures(self.tj().freshest_rec);
@@ -218,6 +220,7 @@ impl LikesJournal::State {
             tj.disk_view.pointer_after_crop_seq_end(tj.freshest_rec, depth);
             reveal(TruncatedJournal::index_domain_valid);
 
+
             tj.disk_view.cropped_ptr_build_sub_index(tj.freshest_rec, post_discard.freshest_rec, depth);
             post_discard.disk_view.sub_disk_with_newer_lsn_repr_index(tj.disk_view, post_discard.freshest_rec);
 
@@ -229,6 +232,7 @@ impl LikesJournal::State {
 
             assert(post_discard_repr.values() <= fj.disk_view.entries.dom()) by {
                 reveal(LinkedJournal_v::DiskView::index_keys_map_to_valid_entries);
+
             }
         } else {
             assert(Self::lbl_i(lbl)->frozen_journal.freshest_rec is None);

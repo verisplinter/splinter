@@ -139,4 +139,25 @@ ensures
     unique_multiset_map_insert_equiv(Multiset::empty(), k, v);
 }
 
+pub proof fn singleton_map_values<K, V>(key: K, value: V)
+    ensures map![key => value].values() == set![value],
+{
+    let map = map![key => value];
+    assert forall |candidate: V|
+        #[trigger] map.values().contains(candidate)
+        implies set![value].contains(candidate) by {
+        let candidate_key = choose |candidate_key: K|
+            map.contains_key(candidate_key)
+                && map[candidate_key] == candidate;
+        assert(candidate_key == key);
+    }
+    assert forall |candidate: V|
+        #[trigger] set![value].contains(candidate)
+        implies map.values().contains(candidate) by {
+        assert(candidate == value);
+        assert(map.contains_key(key));
+        assert(map[key] == value);
+    }
+}
+
 }//verus!

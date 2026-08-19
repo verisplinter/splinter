@@ -11,7 +11,7 @@ use vstd::prelude::*;
 use vstd::assert_maps_equal;
 use vstd::map_lib::lemma_values_finite;
 
-use crate::allocation_layer::AllocationBranch_v::{BranchNode, Summary};
+use crate::allocation_layer::BranchTypes_v::{BranchNode, Summary};
 use crate::allocation_layer::AllocationBranchBetree_v::summary_aus;
 use crate::allocation_layer::MiniAllocator_v::MiniAllocator;
 use crate::betree::LinkedBranch_v::{
@@ -350,13 +350,13 @@ impl UnifiedCacheBranchSource {
     pub closed spec fn branch_image_summary_i(
         disk_content: Map<Address, RawPage>,
         roots: Seq<Address>,
-    ) -> Map<AU, crate::allocation_layer::AllocationBranch_v::Summary>
+    ) -> Map<AU, crate::allocation_layer::BranchTypes_v::Summary>
     {
         let nodes = to_branch_nodes(disk_content);
         if branch_summary_reads_valid(roots, nodes) {
             completed_branch_summary_from_reads(roots, nodes)
         } else {
-            Map::<AU, crate::allocation_layer::AllocationBranch_v::Summary>::empty()
+            Map::<AU, crate::allocation_layer::BranchTypes_v::Summary>::empty()
         }
     }
 
@@ -610,7 +610,6 @@ impl UnifiedCacheBranchSource {
             CachingDiskBranch::Label::Internal,
             post.branch_caching_disk_i(),
         )) by {
-            reveal(CachingDiskBranch::State::disk_internal);
         }
         assert(CachingDiskBranch::State::next_by(
             self.branch_caching_disk_state_i(),
@@ -627,7 +626,6 @@ impl UnifiedCacheBranchSource {
             CrashAwareCachingDiskBranch::Label::Internal,
             post.branch_caching_disk_state_i(),
         )) by {
-            reveal(CrashAwareCachingDiskBranch::State::internal);
         }
         assert(CrashAwareCachingDiskBranch::State::next_by(
             self.i(),
@@ -1422,7 +1420,6 @@ impl UnifiedCacheBranchSource {
             CachingDiskBranch::Label::Internal,
             post.branch_caching_disk_i(),
         )) by {
-            reveal(CachingDiskBranch::State::disk_internal);
         }
         assert(CachingDiskBranch::State::next_by(
             self.branch_caching_disk_state_i(),
@@ -1439,7 +1436,6 @@ impl UnifiedCacheBranchSource {
             CrashAwareCachingDiskBranch::Label::Internal,
             post.branch_caching_disk_state_i(),
         )) by {
-            reveal(CrashAwareCachingDiskBranch::State::internal);
         }
         assert(CrashAwareCachingDiskBranch::State::next_by(
             self.i(),
@@ -1535,7 +1531,6 @@ impl UnifiedCacheBranchSource {
             CachingDiskBranch::Label::Internal,
             post.branch_caching_disk_i(),
         )) by {
-            reveal(CachingDiskBranch::State::disk_internal);
         }
         assert(CachingDiskBranch::State::next_by(
             self.branch_caching_disk_state_i(),
@@ -1552,7 +1547,6 @@ impl UnifiedCacheBranchSource {
             CrashAwareCachingDiskBranch::Label::Internal,
             post.branch_caching_disk_state_i(),
         )) by {
-            reveal(CrashAwareCachingDiskBranch::State::internal);
         }
         assert(CrashAwareCachingDiskBranch::State::next_by(
             self.i(),
@@ -1669,7 +1663,6 @@ impl UnifiedCacheBranchSource {
             CachingDiskBranch::Label::Internal,
             post.branch_caching_disk_i(),
         )) by {
-            reveal(CachingDiskBranch::State::disk_internal);
         }
         assert(CachingDiskBranch::State::next_by(
             self.branch_caching_disk_state_i(),
@@ -1686,7 +1679,6 @@ impl UnifiedCacheBranchSource {
             CrashAwareCachingDiskBranch::Label::Internal,
             post.branch_caching_disk_state_i(),
         )) by {
-            reveal(CrashAwareCachingDiskBranch::State::internal);
         }
         assert(CrashAwareCachingDiskBranch::State::next_by(
             self.i(),
@@ -1766,12 +1758,13 @@ pub proof fn init_refines(pre: SystemModel::State<UnifiedCacheProgramModel>)
         ),
         inv(unified_cache_branch_source(pre)),
 {
-    reveal(SystemModel::State::initialize);
     assert(UnifiedCacheProgramModel::is_mkfs(pre.disk));
     assert(UnifiedCacheProgramModel::init(pre.program));
 
     reveal(UnifiedCacheSystem::State::init);
     reveal(UnifiedCacheSystem::State::init_by);
+
+
     let config = choose |config: UnifiedCacheSystem::Config|
         UnifiedCacheSystem::State::init_by(pre.program.state, config);
 
@@ -1852,7 +1845,7 @@ pub proof fn init_refines(pre: SystemModel::State<UnifiedCacheProgramModel>)
                 src.disk.content,
                 src.persistent_superblock_image_i().branch_roots,
             );
-            assert(src.branch.branch_summary == Map::<AU, crate::allocation_layer::AllocationBranch_v::Summary>::empty());
+            assert(src.branch.branch_summary == Map::<AU, crate::allocation_layer::BranchTypes_v::Summary>::empty());
             assert(summary_aus(src.branch.branch_summary) =~= Set::<AU>::empty()) by {
                 lemma_values_finite(src.branch.branch_summary);
                 assert forall |au: AU| #[trigger] summary_aus(src.branch.branch_summary).contains(au)
@@ -1926,11 +1919,12 @@ pub proof fn init_refines(pre: SystemModel::State<UnifiedCacheProgramModel>)
             assert(dst.frozen is None);
             assert(dst.prepared == false);
             assert(CrashAwareCachingDiskBranch::State::initialize(dst)) by {
-                reveal(CrashAwareCachingDiskBranch::State::initialize);
             }
             assert(CrashAwareCachingDiskBranch::State::init(dst)) by {
                 reveal(CrashAwareCachingDiskBranch::State::init);
                 reveal(CrashAwareCachingDiskBranch::State::init_by);
+
+
                 assert(CrashAwareCachingDiskBranch::State::init_by(
                     dst,
                     CrashAwareCachingDiskBranch::Config::initialize(),
@@ -1940,9 +1934,8 @@ pub proof fn init_refines(pre: SystemModel::State<UnifiedCacheProgramModel>)
             assert(dst.inv());
             assert(dst.i().inv()) by {
                 assert(CrashAwareAllocationBranchStack::State::initialize(dst.i()));
-                reveal(CrashAwareAllocationBranchStack::State::initialize);
                 assert(dst.i().persistent == empty_sealed_stack());
-                assert(dst.i().persistent_branch_summary == Map::<AU, crate::allocation_layer::AllocationBranch_v::Summary>::empty());
+                assert(dst.i().persistent_branch_summary == Map::<AU, crate::allocation_layer::BranchTypes_v::Summary>::empty());
                 assert(dst.i().ephemeral is Unknown);
                 assert(dst.i().frozen is None);
                 assert(dst.i().persistent.sealed_roots.to_set() =~= Set::<Address>::empty());
@@ -2021,7 +2014,6 @@ pub proof fn load_ephemeral_refines(
         ),
         inv(post),
 {
-    reveal(AtomicBranchState::State::initialize);
 
     assert(pre.branch == AtomicBranchState::State::empty());
     assert(pre.in_flight is None);
@@ -2255,7 +2247,6 @@ pub proof fn load_ephemeral_refines(
         post.branch_caching_disk_state_i(),
         persistent_image,
     )) by {
-        reveal(CachingDiskBranch::State::initialize);
     }
     assert(CrashAwareCachingDiskBranch::State::load_ephemeral(
         src,
@@ -2263,7 +2254,6 @@ pub proof fn load_ephemeral_refines(
         CrashAwareCachingDiskBranch::Label::LoadEphemeral,
         post.branch_caching_disk_state_i(),
     )) by {
-        reveal(CrashAwareCachingDiskBranch::State::load_ephemeral);
     }
     assert(CrashAwareCachingDiskBranch::State::next_by(
         src,
@@ -3275,7 +3265,6 @@ pub proof fn cache_access_restrict_reads_same_post(
     reveal(Cache::State::next_by);
     assert(Cache::State::next_by(pre, post, full_lbl, Cache::Step::access()));
     assert(Cache::State::access(pre, post, full_lbl)) by {
-        reveal(Cache::State::access);
     }
     assert forall |addr: Address| #[trigger] restricted_reads.contains_key(addr)
         implies pre.valid_read(addr, restricted_reads[addr]) by {
@@ -3285,7 +3274,6 @@ pub proof fn cache_access_restrict_reads_same_post(
         assert(restricted_reads[addr] == reads[addr]);
     }
     assert(Cache::State::access(pre, post, restricted_lbl)) by {
-        reveal(Cache::State::access);
     }
     assert(Cache::State::next_by(pre, post, restricted_lbl, Cache::Step::access())) by {
         reveal(Cache::State::next_by);
@@ -3478,7 +3466,6 @@ pub proof fn load_metadata_refines(
     match atomic_step {
         AtomicBranchState::Step::load_metadata() => {
             assert(AtomicBranchState::State::load_metadata(pre.branch, post.branch, atomic_lbl)) by {
-                reveal(AtomicBranchState::State::load_metadata);
             }
         },
         _ => {
@@ -3499,7 +3486,6 @@ pub proof fn load_metadata_refines(
         reveal(Cache::State::next);
         reveal(Cache::State::next_by);
         assert(Cache::State::next_by(pre.cache, post.cache, cache_lbl, Cache::Step::access()));
-        reveal(Cache::State::access);
         assert(Cache::State::access(pre.cache, post.cache, cache_lbl));
         assert(cache_lbl->reads.contains_key(read_addr));
     }
@@ -3567,7 +3553,6 @@ pub proof fn load_metadata_refines(
             );
         }
         assert(CachingDisk::State::access(old_cdb.disk, old_cdb.disk, cd_lbl)) by {
-            reveal(CachingDisk::State::access);
         }
         assert(CachingDisk::State::next_by(
             old_cdb.disk,
@@ -3585,7 +3570,6 @@ pub proof fn load_metadata_refines(
         cdb_lbl,
         projected_reads,
     )) by {
-        reveal(CachingDiskBranch::State::load_metadata);
         assert(projected_reads <= old_cdb.disk.cache);
         assert(crate::implementation::CachedBranch_v::root_summary_read_valid(
             root,
@@ -3639,7 +3623,6 @@ pub proof fn load_metadata_refines(
         CrashAwareCachingDiskBranch::Label::LoadMetadata{root, discovered_aus},
         new_cdb,
     )) by {
-        reveal(CrashAwareCachingDiskBranch::State::load_metadata);
     }
     assert(CrashAwareCachingDiskBranch::State::next_by(
         src,
@@ -3732,7 +3715,6 @@ pub proof fn query_refines(
     match atomic_step {
             AtomicBranchState::Step::query() => {
                 assert(AtomicBranchState::State::query(pre.branch, pre.branch, atomic_lbl)) by {
-                    reveal(AtomicBranchState::State::query);
                 }
                 let roots = crate::implementation::AtomicBranchState_v::query_roots(
                     pre.branch.image.sealed_roots,
@@ -3755,7 +3737,6 @@ pub proof fn query_refines(
         reveal(Cache::State::next);
         reveal(Cache::State::next_by);
         assert(Cache::State::next_by(pre.cache, post.cache, cache_lbl, Cache::Step::access()));
-        reveal(Cache::State::access);
         assert(Cache::State::access(pre.cache, post.cache, cache_lbl));
         assert(cache_lbl is Access);
         assert(cache_lbl->reads == reads);
@@ -3890,7 +3871,6 @@ pub proof fn query_refines(
         receipts,
         reads,
     )) by {
-        reveal(CachingDiskBranch::State::query);
     }
     assert(CachingDiskBranch::State::next_by(
         inner,
@@ -3907,7 +3887,6 @@ pub proof fn query_refines(
     assert(dst.ephemeral is Known);
     assert(dst == src);
     assert(CrashAwareCachingDiskBranch::State::query(src, dst, lbl, msg)) by {
-        reveal(CrashAwareCachingDiskBranch::State::query);
     }
     assert(CrashAwareCachingDiskBranch::State::next_by(
         src,
@@ -4022,9 +4001,7 @@ pub proof fn append_refines(
                 atomic_lbl,
                 new_active_branch,
             )) by {
-                reveal(AtomicBranchState::State::append_nonempty);
             }
-            reveal(AtomicBranchState::State::append_nonempty);
             assert(pre.branch.active_branch.root is Some);
             assert(init_root is None);
             assert(post.branch.active_branch == new_active_branch);
@@ -4056,9 +4033,7 @@ pub proof fn append_refines(
                 post.branch.active_branch,
                 branch_lbl,
             )) by {
-                reveal(CachedBranch::State::append_step);
             }
-            reveal(CachedBranch::State::append_step);
             assert(write_nodes == loaded_append_write_nodes(receipt, keys, msgs));
         },
         AtomicBranchState::Step::append_empty(new_active_branch) => {
@@ -4068,9 +4043,7 @@ pub proof fn append_refines(
                 atomic_lbl,
                 new_active_branch,
             )) by {
-                reveal(AtomicBranchState::State::append_empty);
             }
-            reveal(AtomicBranchState::State::append_empty);
             assert(pre.branch.active_branch.root is None);
             assert(init_root is Some);
             let init_addr = init_root.unwrap();
@@ -4102,9 +4075,7 @@ pub proof fn append_refines(
                 post.branch.active_branch,
                 branch_lbl,
             )) by {
-                reveal(CachedBranch::State::initialize_branch);
             }
-            reveal(CachedBranch::State::initialize_branch);
             assert(write_nodes == loaded_initialize_write_nodes(init_addr, keys, msgs));
             assert(pre.branch.mini_allocator.can_allocate(init_addr));
         },
@@ -4119,7 +4090,6 @@ pub proof fn append_refines(
         reveal(Cache::State::next);
         reveal(Cache::State::next_by);
         assert(Cache::State::next_by(pre.cache, post.cache, cache_lbl, Cache::Step::access()));
-        reveal(Cache::State::access);
         assert(cache_lbl->reads.contains_key(read_addr));
     }
     assert(reads <= project_cache_pages(pre.cache, aus)) by {
@@ -4131,7 +4101,6 @@ pub proof fn append_refines(
             cache_lbl,
             Cache::Step::access(),
         ));
-        reveal(Cache::State::access);
         assert(Cache::State::access(pre.cache, post.cache, cache_lbl));
         pre.cache.build_lookup_map_ensures();
         assert forall |addr: Address| #[trigger] reads.contains_key(addr)
@@ -4202,9 +4171,7 @@ pub proof fn append_refines(
                     post.branch.active_branch,
                     branch_lbl,
                 )) by {
-                    reveal(CachedBranch::State::append_step);
                 }
-                reveal(CachedBranch::State::append_step);
                 assert(write_nodes == loaded_append_write_nodes(receipt, keys, msgs));
                 assert(addr == receipt.target().addr);
                 assert(receipt.needed_addrs().contains(addr)) by {
@@ -4247,9 +4214,7 @@ pub proof fn append_refines(
                     post.branch.active_branch,
                     branch_lbl,
                 )) by {
-                    reveal(CachedBranch::State::initialize_branch);
                 }
-                reveal(CachedBranch::State::initialize_branch);
                 assert(write_nodes == loaded_initialize_write_nodes(init_addr, keys, msgs));
                 assert(addr == init_addr);
                 assert(pre.branch.mini_allocator.can_allocate(init_addr));
@@ -4291,9 +4256,7 @@ pub proof fn append_refines(
                     post.branch.active_branch,
                     branch_lbl,
                 )) by {
-                    reveal(CachedBranch::State::append_step);
                 }
-                reveal(CachedBranch::State::append_step);
                 assert(write_nodes == loaded_append_write_nodes(receipt, keys, msgs));
                 assert(addr == receipt.target().addr);
                 assert(receipt.needed_addrs().contains(addr)) by {
@@ -4336,9 +4299,7 @@ pub proof fn append_refines(
                     post.branch.active_branch,
                     branch_lbl,
                 )) by {
-                    reveal(CachedBranch::State::initialize_branch);
                 }
-                reveal(CachedBranch::State::initialize_branch);
                 assert(write_nodes == loaded_initialize_write_nodes(init_addr, keys, msgs));
                 assert(addr == init_addr);
                 assert(pre.branch.mini_allocator.can_allocate(init_addr));
@@ -4380,7 +4341,6 @@ pub proof fn append_refines(
         reads,
         writes,
     )) by {
-        reveal(CachingDiskBranch::State::append);
         assert(inner_pre.metadata_loaded);
         assert(CachingDisk::State::next(
             inner_pre.disk,
@@ -4454,7 +4414,6 @@ pub proof fn append_refines(
     assert(src.ephemeral is Known);
     assert(dst.ephemeral is Known);
     assert(CrashAwareCachingDiskBranch::State::append(src, dst, lbl, inner_post)) by {
-        reveal(CrashAwareCachingDiskBranch::State::append);
     }
     assert(CrashAwareCachingDiskBranch::State::next_by(
         src,
@@ -4594,9 +4553,7 @@ pub proof fn append_refines_with_extra_reads(
                         atomic_lbl,
                         new_active_branch,
                     )) by {
-                        reveal(AtomicBranchState::State::append_nonempty);
                     }
-                    reveal(AtomicBranchState::State::append_nonempty);
                     let branch_lbl = CachedBranch::Label::Append{
                         mini_allocator: pre.branch.mini_allocator,
                         receipt,
@@ -4623,9 +4580,7 @@ pub proof fn append_refines_with_extra_reads(
                         new_active_branch,
                         branch_lbl,
                     )) by {
-                        reveal(CachedBranch::State::append_step);
                     }
-                    reveal(CachedBranch::State::append_step);
                     assert(pre.branch.active_branch.can_append(
                         pre.branch.mini_allocator,
                         receipt,
@@ -4681,9 +4636,7 @@ pub proof fn append_refines_with_extra_reads(
                     atomic_lbl,
                     new_active_branch,
                 )) by {
-                    reveal(AtomicBranchState::State::append_nonempty);
                 }
-                reveal(AtomicBranchState::State::append_nonempty);
                 assert(pre.branch.active_branch.root is Some);
                 assert(init_root is None);
                 let branch_lbl = CachedBranch::Label::Append{
@@ -4712,9 +4665,7 @@ pub proof fn append_refines_with_extra_reads(
                     new_active_branch,
                     branch_lbl,
                 )) by {
-                    reveal(CachedBranch::State::append_step);
                 }
-                reveal(CachedBranch::State::append_step);
                 assert(pre.branch.active_branch.can_append(
                     pre.branch.mini_allocator,
                     receipt,
@@ -4806,7 +4757,6 @@ pub proof fn append_refines_with_extra_reads(
                     new_active_branch,
                     tight_branch_lbl,
                 )) by {
-                    reveal(CachedBranch::State::append_step);
                 }
                 assert(CachedBranch::State::next_by(
                     pre.branch.active_branch,
@@ -4828,7 +4778,6 @@ pub proof fn append_refines_with_extra_reads(
                     tight_atomic_lbl,
                     new_active_branch,
                 )) by {
-                    reveal(AtomicBranchState::State::append_nonempty);
                 }
                 assert(AtomicBranchState::State::next_by(
                     pre.branch,
@@ -4846,9 +4795,7 @@ pub proof fn append_refines_with_extra_reads(
                     atomic_lbl,
                     new_active_branch,
                 )) by {
-                    reveal(AtomicBranchState::State::append_empty);
                 }
-                reveal(AtomicBranchState::State::append_empty);
                 assert(pre.branch.active_branch.root is None);
                 assert(init_root is Some);
                 assert(tight_reads == Map::<Address, RawPage>::empty());
@@ -4870,7 +4817,6 @@ pub proof fn append_refines_with_extra_reads(
                     tight_atomic_lbl,
                     new_active_branch,
                 )) by {
-                    reveal(AtomicBranchState::State::append_empty);
                 }
                 assert(AtomicBranchState::State::next_by(
                     pre.branch,
@@ -4986,9 +4932,7 @@ pub proof fn grow_refines(
                 atomic_lbl,
                 new_active_branch,
             )) by {
-                reveal(AtomicBranchState::State::grow);
             }
-            reveal(AtomicBranchState::State::grow);
             let branch_lbl = CachedBranch::Label::Grow{
                 mini_allocator: pre.branch.mini_allocator,
                 new_root_addr,
@@ -5013,9 +4957,7 @@ pub proof fn grow_refines(
                 post.branch.active_branch,
                 branch_lbl,
             )) by {
-                reveal(CachedBranch::State::grow_step);
             }
-            reveal(CachedBranch::State::grow_step);
             assert(post.branch.active_branch == pre.branch.active_branch.grow(
                 pre.branch.mini_allocator,
                 new_root_addr,
@@ -5045,7 +4987,6 @@ pub proof fn grow_refines(
             cache_lbl,
             Cache::Step::access(),
         ));
-        reveal(Cache::State::access);
         pre.cache.build_lookup_map_ensures();
         assert forall |addr: Address| #[trigger] projected_reads.contains_key(addr)
             implies {
@@ -5150,7 +5091,6 @@ pub proof fn grow_refines(
         projected_reads,
         writes,
     )) by {
-        reveal(CachingDiskBranch::State::internal_grow);
         to_branch_nodes_restrict_submap(reads, addrs);
         let cached_lbl = CachedBranch::Label::Grow{
             mini_allocator: inner_pre.mini_allocator,
@@ -5168,7 +5108,6 @@ pub proof fn grow_refines(
                 inner_post.active_branch,
                 cached_lbl,
             )) by {
-                reveal(CachedBranch::State::grow_step);
                 assert(inner_pre.active_branch.can_grow(
                     inner_pre.mini_allocator,
                     new_root_addr,
@@ -5214,7 +5153,6 @@ pub proof fn grow_refines(
         target_lbl,
         inner_post,
     )) by {
-        reveal(CrashAwareCachingDiskBranch::State::internal);
     }
     assert(CrashAwareCachingDiskBranch::State::next_by(
         src,
@@ -5335,9 +5273,7 @@ pub proof fn split_refines(
                 atomic_lbl,
                 new_active_branch,
             )) by {
-                reveal(AtomicBranchState::State::split);
             }
-            reveal(AtomicBranchState::State::split);
             let branch_lbl = CachedBranch::Label::Split{
                 mini_allocator: pre.branch.mini_allocator,
                 new_child_addr,
@@ -5364,9 +5300,7 @@ pub proof fn split_refines(
                 post.branch.active_branch,
                 branch_lbl,
             )) by {
-                reveal(CachedBranch::State::split_step);
             }
-            reveal(CachedBranch::State::split_step);
             assert(post.branch.active_branch == pre.branch.active_branch.split(
                 pre.branch.mini_allocator,
                 new_child_addr,
@@ -5406,7 +5340,6 @@ pub proof fn split_refines(
             cache_lbl,
             Cache::Step::access(),
         ));
-        reveal(Cache::State::access);
         pre.cache.build_lookup_map_ensures();
         assert forall |addr: Address| #[trigger] projected_reads.contains_key(addr)
             implies {
@@ -5432,7 +5365,6 @@ pub proof fn split_refines(
         reveal(Cache::State::next);
         reveal(Cache::State::next_by);
         assert(Cache::State::next_by(pre.cache, post.cache, cache_lbl, Cache::Step::access()));
-        reveal(Cache::State::access);
         assert(cache_lbl->reads.contains_key(read_addr));
     }
 
@@ -5552,7 +5484,6 @@ pub proof fn split_refines(
         projected_reads,
         writes,
     )) by {
-        reveal(CachingDiskBranch::State::internal_split);
         to_branch_nodes_restrict_submap(reads, addrs);
         let cached_lbl = CachedBranch::Label::Split{
             mini_allocator: inner_pre.mini_allocator,
@@ -5572,7 +5503,6 @@ pub proof fn split_refines(
                 inner_post.active_branch,
                 cached_lbl,
             )) by {
-                reveal(CachedBranch::State::split_step);
                 assert(inner_pre.active_branch.can_split(
                     inner_pre.mini_allocator,
                     new_child_addr,
@@ -5622,7 +5552,6 @@ pub proof fn split_refines(
         target_lbl,
         inner_post,
     )) by {
-        reveal(CrashAwareCachingDiskBranch::State::internal);
     }
     assert(CrashAwareCachingDiskBranch::State::next_by(
         src,
@@ -5720,9 +5649,7 @@ pub proof fn seal_refines(
     match atomic_step {
         AtomicBranchState::Step::seal() => {
             assert(AtomicBranchState::State::seal(pre.branch, post.branch, atomic_lbl)) by {
-                reveal(AtomicBranchState::State::seal);
             }
-            reveal(AtomicBranchState::State::seal);
             let root = pre.branch.active_branch.root.unwrap();
             let branch_lbl = CachedBranch::Label::Seal{
                 mini_allocator: pre.branch.mini_allocator,
@@ -5748,9 +5675,7 @@ pub proof fn seal_refines(
                 pre.branch.active_branch,
                 branch_lbl,
             )) by {
-                reveal(CachedBranch::State::seal_step);
             }
-            reveal(CachedBranch::State::seal_step);
             assert(pre.branch.active_branch.can_seal(
                 pre.branch.mini_allocator,
                 aux_ptr,
@@ -5862,7 +5787,6 @@ pub proof fn seal_refines(
             cache_lbl,
             Cache::Step::access(),
         ));
-        reveal(Cache::State::access);
         pre.cache.build_lookup_map_ensures();
         assert forall |addr: Address| #[trigger] projected_reads.contains_key(addr)
             implies {
@@ -6036,7 +5960,6 @@ pub proof fn seal_refines(
         projected_reads,
         writes,
     )) by {
-        reveal(CachingDiskBranch::State::internal_seal);
         to_branch_nodes_restrict_submap(reads, addrs);
         let cached_lbl = CachedBranch::Label::Seal{
             mini_allocator: inner_pre.mini_allocator,
@@ -6054,7 +5977,6 @@ pub proof fn seal_refines(
                 inner_pre.active_branch,
                 cached_lbl,
             )) by {
-                reveal(CachedBranch::State::seal_step);
                 assert(inner_pre.active_branch.can_seal(
                     inner_pre.mini_allocator,
                     aux_ptr,
@@ -6110,7 +6032,6 @@ pub proof fn seal_refines(
         target_lbl,
         inner_post,
     )) by {
-        reveal(CrashAwareCachingDiskBranch::State::internal);
     }
     assert(CrashAwareCachingDiskBranch::State::next_by(
         src,
@@ -6361,7 +6282,6 @@ pub proof fn fill_aus_refines(
         aus,
         new_cdb.disk,
     )) by {
-        reveal(CachingDiskBranch::State::internal_fill_au);
     }
     assert(CachingDiskBranch::State::next_by(
         old_cdb,
@@ -6384,7 +6304,6 @@ pub proof fn fill_aus_refines(
         target_lbl,
         new_cdb,
     )) by {
-        reveal(CrashAwareCachingDiskBranch::State::internal_alloc);
     }
     assert(CrashAwareCachingDiskBranch::State::next_by(
         src,
@@ -6472,9 +6391,7 @@ pub proof fn observe_persisted_roots_refines(
     match cache_step {
         Cache::Step::evictable() => {
             assert(Cache::State::evictable(pre.cache, post.cache, cache_lbl)) by {
-                reveal(Cache::State::evictable);
             }
-            reveal(Cache::State::evictable);
             assert(post.cache == pre.cache);
         },
         _ => {
@@ -6493,9 +6410,7 @@ pub proof fn observe_persisted_roots_refines(
                 post.branch,
                 atomic_lbl,
             )) by {
-                reveal(AtomicBranchState::State::observe_persisted_roots);
             }
-            reveal(AtomicBranchState::State::observe_persisted_roots);
             assert(post.branch.image == pre.branch.image);
             assert(post.branch.persistent_image == pre.branch.persistent_image);
             assert(post.branch.in_flight == pre.branch.in_flight);
@@ -6592,7 +6507,6 @@ pub proof fn observe_persisted_roots_refines(
         CachingDiskBranch::Label::Internal,
         target_count,
     )) by {
-        reveal(CachingDiskBranch::State::observe_persisted_roots);
     }
     assert(CachingDiskBranch::State::next_by(
         inner_pre,
@@ -6617,7 +6531,6 @@ pub proof fn observe_persisted_roots_refines(
         target_lbl,
         inner_post,
     )) by {
-        reveal(CrashAwareCachingDiskBranch::State::internal);
     }
     assert(CrashAwareCachingDiskBranch::State::next_by(
         src,
@@ -6761,7 +6674,6 @@ pub proof fn commit_start_refines(
             atomic_lbl,
             AtomicBranchState::Step::commit_start(),
         ));
-        reveal(AtomicBranchState::State::commit_start);
         assert(AtomicBranchState::State::commit_start(pre.branch, post.branch, atomic_lbl));
     }
     assert(src.frozen is None);
@@ -6769,7 +6681,6 @@ pub proof fn commit_start_refines(
     assert(!dst.prepared);
 
     assert(CrashAwareCachingDiskBranch::State::commit_start(src, dst, target_lbl)) by {
-        reveal(CrashAwareCachingDiskBranch::State::commit_start);
         assert(src.ephemeral is Known);
         assert(src.frozen is None);
         reveal(AtomicBranchState::State::next);
@@ -6780,7 +6691,6 @@ pub proof fn commit_start_refines(
             atomic_lbl,
             AtomicBranchState::Step::commit_start(),
         ));
-        reveal(AtomicBranchState::State::commit_start);
         assert(AtomicBranchState::State::commit_start(pre.branch, post.branch, atomic_lbl));
         if branch_image == pre.branch.persistent_image {
             let persistent = src.persistent.metadata();
@@ -6796,7 +6706,6 @@ pub proof fn commit_start_refines(
                 pre.branch_caching_disk_state_i(),
                 CachingDiskBranch::Label::FreezeAsLabel{image: frozen},
             )) by {
-                reveal(CachingDiskBranch::State::freeze_as);
             }
             assert(CachingDiskBranch::State::next_by(
                 pre.branch_caching_disk_state_i(),
@@ -6878,7 +6787,6 @@ pub proof fn commit_prepared_refines(
         post.branch,
         atomic_lbl,
     )) by {
-        reveal(AtomicBranchState::State::commit_prepared);
     }
     assert(post.branch == AtomicBranchState::State{
         prepared: true,
@@ -6961,7 +6869,6 @@ pub proof fn commit_prepared_refines(
             src.ephemeral->v,
             CachingDiskBranch::Label::FreezePrepared{image: src.frozen.unwrap()},
         )) by {
-            reveal(CachingDiskBranch::State::freeze_prepared);
         }
         assert(CachingDiskBranch::State::next_by(
             src.ephemeral->v,
@@ -6977,7 +6884,6 @@ pub proof fn commit_prepared_refines(
         dst,
         target_lbl,
     )) by {
-        reveal(CrashAwareCachingDiskBranch::State::freeze_prepared);
     }
     assert(CrashAwareCachingDiskBranch::State::next_by(
         src,
@@ -7062,7 +6968,6 @@ pub proof fn commit_complete_refines(
             atomic_lbl,
             AtomicBranchState::Step::commit_complete(),
         ));
-        reveal(AtomicBranchState::State::commit_complete);
     }
     assert(src.inv()) by {
         assert(pre.semantic_inv());
@@ -7081,7 +6986,6 @@ pub proof fn commit_complete_refines(
             atomic_lbl,
             AtomicBranchState::Step::commit_complete(),
         ));
-        reveal(AtomicBranchState::State::commit_complete);
         let committed_root_count = pre.branch.in_flight.unwrap().sealed_roots.len() as nat;
         assert(!(pre.branch.persisted_root_count < committed_root_count));
     }
@@ -7143,7 +7047,6 @@ pub proof fn commit_complete_refines(
         src.ephemeral->v,
         cdb_lbl,
     )) by {
-        reveal(CachingDiskBranch::State::freeze_prepared);
         assert(src.ephemeral->v.sealed_roots.subrange(
             0,
             frozen.sealed_roots.len() as int,
@@ -7164,7 +7067,6 @@ pub proof fn commit_complete_refines(
         dst,
         target_lbl,
     )) by {
-        reveal(CrashAwareCachingDiskBranch::State::commit_complete);
     }
     assert(CrashAwareCachingDiskBranch::State::next_by(
         src,

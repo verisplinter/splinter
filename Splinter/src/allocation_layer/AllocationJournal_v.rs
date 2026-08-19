@@ -157,6 +157,7 @@ impl JournalImage {
         assert(image.tj.disk_view.path_decodable(image.tj.freshest_rec));
         assert(tight.decodable());
         reveal(DiskView::pages_allocated_in_lsn_order);
+
     }
 
     pub proof fn valid_image_implies_tight_valid_image(self)
@@ -379,6 +380,34 @@ impl DiskView {
                 }
             },
         }
+    }
+
+    pub proof fn path_valid_ranking_equation(self, root: Pointer, ranking: Ranking)
+        ensures
+            self.path_valid_ranking(root, ranking) == match root {
+                None => true,
+                Some(addr) => {
+                    if !self.entries.contains_key(addr) || !ranking.contains_key(addr) {
+                        false
+                    } else {
+                        let record = self.entries[addr];
+                        let next = record.cropped_prior(self.boundary_lsn);
+                        &&& record.wf()
+                        &&& self.boundary_lsn < record.message_seq.seq_end
+                        &&& record.has_link(self.boundary_lsn)
+                        &&& next is Some ==> {
+                            let next_addr = next.unwrap();
+                            &&& self.entries.contains_key(next_addr)
+                            &&& self.entries[next_addr].wf()
+                            &&& self.entries[next_addr].message_seq.can_concat(record.message_seq)
+                            &&& ranking.contains_key(next_addr)
+                            &&& ranking[next_addr] < ranking[addr]
+                        }
+                        &&& self.path_valid_ranking(next, ranking)
+                    }
+                },
+            },
+    {
     }
 
     pub open spec fn path_decodable(self, root: Pointer) -> bool
@@ -720,7 +749,8 @@ impl DiskView {
                     assert(tight.entries[next.unwrap()] == tail.entries[next.unwrap()]);
                     assert(tight.path_valid_ranking(next, ranking));
                 }
-                reveal_with_fuel(DiskView::path_valid_ranking, 2);
+
+                tight.path_valid_ranking_equation(root, ranking);
                 assert(tight.path_valid_ranking(root, ranking));
             },
         }
@@ -1073,7 +1103,7 @@ impl DiskView {
         assert(big.path_build_tight(root) == self);
 
         let ranking = choose |ranking: Ranking| big.path_valid_ranking(Some(new_addr), ranking);
-        reveal_with_fuel(DiskView::path_valid_ranking, 2);
+
         assert(big.path_valid_ranking(root, ranking));
         big.path_build_tight_uses_ranking(Some(new_addr), ranking);
         big.path_build_tight_uses_ranking(root, ranking);
@@ -1221,7 +1251,8 @@ impl DiskView {
                     self.path_valid_ranking_from_decodable(next, ranking);
                     assert(self.path_valid_ranking(next, ranking));
                 }
-                reveal_with_fuel(DiskView::path_valid_ranking, 2);
+
+                self.path_valid_ranking_equation(root, ranking);
                 assert(self.path_valid_ranking(root, ranking));
             },
         }
@@ -1269,7 +1300,8 @@ impl DiskView {
                     self.path_valid_ranking_lifts_from_sub_disk(sub, next, ranking);
                     assert(self.path_valid_ranking(next, ranking));
                 }
-                reveal_with_fuel(DiskView::path_valid_ranking, 2);
+
+                self.path_valid_ranking_equation(root, ranking);
                 assert(self.path_valid_ranking(root, ranking));
             },
         }
@@ -2031,6 +2063,7 @@ impl DiskView {
         } else {
             assert(addr.page < root_addr.page);
             reveal(DiskView::pages_allocated_in_lsn_order);
+
             assert(self.pages_allocated_in_lsn_order());
             assert(self.entries[addr].message_seq.seq_end
                 <= self.entries[root_addr].message_seq.seq_start);
@@ -3169,6 +3202,7 @@ impl DiskView {
                     let prior_last = (self.entries[addrp].message_seq.seq_end - 1) as nat;
                     assert(lsn <= prior_last) by {
                         reveal(TruncatedJournal::index_domain_valid);
+
                         self.build_lsn_addr_index_domain_valid(self.next(bottom));
                     }
                     self.tj_at(self.next(bottom)).build_lsn_addr_honors_rank(prior_addr_index);
@@ -3266,6 +3300,7 @@ impl DiskView {
             assert(self.entries[root.unwrap()].message_seq.seq_end
                 <= self.entries[first_page].message_seq.seq_start) by {
                 reveal(DiskView::pages_allocated_in_lsn_order);
+
             }
             assert(false);
         } else {
@@ -3555,6 +3590,7 @@ impl TruncatedJournal {
 
         assert(sub_dv.internal_au_pages_fully_linked()) by {
             reveal(DiskView::pages_allocated_in_lsn_order);
+
         }
 
         assert(sub_dv.has_unique_lsns()) by {
@@ -3601,6 +3637,7 @@ impl TruncatedJournal {
         self.build_lsn_au_index_from_first_ensures(first);
 
         reveal(DiskView::pages_allocated_in_lsn_order);
+
         assert forall|addr| #[trigger] sub_dv.entries.contains_key(addr)
         implies sub_dv.is_nondangling_pointer(
             sub_dv.entries[addr].cropped_prior(sub_dv.boundary_lsn),
@@ -3694,7 +3731,7 @@ impl TruncatedJournal {
         let dv = self.disk_view;
         let sub_dv = sub_tj.disk_view;
         let sub_index = sub_tj.build_lsn_au_index_from_first(sub_first);
-    
+
         assert(forall |addr| sub_dv.entries.contains_key(addr) ==> dv.entries.contains_key(addr));
         assert(sub_dv.wf_addrs());
 
@@ -3724,9 +3761,10 @@ impl TruncatedJournal {
                 assert(index.contains_key(last_lsn)); // trigger
                 assert(dv.entries.contains_key(sub_tj.freshest_rec.unwrap())); // trigger
                 dv.addr_supports_lsn_consistent_with_index(index, last_lsn, sub_tj.freshest_rec.unwrap());
-     
+
                 assert(addr.au != sub_tj.freshest_rec.unwrap().au) by {
                     reveal(DiskView::pages_allocated_in_lsn_order);
+
                 }
 
                 if index.contains_key(lsn) {
@@ -4460,7 +4498,7 @@ state_machine!{ AllocationJournal {
             assert(pre.tj().valid_structure(pre.lsn_au_index, pre_first));
             assert(new_tj.freshest_rec == pre.tj().freshest_rec);
             pre.tj().build_lsn_au_index_from_first_ensures(pre_first);
-            reveal(TruncatedJournal::au_domain_valid);
+
             assert(pre.lsn_au_index.contains_key(start_lsn));
             lsn_au_index_discard_up_to_ensures(pre.lsn_au_index, start_lsn);
             assert(post.lsn_au_index.contains_key(start_lsn));
@@ -4562,6 +4600,7 @@ state_machine!{ AllocationJournal {
                     }
                 }
                 reveal(DiskView::pages_allocated_in_lsn_order);
+
                 assert(tight_sub_dv.pages_allocated_in_lsn_order()) by {
                     assert forall |alo: Address, ahi: Address|
                         ({
@@ -4771,7 +4810,7 @@ state_machine!{ AllocationJournal {
                                 && post.lsn_au_index[lsn] == addr.au;
                             assert(pre.lsn_au_index.contains_key(lsn));
                             pre.tj().build_lsn_au_index_from_first_ensures(pre_first);
-                            reveal(TruncatedJournal::au_domain_valid);
+
                             assert(lsn < pre.tj().seq_end());
                             assert(start_lsn <= lsn);
                             assert(false);
@@ -4830,6 +4869,7 @@ state_machine!{ AllocationJournal {
             let computed_index = semantic_dv.build_lsn_au_index_au_walk(post.freshest_rec, first);
             if start_lsn < pre.tj().seq_end() {
                 reveal(DiskView::pages_allocated_in_lsn_order);
+
                 assert(semantic_dv.pages_allocated_in_lsn_order()) by {
                     assert forall |alo: Address, ahi: Address|
                         ({
@@ -4859,6 +4899,7 @@ state_machine!{ AllocationJournal {
                 assert(computed_index == Map::<LSN, AU>::empty());
                 assert(post.lsn_au_index == computed_index);
                 reveal(DiskView::pages_allocated_in_lsn_order);
+
                 assert(semantic_dv.pages_allocated_in_lsn_order());
                 assert(semantic_dv.internal_au_pages_fully_linked());
                 assert(Self::semantic_journal_structure(semantic_dv, post.freshest_rec, computed_index, first)) by {
@@ -5428,6 +5469,7 @@ state_machine!{ AllocationJournal {
                         assert(pre_dv.build_tight(pre_root).entries.contains_key(x));
                         pre_dv.build_tight_entry_lsn_bounded(pre_root, x);
                         reveal(DiskView::pages_allocated_in_lsn_order);
+
                         assert(pre_dv.pages_allocated_in_lsn_order());
                         assert(pre_dv.entries[pre_root.unwrap()].message_seq.seq_end
                             <= pre_dv.entries[x].message_seq.seq_start);
@@ -5482,7 +5524,7 @@ state_machine!{ AllocationJournal {
                                 0
                             },
                         );
-                        reveal(TruncatedJournal::au_domain_valid);
+
                         assert(lsn < pre.tj().seq_end());
                         assert(msgs.seq_start == pre.tj().seq_end());
                         assert(false);
@@ -5657,6 +5699,7 @@ state_machine!{ AllocationJournal {
         pre.tj_inherits_semantic_structure();
         assert(post_dv.pages_allocated_in_lsn_order()) by {
             reveal(DiskView::pages_allocated_in_lsn_order);
+
             assert forall |alo: Address, ahi: Address|
                 ({
                     &&& alo.au == ahi.au
@@ -5982,7 +6025,7 @@ state_machine!{ AllocationJournal {
                                     0
                                 },
                             );
-                            reveal(TruncatedJournal::au_domain_valid);
+
                             assert(lsn < pre.tj().seq_end());
                             assert(msgs.seq_start == pre.tj().seq_end());
                             assert(false);
@@ -6120,7 +6163,7 @@ state_machine!{ AllocationJournal {
         assert(post.lsn_au_index == tight_dv.build_lsn_au_index_au_walk(tight_tj.freshest_rec, post_first));
         assert(post.au_page_bounds == tight_dv.build_au_page_bounds_au_walk(tight_tj.freshest_rec, post_first));
         post.tj().build_lsn_au_index_from_first_ensures(post_first);
-        reveal(TruncatedJournal::au_domain_valid);
+
         image.valid_image_implies_tight_seq_bounds();
         assert(post.lsn_au_index_before_tail()) by {
             tight_tj.build_lsn_au_index_from_first_ensures(post_first);
@@ -6180,7 +6223,7 @@ state_machine!{ AllocationJournal {
         }
 
         tight_tj.build_lsn_au_index_from_first_ensures(first);
-        reveal(TruncatedJournal::au_domain_valid);
+
         assert(post.lsn_au_index == tight_tj.build_lsn_au_index_from_first(first));
         let bounds = tight_dv.build_au_page_bounds_au_walk(tight_tj.freshest_rec, first);
         assert(post.au_page_bounds == bounds);
@@ -6776,7 +6819,7 @@ state_machine!{ AllocationJournal {
         assert(pre.wf());
         assert(full_tj.valid_structure(full_index, first));
         full_tj.build_lsn_au_index_from_first_ensures(first);
-        reveal(TruncatedJournal::au_domain_valid);
+
 
         if frozen.freshest_rec is Some {
             let root = frozen.freshest_rec.unwrap();
@@ -6876,6 +6919,7 @@ state_machine!{ AllocationJournal {
             }
         }
         reveal(DiskView::pages_allocated_in_lsn_order);
+
         assert(tight_dv.pages_allocated_in_lsn_order()) by {
             assert forall |alo: Address, ahi: Address|
                 ({
@@ -7360,7 +7404,7 @@ state_machine!{ AllocationJournal {
     ensures
         post.tj() == image.tight_tj(),
     {
-        reveal(AllocationJournal::State::initialize);
+
         image.valid_image_implies_tight_valid_image();
         assert(post.disk_view == image.tj.disk_view);
         assert(post.tj() == image.tight_tj());
@@ -7749,7 +7793,7 @@ state_machine!{ AllocationJournal {
             post.frozen_image(frozen) == pre.frozen_image(frozen),
             post.frozen_prefix_domain(frozen) =~= pre.frozen_prefix_domain(frozen),
     {
-        reveal(AllocationJournal::State::discard_old);
+
         let start_lsn = lbl->start_lsn;
         let new_index = lsn_au_index_discard_up_to(pre.lsn_au_index, start_lsn);
         let discarded_aus = pre.lsn_au_index.values().difference(new_index.values());

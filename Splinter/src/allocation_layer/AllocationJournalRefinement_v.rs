@@ -107,10 +107,11 @@ impl AllocationJournal::State {
         let index = self.i().lsn_addr_index;
         let first = self.lsn_au_index[self.tj().seq_start()];
         self.tj().build_lsn_au_index_from_first_ensures(first);
-        reveal(TruncatedJournal::au_domain_valid);
+
         assert(self.tj().seq_start() <= lsn < self.tj().seq_end());
         self.tj().build_lsn_addr_index_ensures();
         reveal(TruncatedJournal::index_domain_valid);
+
         assert(index.contains_key(lsn));
 
         assert(self.tj().disk_view.addr_supports_lsn(addr, lsn));
@@ -225,6 +226,7 @@ impl AllocationJournal::State {
 
         reveal(TruncatedJournal::index_domain_valid);
 
+
         if self.tj().freshest_rec is Some {
             self.tj().disk_view.build_lsn_addr_index_domain_valid(self.tj().freshest_rec);
         }
@@ -258,6 +260,7 @@ impl AllocationJournal::State {
                     assert(post.i().lsn_addr_index[lsn] == addr);
                     post.tj().build_lsn_addr_index_ensures();
                     reveal(DiskView::index_keys_map_to_valid_entries);
+
                     assert(post.tj().disk_view.index_keys_map_to_valid_entries(post.i().lsn_addr_index));
                     post.tj().disk_view.instantiate_index_keys_map_to_valid_entries(post.i().lsn_addr_index, lsn);
                 }
@@ -499,8 +502,8 @@ impl AllocationJournal::State {
         self.refinement_inv(),
         LikesJournal::State::initialize(self.i(), self.tj()),
     {
-        reveal(AllocationJournal::State::initialize);
-        reveal(LikesJournal::State::initialize);
+
+
         AllocationJournal::State::initialize_inductive(self, image);
         AllocationJournal::State::initialize_semantic_inv(self, image);
         image.valid_image_implies_tight_valid_image();

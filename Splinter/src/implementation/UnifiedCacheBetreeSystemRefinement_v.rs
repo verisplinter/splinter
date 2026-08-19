@@ -12,6 +12,8 @@ use vstd::multiset::Multiset;
 use vstd::assert_maps_equal;
 use vstd::assert_sets_equal;
 
+use crate::disk::GenericDisk_v::AU;
+
 use crate::implementation::CrashAwareCachingDiskBetreeSystem_v::
     CrashAwareCachingDiskBetreeSystem;
 use crate::implementation::AbstractSuperblock_v::{
@@ -21,15 +23,23 @@ use crate::implementation::AbstractSuperblock_v::{
 };
 use crate::implementation::CrashAwareCachingDiskBetreeSystemRefinement_v as
     CrashAwareCachingDiskBetreeSystemRefinement;
-use crate::implementation::AtomicBranchBetreeState_v::
-    AtomicBranchBetreeState;
+use crate::implementation::AtomicBranchBetreeState_v::{
+    AtomicBranchBetreeState, empty_cached_betree,
+    recovery_page_access,
+};
 use crate::implementation::AtomicJournalState_v::AtomicJournalState;
 use crate::implementation::CachedBranchBetree_v::{
-    cached_branch_alloc_aus, CachedBranchBetree, LoadedBetreePath,
-    LoadedBetreeQueryReceipt,
+    CachedBranchBetree, FrozenBranchBetree, LoadedBetree,
+    LoadedBetreePath, LoadedBetreeQueryReceipt,
 };
+use crate::implementation::CachedBranch_v::LoadedBranch;
+use crate::implementation::CachedBulkBranch_v::{
+    cached_bulk_branch_alloc_aus, CachedBulkBranch,
+};
+use crate::allocation_layer::AllocationBranchBetree_v::summary_aus;
+use crate::implementation::BetreeQueryImpl_v::cached_betree_query_valid;
 use crate::implementation::CachingDiskBranchBetree_v::{
-    CachingDiskBranchBetree, PageAccess,
+    CachingDiskBranchBetree, PageAccess, branch_build_event_of,
 };
 use crate::implementation::CrashAwareCachingDiskBranchBetree_v::
     {BetreeMetadataRecoveryLabel, CachingDiskBranchBetreeImage,
@@ -90,6 +100,7 @@ use crate::spec::MapSpec_t::{
 use crate::abstract_system::MsgHistory_v::{
     KeyedMessage, MsgHistory,
 };
+use crate::spec::KeyType_t::Key;
 use crate::spec::Messages_t::Message;
 use crate::spec::AsyncDisk_t::{
     AsyncDisk, DiskRequest, DiskResponse, RawPage,
@@ -745,6 +756,37 @@ pub closed spec fn unified_cache_betree_sync_state_inv(
     }
 }
 
+pub proof fn active_sync_implies_client_ready(
+    model: SystemModel::State<UnifiedCacheBetreeProgramModel>,
+)
+    requires
+        refinement_inv(model),
+        !(model.program.state.sync_phase is None),
+    ensures model.program.state.client_ready(),
+{
+    reveal(refinement_inv);
+    reveal(unified_cache_betree_sync_state_inv);
+    match model.program.state.sync_phase {
+        AtomicBetreeSyncPhase::None => { assert(false); },
+        AtomicBetreeSyncPhase::Preparing { .. } => {},
+        AtomicBetreeSyncPhase::SuperblockWriteIssued { .. } => {},
+    }
+}
+
+pub proof fn client_ready_component_facts(
+    model: SystemModel::State<UnifiedCacheBetreeProgramModel>,
+)
+    requires
+        refinement_inv(model),
+        model.program.state.client_ready(),
+    ensures
+        model.program.state.journal.ready(),
+        model.program.state.branch.control.metadata_loaded,
+{
+    reveal(refinement_inv);
+    reveal(unified_cache_betree_ready_inv);
+}
+
 pub closed spec fn unified_cache_betree_disk_request_inv(
     model: SystemModel::State<UnifiedCacheBetreeProgramModel>,
 ) -> bool {
@@ -840,7 +882,7 @@ pub closed spec fn unified_cache_betree_wip_persistent_disjoint_inv(
 ) -> bool {
     let state = model.program.state;
     state.branch.control.metadata_loaded ==> {
-        cached_branch_alloc_aus(
+        cached_bulk_branch_alloc_aus(
             state.branch.betree.wip_branches,
         ).disjoint(state.branch.control.persistent_aus)
     }
@@ -1023,7 +1065,6 @@ proof fn cache_disk_ops_begin_preserves_unready_cache_clean_inv(
             Cache::Step::load_initiate(
                 new_slots_mapping,
             ) => {
-                reveal(Cache::State::load_initiate);
                 let updated_entries = Map::new(
                     |slot: Slot|
                         new_slots_mapping.contains_key(slot),
@@ -1059,8 +1100,6 @@ proof fn cache_disk_ops_begin_preserves_unready_cache_clean_inv(
                 }
             },
             Cache::Step::writeback_initiate() => {
-                reveal(Cache::State::
-                    writeback_initiate);
                 let request = choose |request: DiskRequest|
                     requests.contains(request);
                 assert(requests.contains(request));
@@ -1134,7 +1173,6 @@ proof fn cache_disk_ops_end_preserves_unready_cache_clean_inv(
             );
         match cache_step {
             Cache::Step::load_complete() => {
-                reveal(Cache::State::load_complete);
                 let slot_addr_map =
                     pre_cache.lookup_map
                         .restrict(responses.dom())
@@ -1181,8 +1219,6 @@ proof fn cache_disk_ops_end_preserves_unready_cache_clean_inv(
                 }
             },
             Cache::Step::writeback_complete() => {
-                reveal(Cache::State::
-                    writeback_complete);
                 let addr = choose |addr: Address|
                     responses.contains_key(addr);
                 assert(responses.contains_key(addr));
@@ -1398,7 +1434,6 @@ proof fn cache_disk_ops_begin_preserves_persistent_branch_cache_clean_inv(
             Cache::Step::load_initiate(
                 new_slots_mapping,
             ) => {
-                reveal(Cache::State::load_initiate);
                 let updated_entries = Map::new(
                     |slot: Slot|
                         new_slots_mapping.contains_key(slot),
@@ -1427,7 +1462,6 @@ proof fn cache_disk_ops_begin_preserves_persistent_branch_cache_clean_inv(
                 }
             },
             Cache::Step::writeback_initiate() => {
-                reveal(Cache::State::writeback_initiate);
                 assert forall |slot: Slot|
                     #[trigger] post_cache.entries
                         .contains_key(slot)
@@ -1514,7 +1548,6 @@ proof fn cache_disk_ops_end_preserves_persistent_branch_cache_clean_inv(
             );
         match cache_step {
             Cache::Step::load_complete() => {
-                reveal(Cache::State::load_complete);
                 let slot_addr_map =
                     pre_cache.lookup_map
                         .restrict(responses.dom())
@@ -1556,7 +1589,6 @@ proof fn cache_disk_ops_end_preserves_persistent_branch_cache_clean_inv(
                 }
             },
             Cache::Step::writeback_complete() => {
-                reveal(Cache::State::writeback_complete);
                 assert forall |slot: Slot|
                     #[trigger] post_cache.entries
                         .contains_key(slot)
@@ -2122,7 +2154,6 @@ proof fn cache_io_begin_preserves_shared_cache_disk_inv(
                 cache_lbl,
                 new_slots_mapping,
             )) by {
-                reveal(Cache::State::load_initiate);
             }
         }
         Cache::Step::writeback_initiate() => {
@@ -2131,7 +2162,6 @@ proof fn cache_io_begin_preserves_shared_cache_disk_inv(
                 post_cache,
                 cache_lbl,
             )) by {
-                reveal(Cache::State::writeback_initiate);
             }
         }
         _ => {
@@ -3150,7 +3180,6 @@ proof fn cache_io_end_preserves_shared_cache_disk_inv(
                 post_cache,
                 cache_lbl,
             )) by {
-                reveal(Cache::State::load_complete);
             }
         }
         Cache::Step::writeback_complete() => {
@@ -3159,7 +3188,6 @@ proof fn cache_io_end_preserves_shared_cache_disk_inv(
                 post_cache,
                 cache_lbl,
             )) by {
-                reveal(Cache::State::writeback_complete);
             }
         }
         _ => {
@@ -3959,8 +3987,6 @@ proof fn branch_alloc_clean_cache_disk_coupling(
             }
         }
     }
-    reveal(UnifiedCacheBranchBetreeRefinement::
-        clean_cache_disk_coupling_on_aus);
     assert forall |addr: crate::disk::GenericDisk_v::Address| {
         &&& #[trigger] filled_cache_status(state.cache)
             .contains_key(addr)
@@ -4164,9 +4190,9 @@ proof fn branch_wip_update_preserves_persistent_disjoint_inv(
             == pre.program.state.branch.control.metadata_loaded,
         post.program.state.branch.control.persistent_aus
             == pre.program.state.branch.control.persistent_aus,
-        cached_branch_alloc_aus(
+        cached_bulk_branch_alloc_aus(
             post.program.state.branch.betree.wip_branches,
-        ) <= cached_branch_alloc_aus(
+        ) <= cached_bulk_branch_alloc_aus(
             pre.program.state.branch.betree.wip_branches,
         ) + allocs,
         allocs <= pre.program.state.free_aus,
@@ -4178,7 +4204,7 @@ proof fn branch_wip_update_preserves_persistent_disjoint_inv(
     let pre_state = pre.program.state;
     let post_state = post.program.state;
     if post_state.branch.control.metadata_loaded {
-        assert(cached_branch_alloc_aus(
+        assert(cached_bulk_branch_alloc_aus(
             pre_state.branch.betree.wip_branches,
         ).disjoint(
             pre_state.branch.control.persistent_aus,
@@ -4196,7 +4222,7 @@ proof fn branch_wip_update_preserves_persistent_disjoint_inv(
                     unified_cache_branch_betree_source(pre)
                         .branch_projection_aus());
         }
-        assert(cached_branch_alloc_aus(
+        assert(cached_bulk_branch_alloc_aus(
             post_state.branch.betree.wip_branches,
         ).disjoint(
             post_state.branch.control.persistent_aus,
@@ -4358,6 +4384,369 @@ pub open spec fn refinement_inv(
     &&& unified_cache_betree_allocation_inv(model)
 }
 
+pub proof fn inv_implies_journal_source_inv(
+    model: SystemModel::State<UnifiedCacheBetreeProgramModel>,
+)
+    requires refinement_inv(model),
+    ensures UnifiedCacheJournalRefinement::inv(
+        unified_cache_betree_journal_source(model),
+    ),
+{
+
+    reveal(unified_cache_betree_component_inv);
+}
+
+pub proof fn ready_journal_owned_aus_exclude_superblock(
+    model: SystemModel::State<UnifiedCacheBetreeProgramModel>,
+)
+    requires
+        refinement_inv(model),
+        model.program.state.client_ready(),
+    ensures
+        !model.program.state.journal.owned_aus().contains(
+            spec_superblock_addr().au,
+        ),
+{
+
+    reveal(unified_cache_betree_allocation_inv);
+    let source = unified_cache_betree_journal_source(model);
+    let reserved = UnifiedCacheBetreeSystem::State::reserved_aus();
+    assert(source.journal == model.program.state.journal);
+    assert(source.journal.ready());
+    assert(source.journal_projection_aus()
+        == model.program.state.journal.owned_aus());
+    assert(reserved.contains(spec_superblock_addr().au)) by {
+
+    }
+}
+
+pub proof fn ready_journal_sync_metadata_facts(
+    model: SystemModel::State<UnifiedCacheBetreeProgramModel>,
+)
+    requires
+        refinement_inv(model),
+        model.program.state.client_ready(),
+    ensures
+        model.program.state.journal.persistent_seq_end
+            <= model.program.state.branch.betree.memtable.seq_end,
+        model.program.state.branch.control.metadata.seq_end
+            == model.program.state.journal.journal.snapshot.boundary_lsn,
+{
+
+    reveal(unified_cache_betree_component_inv);
+    reveal(unified_cache_betree_ready_inv);
+    let state = model.program.state;
+    let system = unified_cache_betree_system_i(model);
+    let journal = unified_cache_betree_journal_source(model);
+    let branch = UnifiedCacheBranchBetreeRefinement::
+        unified_cache_branch_betree_source(model);
+
+    assert(journal.inv());
+    assert(branch.inv());
+    assert(journal.superblock_loaded());
+    assert(branch.superblock_loaded());
+    assert(branch.control.metadata == branch.persistent_metadata_i());
+    assert(branch.persistent_superblock_image_i()
+        == journal.persistent_superblock_image_i());
+
+    let coordination = system.coordination_i();
+
+
+
+
+
+
+
+
+
+
+    assert(coordination.inv());
+    assert(coordination.components_loaded());
+    assert(coordination.inv_ephemeral_geometry());
+
+    let journal_inner = journal.journal_caching_disk_state_i();
+    assert(journal.semantic_inv());
+    assert(journal_inner.inv());
+    assert(journal_inner.refinement_inv());
+    assert(journal_inner.semantic_inv());
+    assert(journal_inner.live_bounded_pages_visible());
+    assert(journal_inner.journal.status is Some);
+    journal_inner.loaded_i_abstract_seq_bounds();
+    assert(system.journal.ephemeral is Known);
+    assert(system.journal.ephemeral->v == journal_inner);
+    assert(coordination.journal.ephemeral is Known);
+    assert(coordination.journal.ephemeral->v
+        == journal_inner.i().i_abstract());
+    system.journal.persistent_i_wf();
+    assert(coordination.journal.persistent
+        == system.journal.persistent_i());
+    assert(system.journal.persistent.metadata().seq_end
+        == state.journal.persistent_seq_end);
+    assert(coordination.journal.persistent.seq_end
+        == state.journal.persistent_seq_end);
+    assert(coordination.ephemeral_seq_end()
+        == state.journal.journal.seq_end());
+    assert(state.journal.persistent_seq_end
+        <= state.journal.journal.seq_end());
+    assert(state.journal.journal.seq_end()
+        == state.branch.betree.memtable.seq_end);
+
+    let branch_image = branch.persistent_branch_image_i();
+    assert(branch_image.valid());
+    branch_image.i_abstract_seq_end();
+    assert(system.branch.persistent == branch_image);
+    assert(coordination.mapadt.persistent
+        == system.branch.persistent_i());
+    assert(system.branch.persistent_i()
+        == branch_image.i_abstract().stamped_map);
+    assert(coordination.mapadt.persistent.seq_end
+        == branch.persistent_metadata_i().seq_end);
+    assert(coordination.journal.i().seq_start
+        == state.journal.journal.snapshot.boundary_lsn);
+    assert(coordination.journal.i().can_follow(
+        coordination.mapadt.persistent.seq_end,
+    ));
+}
+
+pub proof fn recovery_superblock_response_facts(
+    model: SystemModel::State<UnifiedCacheBetreeProgramModel>,
+    id: ID,
+    response: DiskResponse,
+)
+    requires
+        refinement_inv(model),
+        model.program.state.recovery_state is AwaitingSuperblock,
+        model.disk.responses.contains_key(id),
+        model.disk.responses[id] == response,
+    ensures
+        response is ReadResp,
+        model.disk.content.contains_key(spec_superblock_addr()),
+        response->data
+            == model.disk.content[spec_superblock_addr()],
+        abstract_superblock_raw_wf(response->data),
+{
+
+    reveal(unified_cache_betree_recovery_state_inv);
+    assert(response is ReadResp);
+    assert(model.disk.content.contains_key(spec_superblock_addr()));
+    assert(response->data
+        == model.disk.content[spec_superblock_addr()]);
+
+    reveal(unified_cache_betree_component_inv);
+    let journal_source = unified_cache_betree_journal_source(model);
+    assert(UnifiedCacheJournalRefinement::inv(journal_source));
+    assert(journal_source.inv());
+    assert(UnifiedCacheJournalRefinement::
+        async_disk_superblock_page_wf(model.disk.content));
+    assert(abstract_superblock_raw_wf(
+        model.disk.content[spec_superblock_addr()],
+    ));
+}
+
+pub proof fn journal_source_inv(
+    model: SystemModel::State<UnifiedCacheBetreeProgramModel>,
+)
+    requires refinement_inv(model),
+    ensures
+        UnifiedCacheJournalRefinement::inv(
+            unified_cache_betree_journal_source(model),
+        ),
+{
+
+    reveal(unified_cache_betree_component_inv);
+}
+
+pub proof fn post_superblock_journal_source_inv(
+    model: SystemModel::State<UnifiedCacheBetreeProgramModel>,
+)
+    requires
+        refinement_inv(model),
+        !(model.program.state.recovery_state is Begin),
+        !(model.program.state.recovery_state is AwaitingSuperblock),
+    ensures
+        UnifiedCacheJournalRefinement::inv(
+            unified_cache_betree_journal_source(model),
+        ),
+        unified_cache_betree_journal_source(model)
+            .superblock_loaded(),
+{
+    journal_source_inv(model);
+
+    reveal(unified_cache_betree_recovery_state_inv);
+}
+
+pub proof fn branch_source_inv(
+    model: SystemModel::State<UnifiedCacheBetreeProgramModel>,
+)
+    requires refinement_inv(model),
+    ensures
+        UnifiedCacheBranchBetreeRefinement::inv(
+            UnifiedCacheBranchBetreeRefinement::
+                unified_cache_branch_betree_source(model),
+        ),
+{
+
+    reveal(unified_cache_betree_component_inv);
+}
+
+pub proof fn ready_free_aus_disjoint_branch_projection(
+    model: SystemModel::State<UnifiedCacheBetreeProgramModel>,
+)
+    requires
+        refinement_inv(model),
+        model.program.state.client_ready(),
+    ensures
+        model.program.state.free_aus.disjoint(
+            UnifiedCacheBranchBetreeRefinement::
+                unified_cache_branch_betree_source(model)
+                .branch_projection_aus(),
+        ),
+{
+
+    reveal(unified_cache_betree_allocation_inv);
+}
+
+pub proof fn journal_branch_projections_disjoint(
+    model: SystemModel::State<UnifiedCacheBetreeProgramModel>,
+)
+    requires refinement_inv(model),
+    ensures
+        unified_cache_betree_journal_source(model)
+            .journal_projection_aus().disjoint(
+                UnifiedCacheBranchBetreeRefinement::
+                    unified_cache_branch_betree_source(model)
+                    .branch_projection_aus(),
+            ),
+{
+
+    reveal(unified_cache_betree_allocation_inv);
+}
+
+pub proof fn ready_free_aus_disjoint_journal_owned(
+    model: SystemModel::State<UnifiedCacheBetreeProgramModel>,
+)
+    requires
+        refinement_inv(model),
+        model.program.state.client_ready(),
+    ensures
+        model.program.state.free_aus.disjoint(
+            model.program.state.journal.owned_aus(),
+        ),
+{
+
+    reveal(unified_cache_betree_allocation_inv);
+    let source = unified_cache_betree_journal_source(model);
+    assert(source.journal == model.program.state.journal);
+    assert(source.journal.ready());
+
+}
+
+pub proof fn ready_branch_query_cache_inv(
+    model: SystemModel::State<UnifiedCacheBetreeProgramModel>,
+    betree_fuel: nat,
+    branch_fuel: nat,
+)
+    requires
+        refinement_inv(model),
+        model.program.state.client_ready(),
+        betree_fuel > 0,
+        branch_fuel > 0,
+    ensures ({
+        let state = model.program.state;
+        state.branch.betree.root is Some ==> forall |key: Key|
+            cached_betree_query_valid(
+                state.cache,
+                state.branch.betree.root.unwrap(),
+                key,
+                betree_fuel,
+                branch_fuel,
+                state.branch.betree.betree_aus.dom(),
+                state.branch.betree.branch_summary,
+                summary_aus(state.branch.betree.branch_summary),
+            )
+    }),
+{
+    branch_source_inv(model);
+
+    reveal(unified_cache_betree_ready_inv);
+    let source = UnifiedCacheBranchBetreeRefinement::
+        unified_cache_branch_betree_source(model);
+    assert(source.control.metadata_loaded);
+    UnifiedCacheBranchBetreeRefinement::ready_query_cache_inv(
+        source,
+        betree_fuel,
+        branch_fuel,
+    );
+}
+
+pub proof fn branch_projection_excludes_superblock(
+    model: SystemModel::State<UnifiedCacheBetreeProgramModel>,
+)
+    requires refinement_inv(model),
+    ensures !UnifiedCacheBranchBetreeRefinement::
+        unified_cache_branch_betree_source(model)
+        .branch_projection_aus()
+        .contains(spec_superblock_addr().au),
+{
+
+    reveal(unified_cache_betree_allocation_inv);
+    assert(UnifiedCacheBetreeSystem::State::reserved_aus()
+        .contains(spec_superblock_addr().au)) by {
+
+    }
+}
+
+pub proof fn loading_branch_recovery_facts(
+    model: SystemModel::State<UnifiedCacheBetreeProgramModel>,
+)
+    requires
+        refinement_inv(model),
+        !(model.program.state.recovery_state is Begin),
+        !(model.program.state.recovery_state is AwaitingSuperblock),
+        model.program.state.branch.control.loading,
+    ensures ({
+        let source = UnifiedCacheBranchBetreeRefinement::
+            unified_cache_branch_betree_source(model);
+        let recovery = crate::implementation::
+            CrashAwareCachingDiskBranchBetree_v::
+                BetreeMetadataRecovery::from_core(
+                    source.branch_caching_disk_i(),
+                    model.program.state.branch.control.recovery,
+                );
+        let image = source.persistent_branch_image_i();
+        &&& source.superblock_loaded()
+        &&& recovery.core()
+            == model.program.state.branch.control.recovery
+        &&& image.metadata
+            == model.program.state.branch.control.metadata
+        &&& recovery.refinement_inv(image)
+    }),
+{
+    branch_source_inv(model);
+
+    reveal(unified_cache_betree_recovery_state_inv);
+    let source = UnifiedCacheBranchBetreeRefinement::
+        unified_cache_branch_betree_source(model);
+    let recovery = crate::implementation::
+        CrashAwareCachingDiskBranchBetree_v::
+            BetreeMetadataRecovery::from_core(
+                source.branch_caching_disk_i(),
+                model.program.state.branch.control.recovery,
+            );
+    let image = source.persistent_branch_image_i();
+    assert(source.superblock_loaded());
+    assert(source.control.metadata
+        == source.persistent_metadata_i());
+    assert(image.metadata == source.persistent_metadata_i());
+    assert(source.ephemeral_branch_i() is Loading);
+    assert(source.i().ephemeral is Loading);
+    assert(source.i().ephemeral->recovery == recovery);
+    assert(source.i().persistent == image);
+    assert(source.i().refinement_inv());
+    assert(recovery.refinement_inv(image));
+
+}
+
 pub proof fn init_refines(
     model: SystemModel::State<UnifiedCacheBetreeProgramModel>,
 )
@@ -4373,12 +4762,13 @@ pub proof fn init_refines(
         ),
         refinement_inv(model),
 {
-    reveal(SystemModel::State::initialize);
     assert(UnifiedCacheBetreeProgramModel::is_mkfs(model.disk));
     assert(UnifiedCacheBetreeProgramModel::init(model.program));
 
     reveal(UnifiedCacheBetreeSystem::State::init);
     reveal(UnifiedCacheBetreeSystem::State::init_by);
+
+
     let config = choose |config: UnifiedCacheBetreeSystem::Config|
         UnifiedCacheBetreeSystem::State::init_by(
             model.program.state,
@@ -4390,7 +4780,6 @@ pub proof fn init_refines(
             cache_slots,
             free_aus,
         ) => {
-            reveal(UnifiedCacheBetreeSystem::State::initialize);
             let journal_src = unified_cache_betree_journal_source(model);
             let branch_src =
                 UnifiedCacheBranchBetreeRefinement::
@@ -4404,7 +4793,6 @@ pub proof fn init_refines(
                     model.program.state.cache,
                     cache_slots,
                 )) by {
-                    reveal(Cache::State::initialize);
                 }
                 Cache::State::initialize_inductive(
                     model.program.state.cache,
@@ -4439,6 +4827,8 @@ pub proof fn init_refines(
                 ));
                 reveal(CrashAwareCachingDiskJournal::State::init);
                 reveal(CrashAwareCachingDiskJournal::State::init_by);
+
+
                 let journal_config = choose |config:
                     CrashAwareCachingDiskJournal::Config|
                     CrashAwareCachingDiskJournal::State::init_by(
@@ -4448,8 +4838,6 @@ pub proof fn init_refines(
                 match journal_config {
                     CrashAwareCachingDiskJournal::Config::
                         initialize() => {
-                        reveal(CrashAwareCachingDiskJournal::State::
-                            initialize);
                     }
                     CrashAwareCachingDiskJournal::Config::
                         dummy_to_use_type_params(_) => {
@@ -4467,6 +4855,8 @@ pub proof fn init_refines(
                 ));
                 reveal(CrashAwareCachingDiskBranchBetree::State::init);
                 reveal(CrashAwareCachingDiskBranchBetree::State::init_by);
+
+
                 let branch_config = choose |config:
                     CrashAwareCachingDiskBranchBetree::Config|
                     CrashAwareCachingDiskBranchBetree::State::init_by(
@@ -4476,10 +4866,6 @@ pub proof fn init_refines(
                 match branch_config {
                     CrashAwareCachingDiskBranchBetree::Config::
                         initialize() => {
-                        reveal(
-                            CrashAwareCachingDiskBranchBetree::State::
-                                initialize,
-                        );
                     }
                     CrashAwareCachingDiskBranchBetree::Config::
                         dummy_to_use_type_params(_) => {
@@ -4494,8 +4880,6 @@ pub proof fn init_refines(
                 dst.journal,
                 dst.branch,
             )) by {
-                reveal(CrashAwareCachingDiskBetreeSystem::State::
-                    initialize);
             }
             assert(CrashAwareCachingDiskBetreeSystem::State::init_by(
                 dst,
@@ -4507,8 +4891,10 @@ pub proof fn init_refines(
                 ),
             )) by {
                 reveal(CrashAwareCachingDiskBetreeSystem::State::init_by);
+
             }
             reveal(CrashAwareCachingDiskBetreeSystem::State::init);
+
             CrashAwareCachingDiskBetreeSystemRefinement::
                 init_refines_ctam(dst);
 
@@ -4578,7 +4964,6 @@ proof fn program_execute_progress_invs(
         system_model_request_reply_disjoint_inv(post),
 {
     broadcast use vstd::multiset::group_multiset_axioms;
-    reveal(SystemModel::State::program_execute);
 
     let req = lbl->op->req;
     let reply = lbl->op->reply;
@@ -4677,7 +5062,6 @@ proof fn program_internal_finish_refinement(
     ensures
         refinement_inv(post),
 {
-    reveal(SystemModel::State::program_internal);
     assert(system_model_progress_history_inv(post));
     assert(system_model_progress_unique_inv(post));
     assert(system_model_request_id_unique_inv(post));
@@ -4712,7 +5096,7 @@ proof fn program_internal_branch_alloc_finish_refinement(
         post.program.state.client_ready(),
         post.program.state.branch.control.persistent_aus
             == pre.program.state.branch.control.persistent_aus,
-        op is InternalAlloc,
+        op is InternalAllocAccess,
         crate::implementation::
             CrashAwareCachingDiskBranchBetree_v::
                 logical_allocs(op) == allocs,
@@ -4754,9 +5138,9 @@ proof fn program_internal_branch_alloc_finish_refinement(
         post.program.state.free_aus
             == (pre.program.state.free_aus - allocs)
                 + reclaimed,
-        cached_branch_alloc_aus(
+        cached_bulk_branch_alloc_aus(
             post.program.state.branch.betree.wip_branches,
-        ) <= cached_branch_alloc_aus(
+        ) <= cached_bulk_branch_alloc_aus(
             pre.program.state.branch.betree.wip_branches,
         ) + allocs,
         unified_cache_betree_component_inv(post),
@@ -4810,10 +5194,6 @@ proof fn program_internal_branch_alloc_finish_refinement(
             ),
     )) by {
         reveal(CrashAwareCachingDiskBetreeSystem::State::next_by);
-        reveal(
-            CrashAwareCachingDiskBetreeSystem::State::
-                branch_internal_alloc,
-        );
     }
     reveal(CrashAwareCachingDiskBetreeSystem::State::next);
     program_internal_finish_refinement(
@@ -4841,7 +5221,6 @@ pub proof fn accept_request_refines(
         refinement_inv(post),
 {
     broadcast use vstd::multiset::group_multiset_axioms;
-    reveal(SystemModel::State::accept_request);
 
     let req = lbl->req;
     let src = unified_cache_betree_system_i(pre);
@@ -4865,8 +5244,6 @@ pub proof fn accept_request_refines(
         CrashAwareCachingDiskBetreeSystem::Step::accept_request(),
     )) by {
         reveal(CrashAwareCachingDiskBetreeSystem::State::next_by);
-        reveal(CrashAwareCachingDiskBetreeSystem::State::
-            accept_request);
     }
     reveal(CrashAwareCachingDiskBetreeSystem::State::next);
 
@@ -4943,7 +5320,6 @@ pub proof fn deliver_reply_refines(
         refinement_inv(post),
 {
     broadcast use vstd::multiset::group_multiset_axioms;
-    reveal(SystemModel::State::deliver_reply);
 
     let reply = lbl->reply;
     let src = unified_cache_betree_system_i(pre);
@@ -4960,8 +5336,6 @@ pub proof fn deliver_reply_refines(
         CrashAwareCachingDiskBetreeSystem::Step::deliver_reply(),
     )) by {
         reveal(CrashAwareCachingDiskBetreeSystem::State::next_by);
-        reveal(CrashAwareCachingDiskBetreeSystem::State::
-            deliver_reply);
     }
     reveal(CrashAwareCachingDiskBetreeSystem::State::next);
 
@@ -5025,7 +5399,6 @@ proof fn interpreted_noop_refines(
         CrashAwareCachingDiskBetreeSystem::Step::noop(),
     )) by {
         reveal(CrashAwareCachingDiskBetreeSystem::State::next_by);
-        reveal(CrashAwareCachingDiskBetreeSystem::State::noop);
     }
     reveal(CrashAwareCachingDiskBetreeSystem::State::next);
     CrashAwareCachingDiskBetreeSystemRefinement::
@@ -5048,7 +5421,6 @@ pub proof fn accept_sync_request_refines(
         ),
         refinement_inv(post),
 {
-    reveal(SystemModel::State::accept_sync_request);
     assert(unified_cache_betree_system_i(post)
         == unified_cache_betree_system_i(pre));
     interpreted_noop_refines(pre, post, lbl);
@@ -5077,7 +5449,6 @@ pub proof fn deliver_sync_reply_refines(
         ),
         refinement_inv(post),
 {
-    reveal(SystemModel::State::deliver_sync_reply);
     assert(unified_cache_betree_system_i(post)
         == unified_cache_betree_system_i(pre));
     interpreted_noop_refines(pre, post, lbl);
@@ -5106,7 +5477,6 @@ pub proof fn system_noop_refines(
         ),
         refinement_inv(post),
 {
-    reveal(SystemModel::State::noop);
     assert(unified_cache_betree_system_i(post)
         == unified_cache_betree_system_i(pre));
     interpreted_noop_refines(pre, post, lbl);
@@ -5148,8 +5518,6 @@ pub proof fn program_execute_noop_refines(
         refinement_inv(post),
 {
     broadcast use vstd::multiset::group_multiset_axioms;
-    reveal(SystemModel::State::program_execute);
-    reveal(UnifiedCacheBetreeSystem::State::execute_noop);
     let req = lbl->op->req;
     let reply = lbl->op->reply;
     let src = unified_cache_betree_system_i(pre);
@@ -5159,7 +5527,6 @@ pub proof fn program_execute_noop_refines(
             req,
             reply,
         };
-
     assert(src.progress.requests.contains(req));
     assert(!src.progress.replies.contains(reply)) by {
         if src.progress.replies.contains(reply) {
@@ -5178,9 +5545,6 @@ pub proof fn program_execute_noop_refines(
         CrashAwareCachingDiskBetreeSystem::Step::execute_noop(),
     )) by {
         reveal(CrashAwareCachingDiskBetreeSystem::State::next_by);
-        reveal(
-            CrashAwareCachingDiskBetreeSystem::State::execute_noop,
-        );
     }
     reveal(CrashAwareCachingDiskBetreeSystem::State::next);
     program_execute_progress_invs(
@@ -5202,7 +5566,6 @@ pub proof fn program_execute_query_refines(
     lbl: SystemModel::Label,
     new_program: UnifiedCacheBetreeProgramModel,
     new_cache: Cache::State,
-    receipt: LoadedBetreeQueryReceipt,
     access: PageAccess,
 )
     requires
@@ -5224,7 +5587,6 @@ pub proof fn program_execute_query_refines(
                 reply: lbl->op->reply,
             },
             new_cache,
-            receipt,
             access,
         ),
     ensures
@@ -5236,8 +5598,6 @@ pub proof fn program_execute_query_refines(
         refinement_inv(post),
 {
     broadcast use vstd::multiset::group_multiset_axioms;
-    reveal(SystemModel::State::program_execute);
-    reveal(UnifiedCacheBetreeSystem::State::execute_query);
 
     let req = lbl->op->req;
     let reply = lbl->op->reply;
@@ -5249,15 +5609,71 @@ pub proof fn program_execute_query_refines(
         reads: access.reads(),
         writes: access.writes(),
     };
-    let branch_lbl =
-        AtomicBranchBetreeState::Label::Betree {
-            cached_op: CachedBranchBetree::Label::Query {
-                end_lsn: pre_state.branch.betree.memtable.seq_end,
-                key,
-                value,
+    let branch_lbl = AtomicBranchBetreeState::Label::Query {
+        end_lsn: pre_state.branch.betree.memtable.seq_end,
+        key,
+        value,
+        access,
+    };
+    AtomicBranchBetreeState::State::query_effect(
+        pre_state.branch,
+        pre_state.branch.betree.memtable.seq_end,
+        key,
+        value,
+        access,
+    );
+    let cached_lbl = CachedBranchBetree::Label::Query {
+        end_lsn: pre_state.branch.betree.memtable.seq_end,
+        key,
+        value,
+        access: access.cached_access(),
+    };
+    assert(exists |receipt: LoadedBetreeQueryReceipt|
+        CachedBranchBetree::State::query(
+            pre_state.branch.betree,
+            pre_state.branch.betree,
+            cached_lbl,
+            receipt,
+            access.loaded_betree_reads(),
+            access.loaded_branch_reads(),
+        )) by {
+        reveal(CachedBranchBetree::State::next);
+        reveal(CachedBranchBetree::State::next_by);
+        let step = choose |step: CachedBranchBetree::Step|
+            CachedBranchBetree::State::next_by(
+                pre_state.branch.betree,
+                pre_state.branch.betree,
+                cached_lbl,
+                step,
+            );
+        match step {
+            CachedBranchBetree::Step::query(
+                receipt, betree_reads, branch_reads,
+            ) => {
+                assert(CachedBranchBetree::State::query(
+                    pre_state.branch.betree,
+                    pre_state.branch.betree,
+                    cached_lbl,
+                    receipt,
+                    betree_reads,
+                    branch_reads,
+                )) by {
+                }
+                assert(betree_reads == access.loaded_betree_reads());
+                assert(branch_reads == access.loaded_branch_reads());
             },
+            _ => { assert(false); },
         };
-
+    }
+    let receipt = choose |receipt: LoadedBetreeQueryReceipt|
+        CachedBranchBetree::State::query(
+            pre_state.branch.betree,
+            pre_state.branch.betree,
+            cached_lbl,
+            receipt,
+            access.loaded_betree_reads(),
+            access.loaded_branch_reads(),
+        );
     Cache::State::inv_next(
         pre_state.cache,
         post_state.cache,
@@ -5267,14 +5683,12 @@ pub proof fn program_execute_query_refines(
         crate::disk::GenericDisk_v::Address,
         crate::spec::AsyncDisk_t::RawPage,
     >::empty()) by {
-        reveal(PageAccess::read_only);
     }
     Cache::State::access_read_only_is_noop(
         pre_state.cache,
         post_state.cache,
         access.reads(),
     );
-    reveal(AtomicBranchBetreeState::State::query);
     assert(CachedBranchBetree::State::query(
         pre_state.branch.betree,
         pre_state.branch.betree,
@@ -5282,6 +5696,7 @@ pub proof fn program_execute_query_refines(
             end_lsn: pre_state.branch.betree.memtable.seq_end,
             key,
             value,
+            access: access.cached_access(),
         },
         receipt,
         access.loaded_betree_reads(),
@@ -5322,6 +5737,8 @@ pub proof fn program_execute_query_refines(
             req,
             reply,
         };
+    let branch_access = UnifiedCacheBranchBetreeRefinement::
+        projected_query_access(branch_pre, access);
 
     assert(src.progress.requests.contains(req));
     assert(!src.progress.replies.contains(reply)) by {
@@ -5341,10 +5758,12 @@ pub proof fn program_execute_query_refines(
         src,
         dst,
         target_lbl,
-        CrashAwareCachingDiskBetreeSystem::Step::query(dst.branch),
+        CrashAwareCachingDiskBetreeSystem::Step::query(
+            dst.branch,
+            branch_access,
+        ),
     )) by {
         reveal(CrashAwareCachingDiskBetreeSystem::State::next_by);
-        reveal(CrashAwareCachingDiskBetreeSystem::State::query);
     }
     reveal(CrashAwareCachingDiskBetreeSystem::State::next);
 
@@ -5399,8 +5818,6 @@ pub proof fn program_execute_put_refines(
         refinement_inv(post),
 {
     broadcast use vstd::multiset::group_multiset_axioms;
-    reveal(SystemModel::State::program_execute);
-    reveal(UnifiedCacheBetreeSystem::State::execute_put);
 
     let req = lbl->op->req;
     let reply = lbl->op->reply;
@@ -5421,6 +5838,27 @@ pub proof fn program_execute_put_refines(
         post_state.branch,
         records,
     );
+    let cached_lbl = CachedBranchBetree::Label::Put{puts: records};
+    reveal(CachedBranchBetree::State::next);
+    reveal(CachedBranchBetree::State::next_by);
+    let cached_step = choose |step: CachedBranchBetree::Step|
+        CachedBranchBetree::State::next_by(
+            pre_state.branch.betree,
+            post_state.branch.betree,
+            cached_lbl,
+            step,
+        );
+    match cached_step {
+        CachedBranchBetree::Step::put() => {
+            assert(CachedBranchBetree::State::put(
+                pre_state.branch.betree,
+                post_state.branch.betree,
+                cached_lbl,
+            )) by {
+            }
+        },
+        _ => { assert(false); },
+    }
 
     let journal_pre = unified_cache_betree_journal_source(pre);
     let journal_post = unified_cache_betree_journal_source(post);
@@ -5485,7 +5923,6 @@ pub proof fn program_execute_put_refines(
         ),
     )) by {
         reveal(CrashAwareCachingDiskBetreeSystem::State::next_by);
-        reveal(CrashAwareCachingDiskBetreeSystem::State::put);
     }
     reveal(CrashAwareCachingDiskBetreeSystem::State::next);
 
@@ -5599,7 +6036,6 @@ pub proof fn program_execute_refines(
             match unified_step {
                 UnifiedCacheBetreeSystem::Step::execute_query(
                     new_cache,
-                    receipt,
                     access,
                 ) => {
                     program_execute_query_refines(
@@ -5608,7 +6044,6 @@ pub proof fn program_execute_refines(
                         lbl,
                         new_program,
                         new_cache,
-                        receipt,
                         access,
                     );
                 }
@@ -5654,8 +6089,6 @@ pub proof fn program_accept_sync_request_refines(
         ),
         refinement_inv(post),
 {
-    reveal(SystemModel::State::program_accept_sync_request);
-    reveal(UnifiedCacheBetreeSystem::State::accept_sync_request);
     let state = pre.program.state;
     let journal_src = unified_cache_betree_journal_source(pre);
     let src = unified_cache_betree_system_i(pre);
@@ -5683,7 +6116,6 @@ pub proof fn program_accept_sync_request_refines(
         CrashAwareCachingDiskBetreeSystem::Step::req_sync(),
     )) by {
         reveal(CrashAwareCachingDiskBetreeSystem::State::next_by);
-        reveal(CrashAwareCachingDiskBetreeSystem::State::req_sync);
     }
     reveal(CrashAwareCachingDiskBetreeSystem::State::next);
 
@@ -5732,8 +6164,6 @@ pub proof fn program_deliver_sync_reply_refines(
         ),
         refinement_inv(post),
 {
-    reveal(SystemModel::State::program_deliver_sync_reply);
-    reveal(UnifiedCacheBetreeSystem::State::deliver_sync_reply);
     let state = pre.program.state;
     let sync_lsn = state.sync_req_map[sync_req_id];
     let journal_src = unified_cache_betree_journal_source(pre);
@@ -5761,7 +6191,6 @@ pub proof fn program_deliver_sync_reply_refines(
         CrashAwareCachingDiskBetreeSystem::Step::reply_sync(),
     )) by {
         reveal(CrashAwareCachingDiskBetreeSystem::State::next_by);
-        reveal(CrashAwareCachingDiskBetreeSystem::State::reply_sync);
     }
     reveal(CrashAwareCachingDiskBetreeSystem::State::next);
 
@@ -5816,7 +6245,6 @@ proof fn program_internal_interpreted_noop_refines(
         ),
         refinement_inv(post),
 {
-    reveal(SystemModel::State::program_internal);
     interpreted_noop_refines(pre, post, lbl);
     assert(system_model_progress_history_inv(post));
     assert(system_model_progress_unique_inv(post));
@@ -5854,8 +6282,6 @@ pub proof fn program_internal_cache_internal_refines(
         ),
         refinement_inv(post),
 {
-    reveal(SystemModel::State::program_internal);
-    reveal(UnifiedCacheBetreeSystem::State::cache_internal);
     let pre_state = pre.program.state;
     let post_state = post.program.state;
     let journal_pre =
@@ -5928,9 +6354,6 @@ pub proof fn program_internal_cache_internal_refines(
             assert(crate::implementation::
                 CrashAwareCachingDiskBetreeSystem_v::
                     branch_internal_label(branch_lbl)) by {
-                reveal(crate::implementation::
-                    CrashAwareCachingDiskBetreeSystem_v::
-                        branch_internal_label);
             }
             assert(
                 CrashAwareCachingDiskBetreeSystem::State::
@@ -5948,10 +6371,6 @@ pub proof fn program_internal_cache_internal_refines(
                 reveal(
                     CrashAwareCachingDiskBetreeSystem::State::
                         next_by,
-                );
-                reveal(
-                    CrashAwareCachingDiskBetreeSystem::State::
-                        branch_internal,
                 );
             }
         } else if branch_pre.control.metadata_loaded {
@@ -5966,9 +6385,6 @@ pub proof fn program_internal_cache_internal_refines(
             assert(crate::implementation::
                 CrashAwareCachingDiskBetreeSystem_v::
                     branch_internal_label(branch_lbl)) by {
-                reveal(crate::implementation::
-                    CrashAwareCachingDiskBetreeSystem_v::
-                        branch_internal_label);
             }
             assert(
                 CrashAwareCachingDiskBetreeSystem::State::
@@ -5986,10 +6402,6 @@ pub proof fn program_internal_cache_internal_refines(
                 reveal(
                     CrashAwareCachingDiskBetreeSystem::State::
                         next_by,
-                );
-                reveal(
-                    CrashAwareCachingDiskBetreeSystem::State::
-                        branch_internal,
                 );
             }
         } else {
@@ -6019,10 +6431,6 @@ pub proof fn program_internal_cache_internal_refines(
                     CrashAwareCachingDiskBetreeSystem::State::
                         next_by,
                 );
-                reveal(
-                    CrashAwareCachingDiskBetreeSystem::State::
-                        noop,
-                );
             }
         }
     } else if branch_pre.control.loading {
@@ -6035,9 +6443,6 @@ pub proof fn program_internal_cache_internal_refines(
         assert(crate::implementation::
             CrashAwareCachingDiskBetreeSystem_v::
                 branch_internal_label(branch_lbl)) by {
-            reveal(crate::implementation::
-                CrashAwareCachingDiskBetreeSystem_v::
-                    branch_internal_label);
         }
         assert(CrashAwareCachingDiskBetreeSystem::State::
             next_by(
@@ -6054,10 +6459,6 @@ pub proof fn program_internal_cache_internal_refines(
             reveal(
                 CrashAwareCachingDiskBetreeSystem::State::
                     next_by,
-            );
-            reveal(
-                CrashAwareCachingDiskBetreeSystem::State::
-                    component_internals,
             );
         }
     } else if branch_pre.control.metadata_loaded {
@@ -6071,9 +6472,6 @@ pub proof fn program_internal_cache_internal_refines(
         assert(crate::implementation::
             CrashAwareCachingDiskBetreeSystem_v::
                 branch_internal_label(branch_lbl)) by {
-            reveal(crate::implementation::
-                CrashAwareCachingDiskBetreeSystem_v::
-                    branch_internal_label);
         }
         assert(CrashAwareCachingDiskBetreeSystem::State::
             next_by(
@@ -6090,10 +6488,6 @@ pub proof fn program_internal_cache_internal_refines(
             reveal(
                 CrashAwareCachingDiskBetreeSystem::State::
                     next_by,
-            );
-            reveal(
-                CrashAwareCachingDiskBetreeSystem::State::
-                    component_internals,
             );
         }
     } else {
@@ -6112,10 +6506,6 @@ pub proof fn program_internal_cache_internal_refines(
             reveal(
                 CrashAwareCachingDiskBetreeSystem::State::
                     next_by,
-            );
-            reveal(
-                CrashAwareCachingDiskBetreeSystem::State::
-                    journal_internal,
             );
         }
     }
@@ -6148,12 +6538,7 @@ pub proof fn program_internal_betree_noop_refines(
             UnifiedCacheBetreeSystem::Label::Internal,
             post.program.state.branch,
         ),
-        AtomicBranchBetreeState::State::next_by(
-            pre.program.state.branch,
-            post.program.state.branch,
-            AtomicBranchBetreeState::Label::Internal,
-            AtomicBranchBetreeState::Step::internal_noop(),
-        ),
+        post.program.state == pre.program.state,
     ensures
         CrashAwareCachingDiskBetreeSystem::State::next(
             unified_cache_betree_system_i(pre),
@@ -6162,11 +6547,6 @@ pub proof fn program_internal_betree_noop_refines(
         ),
         refinement_inv(post),
 {
-    reveal(SystemModel::State::program_internal);
-    reveal(UnifiedCacheBetreeSystem::State::branch_internal);
-    reveal(AtomicBranchBetreeState::State::next_by);
-    reveal(AtomicBranchBetreeState::State::internal_noop);
-    assert(post.program.state == pre.program.state);
     assert(unified_cache_betree_system_i(post)
         == unified_cache_betree_system_i(pre));
     assert(unified_cache_betree_component_inv(post));
@@ -6209,9 +6589,6 @@ pub proof fn program_internal_sync_journal_prepare_refines(
         ),
         refinement_inv(post),
 {
-    reveal(SystemModel::State::program_internal);
-    reveal(UnifiedCacheBetreeSystem::State::
-        execute_sync_journal_prepare);
     let pre_state = pre.program.state;
     let post_state = post.program.state;
     let image = pre_state.sync_phase.image().unwrap();
@@ -6239,7 +6616,6 @@ pub proof fn program_internal_sync_journal_prepare_refines(
         pre_state.journal,
         AtomicJournalState::Label::CommitPrepared,
     ));
-    reveal(AtomicJournalState::State::commit_prepared);
     assert(pre_state.journal.journal.status is Some);
     assert(pre_state.journal.in_flight.unwrap().snapshot
         .freshest_rec() is Some ==> {
@@ -6261,9 +6637,6 @@ pub proof fn program_internal_sync_journal_prepare_refines(
     assert(journal_post == journal_pre);
     assert(branch_post.prepared_branch_image_i()
         == branch_pre.prepared_branch_image_i()) by {
-        reveal(UnifiedCacheBranchBetreeRefinement::
-            UnifiedCacheBranchBetreeSource::
-                prepared_branch_image_i);
     }
     assert(branch_post.i() == branch_pre.i());
     assert(unified_cache_betree_system_i(post)
@@ -6271,8 +6644,6 @@ pub proof fn program_internal_sync_journal_prepare_refines(
 
     assert(unified_cache_betree_component_inv(post)) by {
         reveal(unified_cache_betree_component_inv);
-        reveal(UnifiedCacheBranchBetreeRefinement::
-            UnifiedCacheBranchBetreeSource::inv);
     }
     assert(unified_cache_betree_ready_inv(post));
     assert(unified_cache_betree_recovery_state_inv(post));
@@ -6329,9 +6700,6 @@ pub proof fn program_internal_sync_branch_prepare_refines(
         ),
         refinement_inv(post),
 {
-    reveal(SystemModel::State::program_internal);
-    reveal(UnifiedCacheBetreeSystem::State::
-        execute_sync_branch_prepare);
     let pre_state = pre.program.state;
     let post_state = post.program.state;
     let image = pre_state.sync_phase.image().unwrap();
@@ -6350,7 +6718,6 @@ pub proof fn program_internal_sync_branch_prepare_refines(
         cache_lbl,
         Cache::Step::evictable(),
     ));
-    reveal(Cache::State::evictable);
     assert(post_state.cache == pre_state.cache);
     assert(post_state == UnifiedCacheBetreeSystem::State {
         sync_phase: AtomicBetreeSyncPhase::Preparing {
@@ -6376,17 +6743,12 @@ pub proof fn program_internal_sync_branch_prepare_refines(
     assert(journal_post == journal_pre);
     assert(branch_post.prepared_branch_image_i()
         == branch_pre.prepared_branch_image_i()) by {
-        reveal(UnifiedCacheBranchBetreeRefinement::
-            UnifiedCacheBranchBetreeSource::
-                prepared_branch_image_i);
     }
     assert(branch_post.i() == branch_pre.i());
     assert(unified_cache_betree_system_i(post)
         == unified_cache_betree_system_i(pre));
     assert(unified_cache_betree_component_inv(post)) by {
         reveal(unified_cache_betree_component_inv);
-        reveal(UnifiedCacheBranchBetreeRefinement::
-            UnifiedCacheBranchBetreeSource::inv);
     }
 
     assert(unified_cache_betree_persistent_branch_cache_clean_inv(
@@ -6472,9 +6834,6 @@ pub proof fn program_internal_metadata_load_complete_refines(
         ),
         refinement_inv(post),
 {
-    reveal(SystemModel::State::program_internal);
-    reveal(UnifiedCacheBetreeSystem::State::
-        metadata_load_complete);
     assert(unified_cache_betree_system_i(post)
         == unified_cache_betree_system_i(pre));
     assert(unified_cache_betree_component_inv(post));
@@ -6516,8 +6875,6 @@ pub proof fn program_internal_recovery_complete_refines(
         ),
         refinement_inv(post),
 {
-    reveal(SystemModel::State::program_internal);
-    reveal(UnifiedCacheBetreeSystem::State::recovery_complete);
     let state = pre.program.state;
     let end_lsn = state.branch.betree.memtable.seq_end;
     let atomic_lbl =
@@ -6534,7 +6891,6 @@ pub proof fn program_internal_recovery_complete_refines(
         );
     match atomic_step {
         AtomicJournalState::Step::query_end_lsn() => {
-            reveal(AtomicJournalState::State::query_end_lsn);
             reveal(
                 crate::implementation::CachedJournal_v::
                     CachedJournal::State::next,
@@ -6559,10 +6915,6 @@ pub proof fn program_internal_recovery_complete_refines(
             match cached_step {
                 crate::implementation::CachedJournal_v::
                     CachedJournal::Step::query_end_lsn() => {
-                    reveal(
-                        crate::implementation::CachedJournal_v::
-                            CachedJournal::State::query_end_lsn,
-                    );
                 }
                 _ => {
                     assert(false);
@@ -6622,10 +6974,7 @@ pub proof fn program_internal_branch_recovery_begin_refines(
         ),
         refinement_inv(post),
 {
-    reveal(SystemModel::State::program_internal);
-    reveal(UnifiedCacheBetreeSystem::State::branch_internal);
     reveal(AtomicBranchBetreeState::State::next_by);
-    reveal(AtomicBranchBetreeState::State::recovery_begin);
 
     let branch_pre =
         UnifiedCacheBranchBetreeRefinement::
@@ -6649,10 +6998,6 @@ pub proof fn program_internal_branch_recovery_begin_refines(
             branch_load_ephemeral(dst.branch),
     )) by {
         reveal(CrashAwareCachingDiskBetreeSystem::State::next_by);
-        reveal(
-            CrashAwareCachingDiskBetreeSystem::State::
-                branch_load_ephemeral,
-        );
     }
     reveal(CrashAwareCachingDiskBetreeSystem::State::next);
 
@@ -6697,8 +7042,6 @@ pub proof fn program_internal_branch_internal_refines(
         ),
         refinement_inv(post),
 {
-    reveal(SystemModel::State::program_internal);
-    reveal(UnifiedCacheBetreeSystem::State::branch_internal);
     assert(post.program.state.branch == new_branch);
     assert(AtomicBranchBetreeState::State::next(
         pre.program.state.branch,
@@ -6706,6 +7049,7 @@ pub proof fn program_internal_branch_internal_refines(
         AtomicBranchBetreeState::Label::Internal,
     ));
     reveal(AtomicBranchBetreeState::State::next);
+    reveal(AtomicBranchBetreeState::State::next_by);
     let step = choose |step: AtomicBranchBetreeState::Step|
         AtomicBranchBetreeState::State::next_by(
             pre.program.state.branch,
@@ -6723,6 +7067,36 @@ pub proof fn program_internal_branch_internal_refines(
             );
         },
         AtomicBranchBetreeState::Step::internal_noop() => {
+            assert(AtomicBranchBetreeState::State::internal_noop(
+                pre.program.state.branch,
+                post.program.state.branch,
+                AtomicBranchBetreeState::Label::Internal,
+            )) by {
+            }
+            assert(post.program.state == pre.program.state);
+            program_internal_betree_noop_refines(
+                pre,
+                post,
+                lbl,
+                new_program,
+            );
+        },
+        AtomicBranchBetreeState::Step::recover_internal(
+            new_recovery,
+            recovery_op,
+        ) => {
+            assert(AtomicBranchBetreeState::State::recover_internal(
+                pre.program.state.branch,
+                post.program.state.branch,
+                AtomicBranchBetreeState::Label::Internal,
+                new_recovery,
+                recovery_op,
+            )) by {
+            }
+            assert(recovery_op is DiskInternal);
+            assert(new_recovery
+                == pre.program.state.branch.control.recovery);
+            assert(post.program.state == pre.program.state);
             program_internal_betree_noop_refines(
                 pre,
                 post,
@@ -6762,17 +7136,27 @@ pub proof fn program_internal_branch_recover_betree_refines(
             pre.program.state,
             post.program.state,
             UnifiedCacheBetreeSystem::Label::Internal,
-            AtomicBranchBetreeState::Label::Recover {
-                recovery_op:
-                    BetreeMetadataRecoveryLabel::ReadBetree{
-                        addr,
-                        reads,
-                    },
+            AtomicBranchBetreeState::Label::RecoveryAccess{
+                access: recovery_page_access(
+                    BetreeMetadataRecoveryLabel::ReadBetree {addr, reads},
+                ),
             },
-            reads,
-            Map::empty(),
+            recovery_page_access(
+                BetreeMetadataRecoveryLabel::ReadBetree {addr, reads},
+            ),
             new_cache,
             new_branch,
+        ),
+        AtomicBranchBetreeState::State::recover(
+            pre.program.state.branch,
+            new_branch,
+            AtomicBranchBetreeState::Label::RecoveryAccess{
+                access: recovery_page_access(
+                    BetreeMetadataRecoveryLabel::ReadBetree {addr, reads},
+                ),
+            },
+            new_branch.control.recovery,
+            BetreeMetadataRecoveryLabel::ReadBetree {addr, reads},
         ),
     ensures
         CrashAwareCachingDiskBetreeSystem::State::next(
@@ -6782,18 +7166,23 @@ pub proof fn program_internal_branch_recover_betree_refines(
         ),
         refinement_inv(post),
 {
-    reveal(SystemModel::State::program_internal);
-    reveal(UnifiedCacheBetreeSystem::State::
-        branch_internal_access);
-    reveal(AtomicBranchBetreeState::State::
-        internal_access_next);
-    reveal(AtomicBranchBetreeState::State::recover);
     let recovery_op =
         BetreeMetadataRecoveryLabel::ReadBetree{addr, reads};
+    let access = recovery_page_access(recovery_op);
     let cache_lbl = Cache::Label::Access {
         reads,
         writes: Map::empty(),
     };
+    assert(access.reads() == reads);
+    assert(access.writes() == Map::<Address, RawPage>::empty());
+    assert(Cache::State::next(
+        pre.program.state.cache,
+        new_cache,
+        Cache::Label::Access {
+            reads: access.reads(),
+            writes: access.writes(),
+        },
+    ));
     Cache::State::inv_next(
         pre.program.state.cache,
         post.program.state.cache,
@@ -6839,10 +7228,6 @@ pub proof fn program_internal_branch_recover_betree_refines(
             branch_recover_metadata(dst.branch, recovery_op),
     )) by {
         reveal(CrashAwareCachingDiskBetreeSystem::State::next_by);
-        reveal(
-            CrashAwareCachingDiskBetreeSystem::State::
-                branch_recover_metadata,
-        );
     }
     reveal(CrashAwareCachingDiskBetreeSystem::State::next);
 
@@ -6883,17 +7268,27 @@ pub proof fn program_internal_branch_recover_root_refines(
             pre.program.state,
             post.program.state,
             UnifiedCacheBetreeSystem::Label::Internal,
-            AtomicBranchBetreeState::Label::Recover {
-                recovery_op:
-                    BetreeMetadataRecoveryLabel::ReadBranchRoot{
-                        root,
-                        reads,
-                    },
+            AtomicBranchBetreeState::Label::RecoveryAccess{
+                access: recovery_page_access(
+                    BetreeMetadataRecoveryLabel::ReadBranchRoot {root, reads},
+                ),
             },
-            reads,
-            Map::empty(),
+            recovery_page_access(
+                BetreeMetadataRecoveryLabel::ReadBranchRoot {root, reads},
+            ),
             new_cache,
             new_branch,
+        ),
+        AtomicBranchBetreeState::State::recover(
+            pre.program.state.branch,
+            new_branch,
+            AtomicBranchBetreeState::Label::RecoveryAccess{
+                access: recovery_page_access(
+                    BetreeMetadataRecoveryLabel::ReadBranchRoot {root, reads},
+                ),
+            },
+            new_branch.control.recovery,
+            BetreeMetadataRecoveryLabel::ReadBranchRoot {root, reads},
         ),
     ensures
         CrashAwareCachingDiskBetreeSystem::State::next(
@@ -6903,18 +7298,23 @@ pub proof fn program_internal_branch_recover_root_refines(
         ),
         refinement_inv(post),
 {
-    reveal(SystemModel::State::program_internal);
-    reveal(UnifiedCacheBetreeSystem::State::
-        branch_internal_access);
-    reveal(AtomicBranchBetreeState::State::
-        internal_access_next);
-    reveal(AtomicBranchBetreeState::State::recover);
     let recovery_op =
         BetreeMetadataRecoveryLabel::ReadBranchRoot{root, reads};
+    let access = recovery_page_access(recovery_op);
     let cache_lbl = Cache::Label::Access {
         reads,
         writes: Map::empty(),
     };
+    assert(access.reads() == reads);
+    assert(access.writes() == Map::<Address, RawPage>::empty());
+    assert(Cache::State::next(
+        pre.program.state.cache,
+        new_cache,
+        Cache::Label::Access {
+            reads: access.reads(),
+            writes: access.writes(),
+        },
+    ));
     Cache::State::inv_next(
         pre.program.state.cache,
         post.program.state.cache,
@@ -6960,10 +7360,6 @@ pub proof fn program_internal_branch_recover_root_refines(
             branch_recover_metadata(dst.branch, recovery_op),
     )) by {
         reveal(CrashAwareCachingDiskBetreeSystem::State::next_by);
-        reveal(
-            CrashAwareCachingDiskBetreeSystem::State::
-                branch_recover_metadata,
-        );
     }
     reveal(CrashAwareCachingDiskBetreeSystem::State::next);
 
@@ -7004,17 +7400,27 @@ pub proof fn program_internal_branch_recover_aux_refines(
             pre.program.state,
             post.program.state,
             UnifiedCacheBetreeSystem::Label::Internal,
-            AtomicBranchBetreeState::Label::Recover {
-                recovery_op:
-                    BetreeMetadataRecoveryLabel::ReadBranchAux{
-                        root,
-                        reads,
-                    },
+            AtomicBranchBetreeState::Label::RecoveryAccess{
+                access: recovery_page_access(
+                    BetreeMetadataRecoveryLabel::ReadBranchAux {root, reads},
+                ),
             },
-            reads,
-            Map::empty(),
+            recovery_page_access(
+                BetreeMetadataRecoveryLabel::ReadBranchAux {root, reads},
+            ),
             new_cache,
             new_branch,
+        ),
+        AtomicBranchBetreeState::State::recover(
+            pre.program.state.branch,
+            new_branch,
+            AtomicBranchBetreeState::Label::RecoveryAccess{
+                access: recovery_page_access(
+                    BetreeMetadataRecoveryLabel::ReadBranchAux {root, reads},
+                ),
+            },
+            new_branch.control.recovery,
+            BetreeMetadataRecoveryLabel::ReadBranchAux {root, reads},
         ),
     ensures
         CrashAwareCachingDiskBetreeSystem::State::next(
@@ -7024,18 +7430,23 @@ pub proof fn program_internal_branch_recover_aux_refines(
         ),
         refinement_inv(post),
 {
-    reveal(SystemModel::State::program_internal);
-    reveal(UnifiedCacheBetreeSystem::State::
-        branch_internal_access);
-    reveal(AtomicBranchBetreeState::State::
-        internal_access_next);
-    reveal(AtomicBranchBetreeState::State::recover);
     let recovery_op =
         BetreeMetadataRecoveryLabel::ReadBranchAux{root, reads};
+    let access = recovery_page_access(recovery_op);
     let cache_lbl = Cache::Label::Access {
         reads,
         writes: Map::empty(),
     };
+    assert(access.reads() == reads);
+    assert(access.writes() == Map::<Address, RawPage>::empty());
+    assert(Cache::State::next(
+        pre.program.state.cache,
+        new_cache,
+        Cache::Label::Access {
+            reads: access.reads(),
+            writes: access.writes(),
+        },
+    ));
     Cache::State::inv_next(
         pre.program.state.cache,
         post.program.state.cache,
@@ -7081,10 +7492,6 @@ pub proof fn program_internal_branch_recover_aux_refines(
             branch_recover_metadata(dst.branch, recovery_op),
     )) by {
         reveal(CrashAwareCachingDiskBetreeSystem::State::next_by);
-        reveal(
-            CrashAwareCachingDiskBetreeSystem::State::
-                branch_recover_metadata,
-        );
     }
     reveal(CrashAwareCachingDiskBetreeSystem::State::next);
 
@@ -7105,6 +7512,8 @@ pub proof fn program_internal_branch_recovery_complete_refines(
     post: SystemModel::State<UnifiedCacheBetreeProgramModel>,
     lbl: SystemModel::Label,
     new_program: UnifiedCacheBetreeProgramModel,
+    discovered_aus: Set<AU>,
+    new_branch: AtomicBranchBetreeState::State,
 )
     requires
         SystemModel::State::program_internal(
@@ -7118,6 +7527,8 @@ pub proof fn program_internal_branch_recovery_complete_refines(
             pre.program.state,
             post.program.state,
             UnifiedCacheBetreeSystem::Label::Internal,
+            discovered_aus,
+            new_branch,
         ),
     ensures
         CrashAwareCachingDiskBetreeSystem::State::next(
@@ -7127,11 +7538,29 @@ pub proof fn program_internal_branch_recovery_complete_refines(
         ),
         refinement_inv(post),
 {
-    reveal(SystemModel::State::program_internal);
-    reveal(UnifiedCacheBetreeSystem::State::
-        branch_recovery_complete);
-    reveal(AtomicBranchBetreeState::State::recovery_complete);
-
+    let branch_lbl = AtomicBranchBetreeState::Label::RecoveryComplete {
+        discovered_aus,
+    };
+    reveal(AtomicBranchBetreeState::State::next);
+    reveal(AtomicBranchBetreeState::State::next_by);
+    let branch_step = choose |step: AtomicBranchBetreeState::Step|
+        AtomicBranchBetreeState::State::next_by(
+            pre.program.state.branch,
+            new_branch,
+            branch_lbl,
+            step,
+        );
+    match branch_step {
+        AtomicBranchBetreeState::Step::recovery_complete() => {
+            assert(AtomicBranchBetreeState::State::recovery_complete(
+                pre.program.state.branch,
+                new_branch,
+                branch_lbl,
+            )) by {
+            }
+        },
+        _ => { assert(false); },
+    }
     let branch_pre =
         UnifiedCacheBranchBetreeRefinement::
             unified_cache_branch_betree_source(pre);
@@ -7145,8 +7574,6 @@ pub proof fn program_internal_branch_recovery_complete_refines(
 
     let src = unified_cache_betree_system_i(pre);
     let dst = unified_cache_betree_system_i(post);
-    let discovered_aus =
-        post.program.state.branch.control.persistent_aus;
     let target_lbl = CrashAwareCachingDiskBetreeSystem::Label::Noop;
     assert(discovered_aus
         == dst.branch.ephemeral->persistent_aus);
@@ -7158,10 +7585,7 @@ pub proof fn program_internal_branch_recovery_complete_refines(
             branch_load_metadata(dst.branch, discovered_aus),
     )) by {
         reveal(CrashAwareCachingDiskBetreeSystem::State::next_by);
-        reveal(
-            CrashAwareCachingDiskBetreeSystem::State::
-                branch_load_metadata,
-        );
+
     }
     reveal(CrashAwareCachingDiskBetreeSystem::State::next);
 
@@ -7220,8 +7644,6 @@ pub proof fn program_internal_journal_load_index_refines(
         ),
         refinement_inv(post),
 {
-    reveal(SystemModel::State::program_internal);
-    reveal(UnifiedCacheBetreeSystem::State::journal_load_index);
     let journal_pre = unified_cache_betree_journal_source(pre);
     let journal_post = unified_cache_betree_journal_source(post);
     UnifiedCacheJournalRefinement::load_index_refines(
@@ -7252,7 +7674,6 @@ pub proof fn program_internal_journal_load_index_refines(
         );
     match cache_step {
         Cache::Step::access() => {
-            reveal(Cache::State::access);
             assert(post.program.state.cache
                 == pre.program.state.cache);
         }
@@ -7273,10 +7694,6 @@ pub proof fn program_internal_journal_load_index_refines(
             journal_load_index(dst.journal, discovered_aus),
     )) by {
         reveal(CrashAwareCachingDiskBetreeSystem::State::next_by);
-        reveal(
-            CrashAwareCachingDiskBetreeSystem::State::
-                journal_load_index,
-        );
     }
     reveal(CrashAwareCachingDiskBetreeSystem::State::next);
 
@@ -7304,7 +7721,7 @@ pub proof fn program_internal_read_for_recovery_refines(
     >,
     new_cache: Cache::State,
     new_journal: AtomicJournalState::State,
-    new_branch: CachedBranchBetree::State,
+    new_branch: AtomicBranchBetreeState::State,
 )
     requires
         SystemModel::State::program_internal(
@@ -7332,9 +7749,6 @@ pub proof fn program_internal_read_for_recovery_refines(
         ),
         refinement_inv(post),
 {
-    reveal(SystemModel::State::program_internal);
-    reveal(UnifiedCacheBetreeSystem::State::read_for_recovery);
-    reveal(AtomicBranchBetreeState::State::put);
     let full_msgs =
         crate::implementation::JournalTypes_v::
             to_journal_records(journal_reads)[addr].message_seq;
@@ -7362,6 +7776,34 @@ pub proof fn program_internal_read_for_recovery_refines(
     let branch_post =
         UnifiedCacheBranchBetreeRefinement::
             unified_cache_branch_betree_source(post);
+    AtomicBranchBetreeState::State::put_effect(
+        pre.program.state.branch,
+        post.program.state.branch,
+        branch_records,
+    );
+    let branch_put_lbl = CachedBranchBetree::Label::Put {
+        puts: branch_records,
+    };
+    reveal(CachedBranchBetree::State::next);
+    reveal(CachedBranchBetree::State::next_by);
+    let branch_put_step = choose |step: CachedBranchBetree::Step|
+        CachedBranchBetree::State::next_by(
+            pre.program.state.branch.betree,
+            post.program.state.branch.betree,
+            branch_put_lbl,
+            step,
+        );
+    match branch_put_step {
+        CachedBranchBetree::Step::put() => {
+            assert(CachedBranchBetree::State::put(
+                pre.program.state.branch.betree,
+                post.program.state.branch.betree,
+                branch_put_lbl,
+            )) by {
+            }
+        },
+        _ => { assert(false); },
+    }
     reveal(Cache::State::next);
     reveal(Cache::State::next_by);
     let cache_step = choose |step: Cache::Step|
@@ -7376,7 +7818,6 @@ pub proof fn program_internal_read_for_recovery_refines(
         );
     match cache_step {
         Cache::Step::access() => {
-            reveal(Cache::State::access);
             assert(post.program.state.cache
                 == pre.program.state.cache);
         }
@@ -7412,7 +7853,6 @@ pub proof fn program_internal_read_for_recovery_refines(
         let boundary =
             pre.program.state.journal.journal.snapshot.boundary_lsn;
         let branch_lsn = src.branch_lsn();
-        reveal(MsgHistory::maybe_discard_old);
         if full_msgs.seq_start <= boundary {
             assert(journal_records == full_msgs.discard_old(boundary));
             assert(journal_records.seq_start == boundary);
@@ -7446,7 +7886,6 @@ pub proof fn program_internal_read_for_recovery_refines(
         ),
     )) by {
         reveal(CrashAwareCachingDiskBetreeSystem::State::next_by);
-        reveal(CrashAwareCachingDiskBetreeSystem::State::recover);
     }
     reveal(CrashAwareCachingDiskBetreeSystem::State::next);
 
@@ -7509,10 +7948,6 @@ pub proof fn program_internal_journal_marshall_refines(
         ),
         refinement_inv(post),
 {
-    reveal(SystemModel::State::program_internal);
-    reveal(UnifiedCacheBetreeSystem::State::
-        journal_internal_access);
-    reveal(AtomicJournalState::State::internal_access_next);
     let pre_state = pre.program.state;
     let post_state = post.program.state;
     let writes = Map::<
@@ -7665,10 +8100,6 @@ pub proof fn program_internal_journal_marshall_refines(
             journal_internal(dst.journal),
     )) by {
         reveal(CrashAwareCachingDiskBetreeSystem::State::next_by);
-        reveal(
-            CrashAwareCachingDiskBetreeSystem::State::
-                journal_internal,
-        );
     }
     reveal(CrashAwareCachingDiskBetreeSystem::State::next);
     program_internal_finish_refinement(
@@ -7713,9 +8144,6 @@ pub proof fn program_internal_observe_clean_journal_aus_refines(
         ),
         refinement_inv(post),
 {
-    reveal(SystemModel::State::program_internal);
-    reveal(UnifiedCacheBetreeSystem::State::
-        observe_clean_journal_aus);
     let pre_state = pre.program.state;
     let post_state = post.program.state;
     let journal_pre = unified_cache_betree_journal_source(pre);
@@ -7760,10 +8188,6 @@ pub proof fn program_internal_observe_clean_journal_aus_refines(
             journal_observe_clean_aus(dst.journal, aus),
     )) by {
         reveal(CrashAwareCachingDiskBetreeSystem::State::next_by);
-        reveal(
-            CrashAwareCachingDiskBetreeSystem::State::
-                journal_observe_clean_aus,
-        );
     }
     reveal(CrashAwareCachingDiskBetreeSystem::State::next);
     program_internal_finish_refinement(
@@ -7805,8 +8229,6 @@ pub proof fn program_internal_journal_fill_aus_refines(
         ),
         refinement_inv(post),
 {
-    reveal(SystemModel::State::program_internal);
-    reveal(UnifiedCacheBetreeSystem::State::journal_fill_aus);
     let pre_state = pre.program.state;
     let post_state = post.program.state;
     let journal_pre = unified_cache_betree_journal_source(pre);
@@ -7910,10 +8332,6 @@ pub proof fn program_internal_journal_fill_aus_refines(
             ),
     )) by {
         reveal(CrashAwareCachingDiskBetreeSystem::State::next_by);
-        reveal(
-            CrashAwareCachingDiskBetreeSystem::State::
-                journal_internal_alloc,
-        );
     }
     reveal(CrashAwareCachingDiskBetreeSystem::State::next);
     program_internal_finish_refinement(
@@ -7950,8 +8368,7 @@ pub proof fn program_internal_betree_branch_begin_refines(
             UnifiedCacheBetreeSystem::Label::Internal,
             allocs,
             deallocs,
-            access.reads(),
-            access.writes(),
+            access,
             new_cache,
             AtomicBranchBetreeState::State {
                 betree: new_branch,
@@ -7959,17 +8376,14 @@ pub proof fn program_internal_betree_branch_begin_refines(
             },
         ),
         access == PageAccess::empty(),
-        AtomicBranchBetreeState::State::branch_begin(
-            pre.program.state.branch,
-            AtomicBranchBetreeState::State {
-                betree: new_branch,
-                ..pre.program.state.branch
-            },
-            AtomicBranchBetreeState::Label::Betree {
-                cached_op: CachedBranchBetree::Label::
-                    InternalAlloc{allocs, deallocs},
-            },
+        CachedBranchBetree::State::branch_begin(
+            pre.program.state.branch.betree,
             new_branch,
+            CachedBranchBetree::Label::InternalAllocAccess {
+                allocs,
+                deallocs,
+                access: access.cached_access(),
+            },
         ),
     ensures
         CrashAwareCachingDiskBetreeSystem::State::next(
@@ -7979,9 +8393,6 @@ pub proof fn program_internal_betree_branch_begin_refines(
         ),
         refinement_inv(post),
 {
-    reveal(SystemModel::State::program_internal);
-    reveal(UnifiedCacheBetreeSystem::State::
-        branch_internal_alloc_access);
     let pre_state = pre.program.state;
     let post_state = post.program.state;
     let branch_pre =
@@ -7997,20 +8408,19 @@ pub proof fn program_internal_betree_branch_begin_refines(
     let reclaimed =
         pre_state.branch.control.reclaimable(deallocs);
     let op =
-        CachingDiskBranchBetree::Label::InternalAlloc {
+        CachingDiskBranchBetree::Label::InternalAllocAccess {
             allocs,
             deallocs,
             guard_aus:
                 pre_state.branch.control.protected_aus(),
+            access,
         };
 
     assert(access.reads()
         == Map::<Address, RawPage>::empty()) by {
-        reveal(PageAccess::reads);
     }
     assert(access.writes()
         == Map::<Address, RawPage>::empty()) by {
-        reveal(PageAccess::writes);
     }
     assert(Cache::State::next(
         pre_state.cache,
@@ -8038,7 +8448,6 @@ pub proof fn program_internal_betree_branch_begin_refines(
     assert(unified_cache_betree_ready_inv(post)) by {
         assert(pre_state.client_ready());
         assert(post_state.client_ready());
-        reveal(CachedBranchBetree::State::branch_begin);
         assert(post_state.branch.betree.memtable
             == pre_state.branch.betree.memtable);
     }
@@ -8046,9 +8455,6 @@ pub proof fn program_internal_betree_branch_begin_refines(
     assert(crate::implementation::
         CrashAwareCachingDiskBranchBetree_v::
             logical_allocs(op) == allocs) by {
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_allocs);
     }
     program_internal_branch_alloc_finish_refinement(
         pre,
@@ -8069,9 +8475,9 @@ pub proof fn program_internal_betree_branch_fill_refines(
     allocs: Set<crate::disk::GenericDisk_v::AU>,
     deallocs: Set<crate::disk::GenericDisk_v::AU>,
     idx: int,
-    post_branch:
-        crate::implementation::CachedBranchBetree_v::
-            CachedAllocationBranch,
+    post_branch: CachedBulkBranch,
+    access: PageAccess,
+    new_cache: Cache::State,
     new_branch: CachedBranchBetree::State,
 )
     requires
@@ -8082,15 +8488,30 @@ pub proof fn program_internal_betree_branch_fill_refines(
             new_program,
         ),
         refinement_inv(pre),
-        UnifiedCacheBetreeSystem::State::betree_branch_fill(
+        UnifiedCacheBetreeSystem::State::branch_internal_alloc_access(
             pre.program.state,
             post.program.state,
             UnifiedCacheBetreeSystem::Label::Internal,
             allocs,
             deallocs,
+            access,
+            new_cache,
+            AtomicBranchBetreeState::State {
+                betree: new_branch,
+                ..pre.program.state.branch
+            },
+        ),
+        access == PageAccess::empty(),
+        CachedBranchBetree::State::branch_fill(
+            pre.program.state.branch.betree,
+            new_branch,
+            CachedBranchBetree::Label::InternalAllocAccess {
+                allocs,
+                deallocs,
+                access: access.cached_access(),
+            },
             idx,
             post_branch,
-            new_branch,
         ),
     ensures
         CrashAwareCachingDiskBetreeSystem::State::next(
@@ -8100,9 +8521,6 @@ pub proof fn program_internal_betree_branch_fill_refines(
         ),
         refinement_inv(post),
 {
-    reveal(SystemModel::State::program_internal);
-    reveal(UnifiedCacheBetreeSystem::State::
-        betree_branch_fill);
     let pre_state = pre.program.state;
     let post_state = post.program.state;
     let branch_pre =
@@ -8118,13 +8536,28 @@ pub proof fn program_internal_betree_branch_fill_refines(
     let reclaimed =
         pre_state.branch.control.reclaimable(deallocs);
     let op =
-        CachingDiskBranchBetree::Label::InternalAlloc {
+        CachingDiskBranchBetree::Label::InternalAllocAccess {
             allocs,
             deallocs,
             guard_aus:
                 pre_state.branch.control.protected_aus(),
+            access,
         };
 
+    PageAccess::empty_effects_are_empty();
+    assert(Cache::State::next(
+        pre_state.cache,
+        post_state.cache,
+        Cache::Label::Access {
+            reads: Map::empty(),
+            writes: Map::empty(),
+        },
+    ));
+    Cache::State::access_read_only_is_noop(
+        pre_state.cache,
+        post_state.cache,
+        Map::empty(),
+    );
     branch_alloc_clean_cache_disk_coupling(pre, allocs);
     UnifiedCacheBranchBetreeRefinement::
         branch_fill_refines(
@@ -8141,7 +8574,6 @@ pub proof fn program_internal_betree_branch_fill_refines(
     assert(unified_cache_betree_ready_inv(post)) by {
         assert(pre_state.client_ready());
         assert(post_state.client_ready());
-        reveal(CachedBranchBetree::State::branch_build);
         assert(post_state.branch.betree.memtable
             == pre_state.branch.betree.memtable);
     }
@@ -8149,9 +8581,6 @@ pub proof fn program_internal_betree_branch_fill_refines(
     assert(crate::implementation::
         CrashAwareCachingDiskBranchBetree_v::
             logical_allocs(op) == allocs) by {
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_allocs);
     }
     program_internal_branch_alloc_finish_refinement(
         pre,
@@ -8172,6 +8601,8 @@ pub proof fn program_internal_betree_branch_abort_refines(
     allocs: Set<crate::disk::GenericDisk_v::AU>,
     deallocs: Set<crate::disk::GenericDisk_v::AU>,
     idx: int,
+    access: PageAccess,
+    new_cache: Cache::State,
     new_branch: CachedBranchBetree::State,
 )
     requires
@@ -8182,14 +8613,29 @@ pub proof fn program_internal_betree_branch_abort_refines(
             new_program,
         ),
         refinement_inv(pre),
-        UnifiedCacheBetreeSystem::State::betree_branch_abort(
+        UnifiedCacheBetreeSystem::State::branch_internal_alloc_access(
             pre.program.state,
             post.program.state,
             UnifiedCacheBetreeSystem::Label::Internal,
             allocs,
             deallocs,
-            idx,
+            access,
+            new_cache,
+            AtomicBranchBetreeState::State {
+                betree: new_branch,
+                ..pre.program.state.branch
+            },
+        ),
+        access == PageAccess::empty(),
+        CachedBranchBetree::State::branch_abort(
+            pre.program.state.branch.betree,
             new_branch,
+            CachedBranchBetree::Label::InternalAllocAccess {
+                allocs,
+                deallocs,
+                access: access.cached_access(),
+            },
+            idx,
         ),
     ensures
         CrashAwareCachingDiskBetreeSystem::State::next(
@@ -8199,9 +8645,6 @@ pub proof fn program_internal_betree_branch_abort_refines(
         ),
         refinement_inv(post),
 {
-    reveal(SystemModel::State::program_internal);
-    reveal(UnifiedCacheBetreeSystem::State::
-        betree_branch_abort);
     let pre_state = pre.program.state;
     let post_state = post.program.state;
     let branch_pre =
@@ -8217,13 +8660,28 @@ pub proof fn program_internal_betree_branch_abort_refines(
     let reclaimed =
         pre_state.branch.control.reclaimable(deallocs);
     let op =
-        CachingDiskBranchBetree::Label::InternalAlloc {
+        CachingDiskBranchBetree::Label::InternalAllocAccess {
             allocs,
             deallocs,
             guard_aus:
                 pre_state.branch.control.protected_aus(),
+            access,
         };
 
+    PageAccess::empty_effects_are_empty();
+    assert(Cache::State::next(
+        pre_state.cache,
+        post_state.cache,
+        Cache::Label::Access {
+            reads: Map::empty(),
+            writes: Map::empty(),
+        },
+    ));
+    Cache::State::access_read_only_is_noop(
+        pre_state.cache,
+        post_state.cache,
+        Map::empty(),
+    );
     UnifiedCacheBranchBetreeRefinement::
         branch_abort_refines(
             branch_pre,
@@ -8238,7 +8696,6 @@ pub proof fn program_internal_betree_branch_abort_refines(
     assert(unified_cache_betree_ready_inv(post)) by {
         assert(pre_state.client_ready());
         assert(post_state.client_ready());
-        reveal(CachedBranchBetree::State::branch_abort);
         assert(post_state.branch.betree.memtable
             == pre_state.branch.betree.memtable);
     }
@@ -8246,9 +8703,6 @@ pub proof fn program_internal_betree_branch_abort_refines(
     assert(crate::implementation::
         CrashAwareCachingDiskBranchBetree_v::
             logical_allocs(op) == allocs) by {
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_allocs);
     }
     program_internal_branch_alloc_finish_refinement(
         pre,
@@ -8269,6 +8723,8 @@ pub proof fn program_internal_betree_compact_abort_refines(
     allocs: Set<crate::disk::GenericDisk_v::AU>,
     deallocs: Set<crate::disk::GenericDisk_v::AU>,
     input_idx: int,
+    access: PageAccess,
+    new_cache: Cache::State,
     new_branch: CachedBranchBetree::State,
 )
     requires
@@ -8279,14 +8735,29 @@ pub proof fn program_internal_betree_compact_abort_refines(
             new_program,
         ),
         refinement_inv(pre),
-        UnifiedCacheBetreeSystem::State::betree_compact_abort(
+        UnifiedCacheBetreeSystem::State::branch_internal_alloc_access(
             pre.program.state,
             post.program.state,
             UnifiedCacheBetreeSystem::Label::Internal,
             allocs,
             deallocs,
-            input_idx,
+            access,
+            new_cache,
+            AtomicBranchBetreeState::State {
+                betree: new_branch,
+                ..pre.program.state.branch
+            },
+        ),
+        access == PageAccess::empty(),
+        CachedBranchBetree::State::compact_abort(
+            pre.program.state.branch.betree,
             new_branch,
+            CachedBranchBetree::Label::InternalAllocAccess {
+                allocs,
+                deallocs,
+                access: access.cached_access(),
+            },
+            input_idx,
         ),
     ensures
         CrashAwareCachingDiskBetreeSystem::State::next(
@@ -8296,9 +8767,6 @@ pub proof fn program_internal_betree_compact_abort_refines(
         ),
         refinement_inv(post),
 {
-    reveal(SystemModel::State::program_internal);
-    reveal(UnifiedCacheBetreeSystem::State::
-        betree_compact_abort);
     let pre_state = pre.program.state;
     let post_state = post.program.state;
     let branch_pre =
@@ -8314,13 +8782,28 @@ pub proof fn program_internal_betree_compact_abort_refines(
     let reclaimed =
         pre_state.branch.control.reclaimable(deallocs);
     let op =
-        CachingDiskBranchBetree::Label::InternalAlloc {
+        CachingDiskBranchBetree::Label::InternalAllocAccess {
             allocs,
             deallocs,
             guard_aus:
                 pre_state.branch.control.protected_aus(),
+            access,
         };
 
+    PageAccess::empty_effects_are_empty();
+    assert(Cache::State::next(
+        pre_state.cache,
+        post_state.cache,
+        Cache::Label::Access {
+            reads: Map::empty(),
+            writes: Map::empty(),
+        },
+    ));
+    Cache::State::access_read_only_is_noop(
+        pre_state.cache,
+        post_state.cache,
+        Map::empty(),
+    );
     UnifiedCacheBranchBetreeRefinement::
         compact_abort_refines(
             branch_pre,
@@ -8335,7 +8818,6 @@ pub proof fn program_internal_betree_compact_abort_refines(
     assert(unified_cache_betree_ready_inv(post)) by {
         assert(pre_state.client_ready());
         assert(post_state.client_ready());
-        reveal(CachedBranchBetree::State::compact_abort);
         assert(post_state.branch.betree.memtable
             == pre_state.branch.betree.memtable);
     }
@@ -8343,9 +8825,6 @@ pub proof fn program_internal_betree_compact_abort_refines(
     assert(crate::implementation::
         CrashAwareCachingDiskBranchBetree_v::
             logical_allocs(op) == allocs) by {
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_allocs);
     }
     program_internal_branch_alloc_finish_refinement(
         pre,
@@ -8368,6 +8847,7 @@ pub proof fn program_internal_betree_compact_begin_refines(
             LoadedBetreePath,
     start: nat,
     end: nat,
+    betree_reads: LoadedBetree,
     access: PageAccess,
     new_cache: Cache::State,
     new_branch: CachedBranchBetree::State,
@@ -8384,11 +8864,8 @@ pub proof fn program_internal_betree_compact_begin_refines(
             pre.program.state,
             post.program.state,
             UnifiedCacheBetreeSystem::Label::Internal,
-            AtomicBranchBetreeState::Label::Betree {
-                cached_op: CachedBranchBetree::Label::Internal,
-            },
-            access.reads(),
-            access.writes(),
+            AtomicBranchBetreeState::Label::InternalAccess{access},
+            access,
             new_cache,
             AtomicBranchBetreeState::State {
                 betree: new_branch,
@@ -8397,20 +8874,16 @@ pub proof fn program_internal_betree_compact_begin_refines(
         ),
         access.only_betree(),
         access.read_only(),
-        AtomicBranchBetreeState::State::compact_begin(
-            pre.program.state.branch,
-            AtomicBranchBetreeState::State {
-                betree: new_branch,
-                ..pre.program.state.branch
-            },
-            AtomicBranchBetreeState::Label::Betree {
-                cached_op: CachedBranchBetree::Label::Internal,
-            },
+        CachedBranchBetree::State::compact_begin(
+            pre.program.state.branch.betree,
             new_branch,
+            CachedBranchBetree::Label::InternalAccess {
+                access: access.cached_access(),
+            },
             path,
             start,
             end,
-            access.loaded_betree_reads(),
+            betree_reads,
         ),
     ensures
         CrashAwareCachingDiskBetreeSystem::State::next(
@@ -8420,11 +8893,6 @@ pub proof fn program_internal_betree_compact_begin_refines(
         ),
         refinement_inv(post),
 {
-    reveal(SystemModel::State::program_internal);
-    reveal(UnifiedCacheBetreeSystem::State::
-        branch_internal_access);
-    reveal(AtomicBranchBetreeState::State::
-        internal_access_next);
     let pre_state = pre.program.state;
     let post_state = post.program.state;
     let branch_pre =
@@ -8440,17 +8908,31 @@ pub proof fn program_internal_betree_compact_begin_refines(
     let branch_lbl =
         CrashAwareCachingDiskBranchBetree::Label::
             Ephemeral {
-                op: CachingDiskBranchBetree::Label::Internal,
+                op: CachingDiskBranchBetree::Label::InternalAccess {
+                    access: UnifiedCacheBranchBetreeRefinement::
+                        projected_compact_begin_access(branch_pre, access),
+                },
                 deallocs: Set::empty(),
             };
+
+    assert(betree_reads == access.loaded_betree_reads());
+    assert(CachedBranchBetree::State::compact_begin(
+        pre_state.branch.betree,
+        new_branch,
+        CachedBranchBetree::Label::InternalAccess {
+            access: access.cached_access(),
+        },
+        path,
+        start,
+        end,
+        access.loaded_betree_reads(),
+    ));
 
     assert(access.writes()
         == Map::<
             crate::disk::GenericDisk_v::Address,
             crate::spec::AsyncDisk_t::RawPage,
         >::empty()) by {
-        reveal(PageAccess::read_only);
-        reveal(PageAccess::writes);
         assert_maps_equal!(
             access.writes(),
             Map::<
@@ -8474,6 +8956,17 @@ pub proof fn program_internal_betree_compact_begin_refines(
         access.reads(),
     );
     assert(post_state.cache == pre_state.cache);
+    assert(pre_state.branch.control.metadata_loaded) by {
+        if !pre_state.branch.control.metadata_loaded {
+            assert(branch_pre.branch == empty_cached_betree());
+            assert(branch_pre.branch.root is None);
+            assert(path.valid_for(
+                branch_pre.branch.root,
+                access.loaded_betree_reads(),
+            ));
+            assert(false);
+        }
+    }
     UnifiedCacheBranchBetreeRefinement::
         compact_begin_refines(
             branch_pre,
@@ -8490,7 +8983,6 @@ pub proof fn program_internal_betree_compact_begin_refines(
     assert(unified_cache_betree_ready_inv(post)) by {
         if post_state.client_ready() {
             assert(pre_state.client_ready());
-            reveal(CachedBranchBetree::State::compact_begin);
             assert(post_state.branch.betree.memtable
                 == pre_state.branch.betree.memtable);
         }
@@ -8507,9 +8999,6 @@ pub proof fn program_internal_betree_compact_begin_refines(
     assert(crate::implementation::
         CrashAwareCachingDiskBetreeSystem_v::
             branch_internal_label(branch_lbl)) by {
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBetreeSystem_v::
-                branch_internal_label);
     }
     assert(CrashAwareCachingDiskBetreeSystem::State::next_by(
         src,
@@ -8519,10 +9008,155 @@ pub proof fn program_internal_betree_compact_begin_refines(
             branch_internal(dst.branch, branch_lbl),
     )) by {
         reveal(CrashAwareCachingDiskBetreeSystem::State::next_by);
-        reveal(
-            CrashAwareCachingDiskBetreeSystem::State::
-                branch_internal,
-        );
+    }
+    reveal(CrashAwareCachingDiskBetreeSystem::State::next);
+    program_internal_finish_refinement(
+        pre,
+        post,
+        lbl,
+        new_program,
+    );
+}
+
+pub proof fn program_internal_betree_compact_scan_page_refines(
+    pre: SystemModel::State<UnifiedCacheBetreeProgramModel>,
+    post: SystemModel::State<UnifiedCacheBetreeProgramModel>,
+    lbl: SystemModel::Label,
+    new_program: UnifiedCacheBetreeProgramModel,
+    input_idx: int,
+    branch_reads: LoadedBranch,
+    access: PageAccess,
+    new_cache: Cache::State,
+    new_branch: CachedBranchBetree::State,
+)
+    requires
+        SystemModel::State::program_internal(
+            pre,
+            post,
+            lbl,
+            new_program,
+        ),
+        refinement_inv(pre),
+        UnifiedCacheBetreeSystem::State::branch_internal_access(
+            pre.program.state,
+            post.program.state,
+            UnifiedCacheBetreeSystem::Label::Internal,
+            AtomicBranchBetreeState::Label::InternalAccess{access},
+            access,
+            new_cache,
+            AtomicBranchBetreeState::State {
+                betree: new_branch,
+                ..pre.program.state.branch
+            },
+        ),
+        access.only_branch(),
+        access.read_only(),
+        CachedBranchBetree::State::compact_scan_page(
+            pre.program.state.branch.betree,
+            new_branch,
+            CachedBranchBetree::Label::InternalAccess {
+                access: access.cached_access(),
+            },
+            input_idx,
+            branch_reads,
+        ),
+    ensures
+        CrashAwareCachingDiskBetreeSystem::State::next(
+            unified_cache_betree_system_i(pre),
+            unified_cache_betree_system_i(post),
+            unified_cache_betree_system_i_lbl(pre, post, lbl),
+        ),
+        refinement_inv(post),
+{
+    let pre_state = pre.program.state;
+    let post_state = post.program.state;
+    let branch_pre = UnifiedCacheBranchBetreeRefinement::
+        unified_cache_branch_betree_source(pre);
+    let branch_post = UnifiedCacheBranchBetreeRefinement::
+        unified_cache_branch_betree_source(post);
+    let journal_pre = unified_cache_betree_journal_source(pre);
+    let journal_post = unified_cache_betree_journal_source(post);
+    let branch_lbl =
+        CrashAwareCachingDiskBranchBetree::Label::Ephemeral {
+            op: CachingDiskBranchBetree::Label::InternalAccess {
+                access: UnifiedCacheBranchBetreeRefinement::
+                    projected_compact_scan_access(branch_pre, access),
+            },
+            deallocs: Set::empty(),
+        };
+
+    assert(branch_reads == access.loaded_branch_reads());
+    assert(CachedBranchBetree::State::compact_scan_page(
+        pre.program.state.branch.betree,
+        new_branch,
+        CachedBranchBetree::Label::InternalAccess {
+            access: access.cached_access(),
+        },
+        input_idx,
+        access.loaded_branch_reads(),
+    ));
+    assert(access.writes() == Map::<Address, RawPage>::empty());
+    assert(Cache::State::next(
+        pre_state.cache,
+        post_state.cache,
+        Cache::Label::Access {
+            reads: access.reads(),
+            writes: Map::empty(),
+        },
+    ));
+    Cache::State::access_read_only_is_noop(
+        pre_state.cache,
+        post_state.cache,
+        access.reads(),
+    );
+    assert(post_state.cache == pre_state.cache);
+    assert(pre_state.branch.control.metadata_loaded) by {
+        if !pre_state.branch.control.metadata_loaded {
+            assert(branch_pre.branch == empty_cached_betree());
+            assert(branch_pre.branch.compactors.len() == 0);
+            assert(0 <= input_idx
+                < branch_pre.branch.compactors.len());
+            assert(false);
+        }
+    }
+    UnifiedCacheBranchBetreeRefinement::compact_scan_page_refines(
+        branch_pre,
+        branch_post,
+        input_idx,
+        access,
+    );
+
+    assert(journal_post == journal_pre);
+    assert(unified_cache_betree_component_inv(post));
+    assert(unified_cache_betree_shared_cache_disk_inv(post));
+    assert(unified_cache_betree_ready_inv(post)) by {
+        if post_state.client_ready() {
+            assert(pre_state.client_ready());
+            assert(post_state.branch.betree.memtable
+                == pre_state.branch.betree.memtable);
+        }
+    }
+    assert(unified_cache_betree_recovery_state_inv(post));
+    assert(unified_cache_betree_allocation_inv(post)) by {
+        assert(branch_post.branch_projection_aus()
+            == branch_pre.branch_projection_aus());
+    }
+
+    let src = unified_cache_betree_system_i(pre);
+    let dst = unified_cache_betree_system_i(post);
+    let target_lbl = CrashAwareCachingDiskBetreeSystem::Label::Noop;
+    assert(crate::implementation::CrashAwareCachingDiskBetreeSystem_v::
+        branch_internal_label(branch_lbl));
+    assert(CrashAwareCachingDiskBetreeSystem::State::next_by(
+        src,
+        dst,
+        target_lbl,
+        CrashAwareCachingDiskBetreeSystem::Step::branch_internal(
+            dst.branch,
+            branch_lbl,
+        ),
+    )) by {
+        reveal(CrashAwareCachingDiskBetreeSystem::State::next_by);
     }
     reveal(CrashAwareCachingDiskBetreeSystem::State::next);
     program_internal_finish_refinement(
@@ -8554,7 +9188,7 @@ proof fn program_internal_betree_write_finish_refines(
         pre.program.state.client_ready(),
         post.program.state.client_ready(),
         allocs <= pre.program.state.free_aus,
-        op is InternalAlloc,
+        op is InternalAllocAccess,
         crate::implementation::
             CrashAwareCachingDiskBranchBetree_v::
                 logical_allocs(op) == allocs,
@@ -8625,9 +9259,9 @@ proof fn program_internal_betree_write_finish_refines(
         post.program.state.free_aus
             == (pre.program.state.free_aus - allocs)
                 + reclaimed,
-        cached_branch_alloc_aus(
+        cached_bulk_branch_alloc_aus(
             post.program.state.branch.betree.wip_branches,
-        ) <= cached_branch_alloc_aus(
+        ) <= cached_bulk_branch_alloc_aus(
             pre.program.state.branch.betree.wip_branches,
         ) + allocs,
     ensures
@@ -8729,12 +9363,8 @@ pub proof fn program_internal_betree_branch_build_refines(
     allocs: Set<crate::disk::GenericDisk_v::AU>,
     deallocs: Set<crate::disk::GenericDisk_v::AU>,
     idx: int,
-    post_branch:
-        crate::implementation::CachedBranchBetree_v::
-            CachedAllocationBranch,
-    event:
-        crate::implementation::CachingDiskBranchBetree_v::
-            BranchBuildEvent,
+    post_branch: CachedBulkBranch,
+    event: crate::implementation::CachedBulkBranch_v::CachedBulkBranchEvent,
     access: PageAccess,
     new_cache: Cache::State,
     new_branch: CachedBranchBetree::State,
@@ -8754,8 +9384,7 @@ pub proof fn program_internal_betree_branch_build_refines(
             UnifiedCacheBetreeSystem::Label::Internal,
             allocs,
             deallocs,
-            access.reads(),
-            access.writes(),
+            access,
             new_cache,
             AtomicBranchBetreeState::State {
                 betree: new_branch,
@@ -8763,20 +9392,18 @@ pub proof fn program_internal_betree_branch_build_refines(
             },
         ),
         access.only_branch(),
-        AtomicBranchBetreeState::State::branch_build(
-            pre.program.state.branch,
-            AtomicBranchBetreeState::State {
-                betree: new_branch,
-                ..pre.program.state.branch
-            },
-            AtomicBranchBetreeState::Label::Betree {
-                cached_op: CachedBranchBetree::Label::
-                    InternalAlloc{allocs, deallocs},
-            },
+        branch_build_event_of(event).cached_event(access) == event,
+        CachedBranchBetree::State::branch_build(
+            pre.program.state.branch.betree,
             new_branch,
+            CachedBranchBetree::Label::InternalAllocAccess {
+                allocs,
+                deallocs,
+                access: access.cached_access(),
+            },
             idx,
             post_branch,
-            event.cached_event(access),
+            event,
         ),
     ensures
         CrashAwareCachingDiskBetreeSystem::State::next(
@@ -8786,9 +9413,6 @@ pub proof fn program_internal_betree_branch_build_refines(
         ),
         refinement_inv(post),
 {
-    reveal(SystemModel::State::program_internal);
-    reveal(UnifiedCacheBetreeSystem::State::
-        branch_internal_alloc_access);
     let pre_state = pre.program.state;
     let post_state = post.program.state;
     let branch_pre =
@@ -8800,11 +9424,13 @@ pub proof fn program_internal_betree_branch_build_refines(
     let reclaimed =
         pre_state.branch.control.reclaimable(deallocs);
     let op =
-        CachingDiskBranchBetree::Label::InternalAlloc {
+        CachingDiskBranchBetree::Label::InternalAllocAccess {
             allocs,
             deallocs,
             guard_aus:
                 pre_state.branch.control.protected_aus(),
+            access: UnifiedCacheBranchBetreeRefinement::
+                projected_branch_build_access(branch_pre, access),
         };
 
     branch_alloc_clean_cache_disk_coupling(pre, allocs);
@@ -8816,18 +9442,14 @@ pub proof fn program_internal_betree_branch_build_refines(
             deallocs,
             idx,
             post_branch,
-            event,
+            branch_build_event_of(event),
             access,
         );
-    reveal(CachedBranchBetree::State::branch_build);
     assert(post_state.branch.betree.memtable
         == pre_state.branch.betree.memtable);
     assert(crate::implementation::
         CrashAwareCachingDiskBranchBetree_v::
             logical_allocs(op) == allocs) by {
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_allocs);
     }
     let wip_aus =
         pre_state.branch.betree.wip_branches[idx]
@@ -8841,22 +9463,21 @@ pub proof fn program_internal_betree_branch_build_refines(
         wip_au_sets,
         idx,
     );
-    assert(wip_aus <= cached_branch_alloc_aus(
+    assert(wip_aus <= cached_bulk_branch_alloc_aus(
         pre_state.branch.betree.wip_branches,
     )) by {
-        reveal(cached_branch_alloc_aus);
     }
     assert(wip_aus.disjoint(
         unified_cache_betree_branch_clean_aus(pre_state),
     )) by {
-        assert(cached_branch_alloc_aus(
+        assert(cached_bulk_branch_alloc_aus(
             pre_state.branch.betree.wip_branches,
         ).disjoint(pre_state.branch.control.persistent_aus));
         if pre_state.sync_phase.branch_ready()
             && pre_state.branch.control.frozen is Some
         {
             assert(branch_pre.i().refinement_inv());
-            assert(cached_branch_alloc_aus(
+            assert(cached_bulk_branch_alloc_aus(
                 pre_state.branch.betree.wip_branches,
             ).disjoint(
                 pre_state.branch.control.frozen.unwrap().aus,
@@ -8915,8 +9536,7 @@ pub proof fn program_internal_betree_flush_memtable_refines(
             UnifiedCacheBetreeSystem::Label::Internal,
             allocs,
             deallocs,
-            access.reads(),
-            access.writes(),
+            access,
             new_cache,
             AtomicBranchBetreeState::State {
                 betree: new_branch,
@@ -8925,17 +9545,14 @@ pub proof fn program_internal_betree_flush_memtable_refines(
         ),
         access.wf(),
         access.branch_writes.is_empty(),
-        AtomicBranchBetreeState::State::flush_memtable(
-            pre.program.state.branch,
-            AtomicBranchBetreeState::State {
-                betree: new_branch,
-                ..pre.program.state.branch
-            },
-            AtomicBranchBetreeState::Label::Betree {
-                cached_op: CachedBranchBetree::Label::
-                    InternalAlloc{allocs, deallocs},
-            },
+        CachedBranchBetree::State::flush_memtable(
+            pre.program.state.branch.betree,
             new_branch,
+            CachedBranchBetree::Label::InternalAllocAccess {
+                allocs,
+                deallocs,
+                access: access.cached_access(),
+            },
             branch_idx,
             new_root_addr,
             access.loaded_betree_reads(),
@@ -8950,9 +9567,6 @@ pub proof fn program_internal_betree_flush_memtable_refines(
         ),
         refinement_inv(post),
 {
-    reveal(SystemModel::State::program_internal);
-    reveal(UnifiedCacheBetreeSystem::State::
-        branch_internal_alloc_access);
     let pre_state = pre.program.state;
     let post_state = post.program.state;
     let branch_pre =
@@ -8964,11 +9578,15 @@ pub proof fn program_internal_betree_flush_memtable_refines(
     let reclaimed =
         pre_state.branch.control.reclaimable(deallocs);
     let op =
-        CachingDiskBranchBetree::Label::InternalAlloc {
+        CachingDiskBranchBetree::Label::InternalAllocAccess {
             allocs,
             deallocs,
             guard_aus:
                 pre_state.branch.control.protected_aus(),
+            access: UnifiedCacheBranchBetreeRefinement::
+                projected_flush_memtable_access(
+                    branch_pre, branch_idx, access,
+                ),
         };
 
     branch_alloc_clean_cache_disk_coupling(pre, allocs);
@@ -8982,15 +9600,11 @@ pub proof fn program_internal_betree_flush_memtable_refines(
             new_root_addr,
             access,
         );
-    reveal(CachedBranchBetree::State::flush_memtable);
     assert(post_state.branch.betree.memtable.seq_end
         == pre_state.branch.betree.memtable.seq_end);
     assert(crate::implementation::
         CrashAwareCachingDiskBranchBetree_v::
             logical_allocs(op) == allocs) by {
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_allocs);
     }
     program_internal_betree_write_finish_refines(
         pre,
@@ -9031,8 +9645,7 @@ pub proof fn program_internal_betree_grow_refines(
             UnifiedCacheBetreeSystem::Label::Internal,
             allocs,
             deallocs,
-            access.reads(),
-            access.writes(),
+            access,
             new_cache,
             AtomicBranchBetreeState::State {
                 betree: new_branch,
@@ -9040,17 +9653,14 @@ pub proof fn program_internal_betree_grow_refines(
             },
         ),
         access.only_betree(),
-        AtomicBranchBetreeState::State::grow(
-            pre.program.state.branch,
-            AtomicBranchBetreeState::State {
-                betree: new_branch,
-                ..pre.program.state.branch
-            },
-            AtomicBranchBetreeState::Label::Betree {
-                cached_op: CachedBranchBetree::Label::
-                    InternalAlloc{allocs, deallocs},
-            },
+        CachedBranchBetree::State::grow(
+            pre.program.state.branch.betree,
             new_branch,
+            CachedBranchBetree::Label::InternalAllocAccess {
+                allocs,
+                deallocs,
+                access: access.cached_access(),
+            },
             new_root_addr,
             access.loaded_betree_writes(),
         ),
@@ -9062,9 +9672,6 @@ pub proof fn program_internal_betree_grow_refines(
         ),
         refinement_inv(post),
 {
-    reveal(SystemModel::State::program_internal);
-    reveal(UnifiedCacheBetreeSystem::State::
-        branch_internal_alloc_access);
     let pre_state = pre.program.state;
     let post_state = post.program.state;
     let branch_pre =
@@ -9076,11 +9683,13 @@ pub proof fn program_internal_betree_grow_refines(
     let reclaimed =
         pre_state.branch.control.reclaimable(deallocs);
     let op =
-        CachingDiskBranchBetree::Label::InternalAlloc {
+        CachingDiskBranchBetree::Label::InternalAllocAccess {
             allocs,
             deallocs,
             guard_aus:
                 pre_state.branch.control.protected_aus(),
+            access: UnifiedCacheBranchBetreeRefinement::
+                projected_grow_access(access),
         };
 
     branch_alloc_clean_cache_disk_coupling(pre, allocs);
@@ -9092,15 +9701,11 @@ pub proof fn program_internal_betree_grow_refines(
         new_root_addr,
         access,
     );
-    reveal(CachedBranchBetree::State::grow);
     assert(post_state.branch.betree.memtable
         == pre_state.branch.betree.memtable);
     assert(crate::implementation::
         CrashAwareCachingDiskBranchBetree_v::
             logical_allocs(op) == allocs) by {
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_allocs);
     }
     program_internal_betree_write_finish_refines(
         pre,
@@ -9144,8 +9749,7 @@ pub proof fn program_internal_betree_split_refines(
             UnifiedCacheBetreeSystem::Label::Internal,
             allocs,
             deallocs,
-            access.reads(),
-            access.writes(),
+            access,
             new_cache,
             AtomicBranchBetreeState::State {
                 betree: new_branch,
@@ -9153,17 +9757,14 @@ pub proof fn program_internal_betree_split_refines(
             },
         ),
         access.only_betree(),
-        AtomicBranchBetreeState::State::split(
-            pre.program.state.branch,
-            AtomicBranchBetreeState::State {
-                betree: new_branch,
-                ..pre.program.state.branch
-            },
-            AtomicBranchBetreeState::Label::Betree {
-                cached_op: CachedBranchBetree::Label::
-                    InternalAlloc{allocs, deallocs},
-            },
+        CachedBranchBetree::State::split(
+            pre.program.state.branch.betree,
             new_branch,
+            CachedBranchBetree::Label::InternalAllocAccess {
+                allocs,
+                deallocs,
+                access: access.cached_access(),
+            },
             path,
             request,
             new_addrs,
@@ -9179,9 +9780,6 @@ pub proof fn program_internal_betree_split_refines(
         ),
         refinement_inv(post),
 {
-    reveal(SystemModel::State::program_internal);
-    reveal(UnifiedCacheBetreeSystem::State::
-        branch_internal_alloc_access);
     let pre_state = pre.program.state;
     let post_state = post.program.state;
     let branch_pre =
@@ -9193,11 +9791,15 @@ pub proof fn program_internal_betree_split_refines(
     let reclaimed =
         pre_state.branch.control.reclaimable(deallocs);
     let op =
-        CachingDiskBranchBetree::Label::InternalAlloc {
+        CachingDiskBranchBetree::Label::InternalAllocAccess {
             allocs,
             deallocs,
             guard_aus:
                 pre_state.branch.control.protected_aus(),
+            access: UnifiedCacheBranchBetreeRefinement::
+                projected_path_access(
+                    path, request.get_child_idx(), access,
+                ),
         };
 
     branch_alloc_clean_cache_disk_coupling(pre, allocs);
@@ -9212,15 +9814,11 @@ pub proof fn program_internal_betree_split_refines(
         path_addrs,
         access,
     );
-    reveal(CachedBranchBetree::State::split);
     assert(post_state.branch.betree.memtable
         == pre_state.branch.betree.memtable);
     assert(crate::implementation::
         CrashAwareCachingDiskBranchBetree_v::
             logical_allocs(op) == allocs) by {
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_allocs);
     }
     program_internal_betree_write_finish_refines(
         pre,
@@ -9265,8 +9863,7 @@ pub proof fn program_internal_betree_flush_refines(
             UnifiedCacheBetreeSystem::Label::Internal,
             allocs,
             deallocs,
-            access.reads(),
-            access.writes(),
+            access,
             new_cache,
             AtomicBranchBetreeState::State {
                 betree: new_branch,
@@ -9274,17 +9871,14 @@ pub proof fn program_internal_betree_flush_refines(
             },
         ),
         access.only_betree(),
-        AtomicBranchBetreeState::State::flush(
-            pre.program.state.branch,
-            AtomicBranchBetreeState::State {
-                betree: new_branch,
-                ..pre.program.state.branch
-            },
-            AtomicBranchBetreeState::Label::Betree {
-                cached_op: CachedBranchBetree::Label::
-                    InternalAlloc{allocs, deallocs},
-            },
+        CachedBranchBetree::State::flush(
+            pre.program.state.branch.betree,
             new_branch,
+            CachedBranchBetree::Label::InternalAllocAccess {
+                allocs,
+                deallocs,
+                access: access.cached_access(),
+            },
             path,
             child_idx,
             buffer_gc,
@@ -9301,9 +9895,6 @@ pub proof fn program_internal_betree_flush_refines(
         ),
         refinement_inv(post),
 {
-    reveal(SystemModel::State::program_internal);
-    reveal(UnifiedCacheBetreeSystem::State::
-        branch_internal_alloc_access);
     let pre_state = pre.program.state;
     let post_state = post.program.state;
     let branch_pre =
@@ -9315,11 +9906,13 @@ pub proof fn program_internal_betree_flush_refines(
     let reclaimed =
         pre_state.branch.control.reclaimable(deallocs);
     let op =
-        CachingDiskBranchBetree::Label::InternalAlloc {
+        CachingDiskBranchBetree::Label::InternalAllocAccess {
             allocs,
             deallocs,
             guard_aus:
                 pre_state.branch.control.protected_aus(),
+            access: UnifiedCacheBranchBetreeRefinement::
+                projected_path_access(path, child_idx, access),
         };
 
     branch_alloc_clean_cache_disk_coupling(pre, allocs);
@@ -9335,15 +9928,11 @@ pub proof fn program_internal_betree_flush_refines(
         path_addrs,
         access,
     );
-    reveal(CachedBranchBetree::State::flush);
     assert(post_state.branch.betree.memtable
         == pre_state.branch.betree.memtable);
     assert(crate::implementation::
         CrashAwareCachingDiskBranchBetree_v::
             logical_allocs(op) == allocs) by {
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_allocs);
     }
     program_internal_betree_write_finish_refines(
         pre,
@@ -9390,8 +9979,7 @@ pub proof fn program_internal_betree_compact_complete_refines(
             UnifiedCacheBetreeSystem::Label::Internal,
             allocs,
             deallocs,
-            access.reads(),
-            access.writes(),
+            access,
             new_cache,
             AtomicBranchBetreeState::State {
                 betree: new_branch,
@@ -9400,17 +9988,14 @@ pub proof fn program_internal_betree_compact_complete_refines(
         ),
         access.wf(),
         access.branch_writes.is_empty(),
-        AtomicBranchBetreeState::State::compact_complete(
-            pre.program.state.branch,
-            AtomicBranchBetreeState::State {
-                betree: new_branch,
-                ..pre.program.state.branch
-            },
-            AtomicBranchBetreeState::Label::Betree {
-                cached_op: CachedBranchBetree::Label::
-                    InternalAlloc{allocs, deallocs},
-            },
+        CachedBranchBetree::State::compact_complete(
+            pre.program.state.branch.betree,
             new_branch,
+            CachedBranchBetree::Label::InternalAllocAccess {
+                allocs,
+                deallocs,
+                access: access.cached_access(),
+            },
             input_idx,
             branch_idx,
             path,
@@ -9420,7 +10005,6 @@ pub proof fn program_internal_betree_compact_complete_refines(
             path_addrs,
             access.loaded_betree_reads(),
             access.loaded_betree_writes(),
-            access.loaded_branch_reads(),
         ),
     ensures
         CrashAwareCachingDiskBetreeSystem::State::next(
@@ -9430,9 +10014,6 @@ pub proof fn program_internal_betree_compact_complete_refines(
         ),
         refinement_inv(post),
 {
-    reveal(SystemModel::State::program_internal);
-    reveal(UnifiedCacheBetreeSystem::State::
-        branch_internal_alloc_access);
     let pre_state = pre.program.state;
     let post_state = post.program.state;
     let branch_pre =
@@ -9444,11 +10025,13 @@ pub proof fn program_internal_betree_compact_complete_refines(
     let reclaimed =
         pre_state.branch.control.reclaimable(deallocs);
     let op =
-        CachingDiskBranchBetree::Label::InternalAlloc {
+        CachingDiskBranchBetree::Label::InternalAllocAccess {
             allocs,
             deallocs,
             guard_aus:
                 pre_state.branch.control.protected_aus(),
+            access: UnifiedCacheBranchBetreeRefinement::
+                projected_compact_complete_access(branch_pre, access),
         };
 
     branch_alloc_clean_cache_disk_coupling(pre, allocs);
@@ -9467,15 +10050,11 @@ pub proof fn program_internal_betree_compact_complete_refines(
             path_addrs,
             access,
         );
-    reveal(CachedBranchBetree::State::compact_complete);
     assert(post_state.branch.betree.memtable
         == pre_state.branch.betree.memtable);
     assert(crate::implementation::
         CrashAwareCachingDiskBranchBetree_v::
             logical_allocs(op) == allocs) by {
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_allocs);
     }
     program_internal_betree_write_finish_refines(
         pre,
@@ -9497,14 +10076,7 @@ program_internal_branch_internal_alloc_access_refines(
     new_program: UnifiedCacheBetreeProgramModel,
     allocs: Set<crate::disk::GenericDisk_v::AU>,
     deallocs: Set<crate::disk::GenericDisk_v::AU>,
-    reads: Map<
-        crate::disk::GenericDisk_v::Address,
-        crate::spec::AsyncDisk_t::RawPage,
-    >,
-    writes: Map<
-        crate::disk::GenericDisk_v::Address,
-        crate::spec::AsyncDisk_t::RawPage,
-    >,
+    access: PageAccess,
     new_cache: Cache::State,
     new_branch: AtomicBranchBetreeState::State,
 )
@@ -9523,8 +10095,7 @@ program_internal_branch_internal_alloc_access_refines(
                 UnifiedCacheBetreeSystem::Label::Internal,
                 allocs,
                 deallocs,
-                reads,
-                writes,
+                access,
                 new_cache,
                 new_branch,
             ),
@@ -9536,46 +10107,41 @@ program_internal_branch_internal_alloc_access_refines(
         ),
         refinement_inv(post),
 {
-    reveal(UnifiedCacheBetreeSystem::State::
-        branch_internal_alloc_access);
-    reveal(AtomicBranchBetreeState::State::
-        internal_alloc_access_next);
-    let (step, access) = choose |
-        step: AtomicBranchBetreeState::Step,
-        access: PageAccess,
-    | AtomicBranchBetreeState::State::
-        internal_alloc_access_next_by(
-            pre.program.state.branch,
-            new_branch,
-            allocs,
-            deallocs,
-            reads,
-            writes,
-            step,
-            access,
-        );
-    reveal(AtomicBranchBetreeState::State::
-        internal_alloc_access_next_by);
-    reveal(AtomicBranchBetreeState::State::next_by);
-
-    match step {
-        AtomicBranchBetreeState::Step::branch_begin(
+    let branch_lbl = AtomicBranchBetreeState::Label::InternalAllocAccess{
+        allocs, deallocs, access,
+    };
+    AtomicBranchBetreeState::State::internal_alloc_access_effect(
+        pre.program.state.branch,
+        new_branch,
+        allocs,
+        deallocs,
+        access,
+    );
+    let new_betree = new_branch.betree;
+    let cached_lbl = CachedBranchBetree::Label::InternalAllocAccess {
+        allocs,
+        deallocs,
+        access: access.cached_access(),
+    };
+    reveal(CachedBranchBetree::State::next);
+    reveal(CachedBranchBetree::State::next_by);
+    let step = choose |step: CachedBranchBetree::Step|
+        CachedBranchBetree::State::next_by(
+            pre.program.state.branch.betree,
             new_betree,
-        ) => {
-            assert(AtomicBranchBetreeState::State::branch_begin(
-                pre.program.state.branch,
-                new_branch,
-                AtomicBranchBetreeState::Label::Betree {
-                    cached_op: CachedBranchBetree::Label::
-                        InternalAlloc{allocs, deallocs},
-                },
+            cached_lbl,
+            step,
+        );
+    match step {
+        CachedBranchBetree::Step::branch_begin() => {
+            reveal(CachedBranchBetree::State::branch_begin);
+            assert(CachedBranchBetree::State::branch_begin(
+                pre.program.state.branch.betree,
                 new_betree,
-            ));
-            reveal(AtomicBranchBetreeState::State::branch_begin);
-            assert(new_branch == AtomicBranchBetreeState::State {
-                betree: new_betree,
-                ..pre.program.state.branch
-            });
+                cached_lbl,
+            )) by {
+            }
+            access.cached_empty_is_empty();
             program_internal_betree_branch_begin_refines(
                 pre,
                 post,
@@ -9588,33 +10154,20 @@ program_internal_branch_internal_alloc_access_refines(
                 new_betree,
             );
         },
-        AtomicBranchBetreeState::Step::branch_build(
-            new_betree,
-            idx,
-            post_branch,
-            cached_event,
+        CachedBranchBetree::Step::branch_build(
+            idx, post_branch, event,
         ) => {
-            let event = choose |event:
-                crate::implementation::
-                    CachingDiskBranchBetree_v::BranchBuildEvent|
-                event.cached_event(access) == cached_event;
-            assert(AtomicBranchBetreeState::State::branch_build(
-                pre.program.state.branch,
-                new_branch,
-                AtomicBranchBetreeState::Label::Betree {
-                    cached_op: CachedBranchBetree::Label::
-                        InternalAlloc{allocs, deallocs},
-                },
+            reveal(CachedBranchBetree::State::branch_build);
+            assert(CachedBranchBetree::State::branch_build(
+                pre.program.state.branch.betree,
                 new_betree,
+                cached_lbl,
                 idx,
                 post_branch,
-                event.cached_event(access),
-            ));
-            reveal(AtomicBranchBetreeState::State::branch_build);
-            assert(new_branch == AtomicBranchBetreeState::State {
-                betree: new_betree,
-                ..pre.program.state.branch
-            });
+                event,
+            )) by {
+            }
+            access.cached_only_branch_is_only_branch();
             program_internal_betree_branch_build_refines(
                 pre,
                 post,
@@ -9630,35 +10183,54 @@ program_internal_branch_internal_alloc_access_refines(
                 new_betree,
             );
         },
-        AtomicBranchBetreeState::Step::flush_memtable(
-            new_betree,
-            branch_idx,
-            new_root_addr,
-            betree_reads,
-            betree_writes,
-            branch_reads,
+        CachedBranchBetree::Step::branch_fill(idx, post_branch) => {
+            reveal(CachedBranchBetree::State::branch_fill);
+            assert(CachedBranchBetree::State::branch_fill(
+                pre.program.state.branch.betree,
+                new_betree,
+                cached_lbl,
+                idx,
+                post_branch,
+            )) by {
+            }
+            access.cached_empty_is_empty();
+            program_internal_betree_branch_fill_refines(
+                pre, post, lbl, new_program, allocs, deallocs,
+                idx, post_branch, access, new_cache, new_betree,
+            );
+        },
+        CachedBranchBetree::Step::branch_abort(idx) => {
+            reveal(CachedBranchBetree::State::branch_abort);
+            assert(CachedBranchBetree::State::branch_abort(
+                pre.program.state.branch.betree,
+                new_betree,
+                cached_lbl,
+                idx,
+            )) by {
+            }
+            access.cached_empty_is_empty();
+            program_internal_betree_branch_abort_refines(
+                pre, post, lbl, new_program, allocs, deallocs,
+                idx, access, new_cache, new_betree,
+            );
+        },
+        CachedBranchBetree::Step::flush_memtable(
+            branch_idx, new_root_addr, ..
         ) => {
-            assert(AtomicBranchBetreeState::State::
-                flush_memtable(
-                    pre.program.state.branch,
-                    new_branch,
-                    AtomicBranchBetreeState::Label::Betree {
-                        cached_op: CachedBranchBetree::Label::
-                            InternalAlloc{allocs, deallocs},
-                    },
-                    new_betree,
-                    branch_idx,
-                    new_root_addr,
-                    betree_reads,
-                    betree_writes,
-                    branch_reads,
-                ));
-            reveal(AtomicBranchBetreeState::State::
-                flush_memtable);
-            assert(new_branch == AtomicBranchBetreeState::State {
-                betree: new_betree,
-                ..pre.program.state.branch
-            });
+            reveal(CachedBranchBetree::State::flush_memtable);
+            assert(CachedBranchBetree::State::flush_memtable(
+                pre.program.state.branch.betree,
+                new_betree,
+                cached_lbl,
+                branch_idx,
+                new_root_addr,
+                access.loaded_betree_reads(),
+                access.loaded_betree_writes(),
+                access.loaded_branch_reads(),
+            )) by {
+            }
+            access.cached_wf_is_wf();
+            access.cached_branch_writes_empty();
             program_internal_betree_flush_memtable_refines(
                 pre,
                 post,
@@ -9673,27 +10245,17 @@ program_internal_branch_internal_alloc_access_refines(
                 new_betree,
             );
         },
-        AtomicBranchBetreeState::Step::grow(
-            new_betree,
-            new_root_addr,
-            betree_writes,
-        ) => {
-            assert(AtomicBranchBetreeState::State::grow(
-                pre.program.state.branch,
-                new_branch,
-                AtomicBranchBetreeState::Label::Betree {
-                    cached_op: CachedBranchBetree::Label::
-                        InternalAlloc{allocs, deallocs},
-                },
+        CachedBranchBetree::Step::grow(new_root_addr, ..) => {
+            reveal(CachedBranchBetree::State::grow);
+            assert(CachedBranchBetree::State::grow(
+                pre.program.state.branch.betree,
                 new_betree,
+                cached_lbl,
                 new_root_addr,
-                betree_writes,
-            ));
-            reveal(AtomicBranchBetreeState::State::grow);
-            assert(new_branch == AtomicBranchBetreeState::State {
-                betree: new_betree,
-                ..pre.program.state.branch
-            });
+                access.loaded_betree_writes(),
+            )) by {
+            }
+            access.cached_only_betree_is_only_betree();
             program_internal_betree_grow_refines(
                 pre,
                 post,
@@ -9707,35 +10269,23 @@ program_internal_branch_internal_alloc_access_refines(
                 new_betree,
             );
         },
-        AtomicBranchBetreeState::Step::split(
-            new_betree,
-            path,
-            request,
-            new_addrs,
-            path_addrs,
-            betree_reads,
-            betree_writes,
+        CachedBranchBetree::Step::split(
+            path, request, new_addrs, path_addrs, ..
         ) => {
-            assert(AtomicBranchBetreeState::State::split(
-                pre.program.state.branch,
-                new_branch,
-                AtomicBranchBetreeState::Label::Betree {
-                    cached_op: CachedBranchBetree::Label::
-                        InternalAlloc{allocs, deallocs},
-                },
+            reveal(CachedBranchBetree::State::split);
+            assert(CachedBranchBetree::State::split(
+                pre.program.state.branch.betree,
                 new_betree,
+                cached_lbl,
                 path,
                 request,
                 new_addrs,
                 path_addrs,
-                betree_reads,
-                betree_writes,
-            ));
-            reveal(AtomicBranchBetreeState::State::split);
-            assert(new_branch == AtomicBranchBetreeState::State {
-                betree: new_betree,
-                ..pre.program.state.branch
-            });
+                access.loaded_betree_reads(),
+                access.loaded_betree_writes(),
+            )) by {
+            }
+            access.cached_only_betree_is_only_betree();
             program_internal_betree_split_refines(
                 pre,
                 post,
@@ -9752,37 +10302,24 @@ program_internal_branch_internal_alloc_access_refines(
                 new_betree,
             );
         },
-        AtomicBranchBetreeState::Step::flush(
-            new_betree,
-            path,
-            child_idx,
-            buffer_gc,
-            new_addrs,
-            path_addrs,
-            betree_reads,
-            betree_writes,
+        CachedBranchBetree::Step::flush(
+            path, child_idx, buffer_gc, new_addrs, path_addrs, ..
         ) => {
-            assert(AtomicBranchBetreeState::State::flush(
-                pre.program.state.branch,
-                new_branch,
-                AtomicBranchBetreeState::Label::Betree {
-                    cached_op: CachedBranchBetree::Label::
-                        InternalAlloc{allocs, deallocs},
-                },
+            reveal(CachedBranchBetree::State::flush);
+            assert(CachedBranchBetree::State::flush(
+                pre.program.state.branch.betree,
                 new_betree,
+                cached_lbl,
                 path,
                 child_idx,
                 buffer_gc,
                 new_addrs,
                 path_addrs,
-                betree_reads,
-                betree_writes,
-            ));
-            reveal(AtomicBranchBetreeState::State::flush);
-            assert(new_branch == AtomicBranchBetreeState::State {
-                betree: new_betree,
-                ..pre.program.state.branch
-            });
+                access.loaded_betree_reads(),
+                access.loaded_betree_writes(),
+            )) by {
+            }
+            access.cached_only_betree_is_only_betree();
             program_internal_betree_flush_refines(
                 pre,
                 post,
@@ -9800,45 +10337,43 @@ program_internal_branch_internal_alloc_access_refines(
                 new_betree,
             );
         },
-        AtomicBranchBetreeState::Step::compact_complete(
-            new_betree,
-            input_idx,
-            branch_idx,
-            path,
-            start,
-            end,
-            new_node_addr,
-            path_addrs,
-            betree_reads,
-            betree_writes,
-            branch_reads,
+        CachedBranchBetree::Step::compact_abort(input_idx) => {
+            reveal(CachedBranchBetree::State::compact_abort);
+            assert(CachedBranchBetree::State::compact_abort(
+                pre.program.state.branch.betree,
+                new_betree,
+                cached_lbl,
+                input_idx,
+            )) by {
+            }
+            access.cached_empty_is_empty();
+            program_internal_betree_compact_abort_refines(
+                pre, post, lbl, new_program, allocs, deallocs,
+                input_idx, access, new_cache, new_betree,
+            );
+        },
+        CachedBranchBetree::Step::compact_complete(
+            input_idx, branch_idx, path, start, end,
+            new_node_addr, path_addrs, ..
         ) => {
-            assert(AtomicBranchBetreeState::State::
-                compact_complete(
-                    pre.program.state.branch,
-                    new_branch,
-                    AtomicBranchBetreeState::Label::Betree {
-                        cached_op: CachedBranchBetree::Label::
-                            InternalAlloc{allocs, deallocs},
-                    },
-                    new_betree,
-                    input_idx,
-                    branch_idx,
-                    path,
-                    start,
-                    end,
-                    new_node_addr,
-                    path_addrs,
-                    betree_reads,
-                    betree_writes,
-                    branch_reads,
-                ));
-            reveal(AtomicBranchBetreeState::State::
-                compact_complete);
-            assert(new_branch == AtomicBranchBetreeState::State {
-                betree: new_betree,
-                ..pre.program.state.branch
-            });
+            reveal(CachedBranchBetree::State::compact_complete);
+            assert(CachedBranchBetree::State::compact_complete(
+                pre.program.state.branch.betree,
+                new_betree,
+                cached_lbl,
+                input_idx,
+                branch_idx,
+                path,
+                start,
+                end,
+                new_node_addr,
+                path_addrs,
+                access.loaded_betree_reads(),
+                access.loaded_betree_writes(),
+            )) by {
+            }
+            access.cached_wf_is_wf();
+            access.cached_branch_writes_empty();
             program_internal_betree_compact_complete_refines(
                 pre,
                 post,
@@ -9858,9 +10393,7 @@ program_internal_branch_internal_alloc_access_refines(
                 new_betree,
             );
         },
-        _ => {
-            assert(false);
-        },
+        _ => { assert(false); },
     }
 }
 
@@ -9870,14 +10403,7 @@ pub proof fn program_internal_branch_internal_access_refines(
     lbl: SystemModel::Label,
     new_program: UnifiedCacheBetreeProgramModel,
     branch_lbl: AtomicBranchBetreeState::Label,
-    reads: Map<
-        crate::disk::GenericDisk_v::Address,
-        crate::spec::AsyncDisk_t::RawPage,
-    >,
-    writes: Map<
-        crate::disk::GenericDisk_v::Address,
-        crate::spec::AsyncDisk_t::RawPage,
-    >,
+    access: PageAccess,
     new_cache: Cache::State,
     new_branch: AtomicBranchBetreeState::State,
 )
@@ -9894,8 +10420,7 @@ pub proof fn program_internal_branch_internal_access_refines(
             post.program.state,
             UnifiedCacheBetreeSystem::Label::Internal,
             branch_lbl,
-            reads,
-            writes,
+            access,
             new_cache,
             new_branch,
         ),
@@ -9907,146 +10432,164 @@ pub proof fn program_internal_branch_internal_access_refines(
         ),
         refinement_inv(post),
 {
-    reveal(UnifiedCacheBetreeSystem::State::
-        branch_internal_access);
-    reveal(AtomicBranchBetreeState::State::
-        internal_access_next);
     match branch_lbl {
-        AtomicBranchBetreeState::Label::Recover{
-            recovery_op,
-        } => {
-            assert(writes
-                == Map::<
-                    crate::disk::GenericDisk_v::Address,
-                    crate::spec::AsyncDisk_t::RawPage,
-                >::empty());
-            match recovery_op {
-                BetreeMetadataRecoveryLabel::ReadBetree{
-                    addr,
-                    reads: recovery_reads,
-                } => {
-                    assert(recovery_reads == reads);
-                    program_internal_branch_recover_betree_refines(
-                        pre,
-                        post,
-                        lbl,
-                        new_program,
-                        addr,
-                        reads,
-                        new_cache,
-                        new_branch,
-                    );
-                },
-                BetreeMetadataRecoveryLabel::ReadBranchRoot{
-                    root,
-                    reads: recovery_reads,
-                } => {
-                    assert(recovery_reads == reads);
-                    program_internal_branch_recover_root_refines(
-                        pre,
-                        post,
-                        lbl,
-                        new_program,
-                        root,
-                        reads,
-                        new_cache,
-                        new_branch,
-                    );
-                },
-                BetreeMetadataRecoveryLabel::ReadBranchAux{
-                    root,
-                    reads: recovery_reads,
-                } => {
-                    assert(recovery_reads == reads);
-                    program_internal_branch_recover_aux_refines(
-                        pre,
-                        post,
-                        lbl,
-                        new_program,
-                        root,
-                        reads,
-                        new_cache,
-                        new_branch,
-                    );
-                },
-                BetreeMetadataRecoveryLabel::DiskInternal => {
-                    assert(false);
-                },
-            }
-        },
-        AtomicBranchBetreeState::Label::Betree{
-            cached_op,
-        } => {
-            assert(cached_op is Internal);
-            assert(writes
-                == Map::<
-                    crate::disk::GenericDisk_v::Address,
-                    crate::spec::AsyncDisk_t::RawPage,
-                >::empty());
-            let (path, start, end) = choose |
-                path:
-                    crate::implementation::CachedBranchBetree_v::
-                        LoadedBetreePath,
-                start: nat,
-                end: nat,
-            |
-                AtomicBranchBetreeState::State::compact_begin(
+        AtomicBranchBetreeState::Label::RecoveryAccess{..} => {
+            reveal(AtomicBranchBetreeState::State::next);
+            reveal(AtomicBranchBetreeState::State::next_by);
+            let step = choose |step: AtomicBranchBetreeState::Step|
+                AtomicBranchBetreeState::State::next_by(
                     pre.program.state.branch,
                     new_branch,
                     branch_lbl,
-                    new_branch.betree,
-                    path,
-                    start,
-                    end,
-                    crate::implementation::
-                        CachingDiskBranchBetree_v::
-                            to_betree_nodes(reads),
+                    step,
                 );
-            let access = PageAccess {
-                betree_reads: reads,
-                branch_reads: Map::empty(),
-                betree_writes: Map::empty(),
-                branch_writes: Map::empty(),
-            };
-            assert(access.reads() == reads) by {
-                reveal(PageAccess::reads);
+            match step {
+                AtomicBranchBetreeState::Step::recover(
+                    new_recovery, recovery_op,
+                ) => {
+                    assert(AtomicBranchBetreeState::State::recover(
+                        pre.program.state.branch,
+                        new_branch,
+                        branch_lbl,
+                        new_recovery,
+                        recovery_op,
+                    )) by {
+                    }
+                    match recovery_op {
+                        BetreeMetadataRecoveryLabel::ReadBetree{
+                            addr,
+                            reads: recovery_reads,
+                        } => {
+                            program_internal_branch_recover_betree_refines(
+                                pre,
+                                post,
+                                lbl,
+                                new_program,
+                                addr,
+                                recovery_reads,
+                                new_cache,
+                                new_branch,
+                            );
+                        },
+                        BetreeMetadataRecoveryLabel::ReadBranchRoot{
+                            root,
+                            reads: recovery_reads,
+                        } => {
+                            program_internal_branch_recover_root_refines(
+                                pre,
+                                post,
+                                lbl,
+                                new_program,
+                                root,
+                                recovery_reads,
+                                new_cache,
+                                new_branch,
+                            );
+                        },
+                        BetreeMetadataRecoveryLabel::ReadBranchAux{
+                            root,
+                            reads: recovery_reads,
+                        } => {
+                            program_internal_branch_recover_aux_refines(
+                                pre,
+                                post,
+                                lbl,
+                                new_program,
+                                root,
+                                recovery_reads,
+                                new_cache,
+                                new_branch,
+                            );
+                        },
+                        BetreeMetadataRecoveryLabel::DiskInternal => {
+                            assert(false);
+                        },
+                    }
+                },
+                _ => { assert(false); },
             }
-            assert(access.writes() == writes) by {
-                reveal(PageAccess::writes);
-            }
-            assert(access.only_betree()) by {
-                reveal(PageAccess::only_betree);
-            }
-            assert(access.read_only()) by {
-                reveal(PageAccess::read_only);
-            }
-            assert(access.loaded_betree_reads()
-                == crate::implementation::
-                    CachingDiskBranchBetree_v::
-                        to_betree_nodes(reads)) by {
-                reveal(PageAccess::loaded_betree_reads);
-            }
-            reveal(AtomicBranchBetreeState::State::compact_begin);
-            assert(new_branch == AtomicBranchBetreeState::State {
-                betree: new_branch.betree,
-                ..pre.program.state.branch
-            });
-            program_internal_betree_compact_begin_refines(
-                pre,
-                post,
-                lbl,
-                new_program,
-                path,
-                start,
-                end,
+        },
+        AtomicBranchBetreeState::Label::InternalAccess{..} => {
+            AtomicBranchBetreeState::State::internal_access_effect(
+                pre.program.state.branch,
+                new_branch,
                 access,
-                new_cache,
-                new_branch.betree,
             );
+            let new_betree = new_branch.betree;
+            let cached_lbl = CachedBranchBetree::Label::InternalAccess {
+                access: access.cached_access(),
+            };
+
+            reveal(CachedBranchBetree::State::next);
+            reveal(CachedBranchBetree::State::next_by);
+            let step = choose |step: CachedBranchBetree::Step|
+                CachedBranchBetree::State::next_by(
+                    pre.program.state.branch.betree,
+                    new_betree,
+                    cached_lbl,
+                    step,
+                );
+            match step {
+                CachedBranchBetree::Step::compact_begin(
+                    path, start, end, betree_reads,
+                ) => {
+                    reveal(CachedBranchBetree::State::compact_begin);
+                    assert(CachedBranchBetree::State::compact_begin(
+                        pre.program.state.branch.betree,
+                        new_betree,
+                        cached_lbl,
+                        path,
+                        start,
+                        end,
+                        betree_reads,
+                    )) by {
+                    }
+                    access.cached_only_betree_is_only_betree();
+                    access.cached_read_only_is_read_only();
+                    program_internal_betree_compact_begin_refines(
+                        pre,
+                        post,
+                        lbl,
+                        new_program,
+                        path,
+                        start,
+                        end,
+                        betree_reads,
+                        access,
+                        new_cache,
+                        new_betree,
+                    );
+                },
+                CachedBranchBetree::Step::compact_scan_page(
+                    input_idx, branch_reads,
+                ) => {
+                    reveal(CachedBranchBetree::State::compact_scan_page);
+                    assert(CachedBranchBetree::State::compact_scan_page(
+                        pre.program.state.branch.betree,
+                        new_betree,
+                        cached_lbl,
+                        input_idx,
+                        branch_reads,
+                    )) by {
+                    }
+                    access.cached_only_branch_is_only_branch();
+                    access.cached_read_only_is_read_only();
+                    program_internal_betree_compact_scan_page_refines(
+                        pre,
+                        post,
+                        lbl,
+                        new_program,
+                        input_idx,
+                        branch_reads,
+                        access,
+                        new_cache,
+                        new_betree,
+                    );
+                },
+                _ => { assert(false); },
+            }
         },
-        _ => {
-            assert(false);
-        },
+        _ => { assert(false); },
     }
 }
 
@@ -10093,9 +10636,6 @@ pub proof fn program_internal_journal_internal_access_refines(
         ),
         refinement_inv(post),
 {
-    reveal(UnifiedCacheBetreeSystem::State::
-        journal_internal_access);
-    reveal(AtomicJournalState::State::internal_access_next);
     match journal_lbl {
         AtomicJournalState::Label::JournalMarshal{
             addr,
@@ -10170,7 +10710,6 @@ pub proof fn program_internal_refines(
         lbl,
         new_program,
     ));
-    reveal(SystemModel::State::program_internal);
     assert(UnifiedCacheBetreeProgramModel::next(
         pre.program,
         new_program,
@@ -10204,8 +10743,7 @@ pub proof fn program_internal_refines(
         }
         UnifiedCacheBetreeSystem::Step::branch_internal_access(
             branch_lbl,
-            reads,
-            writes,
+            access,
             new_cache,
             new_branch,
         ) => {
@@ -10215,19 +10753,20 @@ pub proof fn program_internal_refines(
                 lbl,
                 new_program,
                 branch_lbl,
-                reads,
-                writes,
+                access,
                 new_cache,
                 new_branch,
             );
         }
         UnifiedCacheBetreeSystem::Step::
-            branch_recovery_complete() => {
+            branch_recovery_complete(discovered_aus, new_branch) => {
             program_internal_branch_recovery_complete_refines(
                 pre,
                 post,
                 lbl,
                 new_program,
+                discovered_aus,
+                new_branch,
             );
         }
         UnifiedCacheBetreeSystem::Step::cache_internal(
@@ -10344,31 +10883,11 @@ pub proof fn program_internal_refines(
                 new_journal,
             );
         }
-        UnifiedCacheBetreeSystem::Step::betree_branch_fill(
-            allocs,
-            deallocs,
-            idx,
-            post_branch,
-            new_branch,
-        ) => {
-            program_internal_betree_branch_fill_refines(
-                pre,
-                post,
-                lbl,
-                new_program,
-                allocs,
-                deallocs,
-                idx,
-                post_branch,
-                new_branch,
-            );
-        }
         UnifiedCacheBetreeSystem::Step::
             branch_internal_alloc_access(
             allocs,
             deallocs,
-            reads,
-            writes,
+            access,
             new_cache,
             new_branch,
         ) => {
@@ -10379,43 +10898,8 @@ pub proof fn program_internal_refines(
                 new_program,
                 allocs,
                 deallocs,
-                reads,
-                writes,
+                access,
                 new_cache,
-                new_branch,
-            );
-        }
-        UnifiedCacheBetreeSystem::Step::betree_branch_abort(
-            allocs,
-            deallocs,
-            idx,
-            new_branch,
-        ) => {
-            program_internal_betree_branch_abort_refines(
-                pre,
-                post,
-                lbl,
-                new_program,
-                allocs,
-                deallocs,
-                idx,
-                new_branch,
-            );
-        }
-        UnifiedCacheBetreeSystem::Step::betree_compact_abort(
-            allocs,
-            deallocs,
-            input_idx,
-            new_branch,
-        ) => {
-            program_internal_betree_compact_abort_refines(
-                pre,
-                post,
-                lbl,
-                new_program,
-                allocs,
-                deallocs,
-                input_idx,
                 new_branch,
             );
         }
@@ -10499,7 +10983,6 @@ pub proof fn program_disk_initiate_recovery_refines(
         responses: multiset_to_map(lbl->info.resps),
     };
 
-    reveal(SystemModel::State::program_disk);
     assert(lbl is ProgramDiskOp);
     assert(post.program == new_program);
     assert(post.disk == new_disk);
@@ -10550,7 +11033,6 @@ pub proof fn program_disk_initiate_recovery_refines(
             }
         }
     }
-    reveal(AsyncDisk::State::disk_ops);
     assert(post.disk.content == pre.disk.content);
     assert(post.disk.responses == pre.disk.responses);
     assert(post.disk.requests
@@ -10562,8 +11044,6 @@ pub proof fn program_disk_initiate_recovery_refines(
     );
     assert(post.disk.inv());
 
-    reveal(UnifiedCacheBetreeSystem::State::
-        initiate_recovery);
     assert(post_state == UnifiedCacheBetreeSystem::State{
         recovery_state: RecoveryState::AwaitingSuperblock,
         ..pre_state
@@ -10736,7 +11216,6 @@ pub proof fn program_disk_superblock_recovery_refines(
         responses: multiset_to_map(lbl->info.resps),
     };
 
-    reveal(SystemModel::State::program_disk);
     assert(lbl is ProgramDiskOp);
     assert(post.program == new_program);
     assert(post.disk == new_disk);
@@ -10790,13 +11269,11 @@ pub proof fn program_disk_superblock_recovery_refines(
             }
         }
     }
-    reveal(AsyncDisk::State::disk_ops);
     assert(post.disk.content == pre.disk.content);
     assert(post.disk.requests == pre.disk.requests);
     assert(post.disk.responses
         == pre.disk.responses.remove(req_id));
     assert(resp_map <= pre.disk.responses) by {
-        reveal(AsyncDisk::State::disk_ops);
     }
     assert(resp_map.contains_key(req_id));
     assert(pre.disk.responses.contains_key(req_id));
@@ -10820,9 +11297,20 @@ pub proof fn program_disk_superblock_recovery_refines(
     superblock_matches_image_wf(raw_page, image);
     assert(betree_superblock_image_wf(image));
 
-    reveal(UnifiedCacheBetreeSystem::State::
-        superblock_recovery);
     let metadata = betree_metadata_from_superblock(image);
+    reveal(AtomicJournalState::State::init_by);
+    assert(AtomicJournalState::State::initialize(
+        new_journal,
+        image.journal_snapshot,
+        image.journal_seq_end,
+    )) by {
+    }
+    reveal(AtomicBranchBetreeState::State::init_by);
+    assert(AtomicBranchBetreeState::State::initialize(
+        new_branch,
+        metadata,
+    )) by {
+    }
     assert(post_state == UnifiedCacheBetreeSystem::State{
         recovery_state: RecoveryState::SuperblockAvailable,
         journal: new_journal,
@@ -10922,10 +11410,6 @@ pub proof fn program_disk_superblock_recovery_refines(
             dst.journal,
         )
     ) by {
-        reveal(
-            CrashAwareCachingDiskBetreeSystem::State::
-                journal_load_ephemeral,
-        );
     }
     assert(CrashAwareCachingDiskBetreeSystem::State::next_by(
         src,
@@ -11038,7 +11522,6 @@ pub proof fn program_disk_cache_io_begin_refines(
         responses: multiset_to_map(lbl->info.resps),
     };
 
-    reveal(SystemModel::State::program_disk);
     reveal(UnifiedCacheBetreeSystem::State::next_by);
     assert(lbl is ProgramDiskOp);
     assert(post.program == new_program);
@@ -11085,7 +11568,6 @@ pub proof fn program_disk_cache_io_begin_refines(
             }
         }
     }
-    reveal(AsyncDisk::State::disk_ops);
     assert(post.disk.requests
         == pre.disk.requests.union_prefer_right(req_map));
     assert(post.disk.responses == pre.disk.responses);
@@ -11099,7 +11581,6 @@ pub proof fn program_disk_cache_io_begin_refines(
     );
     assert(post.disk.inv());
 
-    reveal(UnifiedCacheBetreeSystem::State::cache_io_begin);
     let updated = Map::new(
         |id| req_map.contains_key(id),
         |id| req_map[id].addr(),
@@ -11203,9 +11684,6 @@ pub proof fn program_disk_cache_io_begin_refines(
         assert(crate::implementation::
             CrashAwareCachingDiskBetreeSystem_v::
                 branch_internal_label(branch_lbl)) by {
-            reveal(crate::implementation::
-                CrashAwareCachingDiskBetreeSystem_v::
-                    branch_internal_label);
         }
         assert(CrashAwareCachingDiskBetreeSystem::State::
             component_internals(
@@ -11217,8 +11695,6 @@ pub proof fn program_disk_cache_io_begin_refines(
                 branch_lbl,
             )
         ) by {
-            reveal(CrashAwareCachingDiskBetreeSystem::State::
-                component_internals);
         }
         assert(CrashAwareCachingDiskBetreeSystem::State::next_by(
             src,
@@ -11244,9 +11720,6 @@ pub proof fn program_disk_cache_io_begin_refines(
         assert(crate::implementation::
             CrashAwareCachingDiskBetreeSystem_v::
                 branch_internal_label(branch_lbl)) by {
-            reveal(crate::implementation::
-                CrashAwareCachingDiskBetreeSystem_v::
-                    branch_internal_label);
         }
         assert(CrashAwareCachingDiskBetreeSystem::State::
             component_internals(
@@ -11258,8 +11731,6 @@ pub proof fn program_disk_cache_io_begin_refines(
                 branch_lbl,
             )
         ) by {
-            reveal(CrashAwareCachingDiskBetreeSystem::State::
-                component_internals);
         }
         assert(CrashAwareCachingDiskBetreeSystem::State::next_by(
             src,
@@ -11285,8 +11756,6 @@ pub proof fn program_disk_cache_io_begin_refines(
                 dst.journal,
             )
         ) by {
-            reveal(CrashAwareCachingDiskBetreeSystem::State::
-                journal_internal);
         }
         assert(CrashAwareCachingDiskBetreeSystem::State::next_by(
             src,
@@ -11423,7 +11892,6 @@ pub proof fn program_disk_cache_io_end_refines(
         responses: multiset_to_map(lbl->info.resps),
     };
 
-    reveal(SystemModel::State::program_disk);
     reveal(UnifiedCacheBetreeSystem::State::next_by);
     assert(lbl is ProgramDiskOp);
     assert(post.program == new_program);
@@ -11470,7 +11938,6 @@ pub proof fn program_disk_cache_io_end_refines(
             }
         }
     }
-    reveal(AsyncDisk::State::disk_ops);
     assert(post.disk.requests == pre.disk.requests);
     assert(post.disk.responses
         == pre.disk.responses.remove_keys(resp_map.dom()));
@@ -11483,7 +11950,6 @@ pub proof fn program_disk_cache_io_end_refines(
     );
     assert(post.disk.inv());
 
-    reveal(UnifiedCacheBetreeSystem::State::cache_io_end);
     let finished =
         pre_state.outstanding_cache_reqs
             .restrict(resp_map.dom())
@@ -11594,9 +12060,6 @@ pub proof fn program_disk_cache_io_end_refines(
         assert(crate::implementation::
             CrashAwareCachingDiskBetreeSystem_v::
                 branch_internal_label(branch_lbl)) by {
-            reveal(crate::implementation::
-                CrashAwareCachingDiskBetreeSystem_v::
-                    branch_internal_label);
         }
         assert(CrashAwareCachingDiskBetreeSystem::State::
             component_internals(
@@ -11608,8 +12071,6 @@ pub proof fn program_disk_cache_io_end_refines(
                 branch_lbl,
             )
         ) by {
-            reveal(CrashAwareCachingDiskBetreeSystem::State::
-                component_internals);
         }
         assert(CrashAwareCachingDiskBetreeSystem::State::next_by(
             src,
@@ -11635,9 +12096,6 @@ pub proof fn program_disk_cache_io_end_refines(
         assert(crate::implementation::
             CrashAwareCachingDiskBetreeSystem_v::
                 branch_internal_label(branch_lbl)) by {
-            reveal(crate::implementation::
-                CrashAwareCachingDiskBetreeSystem_v::
-                    branch_internal_label);
         }
         assert(CrashAwareCachingDiskBetreeSystem::State::
             component_internals(
@@ -11649,8 +12107,6 @@ pub proof fn program_disk_cache_io_end_refines(
                 branch_lbl,
             )
         ) by {
-            reveal(CrashAwareCachingDiskBetreeSystem::State::
-                component_internals);
         }
         assert(CrashAwareCachingDiskBetreeSystem::State::next_by(
             src,
@@ -11676,8 +12132,6 @@ pub proof fn program_disk_cache_io_end_refines(
                 dst.journal,
             )
         ) by {
-            reveal(CrashAwareCachingDiskBetreeSystem::State::
-                journal_internal);
         }
         assert(CrashAwareCachingDiskBetreeSystem::State::next_by(
             src,
@@ -11816,9 +12270,6 @@ pub proof fn program_disk_execute_journal_sync_begin_refines(
         responses: multiset_to_map(lbl->info.resps),
     };
 
-    reveal(SystemModel::State::program_disk);
-    reveal(UnifiedCacheBetreeSystem::State::
-        execute_journal_sync_begin);
     assert(lbl is ProgramDiskOp);
     assert(post.program == new_program);
     assert(post.disk == new_disk);
@@ -11878,7 +12329,6 @@ pub proof fn program_disk_execute_journal_sync_begin_refines(
             }
         }
     }
-    reveal(AsyncDisk::State::disk_ops);
     assert(post.disk.requests == pre.disk.requests) by {
         assert_maps_equal!(
             post.disk.requests,
@@ -11951,8 +12401,6 @@ pub proof fn program_disk_execute_journal_sync_begin_refines(
     );
     assert(branch_post.i() == branch_pre.i());
     assert(branch_post.inv()) by {
-        reveal(UnifiedCacheBranchBetreeRefinement::
-            UnifiedCacheBranchBetreeSource::inv);
     }
     assert(unified_cache_betree_component_inv(post));
 
@@ -11975,8 +12423,6 @@ pub proof fn program_disk_execute_journal_sync_begin_refines(
             image,
         )
     ) by {
-        reveal(CrashAwareCachingDiskBetreeSystem::State::
-            journal_commit_start);
     }
     assert(CrashAwareCachingDiskBetreeSystem::State::next_by(
         src,
@@ -12087,9 +12533,6 @@ pub proof fn program_disk_execute_journal_superblock_write_refines(
     };
     let image = pre_state.sync_phase.image().unwrap();
 
-    reveal(SystemModel::State::program_disk);
-    reveal(UnifiedCacheBetreeSystem::State::
-        execute_sync_superblock_write);
     assert(lbl is ProgramDiskOp);
     assert(post.program == new_program);
     assert(post.disk == new_disk);
@@ -12140,7 +12583,6 @@ pub proof fn program_disk_execute_journal_superblock_write_refines(
             }
         }
     }
-    reveal(AsyncDisk::State::disk_ops);
     assert(post.disk.content == pre.disk.content);
     assert(post.disk.responses == pre.disk.responses) by {
         assert_maps_equal!(
@@ -12200,7 +12642,6 @@ pub proof fn program_disk_execute_journal_superblock_write_refines(
         AtomicJournalState::Label::CommitPrepared,
     )) by {
         assert(unified_cache_betree_sync_state_inv(pre));
-        reveal(AtomicJournalState::State::commit_prepared);
     }
     assert(AtomicJournalState::State::next(
         pre_state.journal,
@@ -12234,8 +12675,6 @@ pub proof fn program_disk_execute_journal_superblock_write_refines(
     );
     assert(branch_post.i() == branch_pre.i());
     assert(branch_post.inv()) by {
-        reveal(UnifiedCacheBranchBetreeRefinement::
-            UnifiedCacheBranchBetreeSource::inv);
     }
     assert(unified_cache_betree_component_inv(post));
 
@@ -12259,7 +12698,6 @@ pub proof fn program_disk_execute_journal_superblock_write_refines(
         SuperblockStore::Step::write(),
     )) by {
         reveal(SuperblockStore::State::next_by);
-        reveal(SuperblockStore::State::write);
     }
     reveal(SuperblockStore::State::next);
     assert(CrashAwareCachingDiskBetreeSystem::State::
@@ -12273,8 +12711,6 @@ pub proof fn program_disk_execute_journal_superblock_write_refines(
             image,
         )
     ) by {
-        reveal(CrashAwareCachingDiskBetreeSystem::State::
-            journal_commit_prepared);
     }
     assert(CrashAwareCachingDiskBetreeSystem::State::next_by(
         src,
@@ -12389,9 +12825,6 @@ pub proof fn program_disk_execute_journal_sync_end_refines(
         responses: multiset_to_map(lbl->info.resps),
     };
 
-    reveal(SystemModel::State::program_disk);
-    reveal(UnifiedCacheBetreeSystem::State::
-        execute_journal_sync_end);
     assert(lbl is ProgramDiskOp);
     assert(post.program == new_program);
     assert(post.disk == new_disk);
@@ -12443,7 +12876,6 @@ pub proof fn program_disk_execute_journal_sync_end_refines(
             }
         }
     }
-    reveal(AsyncDisk::State::disk_ops);
     assert(resp_map <= pre.disk.responses);
     assert(resp_map.contains_key(req_id));
     assert(resp_map[req_id] == write_resp);
@@ -12517,8 +12949,6 @@ pub proof fn program_disk_execute_journal_sync_end_refines(
         == branch_pre.branch_caching_disk_i());
     assert(branch_post.i() == branch_pre.i());
     assert(branch_post.inv()) by {
-        reveal(UnifiedCacheBranchBetreeRefinement::
-            UnifiedCacheBranchBetreeSource::inv);
     }
     assert(unified_cache_betree_component_inv(post));
 
@@ -12550,7 +12980,6 @@ pub proof fn program_disk_execute_journal_sync_end_refines(
         SuperblockStore::Step::complete(),
     )) by {
         reveal(SuperblockStore::State::next_by);
-        reveal(SuperblockStore::State::complete);
     }
     reveal(SuperblockStore::State::next);
     assert(CrashAwareCachingDiskBetreeSystem::State::
@@ -12563,8 +12992,6 @@ pub proof fn program_disk_execute_journal_sync_end_refines(
             journal_discarded_aus,
         )
     ) by {
-        reveal(CrashAwareCachingDiskBetreeSystem::State::
-            journal_commit_complete);
     }
     assert(CrashAwareCachingDiskBetreeSystem::State::next_by(
         src,
@@ -12691,9 +13118,6 @@ pub proof fn program_disk_execute_store_sync_begin_refines(
         responses: multiset_to_map(lbl->info.resps),
     };
 
-    reveal(SystemModel::State::program_disk);
-    reveal(UnifiedCacheBetreeSystem::State::
-        execute_store_sync_begin);
     assert(lbl is ProgramDiskOp);
     assert(post.program == new_program);
     assert(post.disk == new_disk);
@@ -12753,7 +13177,6 @@ pub proof fn program_disk_execute_store_sync_begin_refines(
             }
         }
     }
-    reveal(AsyncDisk::State::disk_ops);
     assert(post.disk.requests == pre.disk.requests) by {
         assert_maps_equal!(
             post.disk.requests,
@@ -12795,6 +13218,57 @@ pub proof fn program_disk_execute_store_sync_begin_refines(
         post_state.journal,
         atomic_journal_lbl,
     );
+    let metadata = betree_metadata_from_superblock(image);
+    let frozen_branch_image = FrozenBranchBetree {
+        root: metadata.root,
+        seq_end: metadata.seq_end,
+    };
+    let atomic_branch_lbl = AtomicBranchBetreeState::Label::CommitStart {
+        image: frozen_branch_image,
+    };
+    reveal(AtomicBranchBetreeState::State::next);
+    reveal(AtomicBranchBetreeState::State::next_by);
+    let atomic_branch_step = choose |step: AtomicBranchBetreeState::Step|
+        AtomicBranchBetreeState::State::next_by(
+            pre_state.branch,
+            post_state.branch,
+            atomic_branch_lbl,
+            step,
+        );
+    match atomic_branch_step {
+        AtomicBranchBetreeState::Step::commit_start() => {
+            assert(AtomicBranchBetreeState::State::commit_start(
+                pre_state.branch,
+                post_state.branch,
+                atomic_branch_lbl,
+            )) by {
+            }
+        },
+        _ => { assert(false); },
+    }
+    let cached_branch_lbl = CachedBranchBetree::Label::FreezeAs {
+        image: frozen_branch_image,
+    };
+    reveal(CachedBranchBetree::State::next);
+    reveal(CachedBranchBetree::State::next_by);
+    let cached_branch_step = choose |step: CachedBranchBetree::Step|
+        CachedBranchBetree::State::next_by(
+            pre_state.branch.betree,
+            pre_state.branch.betree,
+            cached_branch_lbl,
+            step,
+        );
+    match cached_branch_step {
+        CachedBranchBetree::Step::freeze_as() => {
+            assert(CachedBranchBetree::State::freeze_as(
+                pre_state.branch.betree,
+                pre_state.branch.betree,
+                cached_branch_lbl,
+            )) by {
+            }
+        },
+        _ => { assert(false); },
+    }
 
     let journal_pre =
         unified_cache_betree_journal_source(pre);
@@ -12837,8 +13311,6 @@ pub proof fn program_disk_execute_store_sync_begin_refines(
             image,
         )
     ) by {
-        reveal(CrashAwareCachingDiskBetreeSystem::State::
-            store_commit_start);
     }
     assert(CrashAwareCachingDiskBetreeSystem::State::next_by(
         src,
@@ -12945,9 +13417,6 @@ pub proof fn program_disk_execute_store_superblock_write_refines(
     };
     let image = pre_state.sync_phase.image().unwrap();
 
-    reveal(SystemModel::State::program_disk);
-    reveal(UnifiedCacheBetreeSystem::State::
-        execute_sync_superblock_write);
     assert(lbl is ProgramDiskOp);
     assert(post.program == new_program);
     assert(post.disk == new_disk);
@@ -12994,7 +13463,6 @@ pub proof fn program_disk_execute_store_superblock_write_refines(
             }
         }
     }
-    reveal(AsyncDisk::State::disk_ops);
     assert(post.disk.content == pre.disk.content);
     assert(post.disk.responses == pre.disk.responses) by {
         assert_maps_equal!(
@@ -13064,7 +13532,6 @@ pub proof fn program_disk_execute_store_superblock_write_refines(
         AtomicJournalState::Label::CommitPrepared,
     )) by {
         assert(unified_cache_betree_sync_state_inv(pre));
-        reveal(AtomicJournalState::State::commit_prepared);
     }
     assert(AtomicJournalState::State::next(
         pre_state.journal,
@@ -13151,7 +13618,6 @@ pub proof fn program_disk_execute_store_superblock_write_refines(
         SuperblockStore::Step::write(),
     )) by {
         reveal(SuperblockStore::State::next_by);
-        reveal(SuperblockStore::State::write);
     }
     reveal(SuperblockStore::State::next);
     assert(CrashAwareCachingDiskBetreeSystem::State::
@@ -13166,8 +13632,6 @@ pub proof fn program_disk_execute_store_superblock_write_refines(
             image,
         )
     ) by {
-        reveal(CrashAwareCachingDiskBetreeSystem::State::
-            store_commit_prepared);
     }
     assert(CrashAwareCachingDiskBetreeSystem::State::next_by(
         src,
@@ -13288,9 +13752,6 @@ pub proof fn program_disk_execute_store_sync_end_refines(
         responses: multiset_to_map(lbl->info.resps),
     };
 
-    reveal(SystemModel::State::program_disk);
-    reveal(UnifiedCacheBetreeSystem::State::
-        execute_store_sync_end);
     assert(lbl is ProgramDiskOp);
     assert(post.program == new_program);
     assert(post.disk == new_disk);
@@ -13342,7 +13803,6 @@ pub proof fn program_disk_execute_store_sync_end_refines(
             }
         }
     }
-    reveal(AsyncDisk::State::disk_ops);
     assert(resp_map <= pre.disk.responses);
     assert(resp_map.contains_key(req_id));
     assert(resp_map[req_id] == write_resp);
@@ -13454,7 +13914,6 @@ pub proof fn program_disk_execute_store_sync_end_refines(
         SuperblockStore::Step::complete(),
     )) by {
         reveal(SuperblockStore::State::next_by);
-        reveal(SuperblockStore::State::complete);
     }
     reveal(SuperblockStore::State::next);
     assert(CrashAwareCachingDiskBetreeSystem::State::
@@ -13469,8 +13928,6 @@ pub proof fn program_disk_execute_store_sync_end_refines(
             branch_discarded_aus,
         )
     ) by {
-        reveal(CrashAwareCachingDiskBetreeSystem::State::
-            store_commit_complete);
     }
     assert(CrashAwareCachingDiskBetreeSystem::State::next_by(
         src,
@@ -13559,7 +14016,6 @@ pub proof fn program_disk_refines(
         new_program,
         new_disk,
     ));
-    reveal(SystemModel::State::program_disk);
     assert(lbl is ProgramDiskOp);
     assert(UnifiedCacheBetreeProgramModel::next(
         pre.program,
@@ -13836,7 +14292,6 @@ pub proof fn disk_internal_process_write_refines(
         refinement_inv(post),
 {
     reveal(SystemModel::State::next_by);
-    reveal(SystemModel::State::disk_internal);
     reveal(AsyncDisk::State::next);
     reveal(AsyncDisk::State::next_by);
 
@@ -14044,9 +14499,6 @@ pub proof fn disk_internal_process_write_refines(
 
         assert(branch_post.persistent_branch_image_i()
             == branch_pre.persistent_branch_image_i()) by {
-            reveal(UnifiedCacheBranchBetreeRefinement::
-                UnifiedCacheBranchBetreeSource::
-                    persistent_branch_image_i);
             assert_maps_equal!(
                 branch_post.persistent_branch_image_i()
                     .persistent,
@@ -14076,9 +14528,6 @@ pub proof fn disk_internal_process_write_refines(
         }
         assert(branch_post.prepared_branch_image_i()
             == branch_pre.prepared_branch_image_i()) by {
-            reveal(UnifiedCacheBranchBetreeRefinement::
-                UnifiedCacheBranchBetreeSource::
-                    prepared_branch_image_i);
             if pre_state.sync_phase is SuperblockWriteIssued
                 && pre_state.branch.control.frozen is Some
             {
@@ -14213,10 +14662,6 @@ pub proof fn disk_internal_process_write_refines(
                 dst.branch,
                 branch_lbl,
             )) by {
-            reveal(
-                CrashAwareCachingDiskBetreeSystem::State::
-                    component_internals,
-            );
         }
         assert(CrashAwareCachingDiskBetreeSystem::State::
             next_by(
@@ -14371,21 +14816,9 @@ pub proof fn disk_internal_process_write_refines(
         }
         assert(branch_post.persistent_branch_image_i()
             == branch_pre.persistent_branch_image_i()) by {
-            reveal(UnifiedCacheBranchBetreeRefinement::
-                UnifiedCacheBranchBetreeSource::
-                    persistent_branch_image_i);
-            reveal(UnifiedCacheBranchBetreeRefinement::
-                UnifiedCacheBranchBetreeSource::
-                    branch_caching_disk_i);
         }
         assert(branch_post.prepared_branch_image_i()
             == branch_pre.prepared_branch_image_i()) by {
-            reveal(UnifiedCacheBranchBetreeRefinement::
-                UnifiedCacheBranchBetreeSource::
-                    prepared_branch_image_i);
-            reveal(UnifiedCacheBranchBetreeRefinement::
-                UnifiedCacheBranchBetreeSource::
-                    known_branch_i);
         }
         journal_pre.
             loaded_caching_disk_internal_refines_journal_internal_preserves_inv(
@@ -14403,11 +14836,6 @@ pub proof fn disk_internal_process_write_refines(
         assert(branch_post.i() == branch_pre.i()) by {
             assert(branch_post.branch_caching_disk_i()
                 == branch_pre.branch_caching_disk_i());
-            reveal(UnifiedCacheBranchBetreeRefinement::
-                UnifiedCacheBranchBetreeSource::i);
-            reveal(UnifiedCacheBranchBetreeRefinement::
-                UnifiedCacheBranchBetreeSource::
-                    ephemeral_branch_i);
         }
         assert(unified_cache_betree_component_inv(post));
 
@@ -14438,7 +14866,6 @@ pub proof fn disk_internal_process_write_refines(
             dst.superblockstore,
             SuperblockStore::Label::Land,
         )) by {
-            reveal(SuperblockStore::State::land);
         }
         assert(SuperblockStore::State::next_by(
             src.superblockstore,
@@ -14456,10 +14883,6 @@ pub proof fn disk_internal_process_write_refines(
                 target_lbl,
                 dst.superblockstore,
             )) by {
-            reveal(
-                CrashAwareCachingDiskBetreeSystem::State::
-                    superblock_write_lands,
-            );
         }
         assert(CrashAwareCachingDiskBetreeSystem::State::
             next_by(
@@ -14778,7 +15201,6 @@ pub proof fn disk_internal_process_read_refines(
         refinement_inv(post),
 {
     reveal(SystemModel::State::next_by);
-    reveal(SystemModel::State::disk_internal);
     reveal(AsyncDisk::State::next);
     reveal(AsyncDisk::State::next_by);
 
@@ -15188,7 +15610,6 @@ pub proof fn crash_refines(
         new_program,
         new_disk,
     ));
-    reveal(SystemModel::State::crash);
     assert(lbl is Crash);
     assert(post.program == new_program);
     assert(post.disk == new_disk);
@@ -15217,7 +15638,6 @@ pub proof fn crash_refines(
         );
     match disk_step {
         AsyncDisk::Step::crash() => {
-            reveal(AsyncDisk::State::crash);
         },
         _ => {
             assert(false);
@@ -15236,6 +15656,8 @@ pub proof fn crash_refines(
 
     reveal(UnifiedCacheBetreeSystem::State::init);
     reveal(UnifiedCacheBetreeSystem::State::init_by);
+
+
     let config =
         choose |config: UnifiedCacheBetreeSystem::Config|
             UnifiedCacheBetreeSystem::State::init_by(
@@ -15257,9 +15679,6 @@ pub proof fn crash_refines(
                 post.program.state.cache,
                 cache_slots,
             )) by {
-                reveal(UnifiedCacheBetreeSystem::State::
-                    initialize);
-                reveal(Cache::State::initialize);
             }
             Cache::State::initialize_inductive(
                 post.program.state.cache,
@@ -15334,7 +15753,6 @@ pub proof fn crash_refines(
             dst.superblockstore,
             SuperblockStore::Label::Crash,
         )) by {
-            reveal(SuperblockStore::State::crash);
         }
         assert(SuperblockStore::State::next_by(
             src.superblockstore,
@@ -15445,9 +15863,6 @@ pub proof fn crash_refines(
                 keep_in_flight,
             },
         )) by {
-            reveal(
-                CrashAwareCachingDiskJournal::State::crash,
-            );
         }
         assert(CrashAwareCachingDiskJournal::State::next_by(
             src.journal,
@@ -15514,10 +15929,6 @@ pub proof fn crash_refines(
         }
         assert(journal_post.journal_caching_disk_i()
             .inv());
-        reveal(UnifiedCacheJournalRefinement::
-            UnifiedCacheJournalSource::inv);
-        reveal(UnifiedCacheJournalRefinement::
-            UnifiedCacheJournalSource::semantic_inv);
         assert(journal_post.i().refinement_inv());
     }
 
@@ -15561,10 +15972,6 @@ pub proof fn crash_refines(
                 assert(src.branch.frozen is Some);
                 assert(branch_crash_image
                     == src.branch.prepared.unwrap());
-                reveal(
-                    CachingDiskBranchBetreeImage::
-                        materialized_from_persistent,
-                );
                 assert(branch_crash_image.metadata
                     == src.branch.frozen.unwrap().metadata);
             } else {
@@ -15615,13 +16022,6 @@ pub proof fn crash_refines(
                 == branch_pre
                     .prepared_branch_image_i()
                     .unwrap());
-            reveal(UnifiedCacheBranchBetreeRefinement::
-                UnifiedCacheBranchBetreeSource::
-                    prepared_branch_image_i);
-            reveal(
-                CachingDiskBranchBetreeImage::
-                    materialized_from_persistent,
-            );
             assert_maps_equal!(
                 branch_crash_image.persistent,
                 branch_post.disk.content.restrict(
@@ -15658,9 +16058,6 @@ pub proof fn crash_refines(
                 == branch_pre.control.persistent_aus);
             assert(src.branch.persistent
                 == branch_pre.persistent_branch_image_i());
-            reveal(UnifiedCacheBranchBetreeRefinement::
-                UnifiedCacheBranchBetreeSource::
-                    persistent_branch_image_i);
         } else {
             assert(src.branch.persistent
                 == branch_pre.persistent_branch_image_i());
@@ -15668,19 +16065,10 @@ pub proof fn crash_refines(
                 persistent_image_witness_aus_match(
                     branch_pre,
                 );
-            reveal(CachingDiskBranchBetreeImage::load);
-            reveal(CachingDiskBranchBetreeImage::
-                cached_betree);
-            reveal(CachedBranchBetree::State::durable_aus);
-            reveal(UnifiedCacheBranchBetreeRefinement::
-                UnifiedCacheBranchBetreeSource::
-                    persistent_branch_image_i);
         }
     }
     assert(filled_cache_pages(post_state.cache).is_empty())
     by {
-        reveal(Cache::State::empty);
-        reveal(filled_cache_pages);
     }
     UnifiedCacheBranchBetreeRefinement::
         post_crash_reconstructs_persistent_image(
@@ -15707,9 +16095,6 @@ pub proof fn crash_refines(
                 keep_in_flight: branch_keep_in_flight,
             },
         )) by {
-            reveal(
-                CrashAwareCachingDiskBranchBetree::State::crash,
-            );
         }
         assert(CrashAwareCachingDiskBranchBetree::State::
             next_by(
@@ -15737,8 +16122,6 @@ pub proof fn crash_refines(
             keep_in_flight: branch_keep_in_flight,
         },
     );
-    reveal(UnifiedCacheBranchBetreeRefinement::
-        UnifiedCacheBranchBetreeSource::inv);
     assert(branch_post.control_wf());
     assert(branch_post.i().refinement_inv());
     assert(branch_post.inv());
@@ -15746,7 +16129,6 @@ pub proof fn crash_refines(
     assert(dst.progress
         == crate::spec::MapSpec_t::AsyncMap::State::
             init_ephemeral_state()) by {
-        reveal(unified_cache_betree_progress_i);
         reveal(system_multiset_to_set_i);
     }
     assert(post_state.free_aus
@@ -15774,9 +16156,6 @@ pub proof fn crash_refines(
         post_state.free_aus,
         keep_in_flight,
     )) by {
-        reveal(
-            CrashAwareCachingDiskBetreeSystem::State::crash,
-        );
         assert(post_state.free_aus.disjoint(
             UnifiedCacheBetreeSystem::State::reserved_aus(),
         ));
@@ -15866,39 +16245,20 @@ pub proof fn crash_refines(
         assert(post_branch_aus
             == branch_crash_image.load().betree
                 .durable_aus()) by {
-            reveal(UnifiedCacheBranchBetreeRefinement::
-                UnifiedCacheBranchBetreeSource::
-                    branch_projection_aus);
         }
         if branch_keep_in_flight {
             assert(branch_crash_image.load().betree
                 .durable_aus()
                 == src.branch.frozen.unwrap().aus);
-            reveal(UnifiedCacheBranchBetreeRefinement::
-                UnifiedCacheBranchBetreeSource::
-                    branch_projection_aus);
-            reveal(UnifiedCacheBranchBetreeRefinement::
-                UnifiedCacheBranchBetreeSource::
-                    frozen_aus_i);
         } else if branch_pre.control.metadata_loaded {
             assert(branch_crash_image.load().betree
                 .durable_aus()
                 == branch_pre.control.persistent_aus);
-            reveal(UnifiedCacheBranchBetreeRefinement::
-                UnifiedCacheBranchBetreeSource::
-                    branch_projection_aus);
         } else {
             UnifiedCacheBranchBetreeRefinement::
                 persistent_image_witness_aus_match(
                     branch_pre,
                 );
-            reveal(CachingDiskBranchBetreeImage::load);
-            reveal(CachingDiskBranchBetreeImage::
-                cached_betree);
-            reveal(CachedBranchBetree::State::durable_aus);
-            reveal(UnifiedCacheBranchBetreeRefinement::
-                UnifiedCacheBranchBetreeSource::
-                    branch_projection_aus);
         }
     }
     assert(post_journal_aus <= pre_journal_aus) by {
@@ -15987,7 +16347,6 @@ proof fn program_accept_sync_request_step_refines(
         lbl,
         new_program,
     ));
-    reveal(SystemModel::State::program_accept_sync_request);
     assert(lbl is ProgramUIOp);
     assert(lbl->op is AcceptSyncRequest);
     let sync_req_id = match lbl->op {
@@ -16076,7 +16435,6 @@ proof fn program_deliver_sync_reply_step_refines(
         lbl,
         new_program,
     ));
-    reveal(SystemModel::State::program_deliver_sync_reply);
     assert(lbl is ProgramUIOp);
     assert(lbl->op is DeliverSyncReply);
     let sync_req_id = match lbl->op {

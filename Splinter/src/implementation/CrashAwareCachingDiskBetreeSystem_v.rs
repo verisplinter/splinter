@@ -24,8 +24,9 @@ use crate::implementation::AbstractSuperblock_v::{
     AbstractSuperblockImage, empty_abstract_superblock_image,
     superblock_matches,
 };
-use crate::implementation::CachingDiskBranchBetree_v::
-    CachingDiskBranchBetree;
+use crate::implementation::CachingDiskBranchBetree_v::{
+    CachingDiskBranchBetree, PageAccess,
+};
 use crate::implementation::CrashAwareCachingDiskBranchBetree_v::{
     BetreeMetadataRecoveryLabel, CrashAwareCachingDiskBranchBetree,
     EphemeralCachingDiskBranchBetree, logical_allocs,
@@ -55,7 +56,8 @@ pub open spec fn branch_internal_label(
                 BetreeMetadataRecoveryLabel::DiskInternal,
         } => true,
         CrashAwareCachingDiskBranchBetree::Label::Ephemeral{
-            op: CachingDiskBranchBetree::Label::Internal,
+            op: CachingDiskBranchBetree::Label::Internal
+                | CachingDiskBranchBetree::Label::InternalAccess{..},
             deallocs,
         } => deallocs.is_empty(),
         _ => false,
@@ -132,6 +134,7 @@ state_machine! { CrashAwareCachingDiskBetreeSystem {
     transition! { query(
         lbl: Label,
         new_branch: CrashAwareCachingDiskBranchBetree::State,
+        access: PageAccess,
     ) {
         require let Label::Execute{req, reply} = lbl;
         require req.input is QueryInput;
@@ -152,6 +155,7 @@ state_machine! { CrashAwareCachingDiskBetreeSystem {
                     end_lsn: pre.branch_lsn(),
                     key,
                     value,
+                    access,
                 },
                 deallocs: Set::empty(),
             },
@@ -442,7 +446,7 @@ state_machine! { CrashAwareCachingDiskBetreeSystem {
     ) {
         require lbl is Noop;
         require pre.allocation_ready();
-        require op is InternalAlloc;
+        require op is InternalAllocAccess;
         require logical_allocs(op) == allocs;
         require allocs <= pre.free_aus;
         require CrashAwareCachingDiskBranchBetree::State::next(

@@ -213,6 +213,7 @@ state_machine!{ CachingDisk {
             self.persistent.contains_key(addr) ==> self.persistent[addr] == self.cache[addr],
     {
         reveal(CachingDisk::State::clean_pages_agree);
+
     }
 
     pub proof fn au_clean_or_evictable(self, aus: Set<AU>, addr: Address)
@@ -225,6 +226,7 @@ state_machine!{ CachingDisk {
             self.status[addr] == PageStatus::Clean,
     {
         reveal(CachingDisk::State::aus_clean_or_evictable);
+
     }
 
     pub proof fn aus_clean_or_evictable_from_forall(self, aus: Set<AU>)
@@ -237,6 +239,7 @@ state_machine!{ CachingDisk {
             self.aus_clean_or_evictable(aus),
     {
         reveal(CachingDisk::State::aus_clean_or_evictable);
+
     }
 
     pub proof fn aus_clean_or_evictable_implies_persistent_visible_agree(
@@ -275,6 +278,7 @@ state_machine!{ CachingDisk {
             self.status[addr] == PageStatus::Clean,
     {
         reveal(CachingDisk::State::addrs_clean_or_evictable);
+
     }
 
     pub proof fn addrs_clean_or_evictable_from_forall(self, addrs: Set<Address>)
@@ -287,6 +291,7 @@ state_machine!{ CachingDisk {
             self.addrs_clean_or_evictable(addrs),
     {
         reveal(CachingDisk::State::addrs_clean_or_evictable);
+
     }
 
     pub proof fn clean_pages_agree_from_forall(self)
@@ -299,6 +304,7 @@ state_machine!{ CachingDisk {
             self.clean_pages_agree(),
     {
         reveal(CachingDisk::State::clean_pages_agree);
+
     }
 
     pub proof fn empty_status_clean_pages_agree(self)
@@ -323,7 +329,6 @@ state_machine!{ CachingDisk {
 
     #[inductive(load)]
     fn load_inductive(pre: Self, post: Self, lbl: Label, loads: Map<Address, RawPage>) {
-        reveal(CachingDisk::State::load);
         assert(lbl is Internal);
         assert(post.status.dom() =~= post.cache.dom()) by {
             assert forall |addr: Address| #[trigger] post.status.dom().contains(addr)
@@ -555,12 +560,10 @@ state_machine!{ CachingDisk {
         match step {
             CachingDisk::Step::load(loads) => {
                 assert(CachingDisk::State::load(pre, post, lbl, loads)) by {
-                    reveal(CachingDisk::State::load);
                 }
                 CachingDisk::State::load_inductive(pre, post, lbl, loads);
             },
             CachingDisk::Step::access() => {
-                reveal(CachingDisk::State::access);
                 assert(CachingDisk::State::access(pre, post, lbl));
                 let writes = lbl.arrow_Access_writes();
                 assert(post.status.dom() =~= post.cache.dom()) by {
@@ -686,7 +689,6 @@ impl CachingDisk::State {
         let step = choose |step| CachingDisk::State::next_by(pre, post, lbl, step);
         match step {
             CachingDisk::Step::access() => {
-                reveal(CachingDisk::State::access);
                 assert(CachingDisk::State::access(pre, post, lbl));
             },
             _ => { assert(false); },

@@ -29,6 +29,9 @@ use crate::spec::TotalKMMap_t::TotalKMMap;
 
 verus! {
 
+// Retained with AllocationBranchStack_v for a possible branch-as-memtable
+// design. The active Betree bulk loader refines through the slim bulk branch.
+
 pub open spec fn normalize_message(msg: Message) -> Message
 {
     Message::Define{value: normalize_value(msg)}
@@ -1451,7 +1454,6 @@ impl AllocationBranchStack::State {
         ensures
             AbstractMap::State::next(self.abstract_map_i(), post.abstract_map_i(), self.label_to_abstract_map(lbl)),
     {
-        reveal(AllocationBranchStack::State::append_to_active);
         match lbl {
             AllocationBranchStack::Label::AppendLabel{keys, msgs} => {
                 assert forall |key: Key| #[trigger] keys.contains(key)

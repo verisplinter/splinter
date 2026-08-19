@@ -7,7 +7,7 @@ use vstd::prelude::*;
 use vstd::map::*;
 use vstd::assert_maps_equal;
 
-use crate::allocation_layer::AllocationBranch_v::Summary;
+use crate::allocation_layer::BranchTypes_v::Summary;
 use crate::betree::LinkedBranch_v::{DiskView as SpecDiskView, LinkedBranch as SpecLinkedBranch, Node as SpecNode, Path as SpecPath, SplitArg};
 use crate::disk::GenericDisk_v::{AU, Address};
 pub use crate::implementation::IBranchNode_v::IBranchNode as BranchNode;

@@ -248,7 +248,6 @@ proof fn receipt_query_matches_branch_query_internal(
         assert(receipt.lines.len() == 1);
         assert(receipt.target() == receipt.lines[0]);
         assert(branch.root() == receipt.target().node);
-        reveal(LinkedBranch::query_internal);
     } else {
         assert(receipt.lines.len() > 1);
         assert(receipt.lines[0].node is Index);
@@ -557,7 +556,6 @@ proof fn branch_query_nop_for_append_key_internal(
                 assert(false);
             }
         }
-        reveal(LinkedBranch::query_internal);
     } else {
         assert(branch.root() is Index);
         let child_idx = branch.root().route(path.key) + 1;
@@ -908,8 +906,6 @@ impl CachingDiskBranch::State {
             ),
     {
         CachingDiskBranch::State::initialize_inductive(post, image);
-        reveal(CachingDiskBranch::State::initialize);
-        reveal(AllocationBranchStack::State::initialize);
         assert(post.sealed_roots == image.sealed_roots);
         assert(post.branch_summary == Map::<AU, Summary>::empty());
         assert(post.persisted_root_count == image.sealed_roots.len());
@@ -1205,42 +1201,33 @@ impl CachingDiskBranch::State {
             AllocationBranchStack::State::next_by(self.i(), post.i(), lbl.i(), step);
         match stack_step {
             AllocationBranchStack::Step::internal_noop() => {
-                reveal(AllocationBranchStack::State::internal_noop);
                 assert(post.i() == self.i());
             },
             AllocationBranchStack::Step::internal_grow(new_root_addr) => {
-                reveal(AllocationBranchStack::State::internal_grow);
                 assert(post.i().sealed_stack == self.i().sealed_stack);
             },
             AllocationBranchStack::Step::internal_split(new_child_addr, path, split_arg) => {
-                reveal(AllocationBranchStack::State::internal_split);
                 assert(post.i().sealed_stack == self.i().sealed_stack);
             },
             AllocationBranchStack::Step::internal_fill_au(aus) => {
-                reveal(AllocationBranchStack::State::internal_fill_au);
                 assert(post.i().sealed_stack == self.i().sealed_stack);
             },
             AllocationBranchStack::Step::append_to_active(path) => {
-                reveal(AllocationBranchStack::State::append_to_active);
                 assert(post.i().sealed_stack == self.i().sealed_stack);
             },
             AllocationBranchStack::Step::append_to_empty(init_root) => {
-                reveal(AllocationBranchStack::State::append_to_empty);
                 assert(post.i().sealed_stack == self.i().sealed_stack);
             },
             AllocationBranchStack::Step::query_step() => {
-                reveal(AllocationBranchStack::State::query_step);
                 assert(post.i() == self.i());
             },
             AllocationBranchStack::Step::internal_seal(aux_ptr, loose_active_disk) => {
-                reveal(AllocationBranchStack::State::internal_seal);
                 reveal(CachingDiskBranch::State::next);
                 reveal(CachingDiskBranch::State::next_by);
                 let cdb_step = choose |step: CachingDiskBranch::Step|
                     CachingDiskBranch::State::next_by(self, post, lbl, step);
                 match cdb_step {
                     CachingDiskBranch::Step::internal_seal(written_disk, concrete_aux_ptr, reads, writes) => {
-                        reveal(CachingDiskBranch::State::internal_seal);
                         let sealed_root = self.active_branch.root.unwrap();
                         let sealed_summary = self.mini_allocator.allocated_aus();
                         let pre_img = self.visible_image_for_metadata(frozen);
@@ -1267,7 +1254,6 @@ impl CachingDiskBranch::State {
                             CachedBranch::State::next_by(self.active_branch, self.active_branch, branch_lbl, step);
                         match cb_step {
                             CachedBranch::Step::seal_step() => {
-                                reveal(CachedBranch::State::seal_step);
                             },
                             _ => { assert(false); },
                         }
@@ -1552,7 +1538,6 @@ impl CachingDiskBranch::State {
         match step {
             CachingDiskBranch::Step::disk_internal(new_disk) => {
                 assert(CachingDiskBranch::State::disk_internal(self, post, lbl, new_disk)) by {
-                    reveal(CachingDiskBranch::State::disk_internal);
                 }
                 CachingDisk::State::internal_visible_unchanged(self.disk, post.disk);
                 assert(post.sealed_roots == self.sealed_roots);
@@ -1568,7 +1553,6 @@ impl CachingDiskBranch::State {
                 reveal(AllocationBranchStack::State::next);
                 reveal(AllocationBranchStack::State::next_by);
                 assert(AllocationBranchStack::State::internal_noop(self.i(), post.i(), lbl.i())) by {
-                    reveal(AllocationBranchStack::State::internal_noop);
                 }
                 assert(AllocationBranchStack::State::next_by(
                     self.i(),
@@ -1579,7 +1563,6 @@ impl CachingDiskBranch::State {
             },
             CachingDiskBranch::Step::observe_persisted_roots(target_count) => {
                 assert(CachingDiskBranch::State::observe_persisted_roots(self, post, lbl, target_count)) by {
-                    reveal(CachingDiskBranch::State::observe_persisted_roots);
                 }
                 assert(post.sealed_roots == self.sealed_roots);
                 assert(post.branch_summary == self.branch_summary);
@@ -1594,7 +1577,6 @@ impl CachingDiskBranch::State {
                 reveal(AllocationBranchStack::State::next);
                 reveal(AllocationBranchStack::State::next_by);
                 assert(AllocationBranchStack::State::internal_noop(self.i(), post.i(), lbl.i())) by {
-                    reveal(AllocationBranchStack::State::internal_noop);
                 }
                 assert(AllocationBranchStack::State::next_by(
                     self.i(),
@@ -1605,7 +1587,6 @@ impl CachingDiskBranch::State {
             },
             CachingDiskBranch::Step::load_metadata(reads) => {
                 assert(CachingDiskBranch::State::load_metadata(self, post, lbl, reads)) by {
-                    reveal(CachingDiskBranch::State::load_metadata);
                 }
                 assert(post.sealed_roots == self.sealed_roots);
                 assert(post.persisted_root_count == self.persisted_root_count);
@@ -1621,7 +1602,6 @@ impl CachingDiskBranch::State {
                 reveal(AllocationBranchStack::State::next);
                 reveal(AllocationBranchStack::State::next_by);
                 assert(AllocationBranchStack::State::internal_noop(self.i(), post.i(), lbl.i())) by {
-                    reveal(AllocationBranchStack::State::internal_noop);
                 }
                 assert(AllocationBranchStack::State::next_by(
                     self.i(),
@@ -1632,13 +1612,11 @@ impl CachingDiskBranch::State {
             },
             CachingDiskBranch::Step::internal_noop() => {
                 assert(CachingDiskBranch::State::internal_noop(self, post, lbl)) by {
-                    reveal(CachingDiskBranch::State::internal_noop);
                 }
                 assert(post == self);
                 reveal(AllocationBranchStack::State::next);
                 reveal(AllocationBranchStack::State::next_by);
                 assert(AllocationBranchStack::State::internal_noop(self.i(), post.i(), lbl.i())) by {
-                    reveal(AllocationBranchStack::State::internal_noop);
                 }
                 assert(AllocationBranchStack::State::next_by(
                     self.i(),
@@ -1649,13 +1627,11 @@ impl CachingDiskBranch::State {
             },
             CachingDiskBranch::Step::freeze_prepared() => {
                 assert(CachingDiskBranch::State::freeze_prepared(self, post, lbl)) by {
-                    reveal(CachingDiskBranch::State::freeze_prepared);
                 }
                 assert(post == self);
                 reveal(AllocationBranchStack::State::next);
                 reveal(AllocationBranchStack::State::next_by);
                 assert(AllocationBranchStack::State::internal_noop(self.i(), post.i(), lbl.i())) by {
-                    reveal(AllocationBranchStack::State::internal_noop);
                 }
                 assert(AllocationBranchStack::State::next_by(
                     self.i(),
@@ -1666,9 +1642,7 @@ impl CachingDiskBranch::State {
             },
             CachingDiskBranch::Step::freeze_as() => {
                 assert(CachingDiskBranch::State::freeze_as(self, post, lbl)) by {
-                    reveal(CachingDiskBranch::State::freeze_as);
                 }
-                reveal(CachingDiskBranch::State::freeze_as);
                 assert(post == self);
                 match lbl {
                     CachingDiskBranch::Label::FreezeAsLabel{image} => {
@@ -1680,7 +1654,6 @@ impl CachingDiskBranch::State {
                 reveal(AllocationBranchStack::State::next);
                 reveal(AllocationBranchStack::State::next_by);
                 assert(AllocationBranchStack::State::internal_noop(self.i(), post.i(), lbl.i())) by {
-                    reveal(AllocationBranchStack::State::internal_noop);
                 }
                 assert(AllocationBranchStack::State::next_by(
                     self.i(),
@@ -1691,7 +1664,6 @@ impl CachingDiskBranch::State {
             },
             CachingDiskBranch::Step::internal_fill_au(aus, new_disk) => {
                 assert(CachingDiskBranch::State::internal_fill_au(self, post, lbl, aus, new_disk)) by {
-                    reveal(CachingDiskBranch::State::internal_fill_au);
                 }
                 match lbl {
                     CachingDiskBranch::Label::InternalAlloc{allocs, deallocs} => {
@@ -1700,7 +1672,6 @@ impl CachingDiskBranch::State {
                     },
                     _ => { assert(false); }
                 }
-                reveal(CachingDiskBranch::State::internal_fill_au);
                 mini_allocator_add_aus_preserves_all_aus(self.mini_allocator, aus);
 
                 assert(post.sealed_roots == self.sealed_roots);
@@ -1781,7 +1752,6 @@ impl CachingDiskBranch::State {
                     lbl.i(),
                     aus,
                 )) by {
-                    reveal(AllocationBranchStack::State::internal_fill_au);
                 }
                 assert(AllocationBranchStack::State::next_by(
                     self.i(),
@@ -1802,9 +1772,7 @@ impl CachingDiskBranch::State {
                     reads,
                     writes,
                 )) by {
-                    reveal(CachingDiskBranch::State::append);
                 }
-                reveal(CachingDiskBranch::State::append);
                 match lbl {
                     CachingDiskBranch::Label::AppendLabel{keys, msgs} => {
                         if self.active_branch.root is Some {
@@ -1827,7 +1795,6 @@ impl CachingDiskBranch::State {
                             match cb_step {
                                 CachedBranch::Step::append_step() => {
                                     assert(CachedBranch::State::append_step(self.active_branch, new_active_branch, branch_lbl)) by {
-                                        reveal(CachedBranch::State::append_step);
                                     }
                                 },
                                 _ => { assert(false); },
@@ -2017,7 +1984,6 @@ impl CachingDiskBranch::State {
                                 lbl.i(),
                                 path,
                             )) by {
-                                reveal(AllocationBranchStack::State::append_to_active);
                             }
                             assert(AllocationBranchStack::State::next_by(
                                 self.i(),
@@ -2044,7 +2010,6 @@ impl CachingDiskBranch::State {
                             match cb_step {
                                 CachedBranch::Step::initialize_branch() => {
                                     assert(CachedBranch::State::initialize_branch(self.active_branch, new_active_branch, branch_lbl)) by {
-                                        reveal(CachedBranch::State::initialize_branch);
                                     }
                                 },
                                 _ => { assert(false); },
@@ -2168,7 +2133,6 @@ impl CachingDiskBranch::State {
                                 lbl.i(),
                                 init_addr,
                             )) by {
-                                reveal(AllocationBranchStack::State::append_to_empty);
                             }
                             assert(AllocationBranchStack::State::next_by(
                                 self.i(),
@@ -2183,9 +2147,7 @@ impl CachingDiskBranch::State {
             },
             CachingDiskBranch::Step::internal_grow(new_disk, new_root_addr, reads, writes) => {
                 assert(CachingDiskBranch::State::internal_grow(self, post, lbl, new_disk, new_root_addr, reads, writes)) by {
-                    reveal(CachingDiskBranch::State::internal_grow);
                 }
-                reveal(CachingDiskBranch::State::internal_grow);
                 let write_nodes = to_branch_nodes(writes);
                 let old_root = self.active_branch.root.unwrap();
                 let branch = self.i().active_branch.branch.unwrap();
@@ -2337,7 +2299,6 @@ impl CachingDiskBranch::State {
                     lbl.i(),
                     new_root_addr,
                 )) by {
-                    reveal(AllocationBranchStack::State::internal_grow);
                 }
                 assert(AllocationBranchStack::State::next_by(
                     self.i(),
@@ -2348,9 +2309,7 @@ impl CachingDiskBranch::State {
             },
             CachingDiskBranch::Step::query(receipts, reads) => {
                 assert(CachingDiskBranch::State::query(self, post, lbl, receipts, reads)) by {
-                    reveal(CachingDiskBranch::State::query);
                 }
-                reveal(CachingDiskBranch::State::query);
                 match lbl {
                     CachingDiskBranch::Label::QueryLabel{key, msg} => {
                         CachingDisk::State::access_effect(
@@ -2386,7 +2345,6 @@ impl CachingDiskBranch::State {
                         reveal(AllocationBranchStack::State::next);
                         reveal(AllocationBranchStack::State::next_by);
                         assert(AllocationBranchStack::State::query_step(self.i(), post.i(), lbl.i())) by {
-                            reveal(AllocationBranchStack::State::query_step);
                         }
                         assert(AllocationBranchStack::State::next_by(
                             self.i(),
@@ -2410,9 +2368,7 @@ impl CachingDiskBranch::State {
                     reads,
                     writes,
                 )) by {
-                    reveal(CachingDiskBranch::State::internal_split);
                 }
-                reveal(CachingDiskBranch::State::internal_split);
                 let read_nodes = to_branch_nodes(reads);
                 let write_nodes = to_branch_nodes(writes);
                 let branch = self.i().active_branch.branch.unwrap();
@@ -2631,7 +2587,6 @@ impl CachingDiskBranch::State {
                     path,
                     split_arg,
                 )) by {
-                    reveal(AllocationBranchStack::State::internal_split);
                 }
                 assert(AllocationBranchStack::State::next_by(
                     self.i(),
@@ -2650,9 +2605,7 @@ impl CachingDiskBranch::State {
                     reads,
                     writes,
                 )) by {
-                    reveal(CachingDiskBranch::State::internal_seal);
                 }
-                reveal(CachingDiskBranch::State::internal_seal);
 
                 let read_nodes = to_branch_nodes(reads);
                 let write_nodes = to_branch_nodes(writes);
@@ -3164,7 +3117,6 @@ impl CachingDiskBranch::State {
                     aux_ptr,
                     loose_active_disk,
                 )) by {
-                    reveal(AllocationBranchStack::State::internal_seal);
                 }
                 assert(AllocationBranchStack::State::next_by(
                     self.i(),

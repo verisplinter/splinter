@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-2-Clause
 use vstd::{prelude::*};
 use vstd::assert_maps_equal;
+use vstd::assert_sets_equal;
 use crate::abstract_system::MsgHistory_v::{MsgHistory, KeyedMessage};
 use crate::abstract_system::StampedMap_v::LSN;
 use crate::marshalling::Marshalling_v::Parsedview;
@@ -11,11 +12,14 @@ use crate::spec::AsyncDisk_t::{DiskRequest, RawPage};
 use crate::implementation::OverflowFiction_v::convert_overflow_into_liveness_failure;
 use crate::implementation::CachedJournal_v::{CachedJournal, JournalRoot, JournalSnapshot, JournalStatus, acyclic_reads, all_addrs_have_complete_lsn_ranges, all_addrs_have_finite_lsn_sets, au_page_bounds_observe_addr, build_au_page_bounds_from_reads_au_walk_depth, build_lsn_addr_index_from_reads, build_lsn_addr_index_from_reads_extend_next_ptr, build_lsn_addr_index_from_reads_key_range, build_lsn_addr_index_from_reads_next_ptr, build_lsn_addr_index_from_reads_next_ptr_after_insert, build_lsn_addr_index_from_reads_next_ptr_not_in_reads, build_lsn_addr_index_from_reads_to_au_index_au_walk_depth, build_lsn_addr_index_from_reads_values_bounded_by_au_page_bounds, build_lsn_addr_index_from_reads_values_bounded_by_page_bounds, build_lsn_addr_index_from_reads_values_in_reads, build_lsn_au_index_from_reads_au_walk_depth, freeze_reads_for_seq_end, largest_lsn_plus_one_au, lsn_addr_index_to_au_index, lsn_addr_index_to_au_index_append_record, lsn_index_domain_exact, maxmax_au, page_walk_reads_cover_addr_build_matches_full_by_value, page_walk_reads_cover_to_au_walk_reads_cover, page_walk_reads_prefix, page_walk_reads_prefix_complete, page_walk_reads_prefix_extend};
 use crate::disk::GenericDisk_v::{Address, AU, IAddress, Pointer, Ranking, page_count, to_aus, to_aus_domain};
-use crate::implementation::AllocationBranchStackRefinement_v::{append_put_message, append_puts};
+use crate::implementation::BranchProofUtils_v::{append_put_message, append_puts};
 use crate::implementation::DiskLayout_v::spec_superblock_addr;
 use crate::implementation::JournalTypes_v::AJournal;
 use crate::implementation::JournalTypes_v::ILsn;
 use crate::implementation::JournalTypes_v::{journal_marshall_labels, raw_page_to_record, to_journal_records};
+use crate::implementation::AtomicJournalState_v::{
+    AtomicJournalState, journal_snapshot_seq_end_from_reads,
+};
 use crate::allocation_layer::AllocationJournal_v::{
     AUPageBounds, LsnAUIndex, lsn_au_index_append_record,
     lsn_au_index_append_record_ensures, lsn_au_index_discard_up_to,
@@ -115,6 +119,124 @@ fn please_panic()
     ensures false
 {
     convert_overflow_into_liveness_failure();
+}
+
+proof fn iau_vec_set_push(aus: Seq<IAU>, au: IAU)
+    ensures
+        iau_vec_set(aus.push(au))
+            =~= iau_vec_set(aus) + set![au as nat],
+{
+    assert_sets_equal!(
+        iau_vec_set(aus.push(au)),
+        iau_vec_set(aus) + set![au as nat],
+        x => {
+            if iau_vec_set(aus.push(au)).contains(x) {
+                let i = choose |i: int| 0 <= i < aus.push(au).len()
+                    && #[trigger] aus.push(au)[i] as nat == x;
+                if i < aus.len() {
+                    assert(aus.push(au)[i] == aus[i]);
+                    assert(iau_vec_set(aus).contains(x));
+                } else {
+                    assert(i == aus.len());
+                    assert(aus.push(au)[i] == au);
+                    assert(x == au as nat);
+                }
+            }
+            if (iau_vec_set(aus) + set![au as nat]).contains(x) {
+                if iau_vec_set(aus).contains(x) {
+                    let i = choose |i: int| 0 <= i < aus.len()
+                        && #[trigger] aus[i] as nat == x;
+                    assert(aus.push(au)[i] == aus[i]);
+                    assert(iau_vec_set(aus.push(au)).contains(x));
+                } else {
+                    assert(x == au as nat);
+                    assert(aus.push(au)[aus.len() as int] == au);
+                    assert(iau_vec_set(aus.push(au)).contains(x));
+                }
+            }
+        }
+    );
+}
+
+fn journal_iau_vec_contains(aus: &Vec<IAU>, target: IAU) -> (out: bool)
+    ensures
+        out <==> iau_vec_set(aus@).contains(target as nat),
+{
+    let mut idx: usize = 0;
+    while idx < aus.len()
+        invariant
+            idx <= aus.len(),
+            forall |i: int| 0 <= i < idx
+                ==> #[trigger] aus@[i] != target,
+        decreases aus.len() - idx,
+    {
+        if aus[idx] == target {
+            return true;
+        }
+        idx += 1;
+    }
+    false
+}
+
+fn iau_vec_difference(left: &Vec<IAU>, right: &Vec<IAU>) -> (out: Vec<IAU>)
+    ensures
+        iau_vec_set(out@)
+            =~= iau_vec_set(left@) - iau_vec_set(right@),
+{
+    let mut out = Vec::<IAU>::new();
+    let mut idx: usize = 0;
+    while idx < left.len()
+        invariant
+            idx <= left.len(),
+            iau_vec_set(out@)
+                =~= iau_vec_set(left@.take(idx as int))
+                    - iau_vec_set(right@),
+        decreases left.len() - idx,
+    {
+        let au = left[idx];
+        let ghost old_out = out@;
+        let ghost old_prefix = left@.take(idx as int);
+        let in_right = journal_iau_vec_contains(right, au);
+        proof {
+            assert(left@.take((idx + 1) as int)
+                == old_prefix.push(au));
+            iau_vec_set_push(old_prefix, au);
+        }
+        if !in_right {
+            out.push(au);
+            proof {
+                iau_vec_set_push(old_out, au);
+                assert(iau_vec_set(out@)
+                    =~= iau_vec_set(left@.take((idx + 1) as int))
+                        - iau_vec_set(right@)) by {
+                    assert_sets_equal!(
+                        iau_vec_set(out@),
+                        iau_vec_set(left@.take((idx + 1) as int))
+                            - iau_vec_set(right@),
+                        x => {}
+                    );
+                }
+            }
+        } else {
+            proof {
+                assert(iau_vec_set(out@)
+                    =~= iau_vec_set(left@.take((idx + 1) as int))
+                        - iau_vec_set(right@)) by {
+                    assert_sets_equal!(
+                        iau_vec_set(out@),
+                        iau_vec_set(left@.take((idx + 1) as int))
+                            - iau_vec_set(right@),
+                        x => {}
+                    );
+                }
+            }
+        }
+        idx += 1;
+    }
+    proof {
+        assert(left@.take(idx as int) == left@);
+    }
+    out
 }
 
 impl View for IJournalSnapshot {
@@ -248,6 +370,14 @@ pub enum RecoverMapResult{
     FetchSuccess{reads: Ghost<Map<Address, RawPage>>, addr: Ghost<Address>, record: IJournalRecord},
     NotInCache{},
     InvalidRecord{},
+}
+
+pub enum PrepareFreezeReadsResult {
+    Ready { reads: Ghost<Map<Address, RawPage>> },
+    NeedCacheLoad { addr: IAddress, slot_handle: MutHandle },
+    CacheFull,
+    Blocked,
+    InvalidRecord,
 }
 
 pub enum UnifiedRecoverIndexResult {
@@ -609,7 +739,6 @@ proof fn append_preserves_addr_bounds(
     let update = singleton_index(start, end, addr);
     let new_index = lsn_addr_index_append_record(old_index, start, end, addr);
     let new_bounds = au_page_bounds_observe_addr(old_bounds, addr);
-    reveal(lsn_addr_index_append_record);
     assert forall |a: Address| #[trigger] new_index.values().contains(a)
         implies new_bounds.contains_key(a.au) && a.page <= new_bounds[a.au] by {
         let lsn = choose |lsn: LSN| #[trigger] new_index.contains_key(lsn) && new_index[lsn] == a;
@@ -1150,7 +1279,6 @@ impl JournalImpl {
                 clean_watermark_lsn: pre@.snapshot.boundary_lsn,
             });
             assert(CachedJournal::State::load_index(pre@, self@, lbl, 0, 0)) by {
-                reveal(CachedJournal::State::load_index);
             }
             assert(CachedJournal::State::next_by(
                 pre@,
@@ -1469,6 +1597,7 @@ impl JournalImpl {
     ensures ({
         &&& self.wf()
         &&& self@.wf()
+        &&& self.journal_alloc == old(self).journal_alloc
         &&& self.journal_alloc.i() == old(self).journal_alloc.i()
         &&& self.seq_start() == old(self).seq_start()
         &&& self.snapshot_geometry_bounded(total_aus)
@@ -2042,6 +2171,7 @@ impl JournalImpl {
                                 assert(lsn_addr_index =~= full_tj.build_lsn_addr_index());
                                 full_tj.build_lsn_addr_index_ensures();
                                 reveal(LinkedJournal_v::TruncatedJournal::index_domain_valid);
+
                                 let model_index = self.status.unwrap().lsn_addr_index@;
                                 let lai_seq_end = self.status.unwrap().lsn_addr_index.seq_end() as nat;
                                 assert(full_tj.seq_end() == lai_seq_end) by {
@@ -2185,7 +2315,6 @@ impl JournalImpl {
                                 load_index_depth,
                                 load_index_depth,
                             )) by {
-                                reveal(CachedJournal::State::load_index);
                             }
                             assert(CachedJournal::State::next_by(
                                 old(self)@,
@@ -2325,6 +2454,8 @@ impl JournalImpl {
         self@.wf(),
         self.seq_start() == old(self).seq_start(),
         self.seq_end() == old(self).seq_end() + 1,
+        self.marshalled_seq_end() == old(self).marshalled_seq_end(),
+        self.clean_watermark() == old(self).clean_watermark(),
         self.journal_alloc.i() == old(self).journal_alloc.i(),
         self.journal_alloc.allocators@ == old(self).journal_alloc.allocators@,
         self.journal_alloc.curr == old(self).journal_alloc.curr,
@@ -2573,10 +2704,12 @@ impl JournalImpl {
         &mut self,
         cache: &mut FracCacheImpl,
         journal_raw_disk_ghost: Ghost<Map<Address, RawPage>>,
+        atomic_pre: Ghost<AtomicJournalState::State>,
         total_aus: IAU,
     ) -> (out: UnifiedRecoverIndexResult)
         requires
             old(self).basic_wf(),
+            atomic_pre@.journal == old(self)@,
             !old(self).index_ready(),
             old(self).snapshot_geometry_bounded(total_aus),
             old(cache).wf(),
@@ -2592,6 +2725,7 @@ impl JournalImpl {
         ensures ({
             &&& self.basic_wf()
             &&& self@.wf()
+            &&& self.journal_alloc == old(self).journal_alloc
             &&& self.journal_alloc.i() == old(self).journal_alloc.i()
             &&& self.seq_start() == old(self).seq_start()
             &&& self.snapshot_geometry_bounded(total_aus)
@@ -2609,6 +2743,10 @@ impl JournalImpl {
                 },
                 UnifiedRecoverIndexResult::IndexComplete{reads, discovered_aus} => {
                     let (cache_lbl, journal_lbl) = load_index_labels(reads@);
+                    let atomic_post = AtomicJournalState::State {
+                        journal: self@,
+                        ..atomic_pre@
+                    };
                     &&& old(cache)@ == cache@
                     &&& self.wf()
                     &&& self.index_ready()
@@ -2618,12 +2756,13 @@ impl JournalImpl {
                     &&& iau_vec_set(discovered_aus@) =~= to_aus(reads@.dom())
                     &&& Cache::State::next(old(cache)@, cache@, cache_lbl)
                     &&& CachedJournal::State::next(old(self)@, self@, journal_lbl)
-                    &&& exists |au_depth: nat, page_depth: nat| CachedJournal::State::load_index(
-                        old(self)@,
-                        self@,
-                        journal_lbl,
-                        au_depth,
-                        page_depth,
+                    &&& AtomicJournalState::State::next(
+                        atomic_pre@,
+                        atomic_post,
+                        AtomicJournalState::Label::LoadIndex {
+                            reads: to_journal_records(reads@),
+                            discovered_aus: to_aus(reads@.dom()),
+                        },
                     )
                 },
                 UnifiedRecoverIndexResult::IndexProgress{} => {
@@ -2657,6 +2796,46 @@ impl JournalImpl {
                         =~= to_aus(reads@.dom()));
                     assert(iau_vec_set(discovered_aus@)
                         =~= to_aus(reads@.dom()));
+                    let (cache_lbl, journal_lbl) = load_index_labels(reads@);
+                    let (au_depth, page_depth) = choose |
+                        au_depth: nat,
+                        page_depth: nat,
+                    | CachedJournal::State::load_index(
+                        old(self)@,
+                        self@,
+                        journal_lbl,
+                        au_depth,
+                        page_depth,
+                    );
+                    let atomic_post = AtomicJournalState::State {
+                        journal: self@,
+                        ..atomic_pre@
+                    };
+                    assert(AtomicJournalState::State::next_by(
+                        atomic_pre@,
+                        atomic_post,
+                        AtomicJournalState::Label::LoadIndex {
+                            reads: to_journal_records(reads@),
+                            discovered_aus: to_aus(reads@.dom()),
+                        },
+                        AtomicJournalState::Step::load_index(
+                            self@,
+                            au_depth,
+                            page_depth,
+                        ),
+                    )) by {
+                        reveal(AtomicJournalState::State::next_by);
+                    }
+                    assert(AtomicJournalState::State::next(
+                        atomic_pre@,
+                        atomic_post,
+                        AtomicJournalState::Label::LoadIndex {
+                            reads: to_journal_records(reads@),
+                            discovered_aus: to_aus(reads@.dom()),
+                        },
+                    )) by {
+                        reveal(AtomicJournalState::State::next);
+                    }
                 }
                 UnifiedRecoverIndexResult::IndexComplete{reads, discovered_aus}
             },
@@ -2808,6 +2987,7 @@ impl JournalImpl {
             match out {
                 MarshalReserveResult::Reserved{addr, slot_handle} => {
                     &&& cache.entry_fetched(&addr)
+                    &&& !old(cache).entry_fetched(&addr)
                     &&& cache.valid_write_handle(&addr, slot_handle)
                     &&& cache@.valid_write(addr@)
                     &&& !self.status.unwrap().lsn_addr_index@.values().contains(addr@)
@@ -2819,6 +2999,9 @@ impl JournalImpl {
                         addr@,
                     )
                     &&& self.journal_alloc.i() == old(self).journal_alloc.i().allocate(addr@)
+                    &&& forall |read_addr: Address, data: RawPage|
+                        old(cache)@.valid_read(read_addr, data)
+                            ==> cache@.valid_read(read_addr, data)
                     &&& Cache::State::next(old(cache)@, cache@, Cache::Label::Internal)
                 },
                 MarshalReserveResult::CacheFull{} => {
@@ -2931,6 +3114,16 @@ impl JournalImpl {
                         =~= old(self).status.unwrap().lsn_addr_index@.values());
                     assert(Cache::State::next(cache0@, cache@, Cache::Label::Internal));
                     Cache::State::inv_next(cache0@, cache@, Cache::Label::Internal);
+                    assert forall |read_addr: Address, data: RawPage|
+                        cache0@.valid_read(read_addr, data)
+                        implies cache@.valid_read(read_addr, data) by {
+                        assert(read_addr != addr@) by {
+                            if read_addr == addr@ {
+                                assert(cache0.entry_fetched(&addr));
+                                assert(false);
+                            }
+                        }
+                    }
                     assert(self.status.unwrap().lsn_addr_index@.values().contains(addr@)
                         == old(self).status.unwrap().lsn_addr_index@.values().contains(addr@));
                 }
@@ -3195,7 +3388,6 @@ impl JournalImpl {
                 cut,
                 addr@,
             )) by {
-                reveal(CachedJournal::State::internal_journal_marshal);
             }
             reveal(CachedJournal::State::next_by);
             reveal(CachedJournal::State::next);
@@ -3345,6 +3537,36 @@ impl JournalImpl {
         ensures
             post.allocator_index_aligned(),
     {
+    }
+
+    pub proof fn writeback_preserves_ready_wf(
+        pre: &Self,
+        post: &Self,
+        total_aus: IAU,
+    )
+        requires
+            pre.ready_wf(total_aus),
+            post.wf(),
+            post.index_ready(),
+            post.journal_alloc == pre.journal_alloc,
+            post@.status.unwrap().lsn_au_index
+                == pre@.status.unwrap().lsn_au_index,
+        ensures post.ready_wf(total_aus),
+    {
+        assert(post.journal_alloc.bounded(total_aus));
+        assert(MiniAllocatorImpl::allocators_unique(
+            post.journal_alloc.allocators@,
+        ));
+        Self::allocator_index_alignment_preserved(pre, post);
+        assert(post.index_aus_bounded(total_aus)) by {
+            assert forall |au: AU|
+                #[trigger] post@.status.unwrap()
+                    .lsn_au_index.values().contains(au)
+                implies au < total_aus as nat by {
+                assert(pre@.status.unwrap()
+                    .lsn_au_index.values().contains(au));
+            }
+        }
     }
 
     pub proof fn seq_start_le_marshalled_end(&self)
@@ -3520,6 +3742,17 @@ impl JournalImpl {
                 &&& frozen_journal.geometry_bounded(total_aus)
                 &&& (self.clean_watermark() == self.marshalled_seq_end()
                     ==> frozen_journal.snapshot.freshest_rec == self.snapshot.freshest_rec)
+                &&& CachedJournal::State::freeze_for_commit(
+                    self@,
+                    self@,
+                    CachedJournal::Label::FreezeForCommit{
+                        frozen: frozen_journal.snapshot@,
+                        reads: freeze_reads_for_seq_end(
+                            frozen_journal.snapshot@,
+                            frozen_journal.seq_end as nat,
+                        ),
+                    },
+                )
                 &&& CachedJournal::State::next(
                     self@,
                     self@,
@@ -3606,7 +3839,6 @@ impl JournalImpl {
                         self@,
                         lbl,
                     )) by {
-                        reveal(CachedJournal::State::freeze_for_commit);
                     }
                     assert(CachedJournal::State::next_by(
                         self@,
@@ -3741,7 +3973,6 @@ impl JournalImpl {
                         self@,
                         lbl,
                     )) by {
-                        reveal(CachedJournal::State::freeze_for_commit);
                     }
                     assert(CachedJournal::State::next_by(
                         self@,
@@ -3758,6 +3989,403 @@ impl JournalImpl {
         }
     }
 
+    pub exec fn freeze_empty_for_store_commit(
+        &self,
+        boundary_lsn: ILsn,
+    ) -> (out: FrozenJournal)
+        requires
+            self.wf(),
+            self.index_ready(),
+            boundary_lsn as nat == self.seq_end(),
+        ensures
+            out.wf(),
+            out.seq_start() == boundary_lsn,
+            out.seq_end == boundary_lsn,
+            out.snapshot@ == (JournalSnapshot {
+                boundary_lsn: boundary_lsn as nat,
+                root: None,
+            }),
+            CachedJournal::State::freeze_for_commit(
+                self@,
+                self@,
+                CachedJournal::Label::FreezeForCommit {
+                    frozen: out.snapshot@,
+                    reads: Map::empty(),
+                },
+            ),
+            CachedJournal::State::next(
+                self@,
+                self@,
+                CachedJournal::Label::FreezeForCommit {
+                    frozen: out.snapshot@,
+                    reads: Map::empty(),
+                },
+            ),
+    {
+        let out = FrozenJournal::empty_at(boundary_lsn);
+        proof {
+            let lbl = CachedJournal::Label::FreezeForCommit {
+                frozen: out.snapshot@,
+                reads: Map::empty(),
+            };
+            assert(self@.status is Some);
+            assert(self@.seq_start() <= self@.seq_end());
+            assert(self@.seq_end() == boundary_lsn as nat);
+            assert(CachedJournal::State::freeze_for_commit(
+                self@,
+                self@,
+                lbl,
+            )) by {
+
+            }
+            assert(CachedJournal::State::next_by(
+                self@,
+                self@,
+                lbl,
+                CachedJournal::Step::freeze_for_commit(),
+            )) by {
+                reveal(CachedJournal::State::next_by);
+            }
+            reveal(CachedJournal::State::next);
+        }
+        out
+    }
+
+    /// Materialize the exact cache read used by AtomicJournalState::CommitStart.
+    /// A missing root is exposed as a cache-load handle; all other unsuccessful
+    /// results preserve the abstract cache state.
+    pub exec fn prepare_freeze_reads(
+        &self,
+        frozen: &FrozenJournal,
+        cache: &mut FracCacheImpl,
+    ) -> (out: PrepareFreezeReadsResult)
+        requires
+            self.wf(),
+            old(cache).wf(),
+            frozen.wf(),
+            CachedJournal::State::freeze_for_commit(
+                self@,
+                self@,
+                CachedJournal::Label::FreezeForCommit {
+                    frozen: frozen.snapshot@,
+                    reads: freeze_reads_for_seq_end(
+                        frozen.snapshot@,
+                        frozen.seq_end as nat,
+                    ),
+                },
+            ),
+        ensures
+            cache.wf(),
+            cache.valid_load_handles_preserved(*old(cache)),
+            match out {
+                PrepareFreezeReadsResult::Ready { reads } => {
+                    &&& old(cache)@ == cache@
+                    &&& Cache::State::next(
+                        old(cache)@,
+                        cache@,
+                        Cache::Label::Access {
+                            reads: reads@,
+                            writes: Map::empty(),
+                        },
+                    )
+                    &&& CachedJournal::State::next(
+                        self@,
+                        self@,
+                        CachedJournal::Label::FreezeForCommit {
+                            frozen: frozen.snapshot@,
+                            reads: to_journal_records(reads@),
+                        },
+                    )
+                    &&& journal_snapshot_seq_end_from_reads(
+                        frozen.snapshot@,
+                        to_journal_records(reads@),
+                    ) == frozen.seq_end as nat
+                },
+                PrepareFreezeReadsResult::NeedCacheLoad {
+                    addr,
+                    slot_handle,
+                } => {
+                    &&& frozen.snapshot.freshest_rec == Some(addr)
+                    &&& self@.status is Some
+                    &&& self@.status.unwrap().lsn_au_index.values()
+                        .contains(addr@.au)
+                    &&& cache.entry_fetched(&addr)
+                    &&& cache.valid_load_handle(&addr, slot_handle)
+                    &&& Cache::State::next(
+                        old(cache)@,
+                        cache@,
+                        cache_load_label(&addr),
+                    )
+                },
+                PrepareFreezeReadsResult::CacheFull
+                | PrepareFreezeReadsResult::Blocked
+                | PrepareFreezeReadsResult::InvalidRecord => {
+                    old(cache)@ == cache@
+                },
+            },
+    {
+        let root = match frozen.snapshot.freshest_rec {
+            None => {
+                let ghost reads = Map::<Address, RawPage>::empty();
+                proof {
+                    Cache::State::access_empty_is_noop(cache@);
+                    assert(to_journal_records(reads)
+                        == Map::<Address, JournalRecord>::empty());
+                    assert(journal_snapshot_seq_end_from_reads(
+                        frozen.snapshot@,
+                        to_journal_records(reads),
+                    ) == frozen.snapshot@.boundary_lsn);
+                    assert(frozen.seq_end == frozen.snapshot.boundary_lsn);
+                    let lbl = CachedJournal::Label::FreezeForCommit {
+                        frozen: frozen.snapshot@,
+                        reads: to_journal_records(reads),
+                    };
+                    assert(CachedJournal::State::freeze_for_commit(
+                        self@,
+                        self@,
+                        lbl,
+                    ));
+                    assert(CachedJournal::State::next_by(
+                        self@,
+                        self@,
+                        lbl,
+                        CachedJournal::Step::freeze_for_commit(),
+                    )) by {
+                        reveal(CachedJournal::State::next_by);
+                    }
+                    assert(CachedJournal::State::next(self@, self@, lbl)) by {
+                        reveal(CachedJournal::State::next);
+                    }
+                }
+                return PrepareFreezeReadsResult::Ready {
+                    reads: Ghost(reads),
+                };
+            },
+            Some(root) => root,
+        };
+
+        let ghost cache_pre = cache@;
+        match cache.fetch(&root, true) {
+            FetchErrorCode::LoadInitiate { slot_handle } => {
+                PrepareFreezeReadsResult::NeedCacheLoad {
+                    addr: root,
+                    slot_handle,
+                }
+            },
+            FetchErrorCode::CacheFull => PrepareFreezeReadsResult::CacheFull,
+            FetchErrorCode::Awaiting | FetchErrorCode::NotPresent => {
+                PrepareFreezeReadsResult::Blocked
+            },
+            FetchErrorCode::Success { slot_handle } => {
+                let all_slice = Slice::all(&slot_handle.rec);
+                let parsable = self.fmt.exec_parsable(
+                    &all_slice,
+                    &slot_handle.rec,
+                );
+                if !parsable {
+                    let ghost fetched_slot = slot_handle.idx;
+                    let ghost fetched_data = slot_handle.rec@;
+                    let ghost cache_after_fetch = cache@;
+                    cache.handle_release(&root, slot_handle);
+                    proof {
+                        assert(cache_pre.entries
+                            == cache_after_fetch.entries.insert(
+                                fetched_slot,
+                                Entry::Filled {
+                                    addr: root@,
+                                    data: fetched_data,
+                                },
+                            ));
+                        assert(cache@.entries
+                            == cache_after_fetch.entries.insert(
+                                fetched_slot,
+                                Entry::Filled {
+                                    addr: root@,
+                                    data: fetched_data,
+                                },
+                            ));
+                        assert(cache@.entries == cache_pre.entries);
+                        assert(cache@.lookup_map == cache_pre.lookup_map);
+                        assert(cache@.status_map == cache_pre.status_map);
+                        assert(cache@ == cache_pre);
+                    }
+                    return PrepareFreezeReadsResult::InvalidRecord;
+                }
+
+                proof {
+                    assert(all_slice@.i(slot_handle.rec@)
+                        == slot_handle.rec@);
+                    assert(self.fmt.parsable(slot_handle.rec@));
+                }
+                let record = self.fmt.exec_parse(
+                    &all_slice,
+                    &slot_handle.rec,
+                );
+                let record_end = record.seq_end();
+                if record_end != frozen.seq_end {
+                    let ghost fetched_slot = slot_handle.idx;
+                    let ghost fetched_data = slot_handle.rec@;
+                    let ghost cache_after_fetch = cache@;
+                    cache.handle_release(&root, slot_handle);
+                    proof {
+                        assert(cache_pre.entries
+                            == cache_after_fetch.entries.insert(
+                                fetched_slot,
+                                Entry::Filled {
+                                    addr: root@,
+                                    data: fetched_data,
+                                },
+                            ));
+                        assert(cache@.entries
+                            == cache_after_fetch.entries.insert(
+                                fetched_slot,
+                                Entry::Filled {
+                                    addr: root@,
+                                    data: fetched_data,
+                                },
+                            ));
+                        assert(cache@.entries == cache_pre.entries);
+                        assert(cache@.lookup_map == cache_pre.lookup_map);
+                        assert(cache@.status_map == cache_pre.status_map);
+                        assert(cache@ == cache_pre);
+                    }
+                    return PrepareFreezeReadsResult::InvalidRecord;
+                }
+
+                let ghost fetched_slot = slot_handle.idx;
+                let ghost fetched_data = slot_handle.rec@;
+                let ghost reads = map![root@ => fetched_data];
+                let ghost cache_after_fetch = cache@;
+                cache.handle_release(&root, slot_handle);
+                proof {
+                    assert(cache_pre.entries
+                        == cache_after_fetch.entries.insert(
+                            fetched_slot,
+                            Entry::Filled {
+                                addr: root@,
+                                data: fetched_data,
+                            },
+                        ));
+                    assert(cache@.entries
+                        == cache_after_fetch.entries.insert(
+                            fetched_slot,
+                            Entry::Filled {
+                                addr: root@,
+                                data: fetched_data,
+                            },
+                        ));
+                    assert(cache@.entries == cache_pre.entries);
+                    assert(cache@.lookup_map == cache_pre.lookup_map);
+                    assert(cache@.status_map == cache_pre.status_map);
+                    assert(cache@ == cache_pre);
+
+                    to_journal_records_entry_from_exec_parse(
+                        self.fmt,
+                        reads,
+                        root@,
+                        record,
+                    );
+                    assert(to_journal_records(reads)[root@]
+                        == record.parsedv().view());
+                    assert(to_journal_records(reads)[root@]
+                        .message_seq.seq_end == frozen.seq_end as nat);
+                    assert(journal_snapshot_seq_end_from_reads(
+                        frozen.snapshot@,
+                        to_journal_records(reads),
+                    ) == frozen.seq_end as nat);
+
+                    let cache_lbl = Cache::Label::Access {
+                        reads,
+                        writes: Map::empty(),
+                    };
+                    assert forall |addr: Address|
+                        #[trigger] cache_lbl->reads.contains_key(addr)
+                        implies cache_pre.valid_read(
+                            addr,
+                            cache_lbl->reads[addr],
+                        ) by {
+                        assert(addr == root@);
+                        assert(cache_pre.valid_read(root@, fetched_data));
+                    };
+                    assert forall |addr: Address|
+                        #[trigger] cache_lbl->writes.contains_key(addr)
+                        implies cache_pre.valid_write(addr) by {};
+                    let updated_entries = cache_pre.write_updated_entries(
+                        cache_lbl->writes,
+                    );
+                    let updated_status = cache_pre.write_updated_status(
+                        cache_lbl->writes,
+                    );
+                    assert(cache_pre.entries.union_prefer_right(
+                        updated_entries,
+                    ) =~= cache_pre.entries);
+                    assert(cache_pre.status_map.union_prefer_right(
+                        updated_status,
+                    ) =~= cache_pre.status_map);
+                    assert(Cache::State::next_by(
+                        cache_pre,
+                        cache@,
+                        cache_lbl,
+                        Cache::Step::access {},
+                    )) by {
+                        reveal(Cache::State::next_by);
+                    }
+                    assert(Cache::State::next(
+                        cache_pre,
+                        cache@,
+                        cache_lbl,
+                    )) by {
+                        reveal(Cache::State::next);
+                    }
+
+                    let journal_lbl = CachedJournal::Label::FreezeForCommit {
+                        frozen: frozen.snapshot@,
+                        reads: to_journal_records(reads),
+                    };
+                    let witness_lbl = CachedJournal::Label::FreezeForCommit {
+                        frozen: frozen.snapshot@,
+                        reads: freeze_reads_for_seq_end(
+                            frozen.snapshot@,
+                            frozen.seq_end as nat,
+                        ),
+                    };
+                    assert(CachedJournal::State::freeze_for_commit(
+                        self@,
+                        self@,
+                        witness_lbl,
+                    ));
+                    assert(CachedJournal::State::freeze_for_commit(
+                        self@,
+                        self@,
+                        journal_lbl,
+                    )) by {
+
+                        assert(frozen.snapshot@.boundary_lsn
+                            < frozen.seq_end as nat);
+                    }
+                    assert(CachedJournal::State::next_by(
+                        self@,
+                        self@,
+                        journal_lbl,
+                        CachedJournal::Step::freeze_for_commit(),
+                    )) by {
+                        reveal(CachedJournal::State::next_by);
+                    }
+                    assert(CachedJournal::State::next(
+                        self@,
+                        self@,
+                        journal_lbl,
+                    )) by {
+                        reveal(CachedJournal::State::next);
+                    }
+                }
+                PrepareFreezeReadsResult::Ready {
+                    reads: Ghost(reads),
+                }
+            },
+        }
+    }
+
     pub exec fn discard_old(&mut self, boundary_lsn: ILsn, total_aus: IAU)
     requires
         old(self).wf(),
@@ -3771,6 +4399,14 @@ impl JournalImpl {
         self.journal_alloc == old(self).journal_alloc,
         self.seq_start() == boundary_lsn as nat,
         self.seq_end() == old(self).seq_end(),
+        self@.status.unwrap().lsn_au_index
+            == lsn_au_index_discard_up_to(
+                old(self)@.status.unwrap().lsn_au_index,
+                boundary_lsn as nat,
+            ),
+        boundary_lsn as nat == old(self).seq_start() ==>
+            self@.status.unwrap().lsn_au_index
+                == old(self)@.status.unwrap().lsn_au_index,
         ({
             let new_lsn_au_index = lsn_au_index_discard_up_to(
                 old(self)@.status.unwrap().lsn_au_index,
@@ -3960,7 +4596,6 @@ impl JournalImpl {
                 self@,
                 lbl,
             )) by {
-                reveal(CachedJournal::State::discard_old);
             }
             assert(CachedJournal::State::next_by(
                 pre_journal,
@@ -3969,7 +4604,328 @@ impl JournalImpl {
                 CachedJournal::Step::discard_old(),
             ));
             assert(CachedJournal::State::next(pre_journal, self@, lbl));
+            if boundary_lsn as nat == pre_journal.seq_start() {
+                let ghost old_au_index =
+                    pre_journal.status.unwrap().lsn_au_index;
+                let ghost kept = lsn_au_index_discard_up_to(
+                    old_au_index,
+                    boundary_lsn as nat,
+                );
+                assert(kept =~= old_au_index) by {
+                    crate::allocation_layer::AllocationJournal_v::
+                        lsn_au_index_discard_up_to_ensures(
+                            old_au_index,
+                            boundary_lsn as nat,
+                        );
+                    assert_maps_equal!(kept, old_au_index, lsn => {
+                        if old_au_index.contains_key(lsn) {
+                            assert(pre_journal.seq_start() <= lsn) by {
+                                assert(old_index.contains_key(lsn));
+                                assert(lsn_index_domain_exact(
+                                    old_index,
+                                    pre_journal.seq_start(),
+                                    old_index_seq_end as nat,
+                                ));
+                            }
+                        }
+                    });
+                }
+                assert(self@.status.unwrap().lsn_au_index
+                    == old_au_index);
+            }
         }
+    }
+
+    pub exec fn discard_all_for_store_commit(
+        &mut self,
+        total_aus: IAU,
+    ) -> (discarded: Vec<IAU>)
+        requires
+            old(self).ready_wf(total_aus),
+            old(self).marshalled_seq_end() == old(self).seq_end(),
+            0 < page_count(),
+        ensures
+            self.ready_wf(total_aus),
+            self.seq_start() == old(self).seq_end(),
+            self.seq_end() == old(self).seq_end(),
+            iau_vec_set(discarded@)
+                =~= old(self)@.status.unwrap().lsn_au_index.values(),
+            self.journal_alloc.i()
+                == old(self).journal_alloc.i().prune(
+                    iau_vec_set(discarded@),
+                ),
+            CachedJournal::State::next(
+                old(self)@,
+                self@,
+                CachedJournal::Label::DiscardOld {
+                    start_lsn: old(self).seq_end(),
+                    require_end: old(self).seq_end(),
+                    deallocs: iau_vec_set(discarded@),
+                },
+            ),
+    {
+        let ghost pre = *self;
+        let ghost pre_journal = self@;
+        let boundary = self.exec_seq_end();
+        let discarded = self.recovered_index_aus();
+        proof {
+            self.status.unwrap().lsn_addr_index
+                .derive_lsn_index_domain_exact();
+            lsn_addr_index_to_au_index_values_match(
+                self.status.unwrap().lsn_addr_index@,
+            );
+            assert(self@.status.unwrap().lsn_au_index
+                == lsn_addr_index_to_au_index(
+                    self.status.unwrap().lsn_addr_index@,
+                ));
+            assert(iau_vec_set(discarded@)
+                =~= self@.status.unwrap().lsn_au_index.values());
+            assert(self.seq_start() <= boundary as nat);
+            assert(boundary as nat == self.marshalled_seq_end());
+            assert forall |lsn: LSN|
+                #[trigger] pre_journal.status.unwrap()
+                    .lsn_au_index.contains_key(lsn)
+                implies lsn < boundary as nat by {
+                assert(self.status.unwrap().lsn_addr_index@
+                    .contains_key(lsn));
+            }
+        }
+        self.discard_old(boundary, total_aus);
+        let ghost discarded_journal = self@;
+        proof {
+            let kept = lsn_au_index_discard_up_to(
+                pre_journal.status.unwrap().lsn_au_index,
+                boundary as nat,
+            );
+            let deallocs = pre_journal.status.unwrap()
+                .lsn_au_index.values() - kept.values();
+            crate::allocation_layer::AllocationJournal_v::
+                lsn_au_index_discard_up_to_ensures(
+                    pre_journal.status.unwrap().lsn_au_index,
+                    boundary as nat,
+                );
+            assert forall |lsn: LSN|
+                !#[trigger] kept.contains_key(lsn) by {
+                if kept.contains_key(lsn) {
+                    assert(pre_journal.status.unwrap()
+                        .lsn_au_index.contains_key(lsn));
+                    assert(boundary as nat <= lsn);
+                }
+            }
+            assert(CachedJournal::State::next(
+                pre_journal,
+                discarded_journal,
+                CachedJournal::Label::DiscardOld {
+                    start_lsn: boundary as nat,
+                    require_end: pre_journal.seq_end(),
+                    deallocs,
+                },
+            ));
+            self.status.unwrap().lsn_addr_index
+                .derive_lsn_index_domain_exact();
+            assert(self.status.unwrap().lsn_addr_index@.dom().is_empty());
+            assert(self@.status.unwrap().lsn_au_index
+                == lsn_addr_index_to_au_index(
+                    self.status.unwrap().lsn_addr_index@,
+                ));
+            assert(self@.status.unwrap().lsn_au_index.dom().is_empty());
+            assert(kept.dom().is_empty());
+            assert(kept.values().is_empty());
+            assert(deallocs =~= iau_vec_set(discarded@));
+            assert(CachedJournal::State::next(
+                pre_journal,
+                discarded_journal,
+                CachedJournal::Label::DiscardOld {
+                    start_lsn: boundary as nat,
+                    require_end: pre_journal.seq_end(),
+                    deallocs: iau_vec_set(discarded@),
+                },
+            ));
+        }
+        self.journal_alloc.prune_aus(
+            &discarded,
+            total_aus,
+        );
+        proof {
+            let removed = iau_vec_set(discarded@);
+            assert(self@ == discarded_journal);
+            assert(self@.status.unwrap().lsn_au_index.values().is_empty()) by {
+                assert(discarded_journal.status.unwrap()
+                    .lsn_au_index.dom().is_empty());
+            }
+            assert(self.journal_alloc.i().allocated_aus().is_empty()) by {
+                assert(pre.journal_alloc.i().allocated_aus() <= removed);
+            }
+            assert(self.allocator_index_aligned());
+            assert(self.ready_wf(total_aus));
+            assert(CachedJournal::State::next(
+                pre_journal,
+                self@,
+                CachedJournal::Label::DiscardOld {
+                    start_lsn: boundary as nat,
+                    require_end: pre_journal.seq_end(),
+                    deallocs: removed,
+                },
+            ));
+        }
+        discarded
+    }
+
+    pub exec fn discard_for_store_commit(
+        &mut self,
+        boundary_lsn: ILsn,
+        total_aus: IAU,
+    ) -> (discarded: Vec<IAU>)
+        requires
+            old(self).ready_wf(total_aus),
+            old(self).seq_start() <= boundary_lsn <= old(self).marshalled_seq_end(),
+            0 < page_count(),
+        ensures
+            self.ready_wf(total_aus),
+            self.seq_start() == boundary_lsn as nat,
+            self.seq_end() == old(self).seq_end(),
+            self.owned_aus()
+                =~= old(self).owned_aus() - iau_vec_set(discarded@),
+            CachedJournal::State::next(
+                old(self)@,
+                self@,
+                CachedJournal::Label::DiscardOld {
+                    start_lsn: boundary_lsn as nat,
+                    require_end: old(self).seq_end(),
+                    deallocs: iau_vec_set(discarded@),
+                },
+            ),
+            ({
+                let kept = lsn_au_index_discard_up_to(
+                    old(self)@.status.unwrap().lsn_au_index,
+                    boundary_lsn as nat,
+                );
+                let deallocs = old(self)@.status.unwrap().lsn_au_index.values()
+                    - kept.values();
+                &&& iau_vec_set(discarded@) =~= deallocs
+                &&& self.journal_alloc.i()
+                    == old(self).journal_alloc.i().prune(deallocs)
+                &&& CachedJournal::State::next(
+                    old(self)@,
+                    self@,
+                    CachedJournal::Label::DiscardOld {
+                        start_lsn: boundary_lsn as nat,
+                        require_end: old(self).seq_end(),
+                        deallocs,
+                    },
+                )
+                &&& CachedJournal::State::next(
+                    old(self)@,
+                    self@,
+                    CachedJournal::Label::DiscardOld {
+                        start_lsn: boundary_lsn as nat,
+                        require_end: old(self).seq_end(),
+                        deallocs: iau_vec_set(discarded@),
+                    },
+                )
+            }),
+    {
+        let ghost pre = *self;
+        let ghost pre_journal = self@;
+        let pre_aus = self.status.as_ref().unwrap().lsn_addr_index.au_vec();
+        proof {
+            self.status.unwrap().lsn_addr_index
+                .derive_lsn_index_domain_exact();
+            lsn_addr_index_to_au_index_values_match(
+                self.status.unwrap().lsn_addr_index@,
+            );
+            assert(iau_vec_set(pre_aus@)
+                =~= pre_journal.status.unwrap().lsn_au_index.values());
+        }
+
+        self.discard_old(boundary_lsn, total_aus);
+        let ghost discarded_journal = self@;
+        let kept_aus = self.status.as_ref().unwrap().lsn_addr_index.au_vec();
+        proof {
+            self.status.unwrap().lsn_addr_index
+                .derive_lsn_index_domain_exact();
+            lsn_addr_index_to_au_index_values_match(
+                self.status.unwrap().lsn_addr_index@,
+            );
+            assert(iau_vec_set(kept_aus@)
+                =~= self@.status.unwrap().lsn_au_index.values());
+        }
+        let discarded = iau_vec_difference(&pre_aus, &kept_aus);
+        let ghost kept = lsn_au_index_discard_up_to(
+            pre_journal.status.unwrap().lsn_au_index,
+            boundary_lsn as nat,
+        );
+        let ghost deallocs = pre_journal.status.unwrap().lsn_au_index.values()
+            - kept.values();
+        proof {
+            assert(discarded_journal.status.unwrap().lsn_au_index
+                =~= kept);
+            assert(iau_vec_set(discarded@) =~= deallocs);
+            assert(CachedJournal::State::next(
+                pre_journal,
+                discarded_journal,
+                CachedJournal::Label::DiscardOld {
+                    start_lsn: boundary_lsn as nat,
+                    require_end: pre_journal.seq_end(),
+                    deallocs,
+                },
+            ));
+        }
+
+        self.journal_alloc.prune_aus(&discarded, total_aus);
+        proof {
+            assert(deallocs == iau_vec_set(discarded@)) by {
+                assert_sets_equal!(deallocs, iau_vec_set(discarded@), au => {});
+            }
+            assert(self@ == discarded_journal);
+            assert(self.journal_alloc.i()
+                == pre.journal_alloc.i().prune(deallocs));
+            assert(self.owned_aus()
+                =~= pre.owned_aus() - iau_vec_set(discarded@)) by {
+
+            }
+            assert(self.allocator_index_aligned()) by {
+                assert forall |au: AU|
+                    #[trigger] self.journal_alloc.i().allocated_aus()
+                        .contains(au)
+                    implies self@.status.unwrap().lsn_au_index.values()
+                        .contains(au) by {
+                    assert(self.journal_alloc.i().allocs.contains_key(au));
+                    assert(!deallocs.contains(au));
+                    assert(pre.journal_alloc.i().allocs.contains_key(au));
+                    assert(self.journal_alloc.i().allocs[au]
+                        == pre.journal_alloc.i().allocs[au]);
+                    assert(pre.journal_alloc.i().allocated_aus()
+                        .contains(au));
+                    assert(pre.allocator_index_aligned());
+                    assert(pre_journal.status.unwrap().lsn_au_index
+                        .values().contains(au));
+                    assert(kept.values().contains(au));
+                    assert(discarded_journal.status.unwrap()
+                        .lsn_au_index.values().contains(au));
+                }
+            }
+            assert(self.ready_wf(total_aus));
+            assert(CachedJournal::State::next(
+                pre_journal,
+                self@,
+                CachedJournal::Label::DiscardOld {
+                    start_lsn: boundary_lsn as nat,
+                    require_end: pre_journal.seq_end(),
+                    deallocs,
+                },
+            ));
+            assert(CachedJournal::State::next(
+                pre_journal,
+                self@,
+                CachedJournal::Label::DiscardOld {
+                    start_lsn: boundary_lsn as nat,
+                    require_end: pre_journal.seq_end(),
+                    deallocs: iau_vec_set(discarded@),
+                },
+            ));
+        }
+        discarded
     }
 
     pub exec fn begin_writeback_for_target(
@@ -4219,7 +5175,6 @@ impl JournalImpl {
                                 clean_lbl,
                                 clean_commit as nat,
                             )) by {
-                                reveal(CachedJournal::State::advance_watermark);
                             }
                             assert(CachedJournal::State::next_by(
                                 pre,
@@ -4405,7 +5360,6 @@ impl JournalImpl {
                     clean_lbl,
                     clean_commit as nat,
                 )) by {
-                    reveal(CachedJournal::State::advance_watermark);
                 }
                 assert(CachedJournal::State::next_by(
                     pre,

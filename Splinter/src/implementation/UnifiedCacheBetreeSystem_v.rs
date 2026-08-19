@@ -27,9 +27,10 @@ use crate::implementation::AtomicBranchBetreeState_v::{
 use crate::implementation::AtomicJournalState_v::AtomicJournalState;
 use crate::implementation::Cache_v::Cache;
 use crate::implementation::CachedBranchBetree_v::{
-    CachedAllocationBranch, CachedAllocationBranchEvent, CachedBranchBetree,
-    FrozenBranchBetree, LoadedBetreePath, LoadedBetreeQueryReceipt,
+    CachedBranchBetree, FrozenBranchBetree, LoadedBetreePath,
+    LoadedBetreeQueryReceipt,
 };
+use crate::implementation::CachedBulkBranch_v::CachedBulkBranch;
 use crate::implementation::CachingDiskBranchBetree_v::{
     BranchBuildEvent, PageAccess,
 };
@@ -192,11 +193,7 @@ state_machine! { UnifiedCacheBetreeSystem {
         require AtomicBranchBetreeState::State::next(
             pre.branch,
             new_branch,
-            AtomicBranchBetreeState::Label::Betree {
-                cached_op: CachedBranchBetree::Label::Put{
-                    puts: records,
-                },
-            },
+            AtomicBranchBetreeState::Label::Put{puts: records},
         );
 
         update journal = new_journal;
@@ -206,7 +203,6 @@ state_machine! { UnifiedCacheBetreeSystem {
     transition! { execute_query(
         lbl: Label,
         new_cache: Cache::State,
-        receipt: LoadedBetreeQueryReceipt,
         access: PageAccess,
     ) {
         require let Label::Execute{req, reply} = lbl;
@@ -227,19 +223,15 @@ state_machine! { UnifiedCacheBetreeSystem {
                 writes: access.writes(),
             },
         );
-        require AtomicBranchBetreeState::State::query(
+        require AtomicBranchBetreeState::State::next(
             pre.branch,
             pre.branch,
-            AtomicBranchBetreeState::Label::Betree {
-                cached_op: CachedBranchBetree::Label::Query{
-                    end_lsn: pre.branch.betree.memtable.seq_end,
-                    key,
-                    value,
-                },
+            AtomicBranchBetreeState::Label::Query {
+                end_lsn: pre.branch.betree.memtable.seq_end,
+                key,
+                value,
+                access,
             },
-            receipt,
-            access.loaded_betree_reads(),
-            access.loaded_branch_reads(),
         );
 
         update cache = new_cache;
@@ -297,14 +289,16 @@ state_machine! { UnifiedCacheBetreeSystem {
         let metadata = betree_metadata_from_superblock(image);
         require pre.recovery_state is AwaitingSuperblock;
         require superblock_matches(raw_page, image);
-        require AtomicJournalState::State::initialize(
+        require AtomicJournalState::State::init_by(
             new_journal,
-            image.journal_snapshot,
-            image.journal_seq_end,
+            AtomicJournalState::Config::initialize(
+                image.journal_snapshot,
+                image.journal_seq_end,
+            ),
         );
-        require AtomicBranchBetreeState::State::initialize(
+        require AtomicBranchBetreeState::State::init_by(
             new_branch,
-            metadata,
+            AtomicBranchBetreeState::Config::initialize(metadata),
         );
         require reqs.is_empty();
         require resps == Multiset::singleton((
@@ -337,25 +331,23 @@ state_machine! { UnifiedCacheBetreeSystem {
     transition! { branch_internal_access(
         lbl: Label,
         branch_lbl: AtomicBranchBetreeState::Label,
-        reads: Map<Address, RawPage>,
-        writes: Map<Address, RawPage>,
+        access: PageAccess,
         new_cache: Cache::State,
         new_branch: AtomicBranchBetreeState::State,
     ) {
         require lbl is Internal;
-        require AtomicBranchBetreeState::State::internal_access_next(
+        require branch_lbl.internal_access() == Some(access);
+        require AtomicBranchBetreeState::State::next(
             pre.branch,
             new_branch,
             branch_lbl,
-            reads,
-            writes,
         );
         require Cache::State::next(
             pre.cache,
             new_cache,
             Cache::Label::Access{
-                reads,
-                writes,
+                reads: access.reads(),
+                writes: access.writes(),
             },
         );
 
@@ -363,31 +355,23 @@ state_machine! { UnifiedCacheBetreeSystem {
         update branch = new_branch;
     }}
 
-    transition! { branch_recovery_complete(lbl: Label) {
+    transition! { branch_recovery_complete(
+        lbl: Label,
+        discovered_aus: Set<AU>,
+        new_branch: AtomicBranchBetreeState::State,
+    ) {
         require lbl is Internal;
         require pre.recovery_state is SuperblockAvailable;
-        let loaded = pre.branch.control.recovery.loaded_betree(
-            pre.branch.control.metadata,
-        );
-        let discovered_aus = loaded.durable_aus();
-
-        let new_atomic_branch = AtomicBranchBetreeState::State {
-            betree: loaded,
-            control: AtomicBranchBetreeControl {
-                persistent_aus: discovered_aus,
-                loading: false,
-                metadata_loaded: true,
-                ..pre.branch.control
-            },
-        };
-        require AtomicBranchBetreeState::State::recovery_complete(
+        require AtomicBranchBetreeState::State::next(
             pre.branch,
-            new_atomic_branch,
-            AtomicBranchBetreeState::Label::RecoveryComplete,
+            new_branch,
+            AtomicBranchBetreeState::Label::RecoveryComplete{
+                discovered_aus,
+            },
         );
 
         update free_aus = pre.free_aus - discovered_aus;
-        update branch = new_atomic_branch;
+        update branch = new_branch;
     }}
 
     transition! { cache_io_begin(
@@ -518,7 +502,7 @@ state_machine! { UnifiedCacheBetreeSystem {
         journal_reads: Map<Address, RawPage>,
         new_cache: Cache::State,
         new_journal: AtomicJournalState::State,
-        new_branch: CachedBranchBetree::State,
+        new_branch: AtomicBranchBetreeState::State,
     ) {
         require lbl is Internal;
         require pre.recovery_state is MetadataLoadComplete;
@@ -547,24 +531,15 @@ state_machine! { UnifiedCacheBetreeSystem {
                 reads: to_journal_records(journal_reads),
             },
         );
-        let new_atomic_branch = AtomicBranchBetreeState::State {
-            betree: new_branch,
-            ..pre.branch
-        };
-        require AtomicBranchBetreeState::State::put(
+        require AtomicBranchBetreeState::State::next(
             pre.branch,
-            new_atomic_branch,
-            AtomicBranchBetreeState::Label::Betree {
-                cached_op: CachedBranchBetree::Label::Put{
-                    puts: branch_records,
-                },
-            },
             new_branch,
+            AtomicBranchBetreeState::Label::Put{puts: branch_records},
         );
 
         update cache = new_cache;
         update journal = new_journal;
-        update branch = new_atomic_branch;
+        update branch = new_branch;
     }}
 
     transition! { recovery_complete(lbl: Label) {
@@ -652,51 +627,11 @@ state_machine! { UnifiedCacheBetreeSystem {
         update journal = new_journal;
     }}
 
-    transition! { betree_branch_fill(
-        lbl: Label,
-        allocs: Set<AU>,
-        deallocs: Set<AU>,
-        idx: int,
-        post_branch: CachedAllocationBranch,
-        new_branch: CachedBranchBetree::State,
-    ) {
-        require lbl is Internal;
-        require pre.client_ready();
-        require allocs <= pre.free_aus;
-        require allocs.disjoint(
-            pre.branch.control.protected_aus(),
-        );
-        let new_atomic_branch = AtomicBranchBetreeState::State {
-            betree: new_branch,
-            ..pre.branch
-        };
-        require AtomicBranchBetreeState::State::branch_build(
-            pre.branch,
-            new_atomic_branch,
-            AtomicBranchBetreeState::Label::Betree {
-                cached_op: CachedBranchBetree::Label::InternalAlloc{
-                    allocs,
-                    deallocs,
-                },
-            },
-            new_branch,
-            idx,
-            post_branch,
-            CachedAllocationBranchEvent::AllocFill{},
-        );
-
-        update free_aus =
-            (pre.free_aus - allocs)
-                + pre.branch.control.reclaimable(deallocs);
-        update branch = new_atomic_branch;
-    }}
-
     transition! { branch_internal_alloc_access(
         lbl: Label,
         allocs: Set<AU>,
         deallocs: Set<AU>,
-        reads: Map<Address, RawPage>,
-        writes: Map<Address, RawPage>,
+        access: PageAccess,
         new_cache: Cache::State,
         new_branch: AtomicBranchBetreeState::State,
     ) {
@@ -706,21 +641,21 @@ state_machine! { UnifiedCacheBetreeSystem {
         require allocs.disjoint(
             pre.branch.control.protected_aus(),
         );
-        require AtomicBranchBetreeState::State::
-            internal_alloc_access_next(
-                pre.branch,
-                new_branch,
+        require AtomicBranchBetreeState::State::next(
+            pre.branch,
+            new_branch,
+            AtomicBranchBetreeState::Label::InternalAllocAccess{
                 allocs,
                 deallocs,
-                reads,
-                writes,
-            );
+                access,
+            },
+        );
         require Cache::State::next(
             pre.cache,
             new_cache,
             Cache::Label::Access{
-                reads,
-                writes,
+                reads: access.reads(),
+                writes: access.writes(),
             },
         );
 
@@ -729,78 +664,6 @@ state_machine! { UnifiedCacheBetreeSystem {
             (pre.free_aus - allocs)
                 + pre.branch.control.reclaimable(deallocs);
         update branch = new_branch;
-    }}
-
-    transition! { betree_branch_abort(
-        lbl: Label,
-        allocs: Set<AU>,
-        deallocs: Set<AU>,
-        idx: int,
-        new_branch: CachedBranchBetree::State,
-    ) {
-        require lbl is Internal;
-        require pre.client_ready();
-        require allocs <= pre.free_aus;
-        require allocs.disjoint(
-            pre.branch.control.protected_aus(),
-        );
-        let new_atomic_branch = AtomicBranchBetreeState::State {
-            betree: new_branch,
-            ..pre.branch
-        };
-        require AtomicBranchBetreeState::State::branch_abort(
-            pre.branch,
-            new_atomic_branch,
-            AtomicBranchBetreeState::Label::Betree {
-                cached_op: CachedBranchBetree::Label::InternalAlloc{
-                    allocs,
-                    deallocs,
-                },
-            },
-            new_branch,
-            idx,
-        );
-
-        update free_aus =
-            (pre.free_aus - allocs)
-                + pre.branch.control.reclaimable(deallocs);
-        update branch = new_atomic_branch;
-    }}
-
-    transition! { betree_compact_abort(
-        lbl: Label,
-        allocs: Set<AU>,
-        deallocs: Set<AU>,
-        input_idx: int,
-        new_branch: CachedBranchBetree::State,
-    ) {
-        require lbl is Internal;
-        require pre.client_ready();
-        require allocs <= pre.free_aus;
-        require allocs.disjoint(
-            pre.branch.control.protected_aus(),
-        );
-        let new_atomic_branch = AtomicBranchBetreeState::State {
-            betree: new_branch,
-            ..pre.branch
-        };
-        require AtomicBranchBetreeState::State::compact_abort(
-            pre.branch,
-            new_atomic_branch,
-            AtomicBranchBetreeState::Label::Betree {
-                cached_op: CachedBranchBetree::Label::InternalAlloc{
-                    allocs,
-                    deallocs,
-                },
-            },
-            new_branch,
-            input_idx,
-        );
-
-        update free_aus =
-            (pre.free_aus - allocs)
-                + pre.branch.control.reclaimable(deallocs);
-        update branch = new_atomic_branch;
     }}
 
     transition! { execute_journal_sync_begin(
@@ -1017,7 +880,7 @@ state_machine! { UnifiedCacheBetreeSystem {
             },
             ..pre.branch
         };
-        require AtomicBranchBetreeState::State::commit_start(
+        require AtomicBranchBetreeState::State::next(
             pre.branch,
             new_atomic_branch,
             AtomicBranchBetreeState::Label::CommitStart {
@@ -1078,7 +941,7 @@ state_machine! { UnifiedCacheBetreeSystem {
             },
             ..pre.branch
         };
-        require AtomicBranchBetreeState::State::commit_complete(
+        require AtomicBranchBetreeState::State::next(
             pre.branch,
             new_atomic_branch,
             AtomicBranchBetreeState::Label::CommitComplete,

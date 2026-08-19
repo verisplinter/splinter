@@ -97,16 +97,12 @@ impl SuperblockStore::State {
             SuperblockStore::State::next_by(pre, post, lbl, step);
         match step {
             SuperblockStore::Step::write() => {
-                reveal(SuperblockStore::State::write);
             },
             SuperblockStore::Step::land() => {
-                reveal(SuperblockStore::State::land);
             },
             SuperblockStore::Step::complete() => {
-                reveal(SuperblockStore::State::complete);
             },
             SuperblockStore::Step::crash() => {
-                reveal(SuperblockStore::State::crash);
             },
             SuperblockStore::Step::dummy_to_use_type_params(_) => {
                 assert(false);

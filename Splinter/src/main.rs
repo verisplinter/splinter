@@ -11,10 +11,8 @@ pub mod journal;
 pub mod allocation_layer;
 pub mod betree;
 
-// Retired stack-backed executable entry point. Restore these imports when the
-// Betree implementation supplies the ProgramModelTrait implementation.
-// use crate::trusted::TrustedEntry_t;
-// use crate::implementation::Implementation_v;
+use crate::trusted::TrustedEntry_t;
+use crate::implementation::Implementation_v;
 
 // This file is where the generic theorem that the auditor reads
 // (in _t files) meets the implementation that the implementor supplies
@@ -25,5 +23,5 @@ pub mod betree;
 // put into the executable.
 
 fn main() {
-    // TrustedEntry_t::entry::<Implementation_v::Implementation>();
+    TrustedEntry_t::entry::<Implementation_v::Implementation>();
 }

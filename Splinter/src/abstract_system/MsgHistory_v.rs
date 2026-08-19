@@ -397,7 +397,7 @@ impl MsgHistory {
   pub open spec(checked) fn singleton_at(lsn: LSN, msg: KeyedMessage) -> MsgHistory {
     MsgHistory{ msgs: map![lsn => msg], seq_start: lsn, seq_end: lsn + 1 }
   }
-  
+
   pub open spec(checked) fn map_plus_history(stamped_map: StampedMap, history: MsgHistory) -> StampedMap
     recommends
       stamped_map.value.wf(),

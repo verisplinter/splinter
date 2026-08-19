@@ -15,7 +15,10 @@ use crate::betree::Domain_v::total_domain;
 use crate::betree::SplitRequest_v::SplitRequest;
 use crate::betree::LinkedBetree_v::{Addrs, LinkedBetree, LinkedBetreeVars, Path, PathAddrs, SplitAddrs, TwoAddrs};
 use crate::abstract_system::StampedMap_v::empty;
-use crate::allocation_layer::Likes_v::{Likes, no_likes};
+use crate::allocation_layer::Likes_v::{
+    Likes, no_likes, all_elems_single,
+    all_elems_single_add_disjoint, singleton_all_elems_single,
+};
 
 verus! {
 
@@ -172,6 +175,116 @@ impl<T> LinkedBetree<T> {
         }
     }
 
+    proof fn children_likes_all_elems_single(
+        self,
+        ranking: Ranking,
+        start: nat,
+    )
+        requires
+            self.has_root(),
+            self.valid_ranking(ranking),
+            start <= self.root().children.len(),
+        ensures all_elems_single(self.children_likes(ranking, start)),
+        decreases self.get_rank(ranking),
+            self.root().children.len() - start,
+    {
+        if start == self.root().children.len() {
+            assert(self.children_likes(ranking, start) == no_likes());
+        } else {
+            assert(self.root().valid_child_index(start));
+            let child = self.child_at_idx(start);
+            let child_likes = child.tree_likes(ranking);
+            let right_likes = self.children_likes(ranking, start + 1);
+            child.tree_likes_all_elems_single(ranking);
+            self.children_likes_all_elems_single(ranking, start + 1);
+            child.tree_likes_domain(ranking);
+            self.children_likes_domain(ranking, start + 1);
+            assert(child_likes.dom().disjoint(right_likes.dom())) by {
+                assert forall |addr: Address|
+                    #[trigger] child_likes.dom().contains(addr)
+                    implies !right_likes.dom().contains(addr) by {
+                    if right_likes.dom().contains(addr) {
+                        self.reachable_betree_addrs_using_ranking_recur_lemma(
+                            ranking,
+                            start + 1,
+                        );
+                        assert(self.exists_child_subtree_contains_addr(
+                            ranking,
+                            addr,
+                            start + 1,
+                        ));
+                        let right = self.child_containing_reachable_addr(
+                            ranking,
+                            addr,
+                            start + 1,
+                        );
+                        assert(right != start);
+                        self.child_subtrees_disjoint(
+                            ranking,
+                            start,
+                            right,
+                        );
+                        assert(child
+                            .reachable_betree_addrs_using_ranking(ranking)
+                            .contains(addr));
+                        assert(self.child_at_idx(right)
+                            .reachable_betree_addrs_using_ranking(ranking)
+                            .contains(addr));
+                    }
+                }
+            }
+            all_elems_single_add_disjoint(child_likes, right_likes);
+        }
+    }
+
+    pub proof fn tree_likes_all_elems_single(
+        self,
+        ranking: Ranking,
+    )
+        requires self.valid_ranking(ranking),
+        ensures all_elems_single(self.tree_likes(ranking)),
+        decreases self.get_rank(ranking),
+    {
+        if self.has_root() {
+            self.children_likes_all_elems_single(ranking, 0);
+            self.children_likes_domain(ranking, 0);
+            let root_likes = self.root_likes();
+            let child_likes = self.children_likes(ranking, 0);
+            singleton_all_elems_single(self.root.unwrap());
+            assert(root_likes.dom().disjoint(child_likes.dom())) by {
+                assert forall |addr: Address|
+                    #[trigger] root_likes.dom().contains(addr)
+                    implies !child_likes.dom().contains(addr) by {
+                    assert(addr == self.root.unwrap());
+                    if child_likes.dom().contains(addr) {
+                        self.reachable_betree_addrs_using_ranking_recur_lemma(
+                            ranking,
+                            0,
+                        );
+                        let idx = self.child_containing_reachable_addr(
+                            ranking,
+                            addr,
+                            0,
+                        );
+                        let child = self.child_at_idx(idx);
+                        assert(self.root().valid_child_index(idx));
+                        child.reachable_addr_rank_bounded(ranking, addr);
+                        assert(self.dv.node_children_respects_rank(
+                            ranking,
+                            self.root.unwrap(),
+                        ));
+                        assert(ranking[child.root.unwrap()]
+                            < ranking[self.root.unwrap()]);
+                        assert(ranking[addr]
+                            <= ranking[child.root.unwrap()]);
+                        assert(false);
+                    }
+                }
+            }
+            all_elems_single_add_disjoint(root_likes, child_likes);
+        }
+    }
+
     broadcast proof fn children_likes_ignore_ranking(self, r1: Ranking, r2: Ranking, start: nat)
         requires 
             self.has_root(),
@@ -323,7 +436,7 @@ impl<T> LinkedBetree<T> {
             assert(total.len() > 0); // NOTE: trigger needed for choose
             let random = total.choose();
             assert(total.contains(random)); // trigger
-            
+
             let random_buffer_likes = self.dv.entries[random].buffers.likes();
             let sub_buffer_likes = self.buffer_likes(total.remove(random));
             assert(Multiset::singleton(random).remove(random) =~= no_likes()); // trigger
@@ -636,14 +749,14 @@ impl<T> LinkedBetree<T> {
 
         assert(other.buffer_likes(other_tree_likes) == 
             self.buffer_likes(tree_likes.sub(subtree_likes)).add(self.buffer_likes(subtree_likes).sub(sub_delta).add(add_delta))); 
-        
+
         assert(other.buffer_likes(other_tree_likes) == 
             self.buffer_likes(tree_likes.sub(subtree_likes)).add(self.buffer_likes(subtree_likes)).sub(sub_delta).add(add_delta)); 
 
         assert(self.buffer_likes(tree_likes) == 
             self.buffer_likes(tree_likes.sub(subtree_likes)).add(self.buffer_likes(subtree_likes)));
     }
- 
+
     proof fn flush_parent_children_likes_ensures(self, child_idx: nat, buffer_gc: nat, new_addrs: TwoAddrs, ranking: Ranking, start: nat) 
         requires 
             self.can_flush(child_idx, buffer_gc),
@@ -724,7 +837,7 @@ impl<T> LinkedBetree<T> {
         let gc_slice = self.root().buffers.slice(0, buffer_gc as int);
         let discard_buffers = gc_slice.addrs.to_multiset(); // gced buffers in parent
         let add_buffers = self.flush_buffers(child_idx).addrs.to_multiset();  // newly flushed to child
-        
+
         let flush_upto = self.root().buffers.len(); 
         assert(buffer_gc <= flush_upto) by {
             let i = child_idx as int;
@@ -773,7 +886,7 @@ impl<T> LinkedBetree<T> {
                 == result.buffer_likes(self.children_likes(ranking, 0).sub(child.root_likes())).add(
                     result.buffer_likes(new_child_root_likes))
             );
- 
+
             // assert(result.buffer_likes(result.tree_likes(ranking))
             //     == self.buffer_likes(self.root_likes()).sub(discard_buffers).add(
             //         self.buffer_likes(self.children_likes(ranking, 0).sub(child.root_likes())).add(
@@ -903,7 +1016,7 @@ impl <T: Buffer> LinkedBetree<T> {
         assert(up_to_end + past_end == self.root().buffers.addrs);
         lemma_multiset_commutative(up_to_end, past_end);
         assert(up_to_end.to_multiset() <= self.root().buffers.addrs.to_multiset());
-        
+
         let up_to_start = self.root().buffers.slice(0, start as int).addrs;
         let discard_addrs = self.root().buffers.slice(start as int, end as int).addrs; // gced buffers in parent
 
@@ -1121,7 +1234,7 @@ state_machine!{ LikesBetree {
         update betree_likes = new_betree_likes;
         update buffer_likes = new_buffer_likes;
     }}
-    
+
     transition!{ internal_flush(lbl: Label, new_betree: LinkedBetreeVars::State<SimpleBuffer>, path: Path<SimpleBuffer>, 
         child_idx: nat, buffer_gc: nat, new_addrs: TwoAddrs, path_addrs: PathAddrs) {        
         require LinkedBetreeVars::State::internal_flush(pre.betree, new_betree, lbl->linked_lbl, 
@@ -1238,7 +1351,7 @@ state_machine!{ LikesBetree {
             betree.linked.subdisk_implies_same_buffer_likes(pushed, betree_likes);
             assert(pushed_betree_likes.contains(new_addrs.addr1));
             pushed.tree_buffers_are_closed(post_betree_likes, new_addrs.addr1);
-            
+
             assert(pushed.root().buffers.addrs =~= betree.linked.root().buffers.addrs + seq![new_addrs.addr2]); // trigger
             assert(pushed.root().buffers.addrs[pushed.root().buffers.len() as int - 1] == new_addrs.addr2); // trigger
             pushed.root().buffers.addrs.to_multiset_ensures();
@@ -1365,7 +1478,7 @@ state_machine!{ LikesBetree {
         betree.linked.subdisk_implies_same_buffer_likes(new_betree.linked, betree_likes);
         assert(post_buffer_likes == buffer_likes);
     }
-   
+
     #[inductive(internal_grow)]
     fn internal_grow_inductive(pre: Self, post: Self, lbl: Label, new_betree: LinkedBetreeVars::State<SimpleBuffer>, new_root_addr: Address) { 
         reveal(LinkedBetreeVars::State::next_by);
@@ -1428,7 +1541,7 @@ state_machine!{ LikesBetree {
         let splitted_likes = splitted.tree_likes(splitted.the_ranking());
         let old_path_likes = path.addrs_on_path().to_multiset();
         let new_path_likes = path_addrs.to_multiset();
-        
+
         path.substitute_likes_ensures(new_subtree, path_addrs, split_ranking);
         betree.linked.tree_likes_ignore_ranking(split_ranking, ranking);
 
@@ -1519,13 +1632,13 @@ state_machine!{ LikesBetree {
         let finite_ranking = betree.linked.finite_ranking();
         let flush_ranking = subtree.flush_new_ranking(child_idx, buffer_gc, new_addrs, finite_ranking);
         subtree.flush_parent_likes_ensures(child_idx, buffer_gc, new_addrs, flush_ranking);
-    
+
         let subtree_likes = subtree.tree_likes(flush_ranking);
         let new_subtree_likes = new_subtree.tree_likes(flush_ranking);
 
         let discard_buffers = subtree.root().buffers.slice(0, buffer_gc as int).addrs.to_multiset(); // gced buffers
         let add_buffers = subtree.flush_buffers(child_idx).addrs.to_multiset();  // newly flushed to child
-    
+
         assert(new_subtree_likes == subtree_likes.sub(removed).add(new_addrs.likes()));
         assert(new_subtree.buffer_likes(new_subtree_likes) 
             == subtree.buffer_likes(subtree_likes).sub(discard_buffers).add(add_buffers));
@@ -1559,7 +1672,7 @@ state_machine!{ LikesBetree {
         assert(discard_buffers <= buffer_likes);
         assert(flush_add_buffers(path, child_idx) <= buffer_likes);
     }
-   
+
     #[inductive(internal_flush)]
     fn internal_flush_inductive(pre: Self, post: Self, lbl: Label, new_betree: LinkedBetreeVars::State<SimpleBuffer>, 
         path: Path<SimpleBuffer>, child_idx: nat, buffer_gc: nat, new_addrs: TwoAddrs, path_addrs: PathAddrs) {
@@ -1656,7 +1769,7 @@ state_machine!{ LikesBetree {
             LinkedBetreeVars::State::inv_next_by(pre.betree, new_betree, lbl->linked_lbl, linked_step);
         } 
     }
-   
+
     #[inductive(internal_buffer_noop)]
     fn internal_buffer_noop_inductive(pre: Self, post: Self, lbl: Label, new_betree: LinkedBetreeVars::State<SimpleBuffer>) {
         reveal(LinkedBetreeVars::State::next_by);
@@ -1928,7 +2041,7 @@ impl<T: Buffer> Path<T>{
                 assert(new_subtree.valid_ranking(s_ranking)); // trigger
                 assert(new_sub_path_likes <= new_subtree_likes);
                 new_subtree.tree_likes_domain(s_ranking);
-    
+
                 assert(subtree.valid_ranking(ranking));
                 assert(old_sub_path_likes <= subtree.tree_likes(ranking));
 
@@ -1940,7 +2053,7 @@ impl<T: Buffer> Path<T>{
                 result.root_buffer_likes_ensures();
                 self.linked.root_buffer_likes_ensures();
                 assert(result.buffer_likes(result.root_likes()) =~= self.linked.buffer_likes(self.linked.root_likes()));
-    
+
                 result.buffer_likes_additive(result.root_likes(), new_sub_path_likes);
                 self.linked.buffer_likes_additive(self.linked.root_likes(), old_sub_path_likes);    
             }
@@ -1966,7 +2079,7 @@ impl<T: Buffer> Path<T>{
                     ).add(result.buffer_likes(new_path_likes)));
 
                 self.linked.subdisk_implies_same_buffer_likes(result, old_path_likes);
-                
+
                 assert(result.buffer_likes(result_likes.sub(replacement_likes)) =~= 
                     result.buffer_likes(self.linked.tree_likes(ranking).sub(target_likes).sub(old_path_likes)
                     ).add(result.buffer_likes(old_path_likes)));

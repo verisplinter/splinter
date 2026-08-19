@@ -26,6 +26,10 @@ use crate::spec::Messages_t::{default_value, nop_delta, Message, Value};
 
 verus! {
 
+// Retained for the possible branch-as-memtable design. The active Betree bulk
+// loader uses the slim bulk branch stack and does not perform these mutable
+// linked-branch construction events.
+
 pub open spec fn is_nop_message(msg: Message) -> bool
 {
     msg == Message::Update{delta: nop_delta()}
@@ -156,6 +160,7 @@ impl SealedAllocationBranchStack {
             self.root_has_tight_branch(root, summary),
     {
         reveal(SealedAllocationBranchStack::root_has_tight_branch);
+
     }
 
     pub open spec fn wf(self, branch_summary: Map<AU, Summary>) -> bool
@@ -250,6 +255,7 @@ impl SealedAllocationBranchStack {
             self.tight_branch(root, branch_summary[root.au]).disk_view.entries <= self.sealed_disk.entries,
     {
         reveal(SealedAllocationBranchStack::root_has_tight_branch);
+
         self.root_au_in_summary(branch_summary, root);
         assert(self.root_has_tight_branch(root, branch_summary[root.au]));
     }
@@ -724,55 +730,46 @@ state_machine!{ AllocationBranchStack {
         match step {
             AllocationBranchStack::Step::query_step() => {
                 assert(AllocationBranchStack::State::query_step(pre, post, lbl)) by {
-                    reveal(AllocationBranchStack::State::query_step);
                 }
                 AllocationBranchStack::State::query_step_inductive(pre, post, lbl);
             },
             AllocationBranchStack::Step::append_to_active(path) => {
                 assert(AllocationBranchStack::State::append_to_active(pre, post, lbl, path)) by {
-                    reveal(AllocationBranchStack::State::append_to_active);
                 }
                 AllocationBranchStack::State::append_to_active_inductive(pre, post, lbl, path);
             },
             AllocationBranchStack::Step::append_to_empty(init_root) => {
                 assert(AllocationBranchStack::State::append_to_empty(pre, post, lbl, init_root)) by {
-                    reveal(AllocationBranchStack::State::append_to_empty);
                 }
                 AllocationBranchStack::State::append_to_empty_inductive(pre, post, lbl, init_root);
             },
             AllocationBranchStack::Step::freeze_as() => {
                 assert(AllocationBranchStack::State::freeze_as(pre, post, lbl)) by {
-                    reveal(AllocationBranchStack::State::freeze_as);
                 }
                 AllocationBranchStack::State::freeze_as_inductive(pre, post, lbl);
             },
             AllocationBranchStack::Step::internal_noop() => {
                 assert(AllocationBranchStack::State::internal_noop(pre, post, lbl)) by {
-                    reveal(AllocationBranchStack::State::internal_noop);
                 }
                 AllocationBranchStack::State::internal_noop_inductive(pre, post, lbl);
             },
             AllocationBranchStack::Step::internal_grow(new_root_addr) => {
                 assert(AllocationBranchStack::State::internal_grow(pre, post, lbl, new_root_addr)) by {
-                    reveal(AllocationBranchStack::State::internal_grow);
                 }
                 AllocationBranchStack::State::internal_grow_inductive(pre, post, lbl, new_root_addr);
             },
             AllocationBranchStack::Step::internal_split(new_child_addr, path, split_arg) => {
                 assert(AllocationBranchStack::State::internal_split(pre, post, lbl, new_child_addr, path, split_arg)) by {
-                    reveal(AllocationBranchStack::State::internal_split);
                 }
                 AllocationBranchStack::State::internal_split_inductive(pre, post, lbl, new_child_addr, path, split_arg);
             },
             AllocationBranchStack::Step::internal_seal(aux_ptr, loose_active_disk) => {
                 assert(AllocationBranchStack::State::internal_seal(pre, post, lbl, aux_ptr, loose_active_disk)) by {
-                    reveal(AllocationBranchStack::State::internal_seal);
                 }
                 AllocationBranchStack::State::internal_seal_inductive(pre, post, lbl, aux_ptr, loose_active_disk);
             },
             AllocationBranchStack::Step::internal_fill_au(aus) => {
                 assert(AllocationBranchStack::State::internal_fill_au(pre, post, lbl, aus)) by {
-                    reveal(AllocationBranchStack::State::internal_fill_au);
                 }
                 AllocationBranchStack::State::internal_fill_au_inductive(pre, post, lbl, aus);
             },

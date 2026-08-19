@@ -3,6 +3,7 @@
 
 #![allow(unused_imports)]
 use vstd::prelude::*;
+use vstd::assert_sets_equal;
 
 //use vstd::prelude_macros::*;
 use verus_state_machines_macros::state_machine;
@@ -349,7 +350,6 @@ state_machine!{ Cache {
         self.build_lookup_map_props(lookup_map)
     }) {
         let lookup_map = self.build_lookup_map();
-        reveal(Cache::State::build_lookup_map);
 
         let slot_addr_map = Map::new(
             |slot| self.non_empty_slot(slot),
@@ -392,7 +392,6 @@ state_machine!{ Cache {
                 &&& self.entries[slot].get_addr() == addr
             } by {
                 // Unfold invert to relate lookup_map to the non-empty-slot map.
-                reveal(Map::invert);
                 assert(lookup_map == slot_addr_map.invert());
                 assert(slot_addr_map.contains_value(addr)) by {
                     assert(lookup_map.contains_key(addr));
@@ -416,7 +415,6 @@ state_machine!{ Cache {
                 let addr = self.entries[slot].get_addr();
                 assert(slot_addr_map.contains_pair(slot, addr));
                 assert(slot_addr_map.contains_value(addr));
-                reveal(Map::invert);
                 assert(lookup_map == slot_addr_map.invert());
                 assert(lookup_map.contains_key(addr)) by {
                     assert(slot_addr_map.contains_value(addr));
@@ -563,7 +561,6 @@ state_machine!{ Cache {
         }
         let key = choose |key: K| map.contains_pair(key, value);
         assert(map.contains_pair(key, value));
-        reveal(Map::invert);
         assert(map.invert()[value] == key);
         assert(map.contains_pair(map.invert()[value], value));
     }
@@ -1295,7 +1292,6 @@ state_machine!{ Cache {
         }
         assert(post.status_map.dom() =~= post.entries.dom());
         assert(post.lookup_map == post.build_lookup_map()) by {
-            reveal(Cache::State::build_lookup_map);
             assert(post.build_lookup_map() == Map::<Address, Slot>::empty());
         }
         assert forall |slot| #[trigger] post.status_map.contains_key(slot)
@@ -1517,13 +1513,421 @@ state_machine!{ Cache {
         reveal(State::next);
         reveal(State::next_by);
         assert(State::next_by(pre, post, lbl, Step::access()));
-        reveal(State::access);
         assert(State::access(pre, post, lbl));
         assert(lbl is Access);
         assert(lbl.arrow_Access_reads() == reads);
         assert(lbl.arrow_Access_writes() == writes);
         assert(forall |a: Address| #[trigger] reads.contains_key(a) ==> pre.valid_read(a, reads[a]));
         assert(pre.valid_read(addr, reads[addr]));
+    }
+
+    pub proof fn access_write_valid(
+        pre: State,
+        post: State,
+        reads: Map<Address, RawPage>,
+        writes: Map<Address, RawPage>,
+        addr: Address,
+    )
+        requires
+            State::next(pre, post, Label::Access{reads, writes}),
+            writes.contains_key(addr),
+        ensures
+            post.valid_read(addr, writes[addr]),
+    {
+        let lbl = Label::Access{reads, writes};
+        reveal(State::next);
+        reveal(State::next_by);
+        assert(State::next_by(pre, post, lbl, Step::access()));
+        assert(State::access(pre, post, lbl));
+        assert(forall |write_addr: Address|
+            #[trigger] writes.contains_key(write_addr)
+                ==> pre.valid_write(write_addr));
+        assert(pre.valid_write(addr));
+        let slot = pre.lookup_map[addr];
+        assert(pre.lookup_map.contains_key(addr));
+        assert(pre.entries[slot].get_addr() == addr) by {
+            match pre.entries[slot] {
+                Entry::Reserved{addr: entry_addr} => {},
+                Entry::Filled{addr: entry_addr, data: _} => {},
+                _ => assert(false),
+            }
+        }
+        let restricted = pre.lookup_map.restrict(writes.dom());
+        assert(restricted.contains_pair(addr, slot));
+        assert(restricted.values().contains(slot));
+        let updated_entries = pre.write_updated_entries(writes);
+        assert(updated_entries.contains_key(slot));
+        assert(updated_entries[slot]
+            == Entry::Filled{addr, data: writes[addr]});
+        assert(post.lookup_map == pre.lookup_map);
+        assert(post.entries
+            == pre.entries.union_prefer_right(updated_entries));
+        assert(post.entries[slot]
+            == Entry::Filled{addr, data: writes[addr]});
+        assert(post.valid_read(addr, writes[addr]));
+    }
+
+    pub proof fn access_preserves_unwritten_valid_read(
+        pre: State,
+        post: State,
+        reads: Map<Address, RawPage>,
+        writes: Map<Address, RawPage>,
+        addr: Address,
+        data: RawPage,
+    )
+        requires
+            pre.inv(),
+            State::next(pre, post, Label::Access { reads, writes }),
+            pre.valid_read(addr, data),
+            !writes.contains_key(addr),
+        ensures
+            post.valid_read(addr, data),
+    {
+        State::access_unwritten_addr_unchanged(
+            pre,
+            post,
+            reads,
+            writes,
+            addr,
+        );
+        let slot = pre.lookup_map[addr];
+        assert(post.lookup_map[addr] == slot);
+        assert(post.entries[slot] == pre.entries[slot]);
+        assert(post.entries[slot] is Filled);
+        assert(post.entries[slot]->data == data);
+    }
+
+    pub proof fn access_unwritten_valid_read_backward(
+        pre: State,
+        post: State,
+        reads: Map<Address, RawPage>,
+        writes: Map<Address, RawPage>,
+        addr: Address,
+        data: RawPage,
+    )
+        requires
+            pre.inv(),
+            State::next(pre, post, Label::Access { reads, writes }),
+            post.valid_read(addr, data),
+            !writes.contains_key(addr),
+        ensures
+            pre.valid_read(addr, data),
+    {
+        State::access_unwritten_addr_unchanged(
+            pre,
+            post,
+            reads,
+            writes,
+            addr,
+        );
+        assert(post.lookup_map.contains_key(addr));
+        let slot = post.lookup_map[addr];
+        assert(pre.lookup_map.contains_key(addr));
+        assert(pre.lookup_map[addr] == slot);
+        assert(pre.entries[slot] == post.entries[slot]);
+    }
+
+    pub proof fn internal_valid_read_backward(
+        pre: State,
+        post: State,
+        addr: Address,
+        data: RawPage,
+    )
+        requires
+            pre.inv(),
+            State::next(pre, post, Label::Internal),
+            post.valid_read(addr, data),
+        ensures
+            pre.valid_read(addr, data),
+    {
+        State::inv_next(pre, post, Label::Internal);
+        post.build_lookup_map_ensures();
+        reveal(State::next);
+        reveal(State::next_by);
+        let step = choose |step: Step|
+            State::next_by(pre, post, Label::Internal, step);
+        match step {
+            Step::reserve(new_slots_mapping) => {
+                assert(State::reserve(
+                    pre,
+                    post,
+                    Label::Internal,
+                    new_slots_mapping,
+                ));
+                let updated_entries = Map::new(
+                    |candidate: Slot|
+                        new_slots_mapping.contains_key(candidate),
+                    |candidate: Slot| Entry::Reserved {
+                        addr: new_slots_mapping[candidate],
+                    },
+                );
+                let inverse = new_slots_mapping.invert();
+                assert(post.entries
+                    == pre.entries.union_prefer_right(updated_entries));
+                assert(post.lookup_map
+                    == pre.lookup_map.union_prefer_right(inverse));
+                let slot = post.lookup_map[addr];
+                assert(post.entries[slot] is Filled);
+                if new_slots_mapping.contains_key(slot) {
+                    assert(updated_entries.contains_key(slot));
+                    assert(post.entries[slot] == updated_entries[slot]);
+                    assert(post.entries[slot] is Reserved);
+                    assert(false);
+                }
+                assert(!updated_entries.contains_key(slot));
+                assert(!updated_entries.dom().contains(slot));
+                assert(updated_entries.dom() <= pre.entries.dom());
+                Self::union_prefer_right_preserves_dom_entry(
+                    pre.entries,
+                    updated_entries,
+                );
+                assert(post.entries.dom() =~= pre.entries.dom());
+                assert(post.entries.contains_key(slot));
+                assert(pre.entries.contains_key(slot));
+                assert(post.entries[slot]
+                    == pre.entries.union_prefer_right(updated_entries)[slot]);
+                assert(pre.entries.union_prefer_right(updated_entries)[slot]
+                    == if updated_entries.dom().contains(slot) {
+                        updated_entries[slot]
+                    } else {
+                        pre.entries[slot]
+                    });
+                assert(pre.entries.union_prefer_right(updated_entries)[slot]
+                    == pre.entries[slot]);
+                assert(post.entries[slot] == pre.entries[slot]);
+                if !pre.lookup_map.contains_key(addr) {
+                    assert(inverse.contains_key(addr));
+                    assert(post.lookup_map[addr] == inverse[addr]);
+                    assert(inverse[addr] == slot);
+                    assert(new_slots_mapping.contains_value(addr));
+                    Self::invert_contains_pair(new_slots_mapping, addr);
+                    assert(new_slots_mapping.contains_pair(slot, addr));
+                    assert(new_slots_mapping.contains_key(slot));
+                    assert(false);
+                }
+                assert(post.lookup_map[addr] == pre.lookup_map[addr]);
+            },
+            Step::evict(evicted_slots) => {
+                assert(State::evict(
+                    pre,
+                    post,
+                    Label::Internal,
+                    evicted_slots,
+                ));
+                let updated_entries = Map::new(
+                    |candidate: Slot| evicted_slots.contains(candidate),
+                    |candidate: Slot| Entry::Empty,
+                );
+                assert(post.entries
+                    == pre.entries.union_prefer_right(updated_entries));
+                let slot = post.lookup_map[addr];
+                assert(post.entries[slot] is Filled);
+                assert(pre.lookup_map.contains_key(addr));
+                assert(post.lookup_map[addr] == pre.lookup_map[addr]);
+                if evicted_slots.contains(slot) {
+                    assert(post.entries[slot] is Empty);
+                    assert(false);
+                }
+                assert(!updated_entries.contains_key(slot));
+                assert(!updated_entries.dom().contains(slot));
+                assert(updated_entries.dom() <= pre.entries.dom());
+                Self::union_prefer_right_preserves_dom_entry(
+                    pre.entries,
+                    updated_entries,
+                );
+                assert(post.entries.dom() =~= pre.entries.dom());
+                assert(post.entries.contains_key(slot));
+                assert(pre.entries.contains_key(slot));
+                assert(post.entries[slot]
+                    == pre.entries.union_prefer_right(updated_entries)[slot]);
+                assert(pre.entries.union_prefer_right(updated_entries)[slot]
+                    == if updated_entries.dom().contains(slot) {
+                        updated_entries[slot]
+                    } else {
+                        pre.entries[slot]
+                    });
+                assert(pre.entries.union_prefer_right(updated_entries)[slot]
+                    == pre.entries[slot]);
+                assert(post.entries[slot] == pre.entries[slot]);
+            },
+            Step::noop() => {
+                assert(post == pre);
+            },
+            _ => {
+                assert(false);
+            },
+        }
+    }
+
+    pub proof fn load_request_preserves_valid_read(
+        pre: State,
+        post: State,
+        load_addr: Address,
+        read_addr: Address,
+        data: RawPage,
+    )
+        requires
+            pre.inv(),
+            State::next(
+                pre,
+                post,
+                Label::DiskOps {
+                    requests: set![DiskRequest::ReadReq { from: load_addr }],
+                    responses: map![],
+                },
+            ),
+            pre.valid_read(read_addr, data),
+        ensures
+            post.valid_read(read_addr, data),
+    {
+        pre.build_lookup_map_ensures();
+        reveal(State::next);
+        reveal(State::next_by);
+        let lbl = Label::DiskOps {
+            requests: set![DiskRequest::ReadReq { from: load_addr }],
+            responses: map![],
+        };
+        let step = choose |step: Step|
+            State::next_by(pre, post, lbl, step);
+        match step {
+            Step::load_initiate(new_slots_mapping) => {
+                assert(State::load_initiate(
+                    pre,
+                    post,
+                    lbl,
+                    new_slots_mapping,
+                ));
+                let updated_entries = Map::new(
+                    |candidate: Slot|
+                        new_slots_mapping.contains_key(candidate),
+                    |candidate: Slot| Entry::Loading {
+                        addr: new_slots_mapping[candidate],
+                    },
+                );
+                let inverse = new_slots_mapping.invert();
+                assert(post.entries
+                    == pre.entries.union_prefer_right(updated_entries));
+                assert(post.lookup_map
+                    == pre.lookup_map.union_prefer_right(inverse));
+                let slot = pre.lookup_map[read_addr];
+                assert(!new_slots_mapping.contains_key(slot)) by {
+                    if new_slots_mapping.contains_key(slot) {
+                        assert(pre.entries[slot] is Empty);
+                        assert(pre.entries[slot] is Filled);
+                    }
+                }
+                assert(!inverse.contains_key(read_addr)) by {
+                    if inverse.contains_key(read_addr) {
+                        assert(new_slots_mapping.contains_value(read_addr));
+                        assert(new_slots_mapping.values().contains(read_addr));
+                        assert(pre.lookup_map.dom().contains(read_addr));
+                    }
+                }
+                assert(!updated_entries.contains_key(slot));
+                assert(!updated_entries.dom().contains(slot));
+                assert(pre.entries.contains_key(slot));
+                assert(post.entries[slot]
+                    == pre.entries.union_prefer_right(updated_entries)[slot]);
+                assert(pre.entries.union_prefer_right(updated_entries)[slot]
+                    == if updated_entries.dom().contains(slot) {
+                        updated_entries[slot]
+                    } else {
+                        pre.entries[slot]
+                    });
+                assert(pre.entries.union_prefer_right(updated_entries)[slot]
+                    == pre.entries[slot]);
+                assert(post.entries[slot] == pre.entries[slot]);
+                assert(post.lookup_map[read_addr]
+                    == pre.lookup_map[read_addr]);
+            },
+            _ => {
+                assert(false);
+            },
+        }
+    }
+
+    pub proof fn write_request_preserves_valid_read(
+        pre: State,
+        post: State,
+        addr: Address,
+        data: RawPage,
+        read_addr: Address,
+        read_data: RawPage,
+    )
+        requires
+            State::next(
+                pre,
+                post,
+                Label::DiskOps {
+                    requests: set![DiskRequest::WriteReq {
+                        to: addr,
+                        data,
+                    }],
+                    responses: map![],
+                },
+            ),
+        ensures
+            pre.valid_read(read_addr, read_data)
+                <==> post.valid_read(read_addr, read_data),
+    {
+        reveal(State::next);
+        reveal(State::next_by);
+        let lbl = Label::DiskOps {
+            requests: set![DiskRequest::WriteReq { to: addr, data }],
+            responses: map![],
+        };
+        let step = choose |step: Step|
+            State::next_by(pre, post, lbl, step);
+        match step {
+            Step::writeback_initiate() => {
+                assert(State::writeback_initiate(pre, post, lbl));
+                assert(post.entries == pre.entries);
+                assert(post.lookup_map == pre.lookup_map);
+            },
+            _ => {
+                assert(false);
+            },
+        }
+    }
+
+    pub proof fn write_response_preserves_valid_read(
+        pre: State,
+        post: State,
+        addr: Address,
+        read_addr: Address,
+        read_data: RawPage,
+    )
+        requires
+            State::next(
+                pre,
+                post,
+                Label::DiskOps {
+                    requests: set![],
+                    responses: map![addr => DiskResponse::WriteResp {}],
+                },
+            ),
+        ensures
+            pre.valid_read(read_addr, read_data)
+                <==> post.valid_read(read_addr, read_data),
+    {
+        reveal(State::next);
+        reveal(State::next_by);
+        let lbl = Label::DiskOps {
+            requests: set![],
+            responses: map![addr => DiskResponse::WriteResp {}],
+        };
+        let step = choose |step: Step|
+            State::next_by(pre, post, lbl, step);
+        match step {
+            Step::writeback_complete() => {
+                assert(State::writeback_complete(pre, post, lbl));
+                assert(post.entries == pre.entries);
+                assert(post.lookup_map == pre.lookup_map);
+            },
+            _ => {
+                assert(false);
+            },
+        }
     }
 
     pub proof fn valid_read_unique(pre: State, addr: Address, data1: RawPage, data2: RawPage)
@@ -1565,7 +1969,6 @@ state_machine!{ Cache {
         assert forall |write_addr: Address| #[trigger] writes.contains_key(write_addr)
             implies pre.valid_write(write_addr) by {
             assert(empty_reads.contains_key(write_addr) == false);
-            reveal(State::access);
             assert(State::access(pre, post, empty_lbl));
             assert(forall |addr: Address| #[trigger] writes.contains_key(addr)
                 ==> pre.valid_write(addr));
@@ -1602,7 +2005,6 @@ state_machine!{ Cache {
         reveal(State::next);
         reveal(State::next_by);
         assert(State::next_by(pre, post, base_lbl, Step::access()));
-        reveal(State::access);
         assert(State::access(pre, post, base_lbl));
         assert(base_lbl is Access);
         assert(base_lbl.arrow_Access_reads() == base_reads);
@@ -1683,8 +2085,6 @@ state_machine!{ Cache {
         assert(pre.build_lookup_map_props(pre.lookup_map));
         assert(mid.build_lookup_map_props(mid.lookup_map));
         assert(post.build_lookup_map_props(post.lookup_map));
-        reveal(State::access);
-        reveal(State::valid_write);
         assert(State::access(pre, mid, first_lbl));
         assert(State::access(mid, post, second_lbl));
 
@@ -1916,7 +2316,6 @@ state_machine!{ Cache {
     {
         reveal(State::next);
         reveal(State::next_by);
-        reveal(State::evictable);
         assert forall |addr: Address| subset.contains(addr.au)
             && #[trigger] state.lookup_map.contains_key(addr)
             implies {
@@ -2055,6 +2454,281 @@ state_machine!{ Cache {
             assert(write_addr == addr);
         }
         assert(State::next_by(pre, post, lbl, Step::access()));
+    }
+
+    pub proof fn access_from_two_borrowed_write_slots(
+        pre: State,
+        borrowed: State,
+        post: State,
+        first_addr: Address,
+        first_slot: Slot,
+        first_data: RawPage,
+        second_addr: Address,
+        second_slot: Slot,
+        second_data: RawPage,
+    )
+        requires
+            first_addr != second_addr,
+            first_slot != second_slot,
+            pre.lookup_map == borrowed.lookup_map,
+            pre.status_map == borrowed.status_map,
+            pre.lookup_map.contains_key(first_addr),
+            pre.lookup_map[first_addr] == first_slot,
+            pre.lookup_map.contains_key(second_addr),
+            pre.lookup_map[second_addr] == second_slot,
+            pre.entries.contains_key(first_slot),
+            pre.entries.contains_key(second_slot),
+            pre.valid_write(first_addr),
+            pre.valid_write(second_addr),
+            borrowed.valid_write(first_addr),
+            borrowed.valid_write(second_addr),
+            pre.entries == borrowed.entries
+                .insert(first_slot, pre.entries[first_slot])
+                .insert(second_slot, pre.entries[second_slot]),
+            State::next(
+                borrowed,
+                post,
+                Label::Access {
+                    reads: Map::empty(),
+                    writes: map![
+                        first_addr => first_data,
+                        second_addr => second_data
+                    ],
+                },
+            ),
+        ensures
+            State::next(
+                pre,
+                post,
+                Label::Access {
+                    reads: Map::empty(),
+                    writes: map![
+                        first_addr => first_data,
+                        second_addr => second_data
+                    ],
+                },
+            ),
+    {
+        let writes = map![
+            first_addr => first_data,
+            second_addr => second_data
+        ];
+        let lbl = Label::Access {
+            reads: Map::empty(),
+            writes,
+        };
+        reveal(State::next);
+        reveal(State::next_by);
+        assert(State::next_by(borrowed, post, lbl, Step::access()));
+
+        let pre_entries = pre.write_updated_entries(writes);
+        let borrowed_entries = borrowed.write_updated_entries(writes);
+        let pre_status = pre.write_updated_status(writes);
+        let borrowed_status = borrowed.write_updated_status(writes);
+        let restricted = pre.lookup_map.restrict(writes.dom());
+        assert(restricted.contains_key(first_addr));
+        assert(restricted[first_addr] == first_slot);
+        assert(restricted.values().contains(first_slot));
+        assert(restricted.contains_key(second_addr));
+        assert(restricted[second_addr] == second_slot);
+        assert(restricted.values().contains(second_slot));
+        assert(pre_entries.contains_key(first_slot));
+        assert(pre_entries.contains_key(second_slot));
+        assert(pre.lookup_map.restrict(writes.dom())
+            == borrowed.lookup_map.restrict(writes.dom()));
+        assert(pre_entries =~= borrowed_entries) by {
+            assert forall |slot: Slot|
+                #[trigger] pre_entries.contains_key(slot)
+                    == borrowed_entries.contains_key(slot) by {
+            }
+            assert forall |slot: Slot| pre_entries.contains_key(slot)
+                implies #[trigger] pre_entries[slot]
+                    == borrowed_entries[slot] by {
+                assert(slot == first_slot || slot == second_slot) by {
+                    let restricted = pre.lookup_map.restrict(writes.dom());
+                    assert(restricted.values().contains(slot));
+                    let addr = choose |addr: Address|
+                        restricted.contains_key(addr)
+                        && #[trigger] restricted[addr] == slot;
+                    assert(addr == first_addr || addr == second_addr);
+                }
+                if slot == first_slot {
+                    assert(pre.entries[slot].get_addr() == first_addr);
+                    assert(borrowed.entries[slot].get_addr() == first_addr);
+                } else {
+                    assert(slot == second_slot);
+                    assert(pre.entries[slot].get_addr() == second_addr);
+                    assert(borrowed.entries[slot].get_addr() == second_addr);
+                }
+            }
+        }
+        assert(pre_status =~= borrowed_status);
+        assert(pre.entries.union_prefer_right(pre_entries)
+            =~= borrowed.entries.union_prefer_right(borrowed_entries)) by {
+            assert forall |slot: Slot|
+                #[trigger] pre.entries.union_prefer_right(pre_entries)
+                    .contains_key(slot)
+                == borrowed.entries.union_prefer_right(borrowed_entries)
+                    .contains_key(slot) by {
+                if pre.entries.contains_key(slot)
+                    && !borrowed.entries.contains_key(slot)
+                {
+                    assert(slot == first_slot || slot == second_slot);
+                    assert(pre_entries.contains_key(slot));
+                    assert(borrowed_entries.contains_key(slot));
+                }
+            }
+            assert forall |slot: Slot|
+                pre.entries.union_prefer_right(pre_entries)
+                    .contains_key(slot)
+                implies #[trigger]
+                    pre.entries.union_prefer_right(pre_entries)[slot]
+                    == borrowed.entries.union_prefer_right(
+                        borrowed_entries,
+                    )[slot] by {
+                if pre_entries.contains_key(slot) {
+                    assert(pre_entries[slot] == borrowed_entries[slot]);
+                } else {
+                    assert(!borrowed_entries.contains_key(slot));
+                    assert(slot != first_slot && slot != second_slot) by {
+                        if slot == first_slot {
+                            assert(pre_entries.contains_key(first_slot));
+                        }
+                        if slot == second_slot {
+                            assert(pre_entries.contains_key(second_slot));
+                        }
+                    }
+                    assert(pre.entries[slot] == borrowed.entries[slot]);
+                }
+            }
+        }
+        assert(pre.status_map.union_prefer_right(pre_status)
+            =~= borrowed.status_map.union_prefer_right(borrowed_status));
+        assert forall |addr: Address| #[trigger] writes.contains_key(addr)
+            implies pre.valid_write(addr) by {
+            assert(addr == first_addr || addr == second_addr);
+        }
+        assert(State::next_by(pre, post, lbl, Step::access()));
+    }
+
+    pub proof fn two_borrowed_write_slots_preserve_inv(
+        pre: State,
+        borrowed: State,
+        first_slot: Slot,
+        second_slot: Slot,
+    )
+        requires
+            pre.inv(),
+            first_slot != second_slot,
+            pre.lookup_map == borrowed.lookup_map,
+            pre.status_map == borrowed.status_map,
+            borrowed.entries.contains_key(first_slot),
+            borrowed.entries.contains_key(second_slot),
+            pre.entries == borrowed.entries
+                .insert(first_slot, pre.entries[first_slot])
+                .insert(second_slot, pre.entries[second_slot]),
+            pre.entries[first_slot].get_addr()
+                == borrowed.entries[first_slot].get_addr(),
+            pre.entries[second_slot].get_addr()
+                == borrowed.entries[second_slot].get_addr(),
+            (pre.entries[first_slot] is Filled)
+                == (borrowed.entries[first_slot] is Filled),
+            (pre.entries[second_slot] is Filled)
+                == (borrowed.entries[second_slot] is Filled),
+            (pre.entries[first_slot] is Empty)
+                == (borrowed.entries[first_slot] is Empty),
+            (pre.entries[second_slot] is Empty)
+                == (borrowed.entries[second_slot] is Empty),
+        ensures
+            borrowed.inv(),
+    {
+        assert(borrowed.entries.dom() == pre.entries.dom()) by {
+            assert_sets_equal!(
+                borrowed.entries.dom(),
+                pre.entries.dom(),
+                slot => {}
+            );
+        }
+        assert(borrowed.slots_hold_unique_addr()) by {
+            assert forall |left: Slot, right: Slot|
+                #[trigger] borrowed.non_empty_slot(left)
+                && #[trigger] borrowed.non_empty_slot(right)
+                && left != right
+                implies borrowed.entries[left].get_addr()
+                    != borrowed.entries[right].get_addr() by {
+                assert(pre.non_empty_slot(left));
+                assert(pre.non_empty_slot(right));
+                assert(pre.entries[left].get_addr()
+                    == borrowed.entries[left].get_addr()) by {
+                    if left != first_slot && left != second_slot {
+                        assert(pre.entries[left] == borrowed.entries[left]);
+                    }
+                }
+                assert(pre.entries[right].get_addr()
+                    == borrowed.entries[right].get_addr()) by {
+                    if right != first_slot && right != second_slot {
+                        assert(pre.entries[right] == borrowed.entries[right]);
+                    }
+                }
+            }
+        }
+        pre.build_lookup_map_ensures();
+        assert(pre.build_lookup_map_props(pre.lookup_map));
+        assert(borrowed.build_lookup_map_props(pre.lookup_map)) by {
+            assert forall |addr: Address|
+                #[trigger] pre.lookup_map.contains_key(addr)
+                implies {
+                    let slot = pre.lookup_map[addr];
+                    &&& borrowed.entries.contains_key(slot)
+                    &&& !(borrowed.entries[slot] is Empty)
+                    &&& borrowed.entries[slot].get_addr() == addr
+                } by {
+                let slot = pre.lookup_map[addr];
+                assert(pre.entries.contains_key(slot));
+                assert(!(pre.entries[slot] is Empty));
+                if slot != first_slot && slot != second_slot {
+                    assert(pre.entries[slot] == borrowed.entries[slot]);
+                }
+            }
+            assert forall |slot: Slot|
+                #[trigger] borrowed.entries.contains_key(slot)
+                && !(borrowed.entries[slot] is Empty)
+                implies {
+                    let addr = borrowed.entries[slot].get_addr();
+                    &&& pre.lookup_map.contains_key(addr)
+                    &&& pre.lookup_map[addr] == slot
+                } by {
+                assert(pre.entries.contains_key(slot));
+                assert(!(pre.entries[slot] is Empty));
+                assert(pre.entries[slot].get_addr()
+                    == borrowed.entries[slot].get_addr()) by {
+                    if slot != first_slot && slot != second_slot {
+                        assert(pre.entries[slot] == borrowed.entries[slot]);
+                    }
+                }
+            }
+        }
+        borrowed.build_lookup_map_is_unique(pre.lookup_map);
+        assert(borrowed.lookup_map == borrowed.build_lookup_map()) by {
+            assert_maps_equal!(
+                borrowed.lookup_map,
+                borrowed.build_lookup_map(),
+                addr => {}
+            );
+        }
+        assert forall |slot: Slot|
+            #[trigger] borrowed.status_map.contains_key(slot)
+            implies ((borrowed.status_map[slot] is NotFilled)
+                <==> !(borrowed.entries[slot] is Filled)) by {
+            assert(pre.status_map.contains_key(slot));
+            assert((pre.entries[slot] is Filled)
+                == (borrowed.entries[slot] is Filled)) by {
+                if slot != first_slot && slot != second_slot {
+                    assert(pre.entries[slot] == borrowed.entries[slot]);
+                }
+            }
+        }
+        assert(borrowed.inv());
     }
 }}
 

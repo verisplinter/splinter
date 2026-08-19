@@ -133,6 +133,7 @@ impl DiskView {
     {
         reveal(TruncatedJournal::index_domain_valid);
 
+
         let cropped_index = self.build_lsn_addr_index(cropped);
         let index = self.build_lsn_addr_index(root);
 
@@ -147,7 +148,7 @@ impl DiskView {
             let curr_msgs = self.entries[root.unwrap()].message_seq;
             let start_lsn = max(self.boundary_lsn as int, curr_msgs.seq_start as int) as nat;
             let update = singleton_index(start_lsn, curr_msgs.seq_end, root.unwrap());
-    
+
             assert(self.build_lsn_addr_index(self.next(root)) <= self.build_lsn_addr_index(root)); // trigger
         }
     }
@@ -237,6 +238,8 @@ impl DiskView {
     {
         reveal(TruncatedJournal::index_domain_valid);
         reveal(DiskView::index_keys_map_to_valid_entries);
+
+
         if self.next(root) is None {
             // TODO(chris) These lets are trigger something... not sure why, since we have the same
             // defn (build_lsn_addr_index) available in scope. ?
@@ -261,6 +264,8 @@ impl DiskView {
     {
         reveal(TruncatedJournal::index_domain_valid);
         reveal(DiskView::index_keys_map_to_valid_entries);
+
+
 
         if root is None {
         } else if self.next(root) is None {
@@ -359,6 +364,7 @@ impl DiskView {
             self.build_lsn_addr_index_domain_valid(sub_root);
             let sub_tj = self.tj_at(sub_root);
             reveal(TruncatedJournal::index_domain_valid);
+
             assert(sub_tj.index_domain_valid(sub_index));
             assert(prior_lsn < sub_tj.seq_end());
             assert(prior_lsn < root_start);
@@ -390,6 +396,8 @@ impl DiskView {
     {
         reveal(TruncatedJournal::index_domain_valid);
         reveal(DiskView::index_keys_map_to_valid_entries);
+
+
 
         if root is Some {
             self.build_tight_domain_is_build_lsn_addr_index_range(self.next(root));
@@ -435,6 +443,8 @@ impl DiskView {
         reveal(TruncatedJournal::index_domain_valid);
         reveal(DiskView::index_keys_map_to_valid_entries);
 
+
+
         if ptr is Some {
             self.sub_disk_with_newer_lsn_repr_index(big, self.next(ptr));
             if self.next(ptr) is Some {
@@ -460,6 +470,8 @@ impl DiskView {
     {
         reveal(TruncatedJournal::index_domain_valid);
         reveal(DiskView::index_keys_map_to_valid_entries);
+
+
 
         assert( forall |addr| #[trigger] self.entries.contains_key(addr) ==> big.entries.dom().contains(addr) );    // new clunikness related to contains-vs-contains_key
         assert( self.valid_ranking(big.the_ranking()) );
@@ -529,6 +541,7 @@ impl DiskView {
                 if lsn1 < corner {
                     assert( prior_index.contains_key(before) ) by {
                         reveal(TruncatedJournal::index_domain_valid);
+
                     }
 //                     assert( lsn1 <= corner );
 //                     assert( self.the_rank_of(Some(lsn_addr_index[lsn1])) <= self.the_rank_of(Some(lsn_addr_index[before])) );
@@ -536,6 +549,7 @@ impl DiskView {
                 } else {
                     assert( !prior_index.contains_key(lsn1) && !prior_index.contains_key(lsn2) ) by {
                         reveal(TruncatedJournal::index_domain_valid);
+
                     }
                 }
             }
@@ -583,6 +597,7 @@ impl DiskView {
         self.entries[lsn_addr_index[lsn]].contains_lsn(self.boundary_lsn, lsn),
     {
         reveal(DiskView::index_keys_map_to_valid_entries);
+
     }
 
 } // DiskView proof bits
@@ -617,6 +632,8 @@ impl TruncatedJournal {
     {        
         reveal(TruncatedJournal::index_domain_valid);
         reveal(DiskView::index_keys_map_to_valid_entries);
+
+
         if self.freshest_rec is Some {
             self.disk_view.build_lsn_addr_index_domain_valid(self.freshest_rec);
             self.disk_view.build_lsn_addr_index_range_valid(self.freshest_rec);
@@ -655,7 +672,7 @@ impl TruncatedJournal {
         let dv = self.disk_view;
         let post_dv = post.disk_view;
         let ranking = dv.the_ranking();
-   
+
         assert forall |addr| #[trigger] post_dv.entries.contains_key(addr) && post_dv.entries[addr].cropped_prior(post_dv.boundary_lsn) is Some
         implies ranking[post_dv.entries[addr].cropped_prior(post_dv.boundary_lsn).unwrap()] < ranking[addr]
         by {
@@ -680,6 +697,7 @@ impl TruncatedJournal {
         let bdy_post = post.disk_view.boundary_lsn;
 
         reveal(TruncatedJournal::index_domain_valid);
+
         if bdy_post < self.seq_end() {
             post.disk_view.build_lsn_addr_index_domain_valid(post.freshest_rec);
             post.disk_view.sub_disk_with_newer_lsn_repr_index(self.disk_view, post.freshest_rec);
@@ -788,7 +806,7 @@ state_machine!{ LikesJournal {
                 => LinkedJournal::Label::Internal{},
         }
     }
-    
+
     pub open spec(checked) fn wf(self) -> bool {
         &&& self.journal.wf()
     }
@@ -827,7 +845,7 @@ state_machine!{ LikesJournal {
         require lbl is QueryEndLsn;
         require lbl->end_lsn == pre.journal.seq_end();
     } }
-    
+
     transition!{ put(lbl: Label) {
         require let Label::Put{messages} = lbl;
         require messages.wf();
@@ -909,7 +927,7 @@ state_machine!{ LikesJournal {
     #[inductive(read_for_recovery)]
     fn read_for_recovery_inductive(pre: Self, post: Self, lbl: Label, addr: Address) {
     }
-   
+
     #[inductive(freeze_for_commit)]
     fn freeze_for_commit_inductive(pre: Self, post: Self, lbl: Label) {
     }
@@ -917,7 +935,7 @@ state_machine!{ LikesJournal {
     #[inductive(query_end_lsn)]
     fn query_end_lsn_inductive(pre: Self, post: Self, lbl: Label) {
     }
-   
+
     #[inductive(put)]
     fn put_inductive(pre: Self, post: Self, lbl: Label) {
     }
@@ -943,6 +961,7 @@ state_machine!{ LikesJournal {
             assert(post_tj.build_lsn_addr_index() == Map::<LSN, Address>::empty());
             tj.build_lsn_addr_index_ensures();
             reveal(TruncatedJournal::index_domain_valid);
+
             assert(lsn_addr_index_post == Map::<LSN, Address>::empty()) by {
                 assert_maps_equal!(lsn_addr_index_post, Map::<LSN, Address>::empty());
             }
@@ -972,11 +991,11 @@ state_machine!{ LikesJournal {
     #[inductive(internal_no_op)]
     fn internal_no_op_inductive(pre: Self, post: Self, lbl: Label) {
     }
-   
+
     #[inductive(initialize)]
     fn initialize_inductive(post: Self, ijournal: TruncatedJournal) {
         // post.journal.truncated_journal.build_lsn_addr_index_ensures();
-        // reveal(DiskView::index_keys_map_to_valid_entries);
+        // 
     }
 
 } } // state_machine!

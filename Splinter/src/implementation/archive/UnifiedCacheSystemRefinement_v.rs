@@ -13,7 +13,7 @@ use vstd::multiset::Multiset;
 
 use crate::abstract_system::MsgHistory_v::{KeyedMessage, MsgHistory};
 use crate::abstract_system::StampedMap_v::LSN;
-use crate::allocation_layer::AllocationBranch_v::Summary;
+use crate::allocation_layer::BranchTypes_v::Summary;
 use crate::allocation_layer::AllocationBranchBetree_v::summary_aus;
 use crate::allocation_layer::MiniAllocator_v::MiniAllocator;
 use crate::betree::LinkedBranch_v::SplitArg;
@@ -906,7 +906,6 @@ pub proof fn program_execute_progress_invs(
         system_model_request_reply_disjoint_inv(post),
 {
     broadcast use vstd::multiset::group_multiset_axioms;
-    reveal(SystemModel::State::program_execute);
 
     let req = lbl->op->req;
     let reply = lbl->op->reply;
@@ -1273,7 +1272,6 @@ pub proof fn system_i_noop_next(
         CrashAwareCachingDiskSystem::Step::noop(),
     )) by {
         reveal(CrashAwareCachingDiskSystem::State::next_by);
-        reveal(CrashAwareCachingDiskSystem::State::noop);
     }
     reveal(CrashAwareCachingDiskSystem::State::next);
     assert(src.inv());
@@ -1316,7 +1314,6 @@ pub proof fn cache_internal_preserves_all_filled_clean(
                     Cache::Label::Internal{},
                     new_slots_mapping,
                 )) by {
-                    reveal(Cache::State::reserve);
                 }
                 let updated_entries = Map::new(
                     |slot| new_slots_mapping.contains_key(slot),
@@ -1357,7 +1354,6 @@ pub proof fn cache_internal_preserves_all_filled_clean(
                     Cache::Label::Internal{},
                     evicted_slots,
                 )) by {
-                    reveal(Cache::State::evict);
                 }
                 let evicted_addrs = Map::new(
                     |slot: Slot| evicted_slots.contains(slot),
@@ -1396,7 +1392,6 @@ pub proof fn cache_internal_preserves_all_filled_clean(
             },
             Cache::Step::noop() => {
                 assert(Cache::State::noop(pre_cache, post_cache, Cache::Label::Internal{})) by {
-                    reveal(Cache::State::noop);
                 }
                 assert(post_cache == pre_cache);
             },
@@ -1448,12 +1443,10 @@ pub proof fn cache_disk_ops_begin_preserves_all_filled_clean_and_read_requests(
     match step {
         Cache::Step::load_initiate(new_slots_mapping) => {
             assert(Cache::State::load_initiate(pre_cache, post_cache, lbl, new_slots_mapping)) by {
-                reveal(Cache::State::load_initiate);
             }
         },
         Cache::Step::writeback_initiate() => {
             assert(Cache::State::writeback_initiate(pre_cache, post_cache, lbl)) by {
-                reveal(Cache::State::writeback_initiate);
             }
             assert(!req_map.values().is_empty());
             let req = choose |req: DiskRequest| req_map.values().contains(req);
@@ -1578,12 +1571,10 @@ pub proof fn cache_disk_ops_end_preserves_all_filled_clean(
     match step {
         Cache::Step::load_complete() => {
             assert(Cache::State::load_complete(pre_cache, post_cache, lbl)) by {
-                reveal(Cache::State::load_complete);
             }
         },
         Cache::Step::writeback_complete() => {
             assert(Cache::State::writeback_complete(pre_cache, post_cache, lbl)) by {
-                reveal(Cache::State::writeback_complete);
             }
             assert(!cache_resps.is_empty());
             let addr = choose |addr: Address| cache_resps.contains_key(addr);
@@ -1725,7 +1716,6 @@ pub proof fn cache_access_preserves_cache_request_wf(
                         cache_lbl,
                         Cache::Step::access(),
                     ));
-                    reveal(Cache::State::access);
                     assert(pre_state.cache.valid_write(addr));
                     let slot = pre_state.cache.lookup_map[addr];
                     match pre_state.cache.entries[slot] {
@@ -1777,7 +1767,6 @@ pub proof fn cache_access_preserves_cache_request_wf(
                     cache_lbl,
                     Cache::Step::access(),
                 ));
-                reveal(Cache::State::access);
                 assert(pre_state.cache.valid_write(addr));
                 let slot = pre_state.cache.lookup_map[addr];
                 match pre_state.cache.entries[slot] {
@@ -1896,7 +1885,6 @@ pub proof fn cache_access_preserves_cache_disk_response_inv(
                         cache_lbl,
                         Cache::Step::access(),
                     ));
-                    reveal(Cache::State::access);
                     assert(pre_state.cache.valid_write(addr));
                     assert(false);
                 }
@@ -1986,7 +1974,6 @@ pub proof fn cache_access_preserves_outstanding_cache_reqs_disk_backed(
                         cache_lbl,
                         Cache::Step::access(),
                     ));
-                    reveal(Cache::State::access);
                     assert(pre_state.cache.valid_write(addr));
                     assert(false);
                 }
@@ -2151,12 +2138,10 @@ pub proof fn cache_io_begin_preserves_shared_cache_disk_inv(
                 lbl,
                 new_slots_mapping,
             )) by {
-                reveal(Cache::State::load_initiate);
             }
         },
         Cache::Step::writeback_initiate() => {
             assert(Cache::State::writeback_initiate(pre_state.cache, post_state.cache, lbl)) by {
-                reveal(Cache::State::writeback_initiate);
             }
         },
         _ => {
@@ -2362,12 +2347,10 @@ pub proof fn cache_io_end_preserves_shared_cache_disk_inv(
     match step {
         Cache::Step::load_complete() => {
             assert(Cache::State::load_complete(pre_state.cache, post_state.cache, lbl)) by {
-                reveal(Cache::State::load_complete);
             }
         },
         Cache::Step::writeback_complete() => {
             assert(Cache::State::writeback_complete(pre_state.cache, post_state.cache, lbl)) by {
-                reveal(Cache::State::writeback_complete);
             }
         },
         _ => {
@@ -3838,7 +3821,6 @@ pub proof fn cache_io_begin_preserves_outstanding_cache_reqs_disk_backed(
                             post_state.cache,
                             cache_lbl,
                         )) by {
-                            reveal(Cache::State::writeback_initiate);
                         }
                         assert(pre_state.cache.valid_writeback_requests(req_map.values()));
                         assert(req_map.values().contains(req));
@@ -3875,7 +3857,6 @@ pub proof fn cache_io_begin_preserves_outstanding_cache_reqs_disk_backed(
                             cache_lbl,
                             new_slots_mapping,
                         )) by {
-                            reveal(Cache::State::load_initiate);
                         }
                         assert(Cache::State::valid_load_requests(
                             req_map.values(),
@@ -4095,12 +4076,13 @@ pub proof fn init_refines(pre: SystemModel::State<UnifiedCacheProgramModel>)
         CrashAwareCachingDiskSystem::State::init(unified_cache_system_i(pre)),
         inv(pre),
 {
-    reveal(SystemModel::State::initialize);
     assert(UnifiedCacheProgramModel::is_mkfs(pre.disk));
     assert(UnifiedCacheProgramModel::init(pre.program));
 
     reveal(UnifiedCacheSystem::State::init);
     reveal(UnifiedCacheSystem::State::init_by);
+
+
     let config = choose |config: UnifiedCacheSystem::Config|
         UnifiedCacheSystem::State::init_by(pre.program.state, config);
 
@@ -4131,7 +4113,6 @@ pub proof fn init_refines(pre: SystemModel::State<UnifiedCacheProgramModel>)
             assert(pre.disk.inv());
             assert(pre.program.state.cache.inv()) by {
                 assert(Cache::State::initialize(pre.program.state.cache, cache_slots)) by {
-                    reveal(Cache::State::initialize);
                 }
                 Cache::State::initialize_inductive(pre.program.state.cache, cache_slots);
             }
@@ -4151,11 +4132,12 @@ pub proof fn init_refines(pre: SystemModel::State<UnifiedCacheProgramModel>)
                 assert(CrashAwareCachingDiskJournal::State::init(dst.journal));
                 reveal(CrashAwareCachingDiskJournal::State::init);
                 reveal(CrashAwareCachingDiskJournal::State::init_by);
+
+
                 let journal_config = choose |config: CrashAwareCachingDiskJournal::Config|
                     CrashAwareCachingDiskJournal::State::init_by(dst.journal, config);
                 match journal_config {
                     CrashAwareCachingDiskJournal::Config::initialize() => {
-                        reveal(CrashAwareCachingDiskJournal::State::initialize);
                     },
                     CrashAwareCachingDiskJournal::Config::dummy_to_use_type_params(_) => {
                         assert(false);
@@ -4166,11 +4148,12 @@ pub proof fn init_refines(pre: SystemModel::State<UnifiedCacheProgramModel>)
                 assert(CrashAwareCachingDiskBranch::State::init(dst.branch));
                 reveal(CrashAwareCachingDiskBranch::State::init);
                 reveal(CrashAwareCachingDiskBranch::State::init_by);
+
+
                 let branch_config = choose |config: CrashAwareCachingDiskBranch::Config|
                     CrashAwareCachingDiskBranch::State::init_by(dst.branch, config);
                 match branch_config {
                     CrashAwareCachingDiskBranch::Config::initialize() => {
-                        reveal(CrashAwareCachingDiskBranch::State::initialize);
                     },
                     CrashAwareCachingDiskBranch::Config::dummy_to_use_type_params(_) => {
                         assert(false);
@@ -4201,7 +4184,6 @@ pub proof fn init_refines(pre: SystemModel::State<UnifiedCacheProgramModel>)
                 dst.journal,
                 dst.branch,
             )) by {
-                reveal(CrashAwareCachingDiskSystem::State::initialize);
             }
             assert(CrashAwareCachingDiskSystem::State::init_by(
                 dst,
@@ -4213,8 +4195,10 @@ pub proof fn init_refines(pre: SystemModel::State<UnifiedCacheProgramModel>)
                 ),
             )) by {
                 reveal(CrashAwareCachingDiskSystem::State::init_by);
+
             }
             reveal(CrashAwareCachingDiskSystem::State::init);
+
             CrashAwareCachingDiskSystem::State::initialize_inductive(
                 dst,
                 free_aus,
@@ -4251,7 +4235,6 @@ pub proof fn init_refines(pre: SystemModel::State<UnifiedCacheProgramModel>)
                     }
                 }
                 assert(pre.program.state.cache.lookup_map == Map::<Address, crate::implementation::Cache_v::Slot>::empty()) by {
-                    reveal(Cache::State::initialize);
                 }
                 assert(journal_src.journal_caching_disk_i().cache
                     == Map::<Address, RawPage>::empty()) by {
@@ -4392,7 +4375,6 @@ pub proof fn accept_request_refines(
         inv(post),
 {
     broadcast use vstd::multiset::group_multiset_axioms;
-    reveal(SystemModel::State::accept_request);
 
     assert(lbl is AcceptRequest);
     let req = lbl->req;
@@ -4409,7 +4391,6 @@ pub proof fn accept_request_refines(
         CrashAwareCachingDiskSystem::Step::accept_request(),
     )) by {
         reveal(CrashAwareCachingDiskSystem::State::next_by);
-        reveal(CrashAwareCachingDiskSystem::State::accept_request);
     }
     reveal(CrashAwareCachingDiskSystem::State::next);
     assert(system_model_progress_history_inv(post)) by {
@@ -4511,7 +4492,6 @@ pub proof fn deliver_reply_refines(
         CrashAwareCachingDiskSystem::Step::deliver_reply(),
     )) by {
         reveal(CrashAwareCachingDiskSystem::State::next_by);
-        reveal(CrashAwareCachingDiskSystem::State::deliver_reply);
     }
     reveal(CrashAwareCachingDiskSystem::State::next);
     assert(system_model_progress_history_inv(post)) by {
@@ -4580,7 +4560,6 @@ pub proof fn program_execute_noop_refines(
         inv(post),
 {
     broadcast use vstd::multiset::group_multiset_axioms;
-    reveal(SystemModel::State::program_execute);
 
     let req = lbl->op->req;
     let reply = lbl->op->reply;
@@ -4605,7 +4584,6 @@ pub proof fn program_execute_noop_refines(
         CrashAwareCachingDiskSystem::Step::execute_noop(),
     )) by {
         reveal(CrashAwareCachingDiskSystem::State::next_by);
-        reveal(CrashAwareCachingDiskSystem::State::execute_noop);
     }
     reveal(CrashAwareCachingDiskSystem::State::next);
 
@@ -4670,7 +4648,6 @@ pub proof fn program_execute_put_refines(
         inv(post),
 {
     broadcast use vstd::multiset::group_multiset_axioms;
-    reveal(SystemModel::State::program_execute);
 
     let req = lbl->op->req;
     let reply = lbl->op->reply;
@@ -4796,7 +4773,6 @@ pub proof fn program_execute_put_refines(
         CrashAwareCachingDiskSystem::Step::put(dst.journal, dst.branch),
     )) by {
         reveal(CrashAwareCachingDiskSystem::State::next_by);
-        reveal(CrashAwareCachingDiskSystem::State::put);
     }
     reveal(CrashAwareCachingDiskSystem::State::next);
 
@@ -4847,7 +4823,6 @@ pub proof fn program_execute_put_refines(
             reveal(Cache::State::next_by);
             assert(Cache::State::next_by(pre_state.cache, post_state.cache, cache_lbl, Cache::Step::access()));
             assert(Cache::State::access(pre_state.cache, post_state.cache, cache_lbl)) by {
-                reveal(Cache::State::access);
             }
             assert(pre_state.cache.valid_write(addr));
             let slot = pre_state.cache.lookup_map[addr];
@@ -4865,9 +4840,7 @@ pub proof fn program_execute_put_refines(
                             branch_atomic_lbl,
                             new_active_branch,
                         )) by {
-                            reveal(AtomicBranchState::State::append_nonempty);
                         }
-                        reveal(AtomicBranchState::State::append_nonempty);
                         let branch_lbl = CachedBranch::Label::Append{
                             mini_allocator: pre_state.branch.mini_allocator,
                             receipt,
@@ -4894,9 +4867,7 @@ pub proof fn program_execute_put_refines(
                             post_state.branch.active_branch,
                             branch_lbl,
                         )) by {
-                            reveal(CachedBranch::State::append_step);
                         }
-                        reveal(CachedBranch::State::append_step);
                         assert(write_nodes.contains_key(addr));
                         assert(write_nodes == loaded_append_write_nodes(receipt, keys, msgs));
                         assert(addr == receipt.target().addr);
@@ -4910,7 +4881,6 @@ pub proof fn program_execute_put_refines(
                         assert(Cache::State::access(pre_state.cache, post_state.cache, cache_lbl));
                         assert(cache_lbl->reads.contains_key(addr));
                         assert(pre_state.cache.valid_read(addr, reads[addr])) by {
-                            reveal(Cache::State::access);
                         }
                         assert(pre_state.cache.entries[slot] is Filled);
                         assert(false);
@@ -4922,9 +4892,7 @@ pub proof fn program_execute_put_refines(
                             branch_atomic_lbl,
                             new_active_branch,
                         )) by {
-                            reveal(AtomicBranchState::State::append_empty);
                         }
-                        reveal(AtomicBranchState::State::append_empty);
                         assert(init_root is Some);
                         let init_addr = init_root.unwrap();
                         let branch_lbl = CachedBranch::Label::Initialize{
@@ -4952,9 +4920,7 @@ pub proof fn program_execute_put_refines(
                             post_state.branch.active_branch,
                             branch_lbl,
                         )) by {
-                            reveal(CachedBranch::State::initialize_branch);
                         }
-                        reveal(CachedBranch::State::initialize_branch);
                         assert(write_nodes.contains_key(addr));
                         assert(write_nodes == loaded_initialize_write_nodes(init_addr, keys, msgs));
                         assert(addr == init_addr);
@@ -5012,7 +4978,6 @@ pub proof fn program_execute_query_refines(
         inv(post),
 {
     broadcast use vstd::multiset::group_multiset_axioms;
-    reveal(SystemModel::State::program_execute);
 
     let req = lbl->op->req;
     let reply = lbl->op->reply;
@@ -5076,7 +5041,6 @@ pub proof fn program_execute_query_refines(
         CrashAwareCachingDiskSystem::Step::query(dst.branch),
     )) by {
         reveal(CrashAwareCachingDiskSystem::State::next_by);
-        reveal(CrashAwareCachingDiskSystem::State::query);
     }
     reveal(CrashAwareCachingDiskSystem::State::next);
 
@@ -5273,7 +5237,6 @@ pub proof fn accept_sync_request_refines(
     broadcast use vstd::multiset::group_multiset_axioms;
     reveal(SystemModel::State::next_by);
     assert(SystemModel::State::accept_sync_request(pre, post, lbl));
-    reveal(SystemModel::State::accept_sync_request);
 
     assert(lbl is AcceptSyncRequest);
     let sync_req_id = match lbl {
@@ -5362,7 +5325,6 @@ pub proof fn program_accept_sync_request_refines(
     broadcast use vstd::multiset::group_multiset_axioms;
     reveal(SystemModel::State::next_by);
     assert(SystemModel::State::program_accept_sync_request(pre, post, lbl, new_program));
-    reveal(SystemModel::State::program_accept_sync_request);
 
     assert(lbl is ProgramUIOp);
     assert(lbl->op is AcceptSyncRequest);
@@ -5448,7 +5410,6 @@ pub proof fn program_accept_sync_request_refines(
         CrashAwareCachingDiskSystem::Step::req_sync(),
     )) by {
         reveal(CrashAwareCachingDiskSystem::State::next_by);
-        reveal(CrashAwareCachingDiskSystem::State::req_sync);
     }
     reveal(CrashAwareCachingDiskSystem::State::next);
 
@@ -5524,7 +5485,6 @@ pub proof fn program_deliver_sync_reply_refines(
     broadcast use vstd::multiset::group_multiset_axioms;
     reveal(SystemModel::State::next_by);
     assert(SystemModel::State::program_deliver_sync_reply(pre, post, lbl, new_program));
-    reveal(SystemModel::State::program_deliver_sync_reply);
 
     assert(lbl is ProgramUIOp);
     assert(lbl->op is DeliverSyncReply);
@@ -5612,7 +5572,6 @@ pub proof fn program_deliver_sync_reply_refines(
         CrashAwareCachingDiskSystem::Step::reply_sync(),
     )) by {
         reveal(CrashAwareCachingDiskSystem::State::next_by);
-        reveal(CrashAwareCachingDiskSystem::State::reply_sync);
     }
     reveal(CrashAwareCachingDiskSystem::State::next);
 
@@ -5687,7 +5646,6 @@ pub proof fn deliver_sync_reply_refines(
     broadcast use vstd::multiset::group_multiset_axioms;
     reveal(SystemModel::State::next_by);
     assert(SystemModel::State::deliver_sync_reply(pre, post, lbl));
-    reveal(SystemModel::State::deliver_sync_reply);
 
     assert(lbl is DeliverSyncReply);
     assert(unified_cache_system_i_lbl(pre, post, lbl) == CrashAwareCachingDiskSystem::Label::Noop);
@@ -5788,7 +5746,6 @@ pub proof fn program_disk_initiate_recovery_refines(
     let read_req = DiskRequest::ReadReq{from: spec_superblock_addr()};
     let req_map = Map::empty().insert(req_id, read_req);
 
-    reveal(SystemModel::State::program_disk);
 
     assert(lbl is ProgramDiskOp);
     assert(target_lbl == CrashAwareCachingDiskSystem::Label::Noop);
@@ -5827,13 +5784,10 @@ pub proof fn program_disk_initiate_recovery_refines(
         }
     }
     assert(post.disk.content == pre.disk.content) by {
-        reveal(AsyncDisk::State::disk_ops);
     }
     assert(post.disk.responses == pre.disk.responses) by {
-        reveal(AsyncDisk::State::disk_ops);
     }
     assert(post.disk.requests == pre.disk.requests.union_prefer_right(req_map)) by {
-        reveal(AsyncDisk::State::disk_ops);
     }
     crate::spec::AsyncDisk_t::inv_next(pre.disk, post.disk, disk_lbl);
     assert(post.disk.inv());
@@ -5887,7 +5841,6 @@ pub proof fn program_disk_initiate_recovery_refines(
                 let in_flight_req_id = pre_state.sync_phase->req_id;
                 if pre.disk.requests.contains_key(in_flight_req_id) {
                     assert(!req_map.contains_key(in_flight_req_id)) by {
-                        reveal(AsyncDisk::State::disk_ops);
                     }
                     assert(post.disk.requests[in_flight_req_id]
                         == pre.disk.requests[in_flight_req_id]);
@@ -6046,7 +5999,6 @@ pub proof fn program_disk_superblock_recovery_refines(
         responses: multiset_to_map(lbl->info.resps),
     };
 
-    reveal(SystemModel::State::program_disk);
 
     assert(lbl is ProgramDiskOp);
     assert(target_lbl == CrashAwareCachingDiskSystem::Label::Noop);
@@ -6086,17 +6038,13 @@ pub proof fn program_disk_superblock_recovery_refines(
         }
     }
     assert(post.disk.content == pre.disk.content) by {
-        reveal(AsyncDisk::State::disk_ops);
     }
     assert(post.disk.requests == pre.disk.requests) by {
-        reveal(AsyncDisk::State::disk_ops);
     }
     assert(post.disk.responses == pre.disk.responses.remove(req_id)) by {
-        reveal(AsyncDisk::State::disk_ops);
         assert(resp_map.dom() == Set::<ID>::empty().insert(req_id));
     }
     assert(resp_map <= pre.disk.responses) by {
-        reveal(AsyncDisk::State::disk_ops);
     }
     assert(resp_map.contains_key(req_id));
     assert(resp_map[req_id] == read_resp);
@@ -6272,7 +6220,6 @@ pub proof fn program_disk_superblock_recovery_refines(
         dst.journal,
         dst.branch,
     )) by {
-        reveal(CrashAwareCachingDiskSystem::State::load_ephemeral_from_persistent);
     }
     assert(CrashAwareCachingDiskSystem::State::next_by(
         src,
@@ -6427,7 +6374,6 @@ pub proof fn program_disk_execute_sync_begin_refines(
     };
     let branch_lbl = AtomicBranchState::Label::CommitStart{branch_image};
 
-    reveal(SystemModel::State::program_disk);
 
     assert(lbl is ProgramDiskOp);
     assert(target_lbl == CrashAwareCachingDiskSystem::Label::Noop);
@@ -6477,10 +6423,8 @@ pub proof fn program_disk_execute_sync_begin_refines(
         }
     }
     assert(post.disk.content == pre.disk.content) by {
-        reveal(AsyncDisk::State::disk_ops);
     }
     assert(post.disk.requests == pre.disk.requests) by {
-        reveal(AsyncDisk::State::disk_ops);
         assert_maps_equal!(
             pre.disk.requests.union_prefer_right(Map::<ID, DiskRequest>::empty()),
             pre.disk.requests,
@@ -6488,7 +6432,6 @@ pub proof fn program_disk_execute_sync_begin_refines(
         );
     }
     assert(post.disk.responses == pre.disk.responses) by {
-        reveal(AsyncDisk::State::disk_ops);
         assert_maps_equal!(
             pre.disk.responses.remove_keys(Map::<ID, DiskResponse>::empty().dom()),
             pre.disk.responses,
@@ -6604,7 +6547,6 @@ pub proof fn program_disk_execute_sync_begin_refines(
         dst.branch,
         image,
     )) by {
-        reveal(CrashAwareCachingDiskSystem::State::commit_start);
         assert(image.branch_seq_end == image.journal_snapshot.boundary_lsn);
     }
     assert(CrashAwareCachingDiskSystem::State::next_by(
@@ -6722,7 +6664,6 @@ pub proof fn program_disk_execute_sync_prepared_refines(
     let image = pre_state.atomic_inflight_superblock_i();
     let raw_page = req->data;
 
-    reveal(SystemModel::State::program_disk);
 
     assert(lbl is ProgramDiskOp);
     assert(target_lbl == CrashAwareCachingDiskSystem::Label::Noop);
@@ -6767,13 +6708,10 @@ pub proof fn program_disk_execute_sync_prepared_refines(
         }
     }
     assert(post.disk.content == pre.disk.content) by {
-        reveal(AsyncDisk::State::disk_ops);
     }
     assert(post.disk.requests == pre.disk.requests.union_prefer_right(req_map)) by {
-        reveal(AsyncDisk::State::disk_ops);
     }
     assert(post.disk.responses == pre.disk.responses) by {
-        reveal(AsyncDisk::State::disk_ops);
         assert_maps_equal!(
             pre.disk.responses.remove_keys(Map::<ID, DiskResponse>::empty().dom()),
             pre.disk.responses,
@@ -6781,12 +6719,10 @@ pub proof fn program_disk_execute_sync_prepared_refines(
         );
     }
     assert(!pre.disk.requests.contains_key(req_id)) by {
-        reveal(AsyncDisk::State::disk_ops);
         assert(req_map.dom().contains(req_id));
         assert(disk_lbl->requests.dom().disjoint(pre.disk.requests.dom()));
     }
     assert(!pre.disk.responses.contains_key(req_id)) by {
-        reveal(AsyncDisk::State::disk_ops);
         assert(req_map.dom().contains(req_id));
         assert(disk_lbl->requests.dom().disjoint(pre.disk.responses.dom()));
     }
@@ -6830,7 +6766,6 @@ pub proof fn program_disk_execute_sync_prepared_refines(
             AtomicJournalState::Label::CommitPrepared,
             AtomicJournalState::Step::commit_prepared(),
         ));
-        reveal(AtomicJournalState::State::commit_prepared);
     }
     assert(post_state.branch == AtomicBranchState::State{
         prepared: true,
@@ -6844,7 +6779,6 @@ pub proof fn program_disk_execute_sync_prepared_refines(
             AtomicBranchState::Label::CommitPrepared,
             AtomicBranchState::Step::commit_prepared(),
         ));
-        reveal(AtomicBranchState::State::commit_prepared);
     }
     assert(post_state.journal.journal == pre_state.journal.journal);
     assert(post_state.branch.seq_end == pre_state.branch.seq_end);
@@ -6928,7 +6862,6 @@ pub proof fn program_disk_execute_sync_prepared_refines(
         dst.superblockstore,
         SuperblockStore::Label::Write{raw: raw_page},
     )) by {
-        reveal(SuperblockStore::State::write);
     }
     assert(SuperblockStore::State::next_by(
         src.superblockstore,
@@ -6949,7 +6882,6 @@ pub proof fn program_disk_execute_sync_prepared_refines(
         dst.superblockstore,
         raw_page,
     )) by {
-        reveal(CrashAwareCachingDiskSystem::State::commit_prepared);
         assert(superblock_matches(raw_page, src.frozen_superblock_image()));
     }
     assert(CrashAwareCachingDiskSystem::State::next_by(
@@ -7100,7 +7032,6 @@ pub proof fn program_disk_execute_sync_end_refines(
     };
     let branch_lbl = AtomicBranchState::Label::CommitComplete;
 
-    reveal(SystemModel::State::program_disk);
 
     assert(lbl is ProgramDiskOp);
     assert(target_lbl == CrashAwareCachingDiskSystem::Label::Noop);
@@ -7143,17 +7074,13 @@ pub proof fn program_disk_execute_sync_end_refines(
         }
     }
     assert(post.disk.content == pre.disk.content) by {
-        reveal(AsyncDisk::State::disk_ops);
     }
     assert(post.disk.requests == pre.disk.requests) by {
-        reveal(AsyncDisk::State::disk_ops);
     }
     assert(post.disk.responses == pre.disk.responses.remove(req_id)) by {
-        reveal(AsyncDisk::State::disk_ops);
         assert(resp_map.dom() == Set::<ID>::empty().insert(req_id));
     }
     assert(resp_map <= pre.disk.responses) by {
-        reveal(AsyncDisk::State::disk_ops);
     }
     assert(resp_map.contains_key(req_id));
     assert(resp_map.dom().contains(req_id));
@@ -7282,7 +7209,6 @@ pub proof fn program_disk_execute_sync_end_refines(
         dst.superblockstore,
         SuperblockStore::Label::Complete,
     )) by {
-        reveal(SuperblockStore::State::complete);
     }
     assert(SuperblockStore::State::next_by(
         src.superblockstore,
@@ -7306,7 +7232,6 @@ pub proof fn program_disk_execute_sync_end_refines(
         dst.superblockstore,
         journal_discarded_aus,
     )) by {
-        reveal(CrashAwareCachingDiskSystem::State::commit_complete);
     }
     assert(CrashAwareCachingDiskSystem::State::next_by(
         src,
@@ -7430,7 +7355,6 @@ pub proof fn program_disk_cache_io_begin_refines(
         responses: multiset_to_map(lbl->info.resps),
     };
 
-    reveal(SystemModel::State::program_disk);
     reveal(UnifiedCacheSystem::State::next_by);
 
     assert(lbl is ProgramDiskOp);
@@ -7459,11 +7383,9 @@ pub proof fn program_disk_cache_io_begin_refines(
         }
     }
     assert(post.disk.requests == pre.disk.requests.union_prefer_right(req_map)) by {
-        reveal(AsyncDisk::State::disk_ops);
     }
 
     assert(post.disk.content == pre.disk.content) by {
-        reveal(AsyncDisk::State::disk_ops);
     }
     crate::spec::AsyncDisk_t::inv_next(pre.disk, post.disk, disk_lbl);
     assert(post.disk.inv());
@@ -7542,7 +7464,6 @@ pub proof fn program_disk_cache_io_begin_refines(
                 let req_id = pre_state.sync_phase->req_id;
                 if pre.disk.requests.contains_key(req_id) {
                     assert(!req_map.contains_key(req_id)) by {
-                        reveal(AsyncDisk::State::disk_ops);
                     }
                     assert(post.disk.requests[req_id] == pre.disk.requests[req_id]);
                 } else if post.disk.requests.contains_key(req_id) {
@@ -7575,7 +7496,6 @@ pub proof fn program_disk_cache_io_begin_refines(
             dst.journal,
             dst.branch,
         )) by {
-            reveal(CrashAwareCachingDiskSystem::State::component_internals);
         }
         assert(CrashAwareCachingDiskSystem::State::next_by(
             src,
@@ -7713,13 +7633,10 @@ pub proof fn program_disk_cache_io_begin_refines(
         assert(post_state.journal == pre_state.journal);
     }
     assert(post.disk.responses == pre.disk.responses) by {
-        reveal(AsyncDisk::State::disk_ops);
     }
     assert(req_map.dom().disjoint(pre.disk.requests.dom())) by {
-        reveal(AsyncDisk::State::disk_ops);
     }
     assert(req_map.dom().disjoint(pre.disk.responses.dom())) by {
-        reveal(AsyncDisk::State::disk_ops);
     }
     cache_io_begin_preserves_cache_request_wf(pre, post, req_map);
     assert(unified_cache_cache_request_wf(post));
@@ -7855,7 +7772,6 @@ pub proof fn program_disk_cache_io_end_refines(
         responses: multiset_to_map(lbl->info.resps),
     };
 
-    reveal(SystemModel::State::program_disk);
     reveal(UnifiedCacheSystem::State::next_by);
 
     assert(lbl is ProgramDiskOp);
@@ -7881,16 +7797,12 @@ pub proof fn program_disk_cache_io_end_refines(
         }
     }
     assert(post.disk.content == pre.disk.content) by {
-        reveal(AsyncDisk::State::disk_ops);
     }
     assert(post.disk.requests == pre.disk.requests) by {
-        reveal(AsyncDisk::State::disk_ops);
     }
     assert(post.disk.responses == pre.disk.responses.remove_keys(resp_map.dom())) by {
-        reveal(AsyncDisk::State::disk_ops);
     }
     assert(resp_map <= pre.disk.responses) by {
-        reveal(AsyncDisk::State::disk_ops);
     }
     crate::spec::AsyncDisk_t::inv_next(pre.disk, post.disk, disk_lbl);
     assert(post.disk.inv());
@@ -7918,7 +7830,6 @@ pub proof fn program_disk_cache_io_end_refines(
         reqs,
         resps,
     )) by {
-        reveal(UnifiedCacheSystem::State::cache_io_end);
     }
     assert(post_state.recovery_state == pre_state.recovery_state);
     assert(post_state.journal == pre_state.journal);
@@ -7979,7 +7890,6 @@ pub proof fn program_disk_cache_io_end_refines(
             dst.journal,
             dst.branch,
         )) by {
-            reveal(CrashAwareCachingDiskSystem::State::component_internals);
         }
         assert(CrashAwareCachingDiskSystem::State::next_by(
             src,
@@ -8232,7 +8142,6 @@ pub proof fn program_disk_refines(
 {
     reveal(SystemModel::State::next_by);
     assert(SystemModel::State::program_disk(pre, post, lbl, new_program, new_disk));
-    reveal(SystemModel::State::program_disk);
 
     assert(lbl is ProgramDiskOp);
     assert(UnifiedCacheProgramModel::next(
@@ -8483,7 +8392,6 @@ pub proof fn program_internal_cache_internal_refines(
     let post_state = post.program.state;
     let target_lbl = unified_cache_system_i_lbl(pre, post, lbl);
 
-    reveal(SystemModel::State::program_internal);
     reveal(UnifiedCacheSystem::State::next_by);
 
     assert(lbl is ProgramInternal);
@@ -8549,7 +8457,6 @@ pub proof fn program_internal_cache_internal_refines(
             dst.journal,
             dst.branch,
         )) by {
-            reveal(CrashAwareCachingDiskSystem::State::component_internals);
         }
         assert(CrashAwareCachingDiskSystem::State::next_by(
             src,
@@ -8895,7 +8802,6 @@ pub proof fn program_internal_journal_load_index_refines(
         discovered_aus,
     };
 
-    reveal(SystemModel::State::program_internal);
 
     assert(lbl is ProgramInternal);
     assert(target_lbl == CrashAwareCachingDiskSystem::Label::Noop);
@@ -8972,7 +8878,6 @@ pub proof fn program_internal_journal_load_index_refines(
         dst.journal,
         discovered_aus,
     )) by {
-        reveal(CrashAwareCachingDiskSystem::State::journal_load_index);
     }
     assert(CrashAwareCachingDiskSystem::State::next_by(
         src,
@@ -9098,7 +9003,6 @@ pub proof fn program_internal_read_for_recovery_refines(
     };
     let target_lbl = unified_cache_system_i_lbl(pre, post, lbl);
 
-    reveal(SystemModel::State::program_internal);
 
     assert(lbl is ProgramInternal);
     assert(target_lbl == CrashAwareCachingDiskSystem::Label::Noop);
@@ -9291,7 +9195,6 @@ pub proof fn program_internal_read_for_recovery_refines(
         keys,
         msgs,
     )) by {
-        reveal(CrashAwareCachingDiskSystem::State::recover);
     }
     assert(CrashAwareCachingDiskSystem::State::next_by(
         src,
@@ -9404,7 +9307,6 @@ pub proof fn program_internal_journal_marshall_refines(
     };
     let target_lbl = unified_cache_system_i_lbl(pre, post, lbl);
 
-    reveal(SystemModel::State::program_internal);
 
     assert(lbl is ProgramInternal);
     assert(target_lbl == CrashAwareCachingDiskSystem::Label::Noop);
@@ -9504,7 +9406,6 @@ pub proof fn program_internal_journal_marshall_refines(
         target_lbl,
         dst.journal,
     )) by {
-        reveal(CrashAwareCachingDiskSystem::State::journal_internal);
     }
     assert(CrashAwareCachingDiskSystem::State::next_by(
         src,
@@ -9619,7 +9520,6 @@ pub proof fn program_internal_observe_clean_journal_aus_refines(
     let journal_lbl = AtomicJournalState::Label::ObserveCleanAUs{aus};
     let target_lbl = unified_cache_system_i_lbl(pre, post, lbl);
 
-    reveal(SystemModel::State::program_internal);
 
     assert(lbl is ProgramInternal);
     assert(target_lbl == CrashAwareCachingDiskSystem::Label::Noop);
@@ -9641,7 +9541,6 @@ pub proof fn program_internal_observe_clean_journal_aus_refines(
         Cache::State::next_by(pre_state.cache, post_state.cache, cache_lbl, step);
     match cache_step {
         Cache::Step::evictable() => {
-            reveal(Cache::State::evictable);
             assert(post_state.cache == pre_state.cache);
         },
         _ => {
@@ -9710,7 +9609,6 @@ pub proof fn program_internal_observe_clean_journal_aus_refines(
         dst.journal,
         aus,
     )) by {
-        reveal(CrashAwareCachingDiskSystem::State::journal_observe_clean_aus);
     }
     assert(CrashAwareCachingDiskSystem::State::next_by(
         src,
@@ -9817,7 +9715,6 @@ pub proof fn program_internal_journal_fill_aus_refines(
     let atomic_lbl = AtomicJournalState::Label::FillAUs{aus};
     let target_lbl = unified_cache_system_i_lbl(pre, post, lbl);
 
-    reveal(SystemModel::State::program_internal);
 
     assert(lbl is ProgramInternal);
     assert(target_lbl == CrashAwareCachingDiskSystem::Label::Noop);
@@ -9843,7 +9740,6 @@ pub proof fn program_internal_journal_fill_aus_refines(
         match step {
             AtomicJournalState::Step::fill_aus() => {
                 reveal(AtomicJournalState::State::next_by);
-                reveal(AtomicJournalState::State::fill_aus);
                 assert(post_state.journal.journal == pre_state.journal.journal);
             },
             _ => {
@@ -9921,7 +9817,6 @@ pub proof fn program_internal_journal_fill_aus_refines(
         Set::empty(),
         Set::empty(),
     )) by {
-        reveal(CrashAwareCachingDiskSystem::State::journal_internal_alloc);
     }
     assert(CrashAwareCachingDiskSystem::State::next_by(
         src,
@@ -10051,7 +9946,6 @@ pub proof fn program_internal_branch_load_metadata_refines(
         read_nodes: to_branch_nodes(reads),
     };
 
-    reveal(SystemModel::State::program_internal);
 
     assert(lbl is ProgramInternal);
     assert(target_lbl == CrashAwareCachingDiskSystem::Label::Noop);
@@ -10107,7 +10001,6 @@ pub proof fn program_internal_branch_load_metadata_refines(
                 post_state.branch,
                 branch_lbl,
             )) by {
-                reveal(AtomicBranchState::State::load_metadata);
             }
         },
         _ => {
@@ -10392,7 +10285,6 @@ pub proof fn program_internal_branch_load_metadata_refines(
         root,
         discovered_aus,
     )) by {
-        reveal(CrashAwareCachingDiskSystem::State::map_load_metadata);
     }
     assert(CrashAwareCachingDiskSystem::State::next_by(
         src,
@@ -10476,7 +10368,6 @@ pub proof fn program_internal_metadata_load_complete_refines(
     let post_state = post.program.state;
     let target_lbl = unified_cache_system_i_lbl(pre, post, lbl);
 
-    reveal(SystemModel::State::program_internal);
 
     assert(lbl is ProgramInternal);
     assert(target_lbl == CrashAwareCachingDiskSystem::Label::Noop);
@@ -10608,7 +10499,6 @@ pub proof fn program_internal_branch_fill_aus_refines(
     let atomic_lbl = AtomicBranchState::Label::FillAUs{aus};
     let target_lbl = unified_cache_system_i_lbl(pre, post, lbl);
 
-    reveal(SystemModel::State::program_internal);
 
     assert(lbl is ProgramInternal);
     assert(target_lbl == CrashAwareCachingDiskSystem::Label::Noop);
@@ -10634,7 +10524,6 @@ pub proof fn program_internal_branch_fill_aus_refines(
         match step {
             AtomicBranchState::Step::fill_aus() => {
                 reveal(AtomicBranchState::State::next_by);
-                reveal(AtomicBranchState::State::fill_aus);
                 assert(post_state.branch.image == pre_state.branch.image);
                 assert(post_state.branch.branch_summary == pre_state.branch.branch_summary);
                 assert(post_state.branch.active_branch == pre_state.branch.active_branch);
@@ -10713,7 +10602,6 @@ pub proof fn program_internal_branch_fill_aus_refines(
         aus,
         Set::empty(),
     )) by {
-        reveal(CrashAwareCachingDiskSystem::State::map_internal_alloc);
     }
     assert(CrashAwareCachingDiskSystem::State::next_by(
         src,
@@ -10842,7 +10730,6 @@ pub proof fn program_internal_branch_grow_refines(
     };
     let target_lbl = unified_cache_system_i_lbl(pre, post, lbl);
 
-    reveal(SystemModel::State::program_internal);
 
     assert(lbl is ProgramInternal);
     assert(target_lbl == CrashAwareCachingDiskSystem::Label::Noop);
@@ -10930,7 +10817,6 @@ pub proof fn program_internal_branch_grow_refines(
         target_lbl,
         dst.branch,
     )) by {
-        reveal(CrashAwareCachingDiskSystem::State::map_internal);
     }
     assert(CrashAwareCachingDiskSystem::State::next_by(
         src,
@@ -11057,7 +10943,6 @@ pub proof fn program_internal_branch_split_refines(
     };
     let target_lbl = unified_cache_system_i_lbl(pre, post, lbl);
 
-    reveal(SystemModel::State::program_internal);
 
     assert(lbl is ProgramInternal);
     assert(target_lbl == CrashAwareCachingDiskSystem::Label::Noop);
@@ -11147,7 +11032,6 @@ pub proof fn program_internal_branch_split_refines(
         target_lbl,
         dst.branch,
     )) by {
-        reveal(CrashAwareCachingDiskSystem::State::map_internal);
     }
     assert(CrashAwareCachingDiskSystem::State::next_by(
         src,
@@ -11273,7 +11157,6 @@ pub proof fn program_internal_branch_seal_refines(
     };
     let target_lbl = unified_cache_system_i_lbl(pre, post, lbl);
 
-    reveal(SystemModel::State::program_internal);
     reveal(UnifiedCacheSystem::State::next_by);
 
     assert(lbl is ProgramInternal);
@@ -11300,7 +11183,6 @@ pub proof fn program_internal_branch_seal_refines(
         new_cache,
         new_branch,
     )) by {
-        reveal(UnifiedCacheSystem::State::branch_seal);
     }
     assert(post_state.journal == pre_state.journal);
     assert(post_state.free_aus == pre_state.free_aus);
@@ -11376,7 +11258,6 @@ pub proof fn program_internal_branch_seal_refines(
         target_lbl,
         dst.branch,
     )) by {
-        reveal(CrashAwareCachingDiskSystem::State::map_internal);
     }
     assert(CrashAwareCachingDiskSystem::State::next_by(
         src,
@@ -11491,7 +11372,6 @@ pub proof fn program_internal_observe_persisted_branch_roots_refines(
     let branch_lbl = AtomicBranchState::Label::ObservePersistedRoots{target_count};
     let target_lbl = unified_cache_system_i_lbl(pre, post, lbl);
 
-    reveal(SystemModel::State::program_internal);
 
     assert(lbl is ProgramInternal);
     assert(target_lbl == CrashAwareCachingDiskSystem::Label::Noop);
@@ -11575,7 +11455,6 @@ pub proof fn program_internal_observe_persisted_branch_roots_refines(
         target_lbl,
         dst.branch,
     )) by {
-        reveal(CrashAwareCachingDiskSystem::State::map_internal);
     }
     assert(CrashAwareCachingDiskSystem::State::next_by(
         src,
@@ -11698,7 +11577,6 @@ pub proof fn program_internal_recovery_complete_refines(
         end_lsn: pre_state.branch.seq_end(),
     };
 
-    reveal(SystemModel::State::program_internal);
 
     assert(lbl is ProgramInternal);
     assert(target_lbl == CrashAwareCachingDiskSystem::Label::Noop);
@@ -11854,7 +11732,6 @@ pub proof fn program_internal_refines(
 {
     reveal(SystemModel::State::next_by);
     assert(SystemModel::State::program_internal(pre, post, lbl, new_program));
-    reveal(SystemModel::State::program_internal);
 
     assert(lbl is ProgramInternal);
     assert(post.program == new_program);
@@ -12228,7 +12105,6 @@ pub proof fn disk_internal_process_read_refines(
         inv(post),
 {
     reveal(SystemModel::State::next_by);
-    reveal(SystemModel::State::disk_internal);
     reveal(AsyncDisk::State::next);
     reveal(AsyncDisk::State::next_by);
 
@@ -12459,7 +12335,6 @@ pub proof fn disk_internal_process_write_refines(
         inv(post),
 {
     reveal(SystemModel::State::next_by);
-    reveal(SystemModel::State::disk_internal);
     reveal(AsyncDisk::State::next);
     reveal(AsyncDisk::State::next_by);
 
@@ -12728,7 +12603,6 @@ pub proof fn disk_internal_process_write_refines(
                 dst.journal,
                 dst.branch,
             )) by {
-                reveal(CrashAwareCachingDiskSystem::State::component_internals);
             }
             assert(CrashAwareCachingDiskSystem::State::next_by(
                 src,
@@ -13000,7 +12874,6 @@ pub proof fn disk_internal_process_write_refines(
             dst.superblockstore,
             SuperblockStore::Label::Land,
         )) by {
-            reveal(SuperblockStore::State::land);
         }
         assert(SuperblockStore::State::next_by(
             src.superblockstore,
@@ -13017,7 +12890,6 @@ pub proof fn disk_internal_process_write_refines(
             target_lbl,
             dst.superblockstore,
         )) by {
-            reveal(CrashAwareCachingDiskSystem::State::superblock_write_lands);
         }
         assert(CrashAwareCachingDiskSystem::State::next_by(
             src,
@@ -13341,7 +13213,6 @@ pub proof fn crash_refines(
 {
     reveal(SystemModel::State::next_by);
     assert(SystemModel::State::crash(pre, post, lbl, new_program, new_disk));
-    reveal(SystemModel::State::crash);
     assert(lbl is Crash);
     assert(post.program == new_program);
     assert(post.disk == new_disk);
@@ -13359,7 +13230,6 @@ pub proof fn crash_refines(
     match disk_step {
         AsyncDisk::Step::crash() => {
             assert(AsyncDisk::State::crash(pre.disk, post.disk, DiskLabel::Crash{})) by {
-                reveal(AsyncDisk::State::crash);
             }
         },
         _ => {
@@ -13373,6 +13243,8 @@ pub proof fn crash_refines(
 
     reveal(UnifiedCacheSystem::State::init);
     reveal(UnifiedCacheSystem::State::init_by);
+
+
     let config = choose |config: UnifiedCacheSystem::Config|
         UnifiedCacheSystem::State::init_by(post.program.state, config);
     match config {
@@ -13410,7 +13282,6 @@ pub proof fn crash_refines(
             dst.superblockstore,
             SuperblockStore::Label::Crash,
         )) by {
-            reveal(SuperblockStore::State::crash);
         }
         assert(SuperblockStore::State::next_by(
             src.superblockstore,
@@ -13564,7 +13435,6 @@ pub proof fn crash_refines(
             dst.journal,
             CrashAwareCachingDiskJournal::Label::Crash{keep_in_flight},
         )) by {
-            reveal(CrashAwareCachingDiskJournal::State::crash);
         }
         assert(CrashAwareCachingDiskJournal::State::next_by(
             src.journal,
@@ -13655,7 +13525,6 @@ pub proof fn crash_refines(
                     branch_pre.branch_caching_disk_state_i(),
                     CachingDiskBranch::Label::FreezePrepared{image: frozen},
                 )) by {
-                    reveal(CachingDiskBranch::State::freeze_prepared);
                 }
                 assert(CachingDiskBranch::State::next_by(
                     branch_pre.branch_caching_disk_state_i(),
@@ -13788,7 +13657,6 @@ pub proof fn crash_refines(
                     branch_pre.branch_caching_disk_state_i(),
                     CachingDiskBranch::Label::FreezePrepared{image: frozen},
                 )) by {
-                    reveal(CachingDiskBranch::State::freeze_prepared);
                 }
                 assert(CachingDiskBranch::State::next_by(
                     branch_pre.branch_caching_disk_state_i(),
@@ -13820,7 +13688,6 @@ pub proof fn crash_refines(
             dst.branch,
             CrashAwareCachingDiskBranch::Label::Crash{keep_in_flight},
         )) by {
-            reveal(CrashAwareCachingDiskBranch::State::crash);
         }
         assert(CrashAwareCachingDiskBranch::State::next_by(
             src.branch,
@@ -13844,7 +13711,6 @@ pub proof fn crash_refines(
     match config {
         UnifiedCacheSystem::Config::initialize(cache_slots, free_aus) => {
             assert(Cache::State::initialize(post_state.cache, cache_slots)) by {
-                reveal(Cache::State::initialize);
             }
             Cache::State::initialize_inductive(post_state.cache, cache_slots);
             assert(post_state.cache.inv());
@@ -13954,7 +13820,6 @@ pub proof fn crash_refines(
             match config {
                 UnifiedCacheSystem::Config::initialize(cache_slots, free_aus) => {
                     assert(Cache::State::initialize(post_state.cache, cache_slots)) by {
-                        reveal(Cache::State::initialize);
                     }
                 },
                 UnifiedCacheSystem::Config::dummy_to_use_type_params(_) => {
@@ -14096,7 +13961,6 @@ pub proof fn crash_refines(
         dst.free_aus,
         keep_in_flight,
     )) by {
-        reveal(CrashAwareCachingDiskSystem::State::crash);
     }
     assert(CrashAwareCachingDiskSystem::State::next_by(
         src,
@@ -14142,7 +14006,6 @@ pub proof fn noop_refines(
 {
     reveal(SystemModel::State::next_by);
     assert(SystemModel::State::noop(pre, post, lbl));
-    reveal(SystemModel::State::noop);
     assert(lbl is Noop);
     assert(post == pre);
     assert(unified_cache_system_i_lbl(pre, post, lbl) == CrashAwareCachingDiskSystem::Label::Noop);

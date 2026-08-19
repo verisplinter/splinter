@@ -15,20 +15,17 @@ use verus_state_machines_macros::state_machine;
 use crate::abstract_system::MsgHistory_v::{KeyedMessage, MsgHistory};
 use crate::abstract_system::StampedMap_v::LSN;
 use crate::allocation_layer::AllocationJournal_v::lsn_au_index_discard_up_to;
-use crate::allocation_layer::AllocationBranch_v::{BranchNode, Summary};
+use crate::allocation_layer::BranchTypes_v::{BranchNode, Summary};
 use crate::allocation_layer::AllocationBranchBetree_v::summary_aus;
 use crate::allocation_layer::MiniAllocator_v::MiniAllocator;
 use crate::betree::LinkedBranch_v::SplitArg;
 use crate::disk::GenericDisk_v::{Address, AU, Pointer, to_aus};
-use crate::implementation::AllocationBranchStack_v::normalize_value;
-use crate::implementation::AllocationBranchStackRefinement_v::append_puts;
 use crate::implementation::Cache_v::{addr_maps_to_req, Cache, Entry, Slot, Status};
 use crate::implementation::CachedBranch_v::{
     CachedBranch, LoadedBranch, LoadedPathReceipt,
     root_summary_from_read, root_summary_read_valid,
 };
 use crate::implementation::CachedJournal_v::{CachedJournal, JournalSnapshot};
-use crate::implementation::CachingDiskBranch_v::{sealed_summary_aus_between, split_read_addrs};
 use crate::implementation::CachingDisk_v::addresses_in_aus;
 use crate::implementation::AbstractSuperblock_v::{
     AbstractSuperblockImage, empty_abstract_superblock_image, superblock_matches,
@@ -555,7 +552,6 @@ impl AtomicJournalState::State {
         match step {
             AtomicJournalState::Step::fill_aus() => {
                 assert(AtomicJournalState::State::fill_aus(pre, post, lbl)) by {
-                    reveal(AtomicJournalState::State::fill_aus);
                 }
             },
             _ => {

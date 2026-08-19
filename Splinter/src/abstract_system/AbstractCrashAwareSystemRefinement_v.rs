@@ -342,7 +342,7 @@ verus! {
             &&& self.journal.i().includes_subseq(frozen_journal)
             &&& journal_overlaps_agree(frozen_journal, self.journal.persistent)
         }
-        
+
         pub open spec(checked) fn inv_frozen_map_geometry(self) -> bool
             recommends
                 self.wf(),
@@ -493,6 +493,12 @@ verus! {
         reveal(AbstractCrashAwareJournal::State::init_by);
         reveal(AbstractCrashAwareMap::State::init);
         reveal(AbstractCrashAwareMap::State::init_by);
+
+
+
+
+
+
 
         match choose |config: CoordinationSystem::Config|
             CoordinationSystem::State::init_by(v, config)
@@ -799,7 +805,7 @@ verus! {
                     ));
                     match amap_step {
                         AbstractMap::Step::freeze_as() => {
-                            reveal(AbstractMap::State::freeze_as);
+
                         },
                         _ => { assert(false); },
                     }
@@ -945,9 +951,12 @@ verus! {
         // Be careful to reveal init and init_by transitions as well!
         reveal(AbstractCrashAwareJournal::State::init);
         reveal(AbstractCrashAwareJournal::State::init_by);
+
+
         // No direct dependencies on init()
-        // reveal(AbstractJournal::State::init);
         reveal(AbstractJournal::State::init_by);
+        // 
+
 
         // Avoid common extensionality argument errors with these proofs
         // about extensional equality for the frequently used MsgHistory and
@@ -1088,9 +1097,12 @@ verus! {
         // Be careful to reveal init and init_by transitions as well!
         reveal(AbstractCrashAwareJournal::State::init);
         reveal(AbstractCrashAwareJournal::State::init_by);
+
+
         // No direct dependencies on init()
-        // reveal(AbstractJournal::State::init);
         reveal(AbstractJournal::State::init_by);
+        // 
+
 
         // Reveal refinement transitions
         reveal(CrashTolerantAsyncMap::State::next);
@@ -1269,9 +1281,12 @@ verus! {
         // Be careful to reveal init and init_by transitions as well!
         reveal(AbstractCrashAwareJournal::State::init);
         reveal(AbstractCrashAwareJournal::State::init_by);
+
+
         // No direct dependencies on init()
-        // reveal(AbstractJournal::State::init);
         reveal(AbstractJournal::State::init_by);
+        // 
+
 
         // Reveal refinement transitions
         reveal(CrashTolerantAsyncMap::State::next);
@@ -1345,9 +1360,12 @@ verus! {
         // Be careful to reveal init and init_by transitions as well!
         reveal(AbstractCrashAwareJournal::State::init);
         reveal(AbstractCrashAwareJournal::State::init_by);
+
+
         // No direct dependencies on init()
-        // reveal(AbstractJournal::State::init);
         reveal(AbstractJournal::State::init_by);
+        // 
+
 
         // Reveal refinement transitions
         reveal(CrashTolerantAsyncMap::State::next);
@@ -1360,7 +1378,7 @@ verus! {
         // PROOF ZONE
         // It's possible that this isn't necessary.
         reveal(journal_overlaps_agree);
-        
+
         let stable_lsn = vp.journal.persistent.seq_end;
         if v.components_loaded()
         {
@@ -1381,7 +1399,7 @@ verus! {
 //             }
         }
 
-        
+
         // GOAL (necessary): vp.i()'s versions should be truncated down to just v.i().versions[..stable_index+1]. (Which
         // by invariant should actually mean that the only index vp.i().versions contains is `stable_index`).
 
@@ -1462,9 +1480,12 @@ verus! {
         // Be careful to reveal init and init_by transitions as well!
         reveal(AbstractCrashAwareJournal::State::init);
         reveal(AbstractCrashAwareJournal::State::init_by);
+
+
         // No direct dependencies on init()
-        // reveal(AbstractJournal::State::init);
         reveal(AbstractJournal::State::init_by);
+        // 
+
 
         // Reveal refinement transitions
         reveal(CrashTolerantAsyncMap::State::next);
@@ -1487,7 +1508,7 @@ verus! {
             v.i(), vp.i(), CrashTolerantAsyncMap::Label::Noop{}));
         CrashTolerantAsyncMap::show::noop(v.i(), vp.i(), CrashTolerantAsyncMap::Label::Noop{});
     }
-    
+
     // Prove Query refines to a valid operate transition. (In Dafny this was
     // automatic, didn't require a lemma). Here there's a ton of boilerplate to
     // do the transition nesting unwrapping (although that may be specific to
@@ -1521,9 +1542,12 @@ verus! {
         // Be careful to reveal init and init_by transitions as well!
         reveal(AbstractCrashAwareJournal::State::init);
         reveal(AbstractCrashAwareJournal::State::init_by);
+
+
         // No direct dependencies on init()
-        // reveal(AbstractJournal::State::init);
         reveal(AbstractJournal::State::init_by);
+        // 
+
 
         // Reveal refinement transitions
         reveal(CrashTolerantAsyncMap::State::next);
@@ -1683,9 +1707,12 @@ verus! {
         // Be careful to reveal init and init_by transitions as well!
         reveal(AbstractCrashAwareJournal::State::init);
         reveal(AbstractCrashAwareJournal::State::init_by);
+
+
         // No direct dependencies on init()
-        // reveal(AbstractJournal::State::init);
         reveal(AbstractJournal::State::init_by);
+        // 
+
 
         // Reveal refinement transitions
         reveal(CrashTolerantAsyncMap::State::next);
@@ -1780,9 +1807,12 @@ verus! {
         // Be careful to reveal init and init_by transitions as well!
         reveal(AbstractCrashAwareJournal::State::init);
         reveal(AbstractCrashAwareJournal::State::init_by);
+
+
         // No direct dependencies on init()
-        // reveal(AbstractJournal::State::init);
         reveal(AbstractJournal::State::init_by);
+        // 
+
 
         // Reveal refinement transitions
         reveal(CrashTolerantAsyncMap::State::next);

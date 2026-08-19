@@ -19,7 +19,7 @@ use crate::allocation_layer::AllocationBetree_v::AllocationBetree;
 use crate::allocation_layer::AllocationBetreeAbstractRefinement_v::*;
 use crate::allocation_layer::AllocationBranchBetree_v::AllocationBranchBetree;
 use crate::allocation_layer::AllocationBranchBetreeRefinement_v::*;
-use crate::allocation_layer::AllocationBranch_v::{BranchNode, Summary};
+use crate::allocation_layer::BranchTypes_v::{BranchNode, Summary};
 use crate::allocation_layer::Likes_v::AULikes;
 use crate::allocation_layer::LikesBetree_v::LikesBetree;
 use crate::betree::BufferDisk_v::BufferDisk;
@@ -30,9 +30,8 @@ use crate::disk::GenericDisk_v::{
     addrs_with_different_au, set_addrs_disjoint_aus, to_aus, AU,
     Address,
 };
-use crate::implementation::CachedBranchBetree_v::{
-    cached_branch_alloc_aus, CachedBranchBetree,
-};
+use crate::implementation::CachedBranchBetree_v::CachedBranchBetree;
+use crate::implementation::CachedBulkBranch_v::cached_bulk_branch_alloc_aus;
 use crate::implementation::CachingDiskBranchBetree_v::{
     CachingDiskBranchBetree, loose_disk_for_summary, tight_branch_addrs,
     tight_branch_of, tight_sealed_branch_disk, to_betree_nodes,
@@ -66,7 +65,6 @@ pub proof fn abstract_internal_stutters(
         );
     match step {
         AbstractMap::Step::internal() => {
-            reveal(AbstractMap::State::internal);
         }
         _ => {
             assert(false);
@@ -90,7 +88,6 @@ pub proof fn abstract_query_stutters(
         AbstractMap::State::next_by(pre, post, lbl, step);
     match step {
         AbstractMap::Step::query() => {
-            reveal(AbstractMap::State::query);
         }
         _ => {
             assert(false);
@@ -120,7 +117,6 @@ proof fn abstract_freeze_matches(
         );
     match step {
         AbstractMap::Step::freeze_as() => {
-            reveal(AbstractMap::State::freeze_as);
         }
         _ => {
             assert(false);
@@ -188,9 +184,6 @@ impl CachingDiskBranchBetree::State {
         let linked = likes.i();
         assert(linked.inv());
         linked.i_inv();
-        reveal(CachingDiskBranchBetree::State::i_abstract);
-        reveal(AllocationBetree::State::i_abstract);
-        reveal(PagedBetree::State::i);
     }
 }
 
@@ -218,7 +211,6 @@ impl CachingDiskBranchBetreeImage {
         requires self.valid()
         ensures self.recovery_witness().valid_for(self)
     {
-        reveal(CachingDiskBranchBetreeImage::valid);
         assert forall |
             betree_aus: AULikes,
             branch_aus: AULikes,
@@ -280,7 +272,7 @@ impl CachingDiskBranchBetreeImage {
             witness.branch_summary,
         );
         self.recovery_witness_valid();
-        assert(CachingDiskBranchBetree::State::initialize(
+        CachingDiskBranchBetree::State::initialize_from_cached(
             loaded,
             self.disk(),
             cached,
@@ -289,10 +281,7 @@ impl CachingDiskBranchBetreeImage {
             witness.betree_aus,
             witness.branch_aus,
             witness.branch_summary,
-        )) by {
-            reveal(CachingDiskBranchBetree::State::initialize);
-            reveal(crate::implementation::CachedBranchBetree_v::CachedBranchBetree::State::initialize);
-        }
+        );
         CachingDiskBranchBetree::State::init_refines(
             loaded,
             self.disk(),
@@ -370,7 +359,6 @@ pub proof fn loaded_branch_roots_empty()
             Map::<Address, crate::betree::LinkedBetree_v::BetreeNode>::empty(),
         ).is_empty(),
 {
-    reveal(loaded_branch_roots);
 }
 
 pub proof fn recovery_core_next_preserves_loaded_branch_roots(
@@ -385,12 +373,9 @@ pub proof fn recovery_core_next_preserves_loaded_branch_roots(
     ensures
         post.branch_roots == loaded_branch_roots(post.betree_nodes),
 {
-    reveal(BetreeMetadataRecoveryCore::next);
-    reveal(loaded_branch_roots);
     match lbl {
         BetreeMetadataRecoveryLabel::DiskInternal => {}
         BetreeMetadataRecoveryLabel::ReadBetree{addr, reads} => {
-            reveal(BetreeMetadataRecoveryCore::read_betree);
             let node = to_betree_nodes(reads)[addr];
             assert(!pre.betree_nodes.contains_key(addr));
             assert_sets_equal!(
@@ -436,10 +421,8 @@ pub proof fn recovery_core_next_preserves_loaded_branch_roots(
             );
         }
         BetreeMetadataRecoveryLabel::ReadBranchRoot{..} => {
-            reveal(BetreeMetadataRecoveryCore::read_branch_root);
         }
         BetreeMetadataRecoveryLabel::ReadBranchAux{..} => {
-            reveal(BetreeMetadataRecoveryCore::read_branch_aux);
         }
     }
 }
@@ -522,11 +505,6 @@ pub proof fn recovery_frontier_start_with_disk(
         initial_disk,
         BetreeMetadataRecoveryCore::start(image.metadata),
     );
-    reveal(initial_refinement_witness_valid);
-    reveal(tight_betree_candidate);
-    reveal(BetreeMetadataRecovery::from_core);
-    reveal(BetreeMetadataRecoveryCore::start);
-    reveal(recovery_frontier_inv);
     loaded_branch_roots_empty();
     if image.metadata.root is Some {
         assert(tree.dv.entries.contains_key(
@@ -558,8 +536,6 @@ pub proof fn recovery_frontier_pending_reads_persistent(
                 recovery.pending_branch_aux[root],
             ),
 {
-    reveal(BetreeMetadataRecovery::refinement_inv);
-    reveal(recovery_frontier_inv);
     recovery_witness_branch_facts(image);
     let witness = image.recovery_witness();
     let tree = initial_tight_tree(witness.initial_betree);
@@ -571,14 +547,9 @@ pub proof fn recovery_frontier_pending_reads_persistent(
     );
 
     image.recovery_witness_valid();
-    reveal(initial_refinement_witness_valid);
-    reveal(tight_betree_candidate);
     assert(tree.dv.entries
         <= to_betree_nodes(image.disk().visible()));
     assert(image.disk().visible() == image.persistent) by {
-        reveal(CachingDiskBranchBetreeImage::disk);
-        reveal(CachingDisk::State::visible);
-        reveal(CachingDisk::State::visible_cache);
     }
     assert(recovery.pending_betree
         <= image.persistent.dom()) by {
@@ -678,7 +649,6 @@ pub proof fn same_betree_root_disk_same_transitive_likes(
     );
     assert(left.transitive_likes()
         == right.transitive_likes()) by {
-        reveal(LinkedBetree::transitive_likes);
     }
 }
 
@@ -692,6 +662,11 @@ pub proof fn recovery_core_loaded_betree_matches(
     ensures
         recovery.core().loaded_betree(image.metadata)
             == recovery.loaded_state(image).betree,
+        recovery.core().recovered_likes_tree(image.metadata).acyclic(),
+        recovery.core().recovered_likes_tree(image.metadata)
+            .dv.entries.dom()
+            == recovery.core().recovered_likes_tree(image.metadata)
+                .reachable_betree_addrs(),
 {
     recovery_complete_witness_valid(recovery, image);
     let core = recovery.core();
@@ -705,29 +680,53 @@ pub proof fn recovery_core_loaded_betree_matches(
             initial_betree: recovery.initial_betree(image),
         };
 
-    reveal(RecoveredCachingDiskBranchBetreeMetadata::valid_for);
-    reveal(initial_refinement_witness_valid);
     assert(recovered.valid_for(image));
+    let tight = initial_tight_tree(recovered.initial_betree);
+    assert(tight.dv.entries.dom()
+        == tight.reachable_betree_addrs());
+    assert(tight.root == full_tree.root);
+    assert(tight.dv == full_tree.dv);
     assert(full_tree.acyclic());
     assert(core_tree.root == full_tree.root);
     assert(core_tree.dv == full_tree.dv);
     assert(core_tree.acyclic()) by {
-        reveal(LinkedBetree::acyclic);
-        reveal(LinkedBetree::valid_ranking);
+    }
+    assert(core_tree.dv.entries.dom()
+        == core_tree.reachable_betree_addrs()) by {
+        assert(core_tree.dv == full_tree.dv);
+        assert(full_tree.reachable_betree_addrs()
+            == tight.reachable_betree_addrs()) by {
+            assert(full_tree.valid_ranking(tight.the_ranking()));
+            tight.agreeable_disks_same_reachable_betree_addrs(
+                full_tree,
+                tight.the_ranking(),
+            );
+            tight.reachable_betree_addrs_ignore_ranking(
+                tight.the_ranking(),
+                tight.the_ranking(),
+            );
+            full_tree.reachable_betree_addrs_ignore_ranking(
+                tight.the_ranking(),
+                full_tree.the_ranking(),
+            );
+        }
+        assert(full_tree.dv.entries.dom()
+            == full_tree.reachable_betree_addrs());
+        assert(core_tree.root == full_tree.root);
+        assert(core_tree.dv == full_tree.dv);
+        assert(core_tree.reachable_betree_addrs()
+            == full_tree.reachable_betree_addrs()) by {
+            core_tree.reachable_betree_addrs_ignore_ranking(
+                core_tree.the_ranking(),
+                full_tree.the_ranking(),
+            );
+        }
     }
     same_betree_root_disk_same_transitive_likes(
         core_tree,
         full_tree,
     );
 
-    reveal(BetreeMetadataRecovery::core);
-    reveal(BetreeMetadataRecoveryCore::loaded_betree);
-    reveal(BetreeMetadataRecoveryCore::betree_aus);
-    reveal(BetreeMetadataRecoveryCore::branch_aus);
-    reveal(BetreeMetadataRecovery::loaded_state);
-    reveal(CachingDiskBranchBetreeImage::cached_betree);
-    reveal(BetreeMetadataRecovery::betree_aus);
-    reveal(BetreeMetadataRecovery::branch_aus);
 }
 
 pub proof fn recovery_complete_metadata_matches_image(
@@ -763,9 +762,6 @@ pub proof fn recovery_complete_metadata_matches_image(
         recovered,
         canonical,
     );
-    reveal(RecoveredCachingDiskBranchBetreeMetadata::valid_for);
-    reveal(initial_refinement_witness_valid);
-    reveal(AllocationBranchBetree::State::initialize);
     assert(recovered.betree_aus == canonical.betree_aus);
     assert(recovered.branch_aus == canonical.branch_aus);
     assert(recovered.branch_summary == canonical.branch_summary);
@@ -805,9 +801,6 @@ pub proof fn recovery_witness_branch_facts(
         witness.branch_aus,
         witness.branch_summary,
     );
-    reveal(initial_refinement_witness_valid);
-    reveal(tight_betree_candidate);
-    reveal(AllocationBranchBetree::State::initialize);
     assert(tree.dv.entries <= visible_tree);
     assert(visible_tree <= to_betree_nodes(image.disk().visible()));
     vstd::map_lib::lemma_submap_of_trans(
@@ -820,7 +813,6 @@ pub proof fn recovery_witness_branch_facts(
     assert(tree.acyclic());
     assert(linked.dv == tree.dv);
     assert(linked.valid_view(tree)) by {
-        reveal(initial_tight_tree);
     }
     linked.valid_view_ensures(tree);
     assert(linked.reachable_buffer_addrs() == roots);
@@ -856,9 +848,6 @@ pub proof fn recovery_frontier_next(
     let summary = witness.branch_summary;
     let buffer = witness.initial_betree.linked.buffer_dv;
     recovery_witness_branch_facts(image);
-    reveal(BetreeMetadataRecovery::next);
-    reveal(recovery_frontier_inv);
-    reveal(tight_betree_candidate);
     assert(buffer.sealed_branch_roots(roots));
     assert(summary == buffer.build_branch_summary(roots));
     assert(set_addrs_disjoint_aus(roots));
@@ -908,7 +897,6 @@ pub proof fn recovery_frontier_next(
                 assert forall |child: Address|
                     #[trigger] betree_child_addrs(node).contains(child)
                     implies tree.dv.entries.dom().contains(child) by {
-                    reveal(betree_child_addrs);
                     let i = choose |i: int|
                         0 <= i
                         && i < node.children.len()
@@ -925,7 +913,6 @@ pub proof fn recovery_frontier_next(
                 post.core(),
                 lbl,
             );
-            reveal(BetreeMetadataRecovery::read_betree);
             assert(post.betree_nodes <= tree.dv.entries);
             assert(post.pending_betree <= tree.dv.entries.dom());
             assert(post.betree_nodes.dom()
@@ -937,17 +924,6 @@ pub proof fn recovery_frontier_next(
                     if !pre.branch_roots.contains(root) {
                         assert(betree_buffer_roots(node)
                             .contains(root));
-                        reveal(betree_buffer_roots);
-                        reveal(
-                            crate::betree::LinkedBetree_v::LinkedBetree::<
-                                _
-                            >::reachable_buffer_addrs,
-                        );
-                        reveal(
-                            crate::betree::LinkedBetree_v::LinkedBetree::<
-                                _
-                            >::reachable_buffer,
-                        );
                         assert(tree.reachable_betree_addrs()
                             .contains(addr));
                         assert(exists |tree_addr: Address|
@@ -1026,7 +1002,6 @@ pub proof fn recovery_frontier_next(
             assert(summary.contains_key(root.au));
             assert(summary[root.au]
                 == buffer.get_branch(root).get_summary());
-            reveal(BetreeMetadataRecovery::read_branch_root);
             if node is Leaf {
                 assert(buffer.get_branch(root).get_summary()
                     == set![root.au]);
@@ -1133,7 +1108,6 @@ pub proof fn recovery_frontier_next(
                 == buffer.get_branch(root).get_summary());
             assert(buffer.get_branch(root).get_summary()
                 == node.arrow_Auxiliary_0());
-            reveal(BetreeMetadataRecovery::read_branch_aux);
             assert(pre.branch_roots == post.branch_roots);
             crate::disk::GenericDisk_v::to_aus_domain(
                 post.branch_roots,
@@ -1224,9 +1198,6 @@ pub proof fn recovery_complete_witness_valid(
     let buffer = witness.initial_betree.linked.buffer_dv;
     let loaded = recovery.betree_nodes.dom();
     let ranking = tree.the_ranking();
-    reveal(recovery_frontier_inv);
-    reveal(BetreeMetadataRecovery::complete);
-    reveal(tight_betree_candidate);
 
     assert(recovery.pending_betree.is_empty());
     assert(tree.has_root() ==> loaded.contains(tree.root.unwrap())) by {
@@ -1250,7 +1221,6 @@ pub proof fn recovery_complete_witness_valid(
         assert(betree_child_addrs(
             recovery.betree_nodes[addr],
         ).contains(child)) by {
-            reveal(betree_child_addrs);
             assert(exists |i: int|
                 0 <= i
                 && i < recovery.betree_nodes[addr].children.len()
@@ -1278,17 +1248,6 @@ pub proof fn recovery_complete_witness_valid(
         recovery.branch_roots,
         roots,
         root => {
-            reveal(loaded_branch_roots);
-            reveal(
-                crate::betree::LinkedBetree_v::LinkedBetree::<
-                    _
-                >::reachable_buffer_addrs,
-            );
-            reveal(
-                crate::betree::LinkedBetree_v::LinkedBetree::<
-                    _
-                >::reachable_buffer,
-            );
         }
     );
     assert(recovery.branch_roots == roots);
@@ -1317,13 +1276,9 @@ pub proof fn recovery_complete_witness_valid(
 
     assert(recovery.recovered_tree(image)
         == witness.initial_betree.linked) by {
-        reveal(BetreeMetadataRecovery::recovered_tree);
-        reveal(BetreeMetadataRecovery::initial_betree);
-        reveal(initial_tight_tree);
     }
     assert(recovery.initial_betree(image)
         == witness.initial_betree) by {
-        reveal(BetreeMetadataRecovery::initial_betree);
     }
 
     let recovered = RecoveredCachingDiskBranchBetreeMetadata {
@@ -1338,9 +1293,6 @@ pub proof fn recovery_complete_witness_valid(
         witness.branch_aus,
         witness.branch_summary,
     );
-    reveal(AllocationBranchBetree::State::initialize);
-    reveal(BetreeMetadataRecovery::betree_aus);
-    reveal(BetreeMetadataRecovery::branch_aus);
     assert(recovery.recovered_tree(image).acyclic());
     assert(recovered.betree_aus == witness.betree_aus);
     assert(recovered.branch_aus == witness.branch_aus);
@@ -1370,7 +1322,6 @@ pub proof fn recovery_witnesses_same_initial(
         right.valid_for(image),
     ensures left.initial_betree == right.initial_betree,
 {
-    reveal(initial_refinement_witness_valid);
     let left_tree = initial_tight_tree(left.initial_betree);
     let right_tree = initial_tight_tree(right.initial_betree);
     let full_tree_entries = to_betree_nodes(image.disk().visible());
@@ -1725,10 +1676,6 @@ pub proof fn valid_recovery_allocation_matches_image(
         recovered,
         canonical,
     );
-    reveal(RecoveredCachingDiskBranchBetreeMetadata::
-        valid_for);
-    reveal(initial_refinement_witness_valid);
-    reveal(AllocationBranchBetree::State::initialize);
 }
 
 pub proof fn valid_recovery_matches_image(
@@ -1754,6 +1701,16 @@ pub proof fn valid_recovery_matches_image(
         recovered.branch_summary,
     );
     let canonical_state = image.load();
+    CachingDiskBranchBetree::State::initialize_from_cached(
+        recovered_state,
+        image.disk(),
+        recovered_state.betree,
+        image.metadata.root,
+        image.metadata.seq_end,
+        recovered.betree_aus,
+        recovered.branch_aus,
+        recovered.branch_summary,
+    );
     CachingDiskBranchBetree::State::init_refines(
         recovered_state,
         image.disk(),
@@ -1764,6 +1721,16 @@ pub proof fn valid_recovery_matches_image(
         recovered.branch_aus,
         recovered.branch_summary,
         recovered.initial_betree,
+    );
+    CachingDiskBranchBetree::State::initialize_from_cached(
+        canonical_state,
+        image.disk(),
+        canonical_state.betree,
+        image.metadata.root,
+        image.metadata.seq_end,
+        canonical.betree_aus,
+        canonical.branch_aus,
+        canonical.branch_summary,
     );
     CachingDiskBranchBetree::State::init_refines(
         canonical_state,
@@ -1784,7 +1751,6 @@ pub proof fn valid_recovery_matches_image(
         == canonical_state.i().betree);
     recovered_state.i().i_inv();
     canonical_state.i().i_inv();
-    reveal(CachingDiskBranchBetree::State::i_abstract);
 }
 
 pub proof fn frozen_image_from_current_refines(
@@ -1836,7 +1802,6 @@ pub proof fn frozen_image_from_current_refines(
     assert(image.disk().inv());
     assert(recovered.valid_for(image));
     assert(image.valid()) by {
-        reveal(CachingDiskBranchBetreeImage::valid);
         assert(exists |
             betree_aus: AULikes,
             branch_aus: AULikes,
@@ -1859,14 +1824,21 @@ pub proof fn frozen_image_from_current_refines(
         image,
         recovered,
     );
-    reveal(CachingDiskBranchBetreeImage::load);
-    reveal(CachingDiskBranchBetreeImage::cached_betree);
-    reveal(CachedBranchBetree::State::durable_aus);
     assert(image.load().betree.durable_aus()
         == state.betree.durable_aus());
     assert(image.load().betree.durable_aus()
         == frozen.aus);
     let recovered_state = image.load_metadata(
+        recovered.betree_aus,
+        recovered.branch_aus,
+        recovered.branch_summary,
+    );
+    CachingDiskBranchBetree::State::initialize_from_cached(
+        recovered_state,
+        image.disk(),
+        recovered_state.betree,
+        image.metadata.root,
+        image.metadata.seq_end,
         recovered.betree_aus,
         recovered.branch_aus,
         recovered.branch_summary,
@@ -1885,7 +1857,6 @@ pub proof fn frozen_image_from_current_refines(
     assert(recovered_state.i() == state.i());
     state.i().i_inv();
     recovered_state.i().i_inv();
-    reveal(CachingDiskBranchBetree::State::i_abstract);
 }
 
 impl EphemeralCachingDiskBranchBetree {
@@ -1954,7 +1925,7 @@ impl CrashAwareCachingDiskBranchBetree::State {
             self.frozen_image().load().betree.durable_aus()
                 == self.frozen.unwrap().aus
         &&& self.frozen is Some ==>
-            cached_branch_alloc_aus(
+            cached_bulk_branch_alloc_aus(
                 self.ephemeral->v.betree.wip_branches,
             ).disjoint(self.frozen.unwrap().aus)
         &&& self.prepared is Some ==> {
@@ -2033,13 +2004,10 @@ impl CrashAwareCachingDiskBranchBetree::State {
                 self.label_i_abstract(post, lbl),
             ),
     {
-        reveal(CrashAwareCachingDiskBranchBetree::State::commit_prepared);
         reveal(AbstractCrashAwareMap::State::next);
         reveal(AbstractCrashAwareMap::State::next_by);
-        reveal(AbstractCrashAwareMap::State::ephemeral_internal);
         reveal(AbstractMap::State::next);
         reveal(AbstractMap::State::next_by);
-        reveal(AbstractMap::State::internal);
         assert(self.ephemeral == post.ephemeral);
         assert(self.persistent == post.persistent);
         assert(self.frozen == post.frozen);
@@ -2129,20 +2097,17 @@ impl CrashAwareCachingDiskBranchBetree::State {
             CrashAwareCachingDiskBranchBetree::Step::load_ephemeral(
                 initial_disk,
             ) => {
-                reveal(CrashAwareCachingDiskBranchBetree::State::load_ephemeral);
                 recovery_frontier_start_with_disk(
                     self.persistent,
                     initial_disk,
                 );
                 self.persistent.valid_refines();
                 self.persistent.i_abstract_seq_end();
-                reveal(AbstractCrashAwareMap::State::load_ephemeral_from_persistent);
                 assert(AbstractMap::State::init_by(
                     self.persistent.i_abstract(),
                     AbstractMap::Config::initialize(self.persistent_i()),
                 )) by {
                     reveal(AbstractMap::State::init_by);
-                    reveal(AbstractMap::State::initialize);
                 }
                 assert(AbstractCrashAwareMap::State::next_by(
                     self.i_abstract(),
@@ -2154,17 +2119,14 @@ impl CrashAwareCachingDiskBranchBetree::State {
             CrashAwareCachingDiskBranchBetree::Step::recover_metadata(
                 new_recovery,
             ) => {
-                reveal(CrashAwareCachingDiskBranchBetree::State::recover_metadata);
                 recovery_frontier_next(
                     self.ephemeral->recovery,
                     new_recovery,
                     self.persistent,
                     lbl->recovery_op,
                 );
-                reveal(AbstractCrashAwareMap::State::ephemeral_internal);
                 reveal(AbstractMap::State::next);
                 reveal(AbstractMap::State::next_by);
-                reveal(AbstractMap::State::internal);
                 assert(AbstractMap::State::next_by(
                     self.persistent.i_abstract(),
                     self.persistent.i_abstract(),
@@ -2181,7 +2143,6 @@ impl CrashAwareCachingDiskBranchBetree::State {
                 ));
             }
             CrashAwareCachingDiskBranchBetree::Step::load_metadata() => {
-                reveal(CrashAwareCachingDiskBranchBetree::State::load_metadata);
                 let recovery = self.ephemeral->recovery;
                 let loaded = post.ephemeral->v;
                 let initial_betree =
@@ -2194,6 +2155,16 @@ impl CrashAwareCachingDiskBranchBetree::State {
                 recovery_complete_witness_valid(
                     recovery,
                     self.persistent,
+                );
+                CachingDiskBranchBetree::State::initialize_from_cached(
+                    loaded,
+                    recovery.disk,
+                    loaded.betree,
+                    self.persistent.metadata.root,
+                    self.persistent.metadata.seq_end,
+                    betree_aus,
+                    branch_aus,
+                    branch_summary,
                 );
                 CachingDiskBranchBetree::State::init_refines(
                     loaded,
@@ -2223,9 +2194,6 @@ impl CrashAwareCachingDiskBranchBetree::State {
                     self.persistent,
                     recovered,
                 );
-                reveal(CachingDiskBranchBetreeImage::load);
-                reveal(CachingDiskBranchBetreeImage::cached_betree);
-                reveal(CachedBranchBetree::State::durable_aus);
                 assert(post.ephemeral->persistent_aus
                     == post.ephemeral->v.betree.durable_aus());
                 assert(post.ephemeral->persistent_aus
@@ -2233,10 +2201,8 @@ impl CrashAwareCachingDiskBranchBetree::State {
                         .durable_aus());
                 assert(loaded.i_abstract()
                     == self.persistent.i_abstract());
-                reveal(AbstractCrashAwareMap::State::ephemeral_internal);
                 reveal(AbstractMap::State::next);
                 reveal(AbstractMap::State::next_by);
-                reveal(AbstractMap::State::internal);
                 assert(AbstractMap::State::next_by(
                     self.persistent.i_abstract(),
                     loaded.i_abstract(),
@@ -2260,7 +2226,6 @@ impl CrashAwareCachingDiskBranchBetree::State {
             CrashAwareCachingDiskBranchBetree::Step::ephemeral_step(
                 new_ephemeral,
             ) => {
-                reveal(CrashAwareCachingDiskBranchBetree::State::ephemeral_step);
                 let op = lbl->op;
                 let old_ephemeral = self.ephemeral->v;
                 CachingDiskBranchBetree::State::next_refines_abstract(
@@ -2276,10 +2241,10 @@ impl CrashAwareCachingDiskBranchBetree::State {
                         self.frozen,
                     );
                     assert(frozen_aus <= protected);
-                    if op is InternalAlloc {
+                    if op is InternalAllocAccess {
                         assert(logical_guard_aus(op) == protected);
                         assert(frozen_aus
-                            <= op.arrow_InternalAlloc_guard_aus());
+                            <= op.arrow_InternalAllocAccess_guard_aus());
                     }
                     assert(logical_allocs(op) == op.allocs());
                     assert(frozen_aus.disjoint(op.allocs()));
@@ -2289,7 +2254,7 @@ impl CrashAwareCachingDiskBranchBetree::State {
                             new_ephemeral,
                             op,
                         );
-                    assert(cached_branch_alloc_aus(
+                    assert(cached_bulk_branch_alloc_aus(
                         new_ephemeral.betree.wip_branches,
                     ).disjoint(frozen_aus));
                     CachingDiskBranchBetree::State::
@@ -2317,7 +2282,6 @@ impl CrashAwareCachingDiskBranchBetree::State {
                             new_ephemeral.i_abstract(),
                             op.i_abstract(old_ephemeral),
                         );
-                        reveal(AbstractCrashAwareMap::State::query);
                         assert(AbstractCrashAwareMap::State::next_by(
                             self.i_abstract(),
                             post.i_abstract(),
@@ -2328,7 +2292,6 @@ impl CrashAwareCachingDiskBranchBetree::State {
                         ));
                     }
                     AbstractMap::Label::PutLabel{puts} => {
-                        reveal(AbstractCrashAwareMap::State::put_records);
                         assert(AbstractCrashAwareMap::State::next_by(
                             self.i_abstract(),
                             post.i_abstract(),
@@ -2343,7 +2306,6 @@ impl CrashAwareCachingDiskBranchBetree::State {
                             old_ephemeral.i_abstract(),
                             new_ephemeral.i_abstract(),
                         );
-                        reveal(AbstractCrashAwareMap::State::ephemeral_internal);
                         assert(AbstractCrashAwareMap::State::next_by(
                             self.i_abstract(),
                             post.i_abstract(),
@@ -2360,7 +2322,6 @@ impl CrashAwareCachingDiskBranchBetree::State {
                 assert(post.refinement_inv());
             }
             CrashAwareCachingDiskBranchBetree::Step::commit_start() => {
-                reveal(CrashAwareCachingDiskBranchBetree::State::commit_start);
                 let image = lbl->image;
                 let old_ephemeral = self.ephemeral->v;
                 let freeze_lbl =
@@ -2387,14 +2348,13 @@ impl CrashAwareCachingDiskBranchBetree::State {
                 );
                 assert(post.frozen_image().load().betree
                     .durable_aus() == frozen.aus);
-                assert(cached_branch_alloc_aus(
+                assert(cached_bulk_branch_alloc_aus(
                     post.ephemeral->v.betree.wip_branches,
                 ).is_empty());
-                assert(cached_branch_alloc_aus(
+                assert(cached_bulk_branch_alloc_aus(
                     post.ephemeral->v.betree.wip_branches,
                 ).disjoint(frozen.aus));
                 self.persistent.i_abstract_seq_end();
-                reveal(AbstractCrashAwareMap::State::commit_start_ephemeral);
                 assert(post.frozen_i()
                     == Option::Some(old_ephemeral.i_abstract().stamped_map));
                 assert(AbstractCrashAwareMap::State::next_by(
@@ -2412,8 +2372,6 @@ impl CrashAwareCachingDiskBranchBetree::State {
             CrashAwareCachingDiskBranchBetree::Step::commit_complete(
                 new_ephemeral,
             ) => {
-                reveal(CrashAwareCachingDiskBranchBetree::State::commit_complete);
-                reveal(AbstractCrashAwareMap::State::commit_complete);
                 let deallocs = match lbl {
                     CrashAwareCachingDiskBranchBetree::Label::CommitComplete{
                         deallocs,
@@ -2454,8 +2412,6 @@ impl CrashAwareCachingDiskBranchBetree::State {
                 assert(post.refinement_inv());
             }
             CrashAwareCachingDiskBranchBetree::Step::crash() => {
-                reveal(CrashAwareCachingDiskBranchBetree::State::crash);
-                reveal(AbstractCrashAwareMap::State::crash);
                 if lbl->keep_in_flight {
                     assert(self.prepared.unwrap().i_abstract()
                         == self.frozen_image().i_abstract());
@@ -2491,7 +2447,6 @@ impl CrashAwareCachingDiskBranchBetree::State {
         let loaded = self.persistent.load();
         loaded.i().init_refines(loaded.i().betree);
         loaded.i().i().init_refines_abstract(loaded.i().betree.i());
-        reveal(AbstractCrashAwareMap::State::initialize);
         assert(self.persistent == CachingDiskBranchBetreeImage::empty());
         CachingDiskBranchBetreeImage::empty_i_is_empty();
         assert(self.persistent_i() == empty());

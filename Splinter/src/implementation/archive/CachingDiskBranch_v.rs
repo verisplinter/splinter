@@ -2346,6 +2346,7 @@ pub proof fn loaded_branch_summary_agrees_domain_contains(
         root_aus_up_to(sealed_roots, sealed_roots.len() as nat).contains(au),
 {
     reveal(loaded_branch_summary_agrees);
+
 }
 
 pub proof fn loaded_branch_summary_agrees_at(
@@ -2364,6 +2365,7 @@ pub proof fn loaded_branch_summary_agrees_at(
             == root_summary_from_read(sealed_roots[i], read_nodes),
 {
     reveal(loaded_branch_summary_agrees);
+
 }
 
 pub proof fn loaded_branch_summary_agrees_from_forall(
@@ -2384,6 +2386,7 @@ pub proof fn loaded_branch_summary_agrees_from_forall(
         loaded_branch_summary_agrees(sealed_roots, read_nodes, branch_summary),
 {
     reveal(loaded_branch_summary_agrees);
+
 }
 
 pub proof fn branch_summary_from_reads_up_to_ensures(
@@ -3102,6 +3105,7 @@ pub proof fn empty_caching_disk_branch_image_wf()
     }
     assert(sealed_disk.sealed_branch_roots(image.sealed_roots.to_set())) by {
         reveal(BufferDisk::<_>::sealed_branch_roots);
+
         assert forall |root: Address| #[trigger] image.sealed_roots.to_set().contains(root)
             implies sealed_disk.get_branch(root).valid_sealed_branch()
         by {
@@ -3551,7 +3555,6 @@ state_machine!{ CachingDiskBranch {
         post: Self,
         image: CachingDiskBranchImage,
     ) {
-        reveal(CachingDiskBranch::State::initialize);
         assert(post.disk.inv());
         assert(post.active_branch.wf());
         assert(post.mini_allocator.wf());
@@ -3686,7 +3689,6 @@ state_machine!{ CachingDiskBranch {
 
     #[inductive(observe_persisted_roots)]
     fn observe_persisted_roots_inductive(pre: Self, post: Self, lbl: Label, target_count: nat) {
-        reveal(CachingDiskBranch::State::observe_persisted_roots);
         let old_aus = sealed_summary_aus_up_to(
             pre.sealed_roots,
             pre.interpreted_branch_summary(),
@@ -3727,7 +3729,6 @@ state_machine!{ CachingDiskBranch {
                 pre.disk,
                 CachingDisk::Label::ObserveCleanAUs{aus: observed_aus},
             )) by {
-                reveal(CachingDisk::State::observe_clean_aus);
             }
         };
         assert(post.disk.aus_clean_or_evictable(new_aus)) by {
@@ -3758,7 +3759,6 @@ state_machine!{ CachingDiskBranch {
         lbl: Label,
         reads: Map<Address, RawPage>,
     ) {
-        reveal(CachingDiskBranch::State::load_metadata);
         CachingDisk::State::inv_next(
             pre.disk,
             pre.disk,
@@ -4015,7 +4015,6 @@ state_machine!{ CachingDiskBranch {
         reads: Map<Address, RawPage>,
         writes: Map<Address, RawPage>,
     ) {
-        reveal(CachingDiskBranch::State::append);
         reveal(CachedBranch::State::next);
         reveal(CachedBranch::State::next_by);
         match lbl {
@@ -4037,7 +4036,6 @@ state_machine!{ CachingDiskBranch {
                     match cb_step {
                         CachedBranch::Step::append_step() => {
                             assert(CachedBranch::State::append_step(pre.active_branch, new_active_branch, branch_lbl)) by {
-                                reveal(CachedBranch::State::append_step);
                             }
                         },
                         _ => { assert(false); },
@@ -4229,7 +4227,6 @@ state_machine!{ CachingDiskBranch {
                     match cb_step {
                         CachedBranch::Step::initialize_branch() => {
                             assert(CachedBranch::State::initialize_branch(pre.active_branch, new_active_branch, branch_lbl)) by {
-                                reveal(CachedBranch::State::initialize_branch);
                             }
                         },
                         _ => { assert(false); },
@@ -4744,7 +4741,6 @@ state_machine!{ CachingDiskBranch {
         reads: Map<Address, RawPage>,
         writes: Map<Address, RawPage>,
     ) {
-        reveal(CachingDiskBranch::State::internal_seal);
         reveal(CachedBranch::State::next);
         reveal(CachedBranch::State::next_by);
         CachingDisk::State::inv_next(pre.disk, written_disk, CachingDisk::Label::Access{reads, writes});
@@ -5532,72 +5528,60 @@ state_machine!{ CachingDiskBranch {
         match step {
             CachingDiskBranch::Step::disk_internal(new_disk) => {
                 assert(CachingDiskBranch::State::disk_internal(pre, post, lbl, new_disk)) by {
-                    reveal(CachingDiskBranch::State::disk_internal);
                 }
                 CachingDiskBranch::State::disk_internal_inductive(pre, post, lbl, new_disk);
             },
             CachingDiskBranch::Step::observe_persisted_roots(target_count) => {
                 assert(CachingDiskBranch::State::observe_persisted_roots(pre, post, lbl, target_count)) by {
-                    reveal(CachingDiskBranch::State::observe_persisted_roots);
                 }
                 CachingDiskBranch::State::observe_persisted_roots_inductive(pre, post, lbl, target_count);
             },
             CachingDiskBranch::Step::load_metadata(reads) => {
                 assert(CachingDiskBranch::State::load_metadata(pre, post, lbl, reads)) by {
-                    reveal(CachingDiskBranch::State::load_metadata);
                 }
                 CachingDiskBranch::State::load_metadata_inductive(pre, post, lbl, reads);
             },
             CachingDiskBranch::Step::query(receipts, reads) => {
                 assert(CachingDiskBranch::State::query(pre, post, lbl, receipts, reads)) by {
-                    reveal(CachingDiskBranch::State::query);
                 }
                 CachingDiskBranch::State::query_inductive(pre, post, lbl, receipts, reads);
             },
             CachingDiskBranch::Step::append(new_disk, new_active_branch, receipt, init_root, reads, writes) => {
                 assert(CachingDiskBranch::State::append(pre, post, lbl, new_disk, new_active_branch, receipt, init_root, reads, writes)) by {
-                    reveal(CachingDiskBranch::State::append);
                 }
                 CachingDiskBranch::State::append_inductive(pre, post, lbl, new_disk, new_active_branch, receipt, init_root, reads, writes);
             },
             CachingDiskBranch::Step::freeze_as() => {
                 assert(CachingDiskBranch::State::freeze_as(pre, post, lbl)) by {
-                    reveal(CachingDiskBranch::State::freeze_as);
                 }
                 CachingDiskBranch::State::freeze_as_inductive(pre, post, lbl);
             },
             CachingDiskBranch::Step::freeze_prepared() => {
                 assert(CachingDiskBranch::State::freeze_prepared(pre, post, lbl)) by {
-                    reveal(CachingDiskBranch::State::freeze_prepared);
                 }
             },
             CachingDiskBranch::Step::internal_noop() => {
                 assert(CachingDiskBranch::State::internal_noop(pre, post, lbl)) by {
-                    reveal(CachingDiskBranch::State::internal_noop);
                 }
                 CachingDiskBranch::State::internal_noop_inductive(pre, post, lbl);
             },
             CachingDiskBranch::Step::internal_grow(new_disk, new_root_addr, reads, writes) => {
                 assert(CachingDiskBranch::State::internal_grow(pre, post, lbl, new_disk, new_root_addr, reads, writes)) by {
-                    reveal(CachingDiskBranch::State::internal_grow);
                 }
                 CachingDiskBranch::State::internal_grow_inductive(pre, post, lbl, new_disk, new_root_addr, reads, writes);
             },
             CachingDiskBranch::Step::internal_split(new_disk, new_child_addr, receipt, split_arg, reads, writes) => {
                 assert(CachingDiskBranch::State::internal_split(pre, post, lbl, new_disk, new_child_addr, receipt, split_arg, reads, writes)) by {
-                    reveal(CachingDiskBranch::State::internal_split);
                 }
                 CachingDiskBranch::State::internal_split_inductive(pre, post, lbl, new_disk, new_child_addr, receipt, split_arg, reads, writes);
             },
             CachingDiskBranch::Step::internal_seal(written_disk, aux_ptr, reads, writes) => {
                 assert(CachingDiskBranch::State::internal_seal(pre, post, lbl, written_disk, aux_ptr, reads, writes)) by {
-                    reveal(CachingDiskBranch::State::internal_seal);
                 }
                 CachingDiskBranch::State::internal_seal_inductive(pre, post, lbl, written_disk, aux_ptr, reads, writes);
             },
             CachingDiskBranch::Step::internal_fill_au(aus, new_disk) => {
                 assert(CachingDiskBranch::State::internal_fill_au(pre, post, lbl, aus, new_disk)) by {
-                    reveal(CachingDiskBranch::State::internal_fill_au);
                 }
                 CachingDiskBranch::State::internal_fill_au_inductive(pre, post, lbl, aus, new_disk);
             },
@@ -5957,9 +5941,7 @@ impl CachingDiskBranch::State {
                 assert(CachingDiskBranch::State::append(
                     pre, post, lbl, new_disk, new_active_branch, receipt, init_root, reads, writes,
                 )) by {
-                    reveal(CachingDiskBranch::State::append);
                 }
-                reveal(CachingDiskBranch::State::append);
                 match lbl {
                     CachingDiskBranch::Label::AppendLabel{keys, msgs} => {
                         if pre.active_branch.root is Some {
@@ -5982,7 +5964,6 @@ impl CachingDiskBranch::State {
                             match cb_step {
                                 CachedBranch::Step::append_step() => {
                                     assert(CachedBranch::State::append_step(pre.active_branch, new_active_branch, branch_lbl)) by {
-                                        reveal(CachedBranch::State::append_step);
                                     }
                                 },
                                 _ => { assert(false); },
@@ -6013,7 +5994,6 @@ impl CachingDiskBranch::State {
                             match cb_step {
                                 CachedBranch::Step::initialize_branch() => {
                                     assert(CachedBranch::State::initialize_branch(pre.active_branch, new_active_branch, branch_lbl)) by {
-                                        reveal(CachedBranch::State::initialize_branch);
                                     }
                                 },
                                 _ => { assert(false); },
@@ -6049,7 +6029,6 @@ impl CachingDiskBranch::State {
                                     match cb_step {
                                         CachedBranch::Step::append_step() => {
                                             assert(CachedBranch::State::append_step(pre.active_branch, new_active_branch, branch_lbl)) by {
-                                                reveal(CachedBranch::State::append_step);
                                             }
                                             assert(write_nodes == loaded_append_write_nodes(receipt, keys, msgs));
                                             assert(write_nodes.contains_key(addr));
@@ -6068,7 +6047,6 @@ impl CachingDiskBranch::State {
                                                 post.disk,
                                                 CachingDisk::Label::Access{reads, writes},
                                             )) by {
-                                                reveal(CachingDisk::State::access);
                                             }
                                             CachingDisk::State::access_effect(pre.disk, post.disk, reads, writes);
                                             pre.loaded_interpreted_wf();
@@ -6150,7 +6128,6 @@ impl CachingDiskBranch::State {
                                                 expected_active_branch,
                                                 branch_lbl,
                                             )) by {
-                                                reveal(CachedBranch::State::initialize_branch);
                                             }
                                         },
                                         _ => { assert(false); },
@@ -6210,7 +6187,6 @@ impl CachingDiskBranch::State {
                 assert(CachingDiskBranch::State::append(
                     pre, post, lbl, new_disk, new_active_branch, receipt, init_root, reads, writes,
                 )) by {
-                    reveal(CachingDiskBranch::State::append);
                 }
                 assert(post.branch_summary == pre.branch_summary);
                 if pre.active_branch.root is Some {
@@ -6239,7 +6215,6 @@ impl CachingDiskBranch::State {
                                         new_active_branch,
                                         branch_lbl,
                                     )) by {
-                                        reveal(CachedBranch::State::initialize_branch);
                                     }
                                 },
                                 _ => { assert(false); },
@@ -6276,7 +6251,6 @@ impl CachingDiskBranch::State {
         match step {
             CachingDiskBranch::Step::disk_internal(new_disk) => {
                 assert(CachingDiskBranch::State::disk_internal(pre, post, lbl, new_disk)) by {
-                    reveal(CachingDiskBranch::State::disk_internal);
                 }
                 CachingDisk::State::internal_visible_unchanged(pre.disk, post.disk);
                 assert(post.branch_summary == pre.branch_summary);
@@ -6285,7 +6259,6 @@ impl CachingDiskBranch::State {
             },
             CachingDiskBranch::Step::observe_persisted_roots(target_count) => {
                 assert(CachingDiskBranch::State::observe_persisted_roots(pre, post, lbl, target_count)) by {
-                    reveal(CachingDiskBranch::State::observe_persisted_roots);
                 }
                 assert(post.branch_summary == pre.branch_summary);
                 assert(post.mini_allocator == pre.mini_allocator);
@@ -6293,19 +6266,16 @@ impl CachingDiskBranch::State {
             },
             CachingDiskBranch::Step::freeze_as() => {
                 assert(CachingDiskBranch::State::freeze_as(pre, post, lbl)) by {
-                    reveal(CachingDiskBranch::State::freeze_as);
                 }
                 assert(post == pre);
             },
             CachingDiskBranch::Step::internal_noop() => {
                 assert(CachingDiskBranch::State::internal_noop(pre, post, lbl)) by {
-                    reveal(CachingDiskBranch::State::internal_noop);
                 }
                 assert(post == pre);
             },
             CachingDiskBranch::Step::internal_grow(new_disk, new_root_addr, reads, writes) => {
                 assert(CachingDiskBranch::State::internal_grow(pre, post, lbl, new_disk, new_root_addr, reads, writes)) by {
-                    reveal(CachingDiskBranch::State::internal_grow);
                 }
                 let read_nodes = to_branch_nodes(reads);
                 let write_nodes = to_branch_nodes(writes);
@@ -6342,7 +6312,6 @@ impl CachingDiskBranch::State {
                             expected_active_branch,
                             branch_lbl,
                         )) by {
-                            reveal(CachedBranch::State::grow_step);
                         }
                     },
                     _ => { assert(false); },
@@ -6365,7 +6334,6 @@ impl CachingDiskBranch::State {
             },
             CachingDiskBranch::Step::internal_split(new_disk, new_child_addr, receipt, split_arg, reads, writes) => {
                 assert(CachingDiskBranch::State::internal_split(pre, post, lbl, new_disk, new_child_addr, receipt, split_arg, reads, writes)) by {
-                    reveal(CachingDiskBranch::State::internal_split);
                 }
                 let read_nodes = to_branch_nodes(reads);
                 let write_nodes = to_branch_nodes(writes);
@@ -6385,7 +6353,6 @@ impl CachingDiskBranch::State {
                 match cb_step {
                     CachedBranch::Step::split_step() => {
                         assert(CachedBranch::State::split_step(pre.active_branch, post.active_branch, branch_lbl)) by {
-                            reveal(CachedBranch::State::split_step);
                         }
                     },
                     _ => { assert(false); },
@@ -6479,7 +6446,6 @@ impl CachingDiskBranch::State {
             },
             CachingDiskBranch::Step::internal_seal(written_disk, aux_ptr, reads, writes) => {
                 assert(CachingDiskBranch::State::internal_seal(pre, post, lbl, written_disk, aux_ptr, reads, writes)) by {
-                    reveal(CachingDiskBranch::State::internal_seal);
                 }
                 let read_nodes = to_branch_nodes(reads);
                 let write_nodes = to_branch_nodes(writes);
@@ -6497,7 +6463,6 @@ impl CachingDiskBranch::State {
                 match cb_step {
                     CachedBranch::Step::seal_step() => {
                         assert(CachedBranch::State::seal_step(pre.active_branch, pre.active_branch, branch_lbl)) by {
-                            reveal(CachedBranch::State::seal_step);
                         }
                     },
                     _ => { assert(false); },
@@ -6595,7 +6560,6 @@ impl CachingDiskBranch::State {
         match step {
             CachingDiskBranch::Step::disk_internal(new_disk) => {
                 assert(CachingDiskBranch::State::disk_internal(pre, post, lbl, new_disk)) by {
-                    reveal(CachingDiskBranch::State::disk_internal);
                 }
                 CachingDisk::State::internal_visible_unchanged(pre.disk, post.disk);
                 assert(post.branch_summary == pre.branch_summary);
@@ -6616,7 +6580,6 @@ impl CachingDiskBranch::State {
             },
             CachingDiskBranch::Step::observe_persisted_roots(target_count) => {
                 assert(CachingDiskBranch::State::observe_persisted_roots(pre, post, lbl, target_count)) by {
-                    reveal(CachingDiskBranch::State::observe_persisted_roots);
                 }
                 assert(post.branch_summary == pre.branch_summary);
                 assert(post.mini_allocator == pre.mini_allocator);
@@ -6625,19 +6588,16 @@ impl CachingDiskBranch::State {
             },
             CachingDiskBranch::Step::freeze_as() => {
                 assert(CachingDiskBranch::State::freeze_as(pre, post, lbl)) by {
-                    reveal(CachingDiskBranch::State::freeze_as);
                 }
                 assert(post == pre);
             },
             CachingDiskBranch::Step::internal_noop() => {
                 assert(CachingDiskBranch::State::internal_noop(pre, post, lbl)) by {
-                    reveal(CachingDiskBranch::State::internal_noop);
                 }
                 assert(post == pre);
             },
             CachingDiskBranch::Step::internal_grow(new_disk, new_root_addr, reads, writes) => {
                 assert(CachingDiskBranch::State::internal_grow(pre, post, lbl, new_disk, new_root_addr, reads, writes)) by {
-                    reveal(CachingDiskBranch::State::internal_grow);
                 }
                 let read_nodes = to_branch_nodes(reads);
                 let write_nodes = to_branch_nodes(writes);
@@ -6674,7 +6634,6 @@ impl CachingDiskBranch::State {
                             expected_active_branch,
                             branch_lbl,
                         )) by {
-                            reveal(CachedBranch::State::grow_step);
                         }
                     },
                     _ => { assert(false); },
@@ -6689,7 +6648,6 @@ impl CachingDiskBranch::State {
             },
             CachingDiskBranch::Step::internal_split(new_disk, new_child_addr, receipt, split_arg, reads, writes) => {
                 assert(CachingDiskBranch::State::internal_split(pre, post, lbl, new_disk, new_child_addr, receipt, split_arg, reads, writes)) by {
-                    reveal(CachingDiskBranch::State::internal_split);
                 }
                 let read_nodes = to_branch_nodes(reads);
                 let write_nodes = to_branch_nodes(writes);
@@ -6709,7 +6667,6 @@ impl CachingDiskBranch::State {
                 match cb_step {
                     CachedBranch::Step::split_step() => {
                         assert(CachedBranch::State::split_step(pre.active_branch, post.active_branch, branch_lbl)) by {
-                            reveal(CachedBranch::State::split_step);
                         }
                     },
                     _ => { assert(false); },
@@ -6724,7 +6681,6 @@ impl CachingDiskBranch::State {
             },
             CachingDiskBranch::Step::internal_seal(written_disk, aux_ptr, reads, writes) => {
                 assert(CachingDiskBranch::State::internal_seal(pre, post, lbl, written_disk, aux_ptr, reads, writes)) by {
-                    reveal(CachingDiskBranch::State::internal_seal);
                 }
                 let sealed_summary = pre.mini_allocator.allocated_aus();
                 pre.mini_allocator.prune_preserves_wf(sealed_summary);
@@ -6783,31 +6739,24 @@ impl CachingDiskBranch::State {
             CachingDiskBranch::State::next_by(pre, post, lbl, step);
         match step {
             CachingDiskBranch::Step::disk_internal(new_disk) => {
-                reveal(CachingDiskBranch::State::disk_internal);
                 assert(post.metadata_loaded == pre.metadata_loaded);
             },
             CachingDiskBranch::Step::observe_persisted_roots(target_count) => {
-                reveal(CachingDiskBranch::State::observe_persisted_roots);
                 assert(post.metadata_loaded == pre.metadata_loaded);
             },
             CachingDiskBranch::Step::freeze_as() => {
-                reveal(CachingDiskBranch::State::freeze_as);
                 assert(post == pre);
             },
             CachingDiskBranch::Step::internal_noop() => {
-                reveal(CachingDiskBranch::State::internal_noop);
                 assert(post == pre);
             },
             CachingDiskBranch::Step::internal_grow(new_disk, new_root_addr, reads, writes) => {
-                reveal(CachingDiskBranch::State::internal_grow);
                 assert(pre.metadata_loaded);
             },
             CachingDiskBranch::Step::internal_split(new_disk, new_child_addr, receipt, split_arg, reads, writes) => {
-                reveal(CachingDiskBranch::State::internal_split);
                 assert(pre.metadata_loaded);
             },
             CachingDiskBranch::Step::internal_seal(written_disk, aux_ptr, reads, writes) => {
-                reveal(CachingDiskBranch::State::internal_seal);
                 assert(pre.metadata_loaded);
             },
             _ => {
@@ -6830,31 +6779,24 @@ impl CachingDiskBranch::State {
             CachingDiskBranch::State::next_by(pre, post, lbl, step);
         match step {
             CachingDiskBranch::Step::disk_internal(new_disk) => {
-                reveal(CachingDiskBranch::State::disk_internal);
                 assert(post.branch_summary == pre.branch_summary);
             },
             CachingDiskBranch::Step::observe_persisted_roots(target_count) => {
-                reveal(CachingDiskBranch::State::observe_persisted_roots);
                 assert(pre.metadata_loaded);
             },
             CachingDiskBranch::Step::freeze_as() => {
-                reveal(CachingDiskBranch::State::freeze_as);
                 assert(post == pre);
             },
             CachingDiskBranch::Step::internal_noop() => {
-                reveal(CachingDiskBranch::State::internal_noop);
                 assert(post == pre);
             },
             CachingDiskBranch::Step::internal_grow(new_disk, new_root_addr, reads, writes) => {
-                reveal(CachingDiskBranch::State::internal_grow);
                 assert(pre.metadata_loaded);
             },
             CachingDiskBranch::Step::internal_split(new_disk, new_child_addr, receipt, split_arg, reads, writes) => {
-                reveal(CachingDiskBranch::State::internal_split);
                 assert(pre.metadata_loaded);
             },
             CachingDiskBranch::Step::internal_seal(written_disk, aux_ptr, reads, writes) => {
-                reveal(CachingDiskBranch::State::internal_seal);
                 assert(pre.metadata_loaded);
             },
             _ => {
@@ -6880,7 +6822,6 @@ impl CachingDiskBranch::State {
         match step {
             CachingDiskBranch::Step::disk_internal(new_disk) => {
                 assert(CachingDiskBranch::State::disk_internal(pre, post, lbl, new_disk)) by {
-                    reveal(CachingDiskBranch::State::disk_internal);
                 }
                 CachingDisk::State::internal_visible_unchanged(pre.disk, post.disk);
                 assert(post.sealed_roots == pre.sealed_roots);
@@ -6890,7 +6831,6 @@ impl CachingDiskBranch::State {
             },
             CachingDiskBranch::Step::observe_persisted_roots(target_count) => {
                 assert(CachingDiskBranch::State::observe_persisted_roots(pre, post, lbl, target_count)) by {
-                    reveal(CachingDiskBranch::State::observe_persisted_roots);
                 }
                 assert(post.disk == pre.disk);
                 assert(post.sealed_roots == pre.sealed_roots);
@@ -6899,13 +6839,11 @@ impl CachingDiskBranch::State {
             },
             CachingDiskBranch::Step::freeze_as() => {
                 assert(CachingDiskBranch::State::freeze_as(pre, post, lbl)) by {
-                    reveal(CachingDiskBranch::State::freeze_as);
                 }
                 assert(post == pre);
             },
             CachingDiskBranch::Step::internal_noop() => {
                 assert(CachingDiskBranch::State::internal_noop(pre, post, lbl)) by {
-                    reveal(CachingDiskBranch::State::internal_noop);
                 }
                 assert(post == pre);
             },
@@ -6943,7 +6881,6 @@ impl CachingDiskBranch::State {
         match step {
             CachingDiskBranch::Step::load_metadata(reads) => {
                 assert(CachingDiskBranch::State::load_metadata(pre, post, lbl, reads)) by {
-                    reveal(CachingDiskBranch::State::load_metadata);
                 }
                 assert(post.sealed_roots == pre.sealed_roots);
                 assert(post.disk == pre.disk);
@@ -6986,7 +6923,6 @@ impl CachingDiskBranch::State {
         match step {
             CachingDiskBranch::Step::load_metadata(reads) => {
                 assert(CachingDiskBranch::State::load_metadata(pre, post, lbl, reads)) by {
-                    reveal(CachingDiskBranch::State::load_metadata);
                 }
                 assert(post.sealed_roots == pre.sealed_roots);
                 assert(post.disk == pre.disk);
@@ -7030,7 +6966,6 @@ impl CachingDiskBranch::State {
         match step {
             CachingDiskBranch::Step::load_metadata(reads) => {
                 assert(CachingDiskBranch::State::load_metadata(pre, post, lbl, reads)) by {
-                    reveal(CachingDiskBranch::State::load_metadata);
                 }
                 CachingDiskBranch::State::inv_next(pre, post, lbl);
                 assert(post.inv());
@@ -7131,7 +7066,6 @@ impl CachingDiskBranch::State {
         match step {
             CachingDiskBranch::Step::load_metadata(reads) => {
                 assert(CachingDiskBranch::State::load_metadata(pre, post, lbl, reads)) by {
-                    reveal(CachingDiskBranch::State::load_metadata);
                 }
                 assert(post.disk == pre.disk);
                 assert(post.mini_allocator == pre.mini_allocator);
@@ -7188,7 +7122,6 @@ impl CachingDiskBranch::State {
         match step {
             CachingDiskBranch::Step::internal_fill_au(aus, new_disk) => {
                 assert(CachingDiskBranch::State::internal_fill_au(pre, post, lbl, aus, new_disk)) by {
-                    reveal(CachingDiskBranch::State::internal_fill_au);
                 }
                 mini_allocator_add_aus_preserves_all_aus(pre.mini_allocator, allocs);
                 assert(post.branch_summary == pre.branch_summary);
@@ -7228,7 +7161,6 @@ impl CachingDiskBranch::State {
         match step {
             CachingDiskBranch::Step::internal_fill_au(aus, new_disk) => {
                 assert(CachingDiskBranch::State::internal_fill_au(pre, post, lbl, aus, new_disk)) by {
-                    reveal(CachingDiskBranch::State::internal_fill_au);
                 }
                 mini_allocator_add_aus_preserves_all_aus(pre.mini_allocator, allocs);
                 assert(post.branch_summary == pre.branch_summary);
@@ -7265,7 +7197,6 @@ impl CachingDiskBranch::State {
         match step {
             CachingDiskBranch::Step::internal_fill_au(aus, new_disk) => {
                 assert(CachingDiskBranch::State::internal_fill_au(pre, post, lbl, aus, new_disk)) by {
-                    reveal(CachingDiskBranch::State::internal_fill_au);
                 }
                 disk_growth_preserves_loaded_metadata(pre, post.disk, aus);
                 mini_allocator_add_aus_preserves_all_aus(pre.mini_allocator, allocs);
@@ -7833,7 +7764,6 @@ impl CachingDiskBranch::State {
             CachingDiskBranch::State::next_by(self, self, lbl, step);
         match step {
             CachingDiskBranch::Step::freeze_prepared() => {
-                reveal(CachingDiskBranch::State::freeze_prepared);
             },
             _ => { assert(false); },
         }
@@ -8312,51 +8242,39 @@ impl CachingDiskBranch::State {
         let step = choose |step| CachingDiskBranch::State::next_by(pre, post, lbl, step);
         match step {
             CachingDiskBranch::Step::disk_internal(new_disk) => {
-                reveal(CachingDiskBranch::State::disk_internal);
                 assert(post.seq_end == pre.seq_end);
             },
             CachingDiskBranch::Step::observe_persisted_roots(target_count) => {
-                reveal(CachingDiskBranch::State::observe_persisted_roots);
                 assert(post.seq_end == pre.seq_end);
             },
             CachingDiskBranch::Step::load_metadata(reads) => {
-                reveal(CachingDiskBranch::State::load_metadata);
                 assert(post.seq_end == pre.seq_end);
             },
             CachingDiskBranch::Step::query(receipts, reads) => {
-                reveal(CachingDiskBranch::State::query);
                 assert(post.seq_end == pre.seq_end);
             },
             CachingDiskBranch::Step::append(new_disk, new_active_branch, receipt, init_root, reads, writes) => {
-                reveal(CachingDiskBranch::State::append);
                 assert(post.seq_end == pre.seq_end + lbl.arrow_AppendLabel_keys().len());
             },
             CachingDiskBranch::Step::freeze_as() => {
-                reveal(CachingDiskBranch::State::freeze_as);
                 assert(post.seq_end == pre.seq_end);
             },
             CachingDiskBranch::Step::freeze_prepared() => {
-                reveal(CachingDiskBranch::State::freeze_prepared);
                 assert(post.seq_end == pre.seq_end);
             },
             CachingDiskBranch::Step::internal_noop() => {
-                reveal(CachingDiskBranch::State::internal_noop);
                 assert(post.seq_end == pre.seq_end);
             },
             CachingDiskBranch::Step::internal_grow(new_disk, new_root_addr, reads, writes) => {
-                reveal(CachingDiskBranch::State::internal_grow);
                 assert(post.seq_end == pre.seq_end);
             },
             CachingDiskBranch::Step::internal_split(new_disk, new_child_addr, receipt, split_arg, reads, writes) => {
-                reveal(CachingDiskBranch::State::internal_split);
                 assert(post.seq_end == pre.seq_end);
             },
             CachingDiskBranch::Step::internal_seal(written_disk, aux_ptr, reads, writes) => {
-                reveal(CachingDiskBranch::State::internal_seal);
                 assert(post.seq_end == pre.seq_end);
             },
             CachingDiskBranch::Step::internal_fill_au(aus, new_disk) => {
-                reveal(CachingDiskBranch::State::internal_fill_au);
                 assert(post.seq_end == pre.seq_end);
             },
             _ => {
@@ -8387,7 +8305,6 @@ impl CachingDiskBranch::State {
         let step = choose |step| CachingDiskBranch::State::next_by(pre, post, lbl, step);
         match step {
             CachingDiskBranch::Step::load_metadata(reads) => {
-                reveal(CachingDiskBranch::State::load_metadata);
                 assert(post.sealed_roots == pre.sealed_roots);
                 assert(pre.branch_summary.dom() <= post.branch_summary.dom()) by {
                     assert forall |au: AU| #[trigger] pre.branch_summary.dom().contains(au)
@@ -8411,7 +8328,6 @@ impl CachingDiskBranch::State {
                 }
             },
             CachingDiskBranch::Step::internal_seal(written_disk, aux_ptr, reads, writes) => {
-                reveal(CachingDiskBranch::State::internal_seal);
                 assert(post.metadata_loaded == pre.metadata_loaded);
                 assert(post.sealed_roots.len() == pre.sealed_roots.len() + 1);
                 assert(post.sealed_roots.subrange(0, roots.len() as int) == roots) by {
@@ -8427,49 +8343,39 @@ impl CachingDiskBranch::State {
                 }
             },
             CachingDiskBranch::Step::append(new_disk, new_active_branch, receipt, init_root, reads, writes) => {
-                reveal(CachingDiskBranch::State::append);
                 assert(post.metadata_loaded == pre.metadata_loaded);
                 assert(post.sealed_roots == pre.sealed_roots);
             },
             CachingDiskBranch::Step::internal_noop() => {
-                reveal(CachingDiskBranch::State::internal_noop);
                 assert(post == pre);
             },
             CachingDiskBranch::Step::internal_grow(new_disk, new_root_addr, reads, writes) => {
-                reveal(CachingDiskBranch::State::internal_grow);
                 assert(post.metadata_loaded == pre.metadata_loaded);
                 assert(post.sealed_roots == pre.sealed_roots);
             },
             CachingDiskBranch::Step::internal_split(new_disk, new_child_addr, receipt, split_arg, reads, writes) => {
-                reveal(CachingDiskBranch::State::internal_split);
                 assert(post.metadata_loaded == pre.metadata_loaded);
                 assert(post.sealed_roots == pre.sealed_roots);
             },
             CachingDiskBranch::Step::internal_fill_au(aus, new_disk) => {
-                reveal(CachingDiskBranch::State::internal_fill_au);
                 assert(post.metadata_loaded == pre.metadata_loaded);
                 assert(post.sealed_roots == pre.sealed_roots);
             },
             CachingDiskBranch::Step::disk_internal(new_disk) => {
-                reveal(CachingDiskBranch::State::disk_internal);
                 assert(post.metadata_loaded == pre.metadata_loaded);
                 assert(post.sealed_roots == pre.sealed_roots);
             },
             CachingDiskBranch::Step::observe_persisted_roots(target_count) => {
-                reveal(CachingDiskBranch::State::observe_persisted_roots);
                 assert(post.metadata_loaded == pre.metadata_loaded);
                 assert(post.sealed_roots == pre.sealed_roots);
             },
             CachingDiskBranch::Step::query(receipts, reads) => {
-                reveal(CachingDiskBranch::State::query);
                 assert(post == pre);
             },
             CachingDiskBranch::Step::freeze_as() => {
-                reveal(CachingDiskBranch::State::freeze_as);
                 assert(post == pre);
             },
             CachingDiskBranch::Step::freeze_prepared() => {
-                reveal(CachingDiskBranch::State::freeze_prepared);
                 assert(post == pre);
             },
             _ => {

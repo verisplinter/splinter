@@ -169,7 +169,7 @@ state_machine!{ AllocationBetree {
         require LinkedBetreeVars::State::internal_compact(pre.betree, new_betree, lbl->linked_lbl, 
             new_betree.linked, path, start, end, compacted_buffer, new_addrs, path_addrs);
         require pre.is_fresh(new_addrs.repr().union(path_addrs.to_set()));
-       
+
         let compacted = LinkedBetreeVars::State::post_compact(path, start, end, compacted_buffer, new_addrs, path_addrs);
         let (new_betree_aus, new_buffer_aus) = Self::internal_compact_complete_au_likes(
             path, start, end, new_addrs, path_addrs, pre.betree_aus, pre.buffer_aus);
@@ -182,7 +182,7 @@ state_machine!{ AllocationBetree {
         update betree_aus = new_betree_aus;
         update buffer_aus = new_buffer_aus;
     }}
-    
+
     transition!{ internal_buffer_noop(lbl: Label, new_betree: LinkedBetreeVars::State<SimpleBuffer>) {
         require LinkedBetreeVars::State::internal_buffer_noop(pre.betree, new_betree, lbl->linked_lbl, new_betree.linked);
         update betree = new_betree;

@@ -4,7 +4,7 @@
 use vstd::prelude::*;
 use vstd::map::*;
 
-use crate::allocation_layer::AllocationBranch_v::{BranchNode as AllocationBranchNode, Summary};
+use crate::allocation_layer::BranchTypes_v::{BranchNode as AllocationBranchNode, Summary};
 use crate::disk::GenericDisk_v::{AU, Address, Pointer};
 use crate::marshalling::Marshalling_v::Parsedview;
 use crate::marshalling::WF_v::WF;
@@ -126,6 +126,14 @@ impl Clone for IBranchNode {
 }
 
 impl IBranchNode {
+    pub proof fn auxiliary_view(&self)
+        ensures
+            self is Auxiliary ==> self@ == AllocationBranchNode::Auxiliary(
+                iau_seq(self->summary_aus@).to_set(),
+            ),
+    {
+    }
+
     pub fn clone_checked(&self) -> (out: Self)
         ensures
             out@ == self@,

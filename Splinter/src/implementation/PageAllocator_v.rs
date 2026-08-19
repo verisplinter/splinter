@@ -64,8 +64,6 @@ impl PageAllocator {
         let out = IAddress { au: self.au, page: self.next_page };
         proof {
             if self.next_addr_wf() {
-                reveal(PageAllocator::next_addr_wf);
-                reveal(PageAllocator::next_addr);
                 assert(out@ == self.next_addr());
             }
         }

@@ -141,7 +141,6 @@ impl UnifiedCacheProgramModel {
             ProgramModelTrait::next(pre, post, ProgramLabel::DiskIO{info}),
     {
         assert(Self::valid_disk_transition(pre, post, info)) by {
-            reveal(UnifiedCacheProgramModel::valid_disk_transition);
         }
     }
 }

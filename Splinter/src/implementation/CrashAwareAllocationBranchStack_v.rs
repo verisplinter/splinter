@@ -321,7 +321,6 @@ state_machine!{ CrashAwareAllocationBranchStack {
     fn query_inductive(pre: Self, post: Self, lbl: Label, new_stack: AllocationBranchStack::State, msg: Message) {
         match lbl {
             Label::Query{key, value} => {
-                reveal(AllocationBranchStack::State::query_step);
                 assert(new_stack == pre.ephemeral->v);
             }
             _ => { }
@@ -341,7 +340,6 @@ state_machine!{ CrashAwareAllocationBranchStack {
         match lbl {
             Label::Append{keys, msgs} => {
                 let old_stack = pre.ephemeral->v;
-                reveal(AllocationBranchStack::State::append_to_active);
                 AllocationBranch::build_next_preserves_inv(
                     old_stack.active_branch,
                     new_stack.active_branch,
@@ -370,7 +368,6 @@ state_machine!{ CrashAwareAllocationBranchStack {
         match lbl {
             Label::Append{keys, msgs} => {
                 let old_stack = pre.ephemeral->v;
-                reveal(AllocationBranchStack::State::append_to_empty);
                 AllocationBranch::build_next_preserves_inv(
                     old_stack.active_branch,
                     new_stack.active_branch,
@@ -396,7 +393,6 @@ state_machine!{ CrashAwareAllocationBranchStack {
         new_stack: AllocationBranchStack::State,
     ) {
         let old_stack = pre.ephemeral->v;
-        reveal(AllocationBranchStack::State::internal_noop);
         assert(new_stack == old_stack);
         assert(new_stack.sealed_stack == old_stack.sealed_stack);
         assert(post.wf());
@@ -412,7 +408,6 @@ state_machine!{ CrashAwareAllocationBranchStack {
         new_root_addr: Address,
     ) {
         let old_stack = pre.ephemeral->v;
-        reveal(AllocationBranchStack::State::internal_grow);
         AllocationBranch::build_next_preserves_inv(
             old_stack.active_branch,
             new_stack.active_branch,
@@ -438,7 +433,6 @@ state_machine!{ CrashAwareAllocationBranchStack {
         split_arg: SplitArg,
     ) {
         let old_stack = pre.ephemeral->v;
-        reveal(AllocationBranchStack::State::internal_split);
         AllocationBranch::build_next_preserves_inv(
             old_stack.active_branch,
             new_stack.active_branch,
@@ -467,7 +461,6 @@ state_machine!{ CrashAwareAllocationBranchStack {
         loose_active_disk: BufferDisk<BranchNode>,
     ) {
         let old_stack = pre.ephemeral->v;
-        reveal(AllocationBranchStack::State::internal_seal);
         reveal(AllocationBranchStack::State::next);
         reveal(AllocationBranchStack::State::next_by);
         assert(AllocationBranchStack::State::next_by(
@@ -500,7 +493,6 @@ state_machine!{ CrashAwareAllocationBranchStack {
         aus: Set<AU>,
     ) {
         let old_stack = pre.ephemeral->v;
-        reveal(AllocationBranchStack::State::internal_fill_au);
         AllocationBranch::build_next_preserves_inv(
             old_stack.active_branch,
             new_stack.active_branch,
@@ -559,85 +551,71 @@ state_machine!{ CrashAwareAllocationBranchStack {
         match step {
             CrashAwareAllocationBranchStack::Step::load_ephemeral() => {
                 assert(CrashAwareAllocationBranchStack::State::load_ephemeral(pre, post, lbl)) by {
-                    reveal(CrashAwareAllocationBranchStack::State::load_ephemeral);
                 }
                 CrashAwareAllocationBranchStack::State::load_ephemeral_inductive(pre, post, lbl);
             },
             CrashAwareAllocationBranchStack::Step::query(new_stack, msg) => {
                 assert(CrashAwareAllocationBranchStack::State::query(pre, post, lbl, new_stack, msg)) by {
-                    reveal(CrashAwareAllocationBranchStack::State::query);
                 }
                 CrashAwareAllocationBranchStack::State::query_inductive(pre, post, lbl, new_stack, msg);
             },
             CrashAwareAllocationBranchStack::Step::append_to_active(new_stack, path) => {
                 assert(CrashAwareAllocationBranchStack::State::append_to_active(pre, post, lbl, new_stack, path)) by {
-                    reveal(CrashAwareAllocationBranchStack::State::append_to_active);
                 }
                 CrashAwareAllocationBranchStack::State::append_to_active_inductive(pre, post, lbl, new_stack, path);
             },
             CrashAwareAllocationBranchStack::Step::append_to_empty(new_stack, init_root) => {
                 assert(CrashAwareAllocationBranchStack::State::append_to_empty(pre, post, lbl, new_stack, init_root)) by {
-                    reveal(CrashAwareAllocationBranchStack::State::append_to_empty);
                 }
                 CrashAwareAllocationBranchStack::State::append_to_empty_inductive(pre, post, lbl, new_stack, init_root);
             },
             CrashAwareAllocationBranchStack::Step::ephemeral_internal_noop(new_stack) => {
                 assert(CrashAwareAllocationBranchStack::State::ephemeral_internal_noop(pre, post, lbl, new_stack)) by {
-                    reveal(CrashAwareAllocationBranchStack::State::ephemeral_internal_noop);
                 }
                 CrashAwareAllocationBranchStack::State::ephemeral_internal_noop_inductive(pre, post, lbl, new_stack);
             },
             CrashAwareAllocationBranchStack::Step::ephemeral_internal_grow(new_stack, new_root_addr) => {
                 assert(CrashAwareAllocationBranchStack::State::ephemeral_internal_grow(pre, post, lbl, new_stack, new_root_addr)) by {
-                    reveal(CrashAwareAllocationBranchStack::State::ephemeral_internal_grow);
                 }
                 CrashAwareAllocationBranchStack::State::ephemeral_internal_grow_inductive(pre, post, lbl, new_stack, new_root_addr);
             },
             CrashAwareAllocationBranchStack::Step::ephemeral_internal_split(new_stack, new_child_addr, path, split_arg) => {
                 assert(CrashAwareAllocationBranchStack::State::ephemeral_internal_split(pre, post, lbl, new_stack, new_child_addr, path, split_arg)) by {
-                    reveal(CrashAwareAllocationBranchStack::State::ephemeral_internal_split);
                 }
                 CrashAwareAllocationBranchStack::State::ephemeral_internal_split_inductive(pre, post, lbl, new_stack, new_child_addr, path, split_arg);
             },
             CrashAwareAllocationBranchStack::Step::ephemeral_internal_seal(new_stack, aux_ptr, loose_active_disk) => {
                 assert(CrashAwareAllocationBranchStack::State::ephemeral_internal_seal(pre, post, lbl, new_stack, aux_ptr, loose_active_disk)) by {
-                    reveal(CrashAwareAllocationBranchStack::State::ephemeral_internal_seal);
                 }
                 CrashAwareAllocationBranchStack::State::ephemeral_internal_seal_inductive(pre, post, lbl, new_stack, aux_ptr, loose_active_disk);
             },
             CrashAwareAllocationBranchStack::Step::ephemeral_internal_fill_au(new_stack, aus) => {
                 assert(CrashAwareAllocationBranchStack::State::ephemeral_internal_fill_au(pre, post, lbl, new_stack, aus)) by {
-                    reveal(CrashAwareAllocationBranchStack::State::ephemeral_internal_fill_au);
                 }
                 CrashAwareAllocationBranchStack::State::ephemeral_internal_fill_au_inductive(pre, post, lbl, new_stack, aus);
             },
             CrashAwareAllocationBranchStack::Step::freeze_map_internal() => {
                 assert(CrashAwareAllocationBranchStack::State::freeze_map_internal(pre, post, lbl)) by {
-                    reveal(CrashAwareAllocationBranchStack::State::freeze_map_internal);
                 }
                 CrashAwareAllocationBranchStack::State::freeze_map_internal_inductive(pre, post, lbl);
             },
             CrashAwareAllocationBranchStack::Step::commit_start_ephemeral() => {
                 assert(CrashAwareAllocationBranchStack::State::commit_start_ephemeral(pre, post, lbl)) by {
-                    reveal(CrashAwareAllocationBranchStack::State::commit_start_ephemeral);
                 }
                 CrashAwareAllocationBranchStack::State::commit_start_ephemeral_inductive(pre, post, lbl);
             },
             CrashAwareAllocationBranchStack::Step::commit_start_persistent() => {
                 assert(CrashAwareAllocationBranchStack::State::commit_start_persistent(pre, post, lbl)) by {
-                    reveal(CrashAwareAllocationBranchStack::State::commit_start_persistent);
                 }
                 CrashAwareAllocationBranchStack::State::commit_start_persistent_inductive(pre, post, lbl);
             },
             CrashAwareAllocationBranchStack::Step::commit_complete() => {
                 assert(CrashAwareAllocationBranchStack::State::commit_complete(pre, post, lbl)) by {
-                    reveal(CrashAwareAllocationBranchStack::State::commit_complete);
                 }
                 CrashAwareAllocationBranchStack::State::commit_complete_inductive(pre, post, lbl);
             },
             CrashAwareAllocationBranchStack::Step::crash() => {
                 assert(CrashAwareAllocationBranchStack::State::crash(pre, post, lbl)) by {
-                    reveal(CrashAwareAllocationBranchStack::State::crash);
                 }
                 CrashAwareAllocationBranchStack::State::crash_inductive(pre, post, lbl);
             },

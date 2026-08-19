@@ -175,6 +175,71 @@ impl UnifiedCacheBetreeProgramModel {
         }
     }
 
+    pub proof fn lift_execute_step(
+        pre: Self,
+        post: Self,
+        req: crate::spec::MapSpec_t::Request,
+        reply: crate::spec::MapSpec_t::Reply,
+    )
+        requires UnifiedCacheBetreeSystem::State::next(
+            pre.state,
+            post.state,
+            UnifiedCacheBetreeSystem::Label::Execute { req, reply },
+        ),
+        ensures ProgramModelTrait::next(
+            pre,
+            post,
+            ProgramLabel::UserIO {
+                op: ProgramUserOp::Execute { req, reply },
+            },
+        ),
+    {
+    }
+
+    pub proof fn lift_accept_sync_step(
+        pre: Self,
+        post: Self,
+        sync_req_id: crate::spec::MapSpec_t::SyncReqId,
+    )
+        requires UnifiedCacheBetreeSystem::State::next(
+            pre.state,
+            post.state,
+            UnifiedCacheBetreeSystem::Label::AcceptSyncRequest {
+                sync_req_id,
+            },
+        ),
+        ensures ProgramModelTrait::next(
+            pre,
+            post,
+            ProgramLabel::UserIO {
+                op: ProgramUserOp::AcceptSyncRequest { sync_req_id },
+            },
+        ),
+    {
+    }
+
+    pub proof fn lift_deliver_sync_step(
+        pre: Self,
+        post: Self,
+        sync_req_id: crate::spec::MapSpec_t::SyncReqId,
+    )
+        requires UnifiedCacheBetreeSystem::State::next(
+            pre.state,
+            post.state,
+            UnifiedCacheBetreeSystem::Label::DeliverSyncReply {
+                sync_req_id,
+            },
+        ),
+        ensures ProgramModelTrait::next(
+            pre,
+            post,
+            ProgramLabel::UserIO {
+                op: ProgramUserOp::DeliverSyncReply { sync_req_id },
+            },
+        ),
+    {
+    }
+
     pub proof fn lift_disk_step(
         pre: Self,
         post: Self,
@@ -201,7 +266,6 @@ impl UnifiedCacheBetreeProgramModel {
                 ProgramLabel::DiskIO{info},
             ),
     {
-        reveal(UnifiedCacheBetreeProgramModel::valid_disk_transition);
     }
 }
 

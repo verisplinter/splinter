@@ -168,7 +168,6 @@ impl ILsnAddrIndex {
             by {
                 let out = self.i(idx);
                 let prev_index = self.i(idx-1);
-                reveal(lsn_addr_index_append_record);
 
                 // -> direction
                 if out.contains_key(lsn) {
@@ -212,12 +211,10 @@ impl ILsnAddrIndex {
     {
         if j == idx + 1 {
             let update = singleton_index(self.bounds[idx] as nat, self.bounds[idx + 1] as nat, self.addrs[idx]@);
-            reveal(lsn_addr_index_append_record);
         } else {
             self.i_segment_maps_to_addr(j - 1, idx, lsn);
             let update = singleton_index(self.bounds[j - 1] as nat, self.bounds[j] as nat, self.addrs[j - 1]@);
             self.bounds_monotone(idx + 1, j - 1);
-            reveal(lsn_addr_index_append_record);
         }
     }
 
@@ -682,7 +679,6 @@ impl ILsnAddrIndex {
             )
         decreases k
     {
-        reveal(lsn_addr_index_append_record);
         assert(new_self.sorted_entry(0)); // trigger: bounds[0] < bounds[1]
         if k == 1 {
             // Base: new_self.i(1) = lar(new_self.i(0), ...) = lar({}, ...)

@@ -1218,7 +1218,6 @@ pub proof fn page_walk_reads_cover_build_matches_full(
     decreases depth,
 {
     let full_dv = DiskView{boundary_lsn, entries};
-    reveal(DiskView::build_lsn_au_index_page_walk);
     if root is None {
         assert_maps_equal!(
             build_lsn_au_index_from_reads_page_walk_depth(reads, boundary_lsn, root, depth),
@@ -1294,8 +1293,6 @@ pub proof fn page_walk_reads_cover_addr_build_matches_full_by_value(
     decreases depth,
 {
     let full_dv = DiskView{boundary_lsn, entries};
-    reveal(build_lsn_addr_index_from_reads);
-    reveal(DiskView::build_lsn_addr_index);
     if root is None {
         assert_maps_equal!(
             build_lsn_addr_index_from_reads(reads, boundary_lsn, root),
@@ -1360,7 +1357,6 @@ pub proof fn page_walk_reads_cover_build_matches_full_by_value(
     decreases depth,
 {
     let full_dv = DiskView{boundary_lsn, entries};
-    reveal(DiskView::build_lsn_au_index_page_walk);
     if root is None {
         assert_maps_equal!(
             build_lsn_au_index_from_reads_page_walk_depth(reads, boundary_lsn, root, depth),
@@ -1441,7 +1437,6 @@ pub proof fn au_walk_reads_cover_build_matches_full(
     decreases au_depth,
 {
     let full_dv = DiskView{boundary_lsn, entries};
-    reveal(DiskView::build_lsn_au_index_au_walk);
     if root is None {
         assert_maps_equal!(
             build_lsn_au_index_from_reads_au_walk_depth(
@@ -1573,7 +1568,6 @@ pub proof fn au_walk_reads_cover_build_matches_full_by_value(
     decreases au_depth,
 {
     let full_dv = DiskView{boundary_lsn, entries};
-    reveal(DiskView::build_lsn_au_index_au_walk);
     if root is None {
         assert_maps_equal!(
             build_lsn_au_index_from_reads_au_walk_depth(
@@ -2039,7 +2033,6 @@ decreases rank_of_reads(boundary_lsn, reads, ptr1)
     build_lsn_addr_index_from_reads_next_ptr_not_in_reads(reads, boundary_lsn, ptr1, ptr2);
 
     // Unfold the definition once on the updated reads.
-    reveal(build_lsn_addr_index_from_reads_next_ptr);
     if reads.contains_key(ptr1.unwrap()) {
         let next_ptr = reads[ptr1.unwrap()].cropped_prior(boundary_lsn);
         build_lsn_addr_index_from_reads_next_ptr_after_insert(
@@ -2122,7 +2115,6 @@ decreases rank_of_reads(boundary_lsn, reads, root)
         let end2 = ptr2_data.message_seq.seq_end;
         let update2 = singleton_index(start2, end2, ptr2.unwrap());
 
-        reveal(build_lsn_addr_index_from_reads);
         let idx = build_lsn_addr_index_from_reads(reads, boundary_lsn, root);
         let sub_index = build_lsn_addr_index_from_reads(reads, boundary_lsn, next_ptr);
         assert(idx == sub_index.union_prefer_right(update));
@@ -2219,7 +2211,6 @@ decreases rank_of_reads(boundary_lsn, reads, root)
     } else {
         // root is missing, so ptr2 == root
         assert(ptr2 == root);
-        reveal(build_lsn_addr_index_from_reads);
         let reads2 = reads.insert(ptr2.unwrap(), ptr2_data);
         let start2 = max(boundary_lsn as int, ptr2_data.message_seq.seq_start as int) as nat;
         let end2 = ptr2_data.message_seq.seq_end;
@@ -2228,7 +2219,6 @@ decreases rank_of_reads(boundary_lsn, reads, root)
             == build_lsn_addr_index_from_reads(reads2, boundary_lsn, ptr2_data.cropped_prior(boundary_lsn))
                 .union_prefer_right(singleton_index(start2, end2, ptr2.unwrap())));
         // ptr2_data.cropped_prior not in reads, so the sub-index is empty
-        reveal(build_lsn_addr_index_from_reads);
         assert(build_lsn_addr_index_from_reads(reads2, boundary_lsn, ptr2_data.cropped_prior(boundary_lsn))
             == Map::<LSN, Address>::empty());
     }
@@ -2259,7 +2249,6 @@ ensures
     let curr_msgs = reads[root.unwrap()].message_seq;
     let start_lsn = max(boundary_lsn as int, curr_msgs.seq_start as int) as nat;
 
-    reveal(build_lsn_addr_index_from_reads);
     assert(build_lsn_addr_index_from_reads(reads, boundary_lsn, root)
         == build_lsn_addr_index_from_reads(reads, boundary_lsn, next_ptr)
             .union_prefer_right(update));
@@ -2281,7 +2270,6 @@ ensures
     reads.contains_key(addr),
 decreases rank_of_reads(boundary_lsn, reads, root)
 {
-    reveal(build_lsn_addr_index_from_reads);
     if root is Some && reads.contains_key(root.unwrap()) {
         let curr_msgs = reads[root.unwrap()].message_seq;
         let start_lsn = max(boundary_lsn as int, curr_msgs.seq_start as int) as nat;
@@ -2316,7 +2304,6 @@ ensures ({
 }),
 decreases rank_of_reads(boundary_lsn, reads, root)
 {
-    reveal(build_lsn_addr_index_from_reads);
     if root is Some && reads.contains_key(root.unwrap()) {
         let curr = root.unwrap();
         let curr_msgs = reads[curr].message_seq;
@@ -2360,7 +2347,6 @@ pub proof fn lsn_addr_index_to_au_index_append_record(
         lsn_addr_index_to_au_index(lsn_addr_index_append_record(index, start, end, addr)),
         lsn_addr_index_to_au_index(index).union_prefer_right(au_update),
         lsn => {
-            reveal(lsn_addr_index_append_record);
             if au_update.contains_key(lsn) {
                 assert(addr_update.contains_key(lsn));
                 assert(addr_update[lsn].au == au_update[lsn]);
@@ -2420,7 +2406,6 @@ pub proof fn build_lsn_addr_index_from_reads_to_au_index_page_walk_depth(
             next,
             (depth - 1) as nat,
         );
-        reveal(build_lsn_addr_index_from_reads);
         assert(addr_index == lsn_addr_index_append_record(sub_addr_index, start_lsn, end_lsn, addr));
         assert(au_index == sub_au_index.union_prefer_right(
             crate::allocation_layer::AllocationJournal_v::singleton_index(start_lsn, end_lsn, addr.au),
@@ -2432,7 +2417,6 @@ pub proof fn build_lsn_addr_index_from_reads_to_au_index_page_walk_depth(
             lsn => {}
         );
     } else {
-        reveal(build_lsn_addr_index_from_reads);
         assert_maps_equal!(
             lsn_addr_index_to_au_index(build_lsn_addr_index_from_reads(reads, boundary_lsn, root)),
             build_lsn_au_index_from_reads_page_walk_depth(reads, boundary_lsn, root, depth),
@@ -2822,7 +2806,6 @@ pub proof fn build_lsn_addr_index_from_reads_values_bounded_by_page_bounds(
         )[addr.au],
     decreases rank_of_reads(boundary_lsn, reads, root),
 {
-    reveal(build_lsn_addr_index_from_reads);
     if root is Some && reads.contains_key(root.unwrap()) {
         let curr = root.unwrap();
         let curr_msgs = reads[curr].message_seq;
@@ -3489,28 +3472,20 @@ state_machine!{ CachedJournal {
         let step = choose |step| CachedJournal::State::next_by(pre, post, lbl, step);
         match step {
             CachedJournal::Step::read_for_recovery(start_lsn, addr) => {
-                reveal(CachedJournal::State::read_for_recovery);
             },
             CachedJournal::Step::freeze_for_commit() => {
-                reveal(CachedJournal::State::freeze_for_commit);
             },
             CachedJournal::Step::query_end_lsn() => {
-                reveal(CachedJournal::State::query_end_lsn);
             },
             CachedJournal::Step::advance_watermark(target_lsn) => {
-                reveal(CachedJournal::State::advance_watermark);
             },
             CachedJournal::Step::put() => {
-                reveal(CachedJournal::State::put);
             },
             CachedJournal::Step::discard_old() => {
-                reveal(CachedJournal::State::discard_old);
             },
             CachedJournal::Step::internal_journal_marshal(cut, addr) => {
-                reveal(CachedJournal::State::internal_journal_marshal);
             },
             CachedJournal::Step::load_index(au_depth, page_depth) => {
-                reveal(CachedJournal::State::load_index);
             },
             _ => {
                 assert(false);
@@ -3560,7 +3535,6 @@ state_machine!{ CachedJournal {
         let step = choose |step| CachedJournal::State::next_by(pre, post, lbl, step);
         match step {
             CachedJournal::Step::load_index(au_depth, page_depth) => {
-                reveal(CachedJournal::State::load_index);
                 assert(exists |au_depth: nat, page_depth: nat| {
                     &&& #[trigger] CachedJournal::State::load_index(
                         pre,
@@ -3636,7 +3610,6 @@ state_machine!{ CachedJournal {
             au_depth,
             page_depth,
         )) by {
-            reveal(CachedJournal::State::load_index);
         }
         assert(au_walk_reads_cover(reads, bdy, ptr, first, au_depth, page_depth));
         au_walk_reads_cover_restrict(reads, addrs, bdy, ptr, first, au_depth, page_depth);
@@ -3703,7 +3676,6 @@ state_machine!{ CachedJournal {
             au_depth,
             page_depth,
         )) by {
-            reveal(CachedJournal::State::load_index);
         }
         assert(CachedJournal::State::next_by(
             pre,
@@ -3937,7 +3909,6 @@ state_machine!{ CachedJournal {
         let step = choose |step| CachedJournal::State::next_by(pre, post, lbl, step);
         match step {
             CachedJournal::Step::advance_watermark(target_lsn) => {
-                reveal(CachedJournal::State::advance_watermark);
             },
             _ => { assert(false); },
         }

@@ -1041,7 +1041,6 @@ impl UnifiedCacheJournalSource {
         assert(tight_tj.freshest_rec == root);
         assert(source_index == tight_index);
         tight_tj.build_lsn_au_index_from_first_ensures(first);
-        reveal(TruncatedJournal::au_domain_valid);
         assert(source_index.dom() <= frozen_lsns) by {
             assert forall |lsn: LSN| #[trigger] source_index.contains_key(lsn)
                 implies frozen_lsns.contains(lsn) by {
@@ -1171,7 +1170,6 @@ impl UnifiedCacheJournalSource {
             CachingDiskJournal::Label::Internal,
             post.journal_caching_disk_i(),
         )) by {
-            reveal(CachingDiskJournal::State::caching_disk_internal);
         }
         assert(CachingDiskJournal::State::next_by(
             self.journal_caching_disk_state_i(),
@@ -1189,7 +1187,6 @@ impl UnifiedCacheJournalSource {
             CrashAwareCachingDiskJournal::Label::Internal,
             post.journal_caching_disk_state_i(),
         )) by {
-            reveal(CrashAwareCachingDiskJournal::State::internal);
         }
         assert(CrashAwareCachingDiskJournal::State::next_by(
             self.i(),
@@ -1448,7 +1445,6 @@ impl UnifiedCacheJournalSource {
                 == self.frozen_journal_metadata_i());
             assert(post.i() == self.i());
 
-            reveal(UnifiedCacheJournalSource::inv);
             assert(post.journal.wf());
             assert(async_disk_superblock_page_wf(
                 post.disk.content,
@@ -1496,7 +1492,6 @@ impl UnifiedCacheJournalSource {
             == self.frozen_journal_metadata_i());
         assert(post.i() == self.i());
 
-        reveal(UnifiedCacheJournalSource::inv);
         assert(post.journal.wf());
         assert(async_disk_superblock_page_wf(
             post.disk.content,
@@ -2030,11 +2025,12 @@ pub proof fn empty_source_init_refines(src: UnifiedCacheJournalSource)
     assert(dst.frozen is None);
     assert(dst.prepared == false);
     assert(CrashAwareCachingDiskJournal::State::initialize(dst)) by {
-        reveal(CrashAwareCachingDiskJournal::State::initialize);
     }
     assert(CrashAwareCachingDiskJournal::State::init(dst)) by {
         reveal(CrashAwareCachingDiskJournal::State::init);
         reveal(CrashAwareCachingDiskJournal::State::init_by);
+
+
         assert(CrashAwareCachingDiskJournal::State::init_by(
             dst,
             CrashAwareCachingDiskJournal::Config::initialize(),
@@ -2058,12 +2054,13 @@ pub proof fn init_refines(pre: SystemModel::State<UnifiedCacheProgramModel>)
         ),
         inv(unified_cache_journal_source(pre)),
 {
-    reveal(SystemModel::State::initialize);
     assert(UnifiedCacheProgramModel::is_mkfs(pre.disk));
     assert(UnifiedCacheProgramModel::init(pre.program));
 
     reveal(UnifiedCacheSystem::State::init);
     reveal(UnifiedCacheSystem::State::init_by);
+
+
     let config = choose |config: UnifiedCacheSystem::Config|
         UnifiedCacheSystem::State::init_by(pre.program.state, config);
 
@@ -2145,11 +2142,12 @@ pub proof fn init_refines(pre: SystemModel::State<UnifiedCacheProgramModel>)
             assert(dst.frozen is None);
             assert(dst.prepared == false);
             assert(CrashAwareCachingDiskJournal::State::initialize(dst)) by {
-                reveal(CrashAwareCachingDiskJournal::State::initialize);
             }
             assert(CrashAwareCachingDiskJournal::State::init(dst)) by {
                 reveal(CrashAwareCachingDiskJournal::State::init);
                 reveal(CrashAwareCachingDiskJournal::State::init_by);
+
+
                 assert(CrashAwareCachingDiskJournal::State::init_by(
                     dst,
                     CrashAwareCachingDiskJournal::Config::initialize(),
@@ -2202,7 +2200,6 @@ pub proof fn load_ephemeral_refines(
         ),
         inv(post),
 {
-    reveal(AtomicJournalState::State::initialize);
 
     assert(pre.journal == AtomicJournalState::State::empty());
     assert(pre.in_flight is None);
@@ -2286,7 +2283,6 @@ pub proof fn load_ephemeral_refines(
         dst,
         CrashAwareCachingDiskJournal::Label::LoadEphemeral,
     )) by {
-        reveal(CrashAwareCachingDiskJournal::State::load_ephemeral);
     }
     assert(CrashAwareCachingDiskJournal::State::next_by(
         src,
@@ -2426,7 +2422,6 @@ pub proof fn load_index_refines(
                 au_depth,
                 page_depth,
             )) by {
-                reveal(AtomicJournalState::State::load_index);
             }
             assert(post.journal.journal == new_journal);
             assert(post.journal.mini_allocator == pre.journal.mini_allocator);
@@ -2668,7 +2663,6 @@ pub proof fn load_index_refines(
         pre.journal_caching_disk_i(),
         CachingDisk::Label::Access{reads: component_reads, writes: empty_writes},
     )) by {
-        reveal(CachingDisk::State::access);
         assert_maps_equal!(
             pre.journal_caching_disk_i().cache.union_prefer_right(empty_writes),
             pre.journal_caching_disk_i().cache,
@@ -2714,7 +2708,6 @@ pub proof fn load_index_refines(
                 au_depth,
                 page_depth,
             )) by {
-                reveal(AtomicJournalState::State::load_index);
             }
             assert(CachedJournal::State::load_index(
                 pre.journal.journal,
@@ -2807,7 +2800,6 @@ pub proof fn load_index_refines(
         post.journal.journal,
         component_reads,
     )) by {
-        reveal(CachingDiskJournal::State::load_index);
     }
     assert(CachingDiskJournal::State::next_by(
         pre.journal_caching_disk_state_i(),
@@ -2833,7 +2825,6 @@ pub proof fn load_index_refines(
         target_lbl,
         post.journal_caching_disk_state_i(),
     )) by {
-        reveal(CrashAwareCachingDiskJournal::State::load_index);
     }
     assert(CrashAwareCachingDiskJournal::State::next_by(
         src,
@@ -2936,9 +2927,7 @@ pub proof fn read_for_recovery_refines(
                 atomic_lbl,
                 new_journal,
             )) by {
-                reveal(AtomicJournalState::State::read_for_recovery);
             }
-            reveal(AtomicJournalState::State::read_for_recovery);
             let full_cj_lbl = CachedJournal::Label::ReadForRecovery{
                 messages: records,
                 reads: to_journal_records(journal_reads),
@@ -2967,9 +2956,7 @@ pub proof fn read_for_recovery_refines(
                         start_lsn,
                         read_addr,
                     )) by {
-                        reveal(CachedJournal::State::read_for_recovery);
                     }
-                    reveal(CachedJournal::State::read_for_recovery);
                     assert(new_journal == pre.journal.journal);
                     assert(post.journal.journal == pre.journal.journal);
                     assert(post.journal.mini_allocator == pre.journal.mini_allocator);
@@ -3055,7 +3042,6 @@ pub proof fn read_for_recovery_refines(
                         pre.journal_caching_disk_i(),
                         disk_lbl,
                     )) by {
-                        reveal(CachingDisk::State::access);
                     }
                     assert(CachingDisk::State::next_by(
                         pre.journal_caching_disk_i(),
@@ -3106,7 +3092,6 @@ pub proof fn read_for_recovery_refines(
                         cdj_lbl,
                         raw_journal_reads,
                     )) by {
-                        reveal(CachingDiskJournal::State::read_for_recovery);
                     }
                     assert(CachingDiskJournal::State::next_by(
                         inner,
@@ -3143,7 +3128,6 @@ pub proof fn read_for_recovery_refines(
     let lbl = CrashAwareCachingDiskJournal::Label::ReadForRecovery{records};
     assert(src == dst);
     assert(CrashAwareCachingDiskJournal::State::read_for_recovery(src, dst, lbl)) by {
-        reveal(CrashAwareCachingDiskJournal::State::read_for_recovery);
     }
     assert(CrashAwareCachingDiskJournal::State::next_by(
         src,
@@ -3207,7 +3191,6 @@ pub proof fn observe_clean_aus_refines(
         Cache::State::next_by(pre.cache, post.cache, cache_lbl, step);
     match cache_step {
         Cache::Step::evictable() => {
-            reveal(Cache::State::evictable);
             assert(post.cache == pre.cache);
         },
         _ => {
@@ -3228,7 +3211,6 @@ pub proof fn observe_clean_aus_refines(
                 atomic_lbl,
                 new_journal,
             )) by {
-                reveal(AtomicJournalState::State::observe_clean_aus);
             }
             assert(post.journal.journal == new_journal);
             assert(post.journal.mini_allocator == pre.journal.mini_allocator);
@@ -3292,7 +3274,6 @@ pub proof fn observe_clean_aus_refines(
         CachingDiskJournal::Label::ObserveCleanAUs{aus},
         post.journal.journal,
     )) by {
-        reveal(CachingDiskJournal::State::observe_clean_aus);
     }
     assert(CachingDiskJournal::State::next_by(
         pre.journal_caching_disk_state_i(),
@@ -3315,7 +3296,6 @@ pub proof fn observe_clean_aus_refines(
         target_lbl,
         post.journal_caching_disk_state_i(),
     )) by {
-        reveal(CrashAwareCachingDiskJournal::State::observe_clean_aus);
     }
     assert(CrashAwareCachingDiskJournal::State::next_by(
         src,
@@ -3421,7 +3401,6 @@ pub proof fn journal_marshal_refines(
                 atomic_lbl,
                 new_journal,
             )) by {
-                reveal(AtomicJournalState::State::journal_marshal);
             }
             assert(post.journal.journal == new_journal);
             assert(post.journal.mini_allocator
@@ -3469,7 +3448,6 @@ pub proof fn journal_marshal_refines(
         CachedJournal::State::next_by(pre.journal.journal, post.journal.journal, journal_lbl, step);
     match journal_step {
         CachedJournal::Step::internal_journal_marshal(cut, hidden_addr) => {
-            reveal(CachedJournal::State::internal_journal_marshal);
             assert(hidden_addr == addr) by {
                 assert(to_journal_records(writes).contains_key(hidden_addr));
                 assert(writes.contains_key(hidden_addr));
@@ -3583,7 +3561,6 @@ pub proof fn journal_marshal_refines(
         addr,
         writes,
     )) by {
-        reveal(CachingDiskJournal::State::journal_marshal);
         assert(to_journal_records(writes).dom() =~= writes.dom()) by {
             assert forall |a: Address| #[trigger] to_journal_records(writes).contains_key(a)
                 <==> writes.contains_key(a) by { }
@@ -3616,7 +3593,6 @@ pub proof fn journal_marshal_refines(
         CrashAwareCachingDiskJournal::Label::Internal,
         new_cdj,
     )) by {
-        reveal(CrashAwareCachingDiskJournal::State::internal);
     }
     assert(CrashAwareCachingDiskJournal::State::next_by(
         src,
@@ -3698,7 +3674,6 @@ pub proof fn fill_aus_refines(
                 post.journal,
                 atomic_lbl,
             )) by {
-                reveal(AtomicJournalState::State::fill_aus);
             }
             assert(post.journal.journal == pre.journal.journal);
             assert(post.journal.mini_allocator == pre.journal.mini_allocator.add_aus(aus));
@@ -3867,7 +3842,6 @@ pub proof fn fill_aus_refines(
         cdj_lbl,
         new_cdj.disk,
     )) by {
-        reveal(CachingDiskJournal::State::mini_allocator_fill);
     }
     assert(CachingDiskJournal::State::next_by(
         old_cdj,
@@ -3894,7 +3868,6 @@ pub proof fn fill_aus_refines(
         target_lbl,
         new_cdj,
     )) by {
-        reveal(CrashAwareCachingDiskJournal::State::internal_alloc);
     }
     assert(CrashAwareCachingDiskJournal::State::next_by(
         src,
@@ -4073,7 +4046,6 @@ pub proof fn query_end_lsn_self_refines(
             CachedJournal::Step::query_end_lsn(),
         )) by {
             reveal(CachedJournal::State::next_by);
-            reveal(CachedJournal::State::query_end_lsn);
         }
         reveal(CachedJournal::State::next);
     }
@@ -4085,7 +4057,6 @@ pub proof fn query_end_lsn_self_refines(
             AtomicJournalState::Step::query_end_lsn(),
         )) by {
             reveal(AtomicJournalState::State::next_by);
-            reveal(AtomicJournalState::State::query_end_lsn);
         }
         reveal(AtomicJournalState::State::next);
     }
@@ -4114,7 +4085,6 @@ pub proof fn query_lsn_persistence_self_refines(
         src.i(),
         lbl,
     )) by {
-        reveal(CrashAwareCachingDiskJournal::State::query_lsn_persistence);
     }
     assert(CrashAwareCachingDiskJournal::State::next_by(
         src.i(),
@@ -4187,7 +4157,6 @@ pub proof fn recovery_complete_refines_query_end_lsn(
             pre_state.journal,
             atomic_lbl,
         ));
-        reveal(AtomicJournalState::State::query_end_lsn);
         let cached_lbl = CachedJournal::Label::QueryEndLsn{end_lsn};
         assert(CachedJournal::State::next(
             pre_state.journal.journal,
@@ -4207,7 +4176,6 @@ pub proof fn recovery_complete_refines_query_end_lsn(
             pre_state.journal.journal,
             cached_lbl,
         ));
-        reveal(CachedJournal::State::query_end_lsn);
     }
 }
 */
@@ -4251,7 +4219,6 @@ pub proof fn put_preserves_projection_aus(
                 atomic_lbl,
                 new_journal,
             )) by {
-                reveal(AtomicJournalState::State::put);
             }
             assert(post.journal.journal == new_journal);
             assert(post.journal.mini_allocator == pre.journal.mini_allocator);
@@ -4321,7 +4288,6 @@ pub proof fn put_refines(
                 atomic_lbl,
                 new_journal,
             )) by {
-                reveal(AtomicJournalState::State::put);
             }
             assert(post.journal.journal == new_journal);
             assert(post.journal.mini_allocator == pre.journal.mini_allocator);
@@ -4362,7 +4328,6 @@ pub proof fn put_refines(
         cj_lbl,
         post.journal.journal,
     )) by {
-        reveal(CachingDiskJournal::State::put);
     }
     assert(CachingDiskJournal::State::next_by(
         pre.journal_caching_disk_state_i(),
@@ -4385,7 +4350,6 @@ pub proof fn put_refines(
         lbl,
         post.journal_caching_disk_state_i(),
     )) by {
-        reveal(CrashAwareCachingDiskJournal::State::put);
     }
     assert(CrashAwareCachingDiskJournal::State::next_by(
         src,
@@ -4484,7 +4448,6 @@ pub proof fn commit_start_refines(
             atomic_lbl,
             AtomicJournalState::Step::commit_start(),
         ));
-        reveal(AtomicJournalState::State::commit_start);
     }
     assert(post.superblock_loaded());
     assert(post.journal.ready()) by {
@@ -4500,7 +4463,6 @@ pub proof fn commit_start_refines(
             atomic_lbl,
             AtomicJournalState::Step::commit_start(),
         ));
-        reveal(AtomicJournalState::State::commit_start);
     }
     assert(post.journal_projection_aus() =~= aus) by {
         assert(post.journal.journal == pre.journal.journal);
@@ -4545,7 +4507,6 @@ pub proof fn commit_start_refines(
                 atomic_lbl,
                 AtomicJournalState::Step::commit_start(),
             ));
-            reveal(AtomicJournalState::State::commit_start);
             assert(AtomicJournalState::State::commit_start(pre.journal, post.journal, atomic_lbl));
             let full_lbl = CachedJournal::Label::FreezeForCommit{
                 frozen: snapshot,
@@ -4560,7 +4521,6 @@ pub proof fn commit_start_refines(
                 full_lbl,
                 CachedJournal::Step::freeze_for_commit(),
             ));
-            reveal(CachedJournal::State::freeze_for_commit);
             let index = pre.journal.journal.status.unwrap().lsn_au_index;
             assert(index.contains_value(root.au));
             assert(pre.journal.loaded_index_aus().contains(root.au));
@@ -4588,7 +4548,6 @@ pub proof fn commit_start_refines(
         inner.disk,
         CachingDisk::Label::Access{reads: component_reads, writes: empty_writes},
     )) by {
-        reveal(CachingDisk::State::access);
         assert(inner.disk == pre.journal_caching_disk_i());
         assert_maps_equal!(
             inner.disk.cache.union_prefer_right(empty_writes),
@@ -4635,7 +4594,6 @@ pub proof fn commit_start_refines(
             atomic_lbl,
             AtomicJournalState::Step::commit_start(),
         ));
-        reveal(AtomicJournalState::State::commit_start);
         assert(AtomicJournalState::State::commit_start(pre.journal, post.journal, atomic_lbl));
         let full_lbl = CachedJournal::Label::FreezeForCommit{
             frozen: snapshot,
@@ -4650,7 +4608,6 @@ pub proof fn commit_start_refines(
             full_lbl,
             CachedJournal::Step::freeze_for_commit(),
         ));
-        reveal(CachedJournal::State::freeze_for_commit);
         assert(inner.journal == pre.journal.journal);
         if snapshot.freshest_rec() is Some {
             let root = snapshot.freshest_rec().unwrap();
@@ -4695,7 +4652,6 @@ pub proof fn commit_start_refines(
             atomic_lbl,
             AtomicJournalState::Step::commit_start(),
         ));
-        reveal(AtomicJournalState::State::commit_start);
         assert(AtomicJournalState::State::commit_start(pre.journal, post.journal, atomic_lbl));
         let full_lbl = CachedJournal::Label::FreezeForCommit{
             frozen: snapshot,
@@ -4710,7 +4666,6 @@ pub proof fn commit_start_refines(
             full_lbl,
             CachedJournal::Step::freeze_for_commit(),
         ));
-        reveal(CachedJournal::State::freeze_for_commit);
         let index = pre.journal.journal.status.unwrap().lsn_au_index;
         assert(reads.contains_key(root));
         assert(index.contains_value(root.au));
@@ -4752,7 +4707,6 @@ pub proof fn commit_start_refines(
                 atomic_lbl,
                 AtomicJournalState::Step::commit_start(),
             ));
-            reveal(AtomicJournalState::State::commit_start);
         }
         assert(seq_end == inner.frozen_seq_end(snapshot));
     }
@@ -4763,7 +4717,6 @@ pub proof fn commit_start_refines(
         cj_lbl,
         component_reads,
     )) by {
-        reveal(CachingDiskJournal::State::freeze_for_commit);
     }
     assert(CachingDiskJournal::State::next_by(
         inner,
@@ -4797,10 +4750,8 @@ pub proof fn commit_start_refines(
             atomic_lbl,
             AtomicJournalState::Step::commit_start(),
         ));
-        reveal(AtomicJournalState::State::commit_start);
     }
     assert(CrashAwareCachingDiskJournal::State::commit_start(src, dst, target_lbl)) by {
-        reveal(CrashAwareCachingDiskJournal::State::commit_start);
     }
     assert(CrashAwareCachingDiskJournal::State::next_by(
         src,
@@ -4872,7 +4823,6 @@ pub proof fn commit_prepared_refines(
         post.journal,
         atomic_lbl,
     )) by {
-        reveal(AtomicJournalState::State::commit_prepared);
     }
     assert(post.journal == pre.journal);
     assert(post.journal.in_flight == pre.journal.in_flight);
@@ -4945,7 +4895,6 @@ pub proof fn commit_prepared_refines(
         dst,
         target_lbl,
     )) by {
-        reveal(CrashAwareCachingDiskJournal::State::commit_prepared);
         let frozen = src.frozen.unwrap();
         assert(src.ephemeral->v == pre.journal_caching_disk_state_i());
         assert(frozen.snapshot == pre.journal.in_flight.unwrap().snapshot);
@@ -4966,8 +4915,6 @@ pub proof fn commit_prepared_refines(
                     seq_end: frozen.seq_end,
                 },
             )) by {
-                reveal(CachingDiskJournal::State::commit_prepared);
-                reveal(AtomicJournalState::State::commit_prepared);
             }
             assert(CachingDiskJournal::State::next_by(
                 src.ephemeral->v,
@@ -5099,7 +5046,6 @@ pub proof fn commit_complete_refines(
             atomic_lbl,
             AtomicJournalState::Step::commit_complete(post.journal.journal),
         ));
-        reveal(AtomicJournalState::State::commit_complete);
     }
     assert(dst.frozen is None);
     assert(!dst.prepared);
@@ -5127,7 +5073,6 @@ pub proof fn commit_complete_refines(
             atomic_lbl,
             post.journal.journal,
         ));
-        reveal(AtomicJournalState::State::commit_complete);
         let cj_lbl = CachedJournal::Label::DiscardOld{
             start_lsn: frozen.snapshot.boundary_lsn,
             require_end,
@@ -5141,7 +5086,6 @@ pub proof fn commit_complete_refines(
             cj_lbl,
             CachedJournal::Step::discard_old(),
         ));
-        reveal(CachedJournal::State::discard_old);
         let old_index = pre.journal.journal.status.unwrap().lsn_au_index;
         let new_index = post.journal.journal.status.unwrap().lsn_au_index;
         assert(discarded_aus == old_index.values().difference(new_index.values()));
@@ -5265,7 +5209,6 @@ pub proof fn commit_complete_refines(
             atomic_lbl,
             AtomicJournalState::Step::commit_complete(post.journal.journal),
         ));
-        reveal(AtomicJournalState::State::commit_complete);
     }
     assert(CachingDisk::State::next(
         pre.journal_caching_disk_i(),
@@ -5279,7 +5222,6 @@ pub proof fn commit_complete_refines(
         post.journal.journal,
         post.journal_caching_disk_i(),
     )) by {
-        reveal(CachingDiskJournal::State::discard_old);
     }
     assert(CachingDiskJournal::State::next_by(
         src.ephemeral->v,
@@ -5304,7 +5246,6 @@ pub proof fn commit_complete_refines(
         target_lbl,
         dst.ephemeral->v,
     )) by {
-        reveal(CrashAwareCachingDiskJournal::State::commit_complete);
     }
     assert(CrashAwareCachingDiskJournal::State::next_by(
         src,

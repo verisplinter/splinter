@@ -754,6 +754,41 @@ pub proof fn lemma_i_unfoldable(node: Node)
     };
 }
 
+pub proof fn lemma_index_i_routes(node: Node, key: Key)
+    requires
+        node.wf(),
+        node is Index,
+    ensures
+        node.i().map.contains_key(key)
+            == node->children[node.route(key) + 1]
+                .i().map.contains_key(key),
+        node.i().map.contains_key(key) ==>
+            node.i().map[key]
+                == node->children[node.route(key) + 1].i().map[key],
+{
+    lemma_i_unfoldable(node);
+    let present = node.contains(key);
+    contains_refines(node, key, present);
+    contains_refines_to_routed_child(node, key, present);
+    contains_refines(
+        node->children[node.route(key) + 1],
+        key,
+        present,
+    );
+    if present {
+        let msg = node.query(key);
+        let lbl = QueryLabel { key, msg };
+        query_refines(node, lbl);
+        query_refines_to_routed_child(node, lbl);
+        assert(node.i().map.contains_key(key));
+        assert(node->children[node.route(key) + 1]
+            .i().map.contains_key(key));
+        assert(node.i().query(key) == node.i().map[key]);
+        assert(node->children[node.route(key) + 1].i().query(key)
+            == node->children[node.route(key) + 1].i().map[key]);
+    }
+}
+
 pub proof fn lemma_i_contains_implies_routed_child_contains(node: Node, key: Key)
     requires
         node.wf(),
@@ -1083,6 +1118,7 @@ pub proof fn lemma_append_via_insert_preserves_wf(pre: Node, keys: Seq<Key>, msg
     let keys_msgs = keys.zip_with(msgs);
     if keys_msgs.len() == 1 {
         reveal_with_fuel(vstd::prelude::Seq::fold_left_alt, 2);
+
         lemma_insert_preserves_wf(pre, keys[0], msgs[0], path);
     } else {
         let path1 = Path{node: insert0, key: keys[1], depth: path.depth};
@@ -1168,6 +1204,7 @@ pub proof fn lemma_append_via_insert_equiv(node: Node, new_keys: Seq<Key>, new_m
 
     if new_keys.len() == 1 {
         reveal_with_fuel(vstd::prelude::Seq::fold_left_alt, 2);
+
         assert(new_keys.take(1) == new_keys); // trigger
         assert(new_msgs.take(1) == new_msgs); // trigger
     } else {
@@ -1217,6 +1254,7 @@ pub proof fn lemma_append_via_insert_refines(pre: Node, keys: Seq<Key>, msgs: Se
     assert(insert0.i() == pre.i().insert(keys[0], msgs[0]));
     if keys_msgs.len() == 1 {
         reveal_with_fuel(vstd::prelude::Seq::fold_left_alt, 2);
+
         assert(post == insert0);
         assert(append_map =~~= map![keys[0] => msgs[0]]);
         assert(i_then_append =~~= pre.i().insert(keys[0], msgs[0]));

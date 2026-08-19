@@ -15,9 +15,8 @@ use crate::allocation_layer::AllocationBranchBetree_v::{
     branch_summary_insert_ensures, read_ref_aus,
     seq_addrs_to_aus, summary_aus, CompactorInput,
 };
-use crate::allocation_layer::AllocationBranch_v::{
-    AllocationBranch, BranchNode, Summary,
-};
+use crate::allocation_layer::BranchTypes_v::{BranchNode, Summary};
+use crate::allocation_layer::AllocationBulkBranch_v::AllocationBulkBranch;
 use crate::allocation_layer::Likes_v::to_au_likes;
 use crate::betree::BufferDisk_v::BufferDisk;
 use crate::betree::LinkedBetree_v::{
@@ -25,6 +24,9 @@ use crate::betree::LinkedBetree_v::{
     PathAddrs, SplitAddrs, TwoAddrs,
 };
 use crate::betree::SplitRequest_v::SplitRequest;
+use crate::betree::Utils_v::{
+    lemma_subset_union_seq_of_sets, lemma_union_set_of_sets_subset,
+};
 use crate::betree::LinkedBranch_v::{
     LinkedBranch, Refinement_v as LinkedBranchRefinement,
 };
@@ -47,16 +49,24 @@ use crate::implementation::CachedBranch_v::{
 use crate::implementation::CachedBranchBetree_v::{
     added_path_likes, branch_receipts_valid,
     cached_allocation_branch_build_all_aus_subset,
-    cached_branch_alloc_aus,
-    cached_branch_alloc_aus_update_remove_exact,
-    cached_branch_alloc_aus_remove_exact, compact_replacement,
+    compact_replacement,
     direct_buffer_likes, flush_replacement,
     loaded_branch_reads_for_roots, path_discard_likes,
     split_replacement, substitute_writes_dom_subset,
     valid_loaded_sealed_branch, valid_loaded_sealed_branches,
     CachedAllocationBranch, FrozenBranchBetree,
-    CachedAllocationBranchEvent, CachedBranchBetree, LoadedBetreePath,
-    LoadedBetreeQueryReceipt,
+    CachedAllocationBranchEvent, CachedBranchBetree,
+    CachedBranchBetreeAccess, LoadedBetreePath, LoadedBetreeQueryReceipt,
+};
+use crate::implementation::CachedBulkBranch_v::{
+    cached_bulk_branch_alloc_aus,
+    cached_bulk_branch_alloc_aus_contains,
+    cached_bulk_branch_alloc_aus_push_subset,
+    cached_bulk_branch_alloc_aus_remove_exact,
+    cached_bulk_branch_alloc_aus_remove_subset,
+    cached_bulk_branch_alloc_aus_update_remove_exact,
+    cached_bulk_branch_alloc_aus_update_subset,
+    CachedBulkBranch, CachedBulkBranchEvent,
 };
 use crate::implementation::CachingDiskAdapterRefinement_v::{
     cache_access_reads_in_project_cache_by_addrs,
@@ -71,6 +81,7 @@ use crate::implementation::CachingDiskAdapterRefinement_v::{
     project_persistent, projected_cache_read_only_access_unchanged,
     projected_cache_access_outside_aus_unchanged,
     valid_reads_in_project_cache_by_addrs,
+    valid_read_matches_caching_disk_i_visible,
     cache_access_refines_caching_disk_access,
     cache_evictable_refines_observe_clean_aus,
     ownership_projection_forget_refines,
@@ -79,6 +90,7 @@ use crate::implementation::CachingDiskBranchBetree_v::{
     disk_access_for_alloc, disk_extend_for_alloc,
     disk_namespace, reclaim_guarded_aus,
     reclaim_guarded_aus_preserves_inv,
+    loose_disk_for_summary, tight_branch_exists, tight_branch_of,
     to_betree_nodes, to_branch_nodes,
     BranchBuildEvent, CachingDiskBranchBetree,
     DiskAccessWitness, PageAccess,
@@ -91,8 +103,14 @@ use crate::implementation::CachingDiskBranchBetreeRefinement_v::{
     loaded_betree_path_wf_child,
     summary_partition_disjoint, tight_betree_candidate,
     tight_betree_exists, tight_betree_of,
+    tight_branch_of_is_candidate,
 };
-use crate::implementation::CachingDiskBranchRefinement_v::
+use crate::implementation::BetreeQueryImpl_v::cached_betree_query_valid;
+use crate::implementation::BranchPathQueryImpl_v::cached_branch_path_valid;
+use crate::implementation::BranchScanCursorImpl_v::cached_branch_scan_valid;
+use crate::marshalling::IBetreeNodeFormat_v::raw_page_to_betree_node;
+use crate::marshalling::IBranchNodeFormat_v::raw_page_to_branch_node;
+use crate::implementation::BulkBranchProofUtils_v::
     query_read_node_matches_visible;
 use crate::implementation::CachingDisk_v::{
     addresses_in_aus, CachingDisk, PageStatus,
@@ -376,6 +394,8 @@ impl UnifiedCacheBranchBetreeSource {
         )
         &&& self.persistent_superblock_image_i().wf()
         &&& self.control_wf()
+        &&& !self.control.metadata_loaded ==>
+            self.branch == empty_cached_betree()
         &&& self.superblock_loaded() ==>
             self.control.metadata
                 == self.persistent_metadata_i()
@@ -439,7 +459,6 @@ impl UnifiedCacheBranchBetreeSource {
             == self.prepared_branch_image_i());
         assert(post.i() == self.i());
 
-        reveal(UnifiedCacheBranchBetreeSource::inv);
         assert(post.control_wf());
         assert(post.branch_caching_disk_i().inv());
         assert(!post.control.metadata_loaded ==> {
@@ -481,7 +500,6 @@ impl UnifiedCacheBranchBetreeSource {
             == self.persistent_metadata_i());
         assert(post.control.metadata
             == post.persistent_metadata_i()) by {
-            reveal(AtomicBranchBetreeControl::install);
         }
         assert(post.branch == self.branch) by {
             assert(self.branch == empty_cached_betree());
@@ -506,19 +524,13 @@ impl UnifiedCacheBranchBetreeSource {
         }
         assert(post.persistent_branch_image_i()
             == self.persistent_branch_image_i());
-        reveal(UnifiedCacheBranchBetreeSource::
-            ephemeral_branch_i);
         assert(post.ephemeral_branch_i()
             == self.ephemeral_branch_i());
-        reveal(UnifiedCacheBranchBetreeSource::
-            prepared_branch_image_i);
         assert(post.prepared_branch_image_i()
             == self.prepared_branch_image_i());
         assert(post.i() == self.i());
 
-        reveal(UnifiedCacheBranchBetreeSource::control_wf);
         assert(post.control_wf());
-        reveal(UnifiedCacheBranchBetreeSource::inv);
         assert(post.branch_caching_disk_i().inv());
         assert(!post.control.metadata_loaded ==> {
             post.branch_caching_disk_i().visible()
@@ -586,7 +598,6 @@ impl UnifiedCacheBranchBetreeSource {
         assert(post.prepared_branch_image_i()
             == self.prepared_branch_image_i());
         assert(post.i() == self.i());
-        reveal(UnifiedCacheBranchBetreeSource::inv);
         assert(post.inv());
     }
 
@@ -615,11 +626,6 @@ impl UnifiedCacheBranchBetreeSource {
             witness.betree_aus.dom(),
         ));
 
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetreeRefinement_v::
-                RecoveredCachingDiskBranchBetreeMetadata::
-                    valid_for);
-        reveal(initial_refinement_witness_valid);
         assert(tight_betree_candidate(
             image.metadata.root,
             image_entries,
@@ -627,14 +633,9 @@ impl UnifiedCacheBranchBetreeSource {
         ));
         assert(image.metadata == self.persistent_metadata_i());
         assert(image.disk().visible() == image.persistent) by {
-            reveal(CachingDiskBranchBetreeImage::disk);
-            reveal(CachingDisk::State::visible);
-            reveal(CachingDisk::State::visible_cache);
         }
         assert(image.persistent
             <= self.disk.content) by {
-            reveal(UnifiedCacheBranchBetreeSource::
-                persistent_branch_image_i);
         }
         assert(to_betree_nodes(image.disk().visible())
             <= to_betree_nodes(self.disk.content)) by {
@@ -653,7 +654,6 @@ impl UnifiedCacheBranchBetreeSource {
                     )[addr]
                 }
             by {
-                reveal(to_betree_nodes);
             }
         }
         assert(image_entries
@@ -667,7 +667,6 @@ impl UnifiedCacheBranchBetreeSource {
             );
         }
         assert(tree.dv.entries <= image_entries) by {
-            reveal(tight_betree_candidate);
         }
         vstd::map_lib::lemma_submap_of_trans(
             tree.dv.entries,
@@ -679,9 +678,7 @@ impl UnifiedCacheBranchBetreeSource {
             to_betree_nodes(self.disk.content),
             tree,
         )) by {
-            reveal(tight_betree_candidate);
         }
-        reveal(tight_betree_exists);
     }
 
     pub proof fn persistent_image_implies_tight_betree_exists(
@@ -781,22 +778,15 @@ impl UnifiedCacheBranchBetreeSource {
             let old_recovery = src.ephemeral->recovery;
             let new_recovery = dst.ephemeral->recovery;
 
-            reveal(
-                UnifiedCacheBranchBetreeSource::
-                    ephemeral_branch_i,
-            );
-            reveal(BetreeMetadataRecovery::from_core);
             assert(src.ephemeral is Loading);
             assert(dst.ephemeral is Loading);
             assert(old_recovery.disk == pre_cd);
             assert(new_recovery.disk == post_cd);
             assert(old_recovery.core()
                 == self.control.recovery) by {
-                reveal(BetreeMetadataRecovery::core);
             }
             assert(new_recovery.core()
                 == self.control.recovery) by {
-                reveal(BetreeMetadataRecovery::core);
             }
             assert(BetreeMetadataRecovery::next(
                 old_recovery,
@@ -815,10 +805,6 @@ impl UnifiedCacheBranchBetreeSource {
                         new_recovery,
                     )
             ) by {
-                reveal(
-                    CrashAwareCachingDiskBranchBetree::State::
-                        recover_metadata,
-                );
             }
             assert(
                 CrashAwareCachingDiskBranchBetree::State::next_by(
@@ -850,10 +836,6 @@ impl UnifiedCacheBranchBetreeSource {
                         deallocs: Set::empty(),
                     };
 
-            reveal(
-                UnifiedCacheBranchBetreeSource::
-                    ephemeral_branch_i,
-            );
             assert(src.ephemeral is Known);
             assert(dst.ephemeral is Known);
             assert(component_pre.disk == pre_cd);
@@ -866,10 +848,6 @@ impl UnifiedCacheBranchBetreeSource {
                     post_cd,
                 )
             ) by {
-                reveal(
-                    CachingDiskBranchBetree::State::
-                        disk_internal,
-                );
             }
             assert(CachingDiskBranchBetree::State::next_by(
                 component_pre,
@@ -885,9 +863,6 @@ impl UnifiedCacheBranchBetreeSource {
                 CrashAwareCachingDiskBranchBetree_v::
                     logical_deallocs(component_lbl)
                 =~= Set::<AU>::empty()) by {
-                reveal(crate::implementation::
-                    CrashAwareCachingDiskBranchBetree_v::
-                        logical_deallocs);
             }
             assert(Set::<AU>::empty()
                 == crate::implementation::
@@ -908,15 +883,6 @@ impl UnifiedCacheBranchBetreeSource {
                         component_post,
                     )
             ) by {
-                reveal(
-                    CrashAwareCachingDiskBranchBetree::State::
-                        ephemeral_step,
-                );
-                reveal(
-                    crate::implementation::
-                        CrashAwareCachingDiskBranchBetree_v::
-                            logical_deallocs,
-                );
             }
             assert(
                 CrashAwareCachingDiskBranchBetree::State::next_by(
@@ -937,16 +903,11 @@ impl UnifiedCacheBranchBetreeSource {
             );
             src.next_refines(dst, target_lbl);
         } else {
-            reveal(
-                UnifiedCacheBranchBetreeSource::
-                    ephemeral_branch_i,
-            );
             assert(src.ephemeral is Unknown);
             assert(dst.ephemeral is Unknown);
             assert(dst == src);
         }
 
-        reveal(UnifiedCacheBranchBetreeSource::inv);
         assert(post.control_wf());
         assert(post.branch_caching_disk_i().inv());
         assert(!post.control.metadata_loaded ==> {
@@ -1027,10 +988,6 @@ impl UnifiedCacheBranchBetreeSource {
             CachingDisk::Label::Internal{},
         );
 
-        reveal(
-            UnifiedCacheBranchBetreeSource::
-                ephemeral_branch_i,
-        );
         assert(src.ephemeral is Known);
         assert(dst.ephemeral is Known);
         assert(component_pre.disk == pre_cd);
@@ -1043,10 +1000,6 @@ impl UnifiedCacheBranchBetreeSource {
                 post_cd,
             )
         ) by {
-            reveal(
-                CachingDiskBranchBetree::State::
-                    disk_internal,
-            );
         }
         assert(CachingDiskBranchBetree::State::next_by(
             component_pre,
@@ -1062,9 +1015,6 @@ impl UnifiedCacheBranchBetreeSource {
             CrashAwareCachingDiskBranchBetree_v::
                 logical_deallocs(component_lbl)
             =~= Set::<AU>::empty()) by {
-            reveal(crate::implementation::
-                CrashAwareCachingDiskBranchBetree_v::
-                    logical_deallocs);
         }
         assert(Set::<AU>::empty()
             == crate::implementation::
@@ -1085,15 +1035,6 @@ impl UnifiedCacheBranchBetreeSource {
                     component_post,
                 )
         ) by {
-            reveal(
-                CrashAwareCachingDiskBranchBetree::State::
-                    ephemeral_step,
-            );
-            reveal(
-                crate::implementation::
-                    CrashAwareCachingDiskBranchBetree_v::
-                        logical_deallocs,
-            );
         }
         assert(
             CrashAwareCachingDiskBranchBetree::State::next_by(
@@ -1114,7 +1055,6 @@ impl UnifiedCacheBranchBetreeSource {
         );
         src.next_refines(dst, target_lbl);
 
-        reveal(UnifiedCacheBranchBetreeSource::inv);
         assert(post.control_wf());
         assert(post.branch_caching_disk_i().inv());
         assert(post.i().refinement_inv());
@@ -1222,22 +1162,15 @@ impl UnifiedCacheBranchBetreeSource {
             let old_recovery = src.ephemeral->recovery;
             let new_recovery = dst.ephemeral->recovery;
 
-            reveal(
-                UnifiedCacheBranchBetreeSource::
-                    ephemeral_branch_i,
-            );
-            reveal(BetreeMetadataRecovery::from_core);
             assert(src.ephemeral is Loading);
             assert(dst.ephemeral is Loading);
             assert(old_recovery.disk == pre_cd);
             assert(new_recovery.disk == post_cd);
             assert(old_recovery.core()
                 == self.control.recovery) by {
-                reveal(BetreeMetadataRecovery::core);
             }
             assert(new_recovery.core()
                 == self.control.recovery) by {
-                reveal(BetreeMetadataRecovery::core);
             }
             assert(BetreeMetadataRecovery::next(
                 old_recovery,
@@ -1256,10 +1189,6 @@ impl UnifiedCacheBranchBetreeSource {
                         new_recovery,
                     )
             ) by {
-                reveal(
-                    CrashAwareCachingDiskBranchBetree::State::
-                        recover_metadata,
-                );
             }
             assert(
                 CrashAwareCachingDiskBranchBetree::State::next_by(
@@ -1291,10 +1220,6 @@ impl UnifiedCacheBranchBetreeSource {
                         deallocs: Set::empty(),
                     };
 
-            reveal(
-                UnifiedCacheBranchBetreeSource::
-                    ephemeral_branch_i,
-            );
             assert(src.ephemeral is Known);
             assert(dst.ephemeral is Known);
             assert(component_pre.disk == pre_cd);
@@ -1307,10 +1232,6 @@ impl UnifiedCacheBranchBetreeSource {
                     post_cd,
                 )
             ) by {
-                reveal(
-                    CachingDiskBranchBetree::State::
-                        disk_internal,
-                );
             }
             assert(CachingDiskBranchBetree::State::next_by(
                 component_pre,
@@ -1326,9 +1247,6 @@ impl UnifiedCacheBranchBetreeSource {
                 CrashAwareCachingDiskBranchBetree_v::
                     logical_deallocs(component_lbl)
                 =~= Set::<AU>::empty()) by {
-                reveal(crate::implementation::
-                    CrashAwareCachingDiskBranchBetree_v::
-                        logical_deallocs);
             }
             assert(Set::<AU>::empty()
                 == crate::implementation::
@@ -1349,15 +1267,6 @@ impl UnifiedCacheBranchBetreeSource {
                         component_post,
                     )
             ) by {
-                reveal(
-                    CrashAwareCachingDiskBranchBetree::State::
-                        ephemeral_step,
-                );
-                reveal(
-                    crate::implementation::
-                        CrashAwareCachingDiskBranchBetree_v::
-                            logical_deallocs,
-                );
             }
             assert(
                 CrashAwareCachingDiskBranchBetree::State::next_by(
@@ -1378,16 +1287,11 @@ impl UnifiedCacheBranchBetreeSource {
             );
             src.next_refines(dst, target_lbl);
         } else {
-            reveal(
-                UnifiedCacheBranchBetreeSource::
-                    ephemeral_branch_i,
-            );
             assert(src.ephemeral is Unknown);
             assert(dst.ephemeral is Unknown);
             assert(dst == src);
         }
 
-        reveal(UnifiedCacheBranchBetreeSource::inv);
         assert(post.control_wf());
         assert(post.branch_caching_disk_i().inv());
         assert(!post.control.metadata_loaded ==> {
@@ -1646,6 +1550,14 @@ pub open spec fn inv(
     src.inv()
 }
 
+pub proof fn persistent_aus_within_branch_projection(
+    src: UnifiedCacheBranchBetreeSource,
+)
+    requires src.control.metadata_loaded,
+    ensures src.control.persistent_aus <= src.branch_projection_aus(),
+{
+}
+
 pub open spec fn clean_cache_disk_coupling_on_aus(
     cache: Cache::State,
     disk: DiskModel,
@@ -1708,7 +1620,6 @@ proof fn projected_disk_extend_for_alloc(
         disk,
         pre_aus + allocs,
     );
-    reveal(clean_cache_disk_coupling_on_aus);
     caching_disk_i_inv_from_clean_cache_coupling(
         cache,
         disk,
@@ -1989,7 +1900,6 @@ proof fn projected_disk_access_for_alloc(
         reads,
         writes,
     )) by {
-        reveal(disk_access_for_alloc);
     }
 }
 
@@ -2028,11 +1938,12 @@ pub proof fn init_refines(
             ),
         ),
 {
-    reveal(SystemModel::State::initialize);
     assert(UnifiedCacheBetreeProgramModel::is_mkfs(model.disk));
     assert(UnifiedCacheBetreeProgramModel::init(model.program));
     reveal(UnifiedCacheBetreeSystem::State::init);
     reveal(UnifiedCacheBetreeSystem::State::init_by);
+
+
     let config = choose |config: UnifiedCacheBetreeSystem::Config|
         UnifiedCacheBetreeSystem::State::init_by(
             model.program.state,
@@ -2043,16 +1954,9 @@ pub proof fn init_refines(
             cache_slots,
             free_aus,
         ) => {
-            reveal(UnifiedCacheBetreeSystem::State::initialize);
             let src =
                 unified_cache_branch_betree_source(model);
             let dst = unified_cache_branch_betree_i(src);
-            reveal(init_shared_facts);
-            reveal(UnifiedCacheBranchBetreeSource::control_wf);
-            reveal(UnifiedCacheBranchBetreeSource::
-                persistent_superblock_image_i);
-            reveal(UnifiedCacheBranchBetreeSource::
-                persistent_metadata_i);
             assert(src.control
                 == AtomicBranchBetreeControl::empty());
             assert(src.persistent_metadata_i()
@@ -2070,19 +1974,6 @@ pub proof fn init_refines(
                         to_betree_nodes(src.disk.content),
                         empty_tree,
                     )) by {
-                reveal(crate::implementation::
-                    CachingDiskBranchBetreeRefinement_v::
-                        tight_betree_candidate);
-                reveal(LinkedBetree::valid_ranking);
-                reveal(crate::betree::LinkedBetree_v::
-                    DiskView::valid_ranking);
-                reveal(crate::betree::LinkedBetree_v::
-                    DiskView::wf);
-                reveal(LinkedBetree::acyclic);
-                reveal(LinkedBetree::has_root);
-                reveal(LinkedBetree::reachable_betree_addrs);
-                reveal(LinkedBetree::
-                    reachable_betree_addrs_using_ranking);
                 assert(empty_tree.valid_ranking(
                     Map::<Address, nat>::empty(),
                 ));
@@ -2091,7 +1982,6 @@ pub proof fn init_refines(
                 src.persistent_metadata_i().root,
                 to_betree_nodes(src.disk.content),
             )) by {
-                reveal(tight_betree_exists);
             }
             crate::implementation::
                 CachingDiskBranchBetreeRefinement_v::
@@ -2105,17 +1995,6 @@ pub proof fn init_refines(
                 == empty_tree);
             assert(src.canonical_persistent_aus_i()
                 =~= Set::<AU>::empty()) by {
-                reveal(UnifiedCacheBranchBetreeSource::
-                    canonical_persistent_aus_i);
-                reveal(UnifiedCacheBranchBetreeSource::
-                    persistent_branch_roots_i);
-                reveal(UnifiedCacheBranchBetreeSource::
-                    persistent_branch_summary_i);
-                reveal(LinkedBetree::transitive_likes);
-                reveal(LinkedBetree::tree_likes);
-                reveal(LinkedBetree::buffer_likes);
-                reveal(LinkedBetree::reachable_buffer_addrs);
-                reveal(LinkedBetree::reachable_buffer);
                 assert(empty_tree.transitive_likes()
                     == (
                         Multiset::<Address>::empty(),
@@ -2160,7 +2039,6 @@ pub proof fn init_refines(
                 assert(summary_aus(
                     Map::<AU, Summary>::empty(),
                 ) =~= Set::<AU>::empty()) by {
-                    reveal(summary_aus);
                     assert(Map::<AU, Summary>::empty().values()
                         =~= Set::<Summary>::empty()) by {
                         assert forall |summary: Summary|
@@ -2173,8 +2051,6 @@ pub proof fn init_refines(
                                     == summary);
                         }
                     }
-                    reveal(crate::betree::Utils_v::
-                        union_set_of_sets);
                 }
             }
             assert(src.persistent_branch_image_i()
@@ -2201,14 +2077,7 @@ pub proof fn init_refines(
             assert(src.branch_caching_disk_i().visible()
                 == src.persistent_branch_image_i()
                     .disk().visible()) by {
-                reveal(CachingDisk::State::visible);
-                reveal(CachingDisk::State::visible_cache);
             }
-            reveal(UnifiedCacheBranchBetreeSource::
-                ephemeral_branch_i);
-            reveal(UnifiedCacheBranchBetreeSource::
-                prepared_branch_image_i);
-            reveal(UnifiedCacheBranchBetreeSource::i);
             assert(dst.persistent
                 == CachingDiskBranchBetreeImage::empty());
             assert(dst.ephemeral is Unknown);
@@ -2216,14 +2085,11 @@ pub proof fn init_refines(
             assert(dst.prepared is None);
             assert(CrashAwareCachingDiskBranchBetree::State::
                 initialize(dst)) by {
-                reveal(CrashAwareCachingDiskBranchBetree::State::
-                    initialize);
             }
             CrashAwareCachingDiskBranchBetree::show::initialize(
                 dst,
             );
             dst.init_refines();
-            reveal(UnifiedCacheBranchBetreeSource::inv);
             assert(src.inv());
         }
         UnifiedCacheBetreeSystem::Config::
@@ -2266,9 +2132,6 @@ pub proof fn load_ephemeral_refines(
     let dst = unified_cache_branch_betree_i(post);
     let initial_disk = pre.branch_caching_disk_i();
 
-    reveal(UnifiedCacheBranchBetreeSource::ephemeral_branch_i);
-    reveal(BetreeMetadataRecovery::from_core);
-    reveal(BetreeMetadataRecoveryCore::start);
     assert(pre.persistent_metadata_i()
         == post.persistent_metadata_i());
     assert(pre.persistent_tight_betree_i()
@@ -2303,8 +2166,6 @@ pub proof fn load_ephemeral_refines(
             CrashAwareCachingDiskBranchBetree::Label::LoadEphemeral,
             initial_disk,
         )) by {
-        reveal(CrashAwareCachingDiskBranchBetree::State::
-            load_ephemeral);
     }
     assert(CrashAwareCachingDiskBranchBetree::State::next_by(
         src,
@@ -2322,8 +2183,6 @@ pub proof fn load_ephemeral_refines(
         CrashAwareCachingDiskBranchBetree::Label::LoadEphemeral,
     );
 
-    reveal(UnifiedCacheBranchBetreeSource::control_wf);
-    reveal(UnifiedCacheBranchBetreeSource::inv);
     assert(post.control_wf());
     assert(post.i().refinement_inv());
     assert(post.inv());
@@ -2399,15 +2258,11 @@ pub proof fn recover_metadata_refines(
     let new_recovery = dst.ephemeral->recovery;
     let aus = pre.branch_projection_aus();
 
-    reveal(UnifiedCacheBranchBetreeSource::ephemeral_branch_i);
-    reveal(BetreeMetadataRecovery::from_core);
     assert(src.ephemeral is Loading);
     assert(dst.ephemeral is Loading);
     assert(old_recovery.core() == pre.control.recovery) by {
-        reveal(BetreeMetadataRecovery::core);
     }
     assert(new_recovery.core() == post.control.recovery) by {
-        reveal(BetreeMetadataRecovery::core);
     }
     assert(old_recovery.refinement_inv(image));
     recovery_frontier_pending_reads_persistent(
@@ -2514,7 +2369,6 @@ pub proof fn recover_metadata_refines(
             writes: empty_writes,
         },
     )) by {
-        reveal(CachingDisk::State::access);
     }
     assert(CachingDisk::State::next_by(
         pre.branch_caching_disk_i(),
@@ -2561,8 +2415,6 @@ pub proof fn recover_metadata_refines(
             BetreeMetadataRecoveryLabel::ReadBetree{..}
             | BetreeMetadataRecoveryLabel::ReadBranchRoot{..}
             | BetreeMetadataRecoveryLabel::ReadBranchAux{..} => {
-                reveal(BetreeMetadataRecovery::next);
-                reveal(BetreeMetadataRecoveryCore::next);
             }
         }
     }
@@ -2576,8 +2428,6 @@ pub proof fn recover_metadata_refines(
             target_lbl,
             new_recovery,
         )) by {
-        reveal(CrashAwareCachingDiskBranchBetree::State::
-            recover_metadata);
     }
     assert(CrashAwareCachingDiskBranchBetree::State::next_by(
         src,
@@ -2591,8 +2441,6 @@ pub proof fn recover_metadata_refines(
     reveal(CrashAwareCachingDiskBranchBetree::State::next);
     src.next_refines(dst, target_lbl);
 
-    reveal(UnifiedCacheBranchBetreeSource::control_wf);
-    reveal(UnifiedCacheBranchBetreeSource::inv);
     assert(post.control_wf());
     assert(post.i().refinement_inv());
     assert(post.inv());
@@ -2627,18 +2475,6 @@ pub proof fn persistent_image_witness_aus_match_from_disk(
 
     image.recovery_witness_valid();
     recovery_witness_branch_facts(image);
-    reveal(crate::implementation::
-        CrashAwareCachingDiskBranchBetreeRefinement_v::
-            RecoveredCachingDiskBranchBetreeMetadata::valid_for);
-    reveal(crate::implementation::
-        CachingDiskBranchBetreeRefinement_v::
-            initial_refinement_witness_valid);
-    reveal(crate::allocation_layer::
-        AllocationBranchBetree_v::
-            AllocationBranchBetree::State::initialize);
-    reveal(crate::implementation::
-        CachingDiskBranchBetreeRefinement_v::
-            tight_betree_candidate);
     let image_tree_entries =
         to_betree_nodes(image.disk().visible());
     let bounded_witness_entries =
@@ -2798,8 +2634,6 @@ pub proof fn persistent_image_witness_aus_match_from_disk(
                         assert(witness_buffer.entries[aux]
                             == source_buffer.entries[aux]);
                     }
-                    reveal(crate::betree::LinkedBranch_v::
-                        LinkedBranch::get_summary);
                     assert(witness_branch.get_summary()
                         == source_branch.get_summary());
                 }
@@ -2825,8 +2659,6 @@ pub proof fn persistent_image_witness_aus_match_from_disk(
             }
         );
     }
-    reveal(UnifiedCacheBranchBetreeSource::
-        canonical_persistent_aus_i);
 }
 
 pub proof fn persistent_image_witness_aus_match(
@@ -2888,9 +2720,6 @@ pub proof fn post_crash_reconstructs_persistent_image(
         post,
         image,
     );
-    reveal(CachingDiskBranchBetreeImage::load);
-    reveal(CachingDiskBranchBetreeImage::cached_betree);
-    reveal(CachedBranchBetree::State::durable_aus);
     assert(durable_aus
         == witness.betree_aus.dom()
             + witness.branch_aus.dom()
@@ -2898,11 +2727,7 @@ pub proof fn post_crash_reconstructs_persistent_image(
     assert(post.canonical_persistent_aus_i()
         == durable_aus);
 
-    reveal(UnifiedCacheBranchBetreeSource::
-        persistent_branch_image_i);
     assert(post.persistent_branch_image_i() == image);
-    reveal(UnifiedCacheBranchBetreeSource::
-        branch_projection_aus);
     assert(post.branch_projection_aus() == durable_aus);
     assert(project_persistent(post.disk, durable_aus)
         == image.persistent);
@@ -2948,9 +2773,6 @@ pub proof fn post_crash_reconstructs_persistent_image(
             }
         );
     }
-    reveal(UnifiedCacheBranchBetreeSource::
-        branch_caching_disk_i);
-    reveal(CachingDiskBranchBetreeImage::disk);
     assert(post.branch_caching_disk_i() == image.disk());
     assert(post.branch_caching_disk_i().inv());
 }
@@ -3004,25 +2826,17 @@ pub proof fn load_metadata_refines(
         };
     let witness = image.recovery_witness();
 
-    reveal(UnifiedCacheBranchBetreeSource::ephemeral_branch_i);
-    reveal(BetreeMetadataRecovery::from_core);
     assert(src.ephemeral is Loading);
     assert(recovery.core() == pre.control.recovery) by {
-        reveal(BetreeMetadataRecovery::core);
     }
     assert(recovery.refinement_inv(image));
     assert(recovery.complete()) by {
-        reveal(BetreeMetadataRecovery::complete);
-        reveal(BetreeMetadataRecoveryCore::complete);
     }
     recovery_core_loaded_betree_matches(recovery, image);
     recovery_complete_metadata_matches_image(recovery, image);
     persistent_image_witness_aus_match(pre);
     assert(recovered == witness);
 
-    reveal(BetreeMetadataRecovery::loaded_state);
-    reveal(CachingDiskBranchBetreeImage::cached_betree);
-    reveal(BetreeMetadataRecoveryCore::loaded_betree);
     assert(post.branch == recovery.loaded_state(image).betree);
     assert(post.branch.betree_aus == witness.betree_aus);
     assert(post.branch.branch_aus == witness.branch_aus);
@@ -3032,17 +2846,9 @@ pub proof fn load_metadata_refines(
     assert(post.branch.wip_branches.len() == 0);
     assert(post.branch.owned_aus()
         == post.branch.durable_aus()) by {
-        reveal(crate::implementation::CachedBranchBetree_v::
-            CachedBranchBetree::State::owned_aus);
-        reveal(crate::implementation::CachedBranchBetree_v::
-            CachedBranchBetree::State::durable_aus);
-        reveal(crate::implementation::CachedBranchBetree_v::
-            cached_branch_alloc_aus);
     }
     assert(post.branch.durable_aus()
         == pre.canonical_persistent_aus_i()) by {
-        reveal(crate::implementation::CachedBranchBetree_v::
-            CachedBranchBetree::State::durable_aus);
     }
     assert(pre.control.frozen is None);
     assert(post.control.frozen is None);
@@ -3070,8 +2876,6 @@ pub proof fn load_metadata_refines(
             dst,
             CrashAwareCachingDiskBranchBetree::Label::LoadMetadata,
         )) by {
-        reveal(CrashAwareCachingDiskBranchBetree::State::
-            load_metadata);
     }
     assert(CrashAwareCachingDiskBranchBetree::State::next_by(
         src,
@@ -3087,8 +2891,6 @@ pub proof fn load_metadata_refines(
         CrashAwareCachingDiskBranchBetree::Label::LoadMetadata,
     );
 
-    reveal(UnifiedCacheBranchBetreeSource::control_wf);
-    reveal(UnifiedCacheBranchBetreeSource::inv);
     assert(post.control_wf());
     assert(post.i().refinement_inv());
     assert(post.inv());
@@ -3194,7 +2996,6 @@ proof fn cache_access_drop_reads(
         source_lbl,
         Cache::Step::access(),
     ));
-    reveal(Cache::State::access);
     assert(Cache::State::access(pre, post, source_lbl));
     assert(Cache::State::access(pre, post, target_lbl));
     assert(Cache::State::next_by(
@@ -3242,7 +3043,6 @@ proof fn cache_access_subreads(
         source_lbl,
         Cache::Step::access(),
     ));
-    reveal(Cache::State::access);
     assert(Cache::State::access(pre, post, source_lbl));
     assert forall |addr: Address|
         #[trigger] kept_reads.contains_key(addr)
@@ -3309,8 +3109,6 @@ proof fn betree_receipt_needed_addr_in_projection(
     let root_reads =
         access.betree_reads.restrict(set![root]);
 
-    reveal(UnifiedCacheBranchBetreeSource::
-        ephemeral_branch_i);
     assert(src.i().ephemeral is Known);
     assert(component.refinement_inv());
     assert(component.i().inv());
@@ -3323,9 +3121,6 @@ proof fn betree_receipt_needed_addr_in_projection(
     assert(linked.dv.entries.contains_key(root));
     assert(component.betree.betree_aus.dom()
         .contains(root.au));
-    reveal(UnifiedCacheBranchBetreeSource::
-        branch_projection_aus);
-    reveal(CachedBranchBetree::State::owned_aus);
     assert(src.branch_projection_aus()
         .contains(root.au));
     assert(addresses_in_aus(
@@ -3364,14 +3159,6 @@ proof fn betree_receipt_needed_addr_in_projection(
         root_reads,
     );
     assert(root_reads <= component.disk.cache) by {
-        reveal(UnifiedCacheBranchBetreeSource::
-            branch_caching_disk_i);
-        reveal(UnifiedCacheBranchBetreeSource::
-            known_branch_i);
-        reveal(crate::implementation::
-            CachingDiskAdapterRefinement_v::
-                project_cache_pages_by_addrs);
-        reveal(project_cache_pages);
     }
     assert(to_betree_nodes(
         component.disk.visible(),
@@ -3495,8 +3282,6 @@ proof fn project_betree_path_reads(
     let tight_reads =
         access.betree_reads.restrict(owned_addrs);
 
-    reveal(UnifiedCacheBranchBetreeSource::
-        ephemeral_branch_i);
     assert(src.i().ephemeral is Known);
     assert(component.refinement_inv());
     component.linked_i_is_tight_candidate();
@@ -3521,8 +3306,6 @@ proof fn project_betree_path_reads(
                         )[addr]
                 }
             by {
-                reveal(CachingDiskBranchBetree::State::
-                    visible_betree_entries);
             }
         }
         vstd::map_lib::lemma_submap_of_trans(
@@ -3552,14 +3335,6 @@ proof fn project_betree_path_reads(
         tight_reads,
     );
     assert(tight_reads <= component.disk.cache) by {
-        reveal(UnifiedCacheBranchBetreeSource::
-            branch_caching_disk_i);
-        reveal(UnifiedCacheBranchBetreeSource::
-            known_branch_i);
-        reveal(crate::implementation::
-            CachingDiskAdapterRefinement_v::
-                project_cache_pages_by_addrs);
-        reveal(project_cache_pages);
     }
     assert(path.valid_for(
         linked.root,
@@ -3724,9 +3499,6 @@ proof fn project_betree_path_with_child_reads(
     ));
     assert(component.betree.betree_aus.dom()
         .contains(child_addr.au));
-    reveal(UnifiedCacheBranchBetreeSource::
-        branch_projection_aus);
-    reveal(CachedBranchBetree::State::owned_aus);
     assert(src.branch_projection_aus()
         .contains(child_addr.au));
     assert(owned_addrs.contains(child_addr));
@@ -3768,14 +3540,6 @@ proof fn project_betree_path_with_child_reads(
         required,
     );
     assert(required <= component.disk.cache) by {
-        reveal(UnifiedCacheBranchBetreeSource::
-            branch_caching_disk_i);
-        reveal(UnifiedCacheBranchBetreeSource::
-            known_branch_i);
-        reveal(crate::implementation::
-            CachingDiskAdapterRefinement_v::
-                project_cache_pages_by_addrs);
-        reveal(project_cache_pages);
     }
     assert(path.valid_for(
         linked.root,
@@ -3823,7 +3587,6 @@ proof fn finite_set_to_multiset_dom<A>(set: Set<A>)
         set.to_multiset().dom() == set,
     decreases set.len(),
 {
-    reveal(Set::to_multiset);
     if set.len() == 0 {
         set.lemma_len0_is_empty();
     } else {
@@ -3901,9 +3664,14 @@ proof fn split_owned_aus_effect(
         CachedBranchBetree::State::split(
             pre.branch,
             post_component.betree,
-            CachedBranchBetree::Label::InternalAlloc {
+            CachedBranchBetree::Label::InternalAllocAccess {
                 allocs,
                 deallocs,
+                access: CachedBranchBetreeAccess {
+                    betree_reads,
+                    betree_writes,
+                    ..CachedBranchBetreeAccess::empty()
+                },
             },
             path,
             request,
@@ -3917,8 +3685,6 @@ proof fn split_owned_aus_effect(
             == (pre.branch.owned_aus() + allocs) - deallocs,
         deallocs <= pre.branch.owned_aus(),
 {
-    reveal(CachedBranchBetree::State::split);
-    reveal(CachedBranchBetree::State::owned_aus);
     let discarded =
         path_discard_likes(path).insert(
             path.child_addr(request.get_child_idx()),
@@ -3931,7 +3697,6 @@ proof fn split_owned_aus_effect(
     let pre_owned = pre.branch.owned_aus();
     let post_owned = post_component.betree.owned_aus();
 
-    reveal(added_path_likes);
     path_addrs.to_multiset_ensures();
     assert(new_addrs.repr()
         == set![
@@ -3976,8 +3741,6 @@ proof fn split_owned_aus_effect(
 
     let pre_i = pre.known_branch_i().i();
     let post_i = post_component.i();
-    reveal(UnifiedCacheBranchBetreeSource::
-        ephemeral_branch_i);
     assert(pre.i().ephemeral is Known);
     assert(pre.known_branch_i().refinement_inv());
     assert(pre_i.inv());
@@ -4003,7 +3766,7 @@ proof fn split_owned_aus_effect(
     let sealed_aus =
         summary_aus(pre.branch.branch_summary);
     let wip_aus =
-        cached_branch_alloc_aus(pre.branch.wip_branches);
+        cached_bulk_branch_alloc_aus(pre.branch.wip_branches);
     assert(pre_owned
         == pre_betree_aus + sealed_aus + wip_aus) by {
         assert forall |au: AU|
@@ -4065,9 +3828,14 @@ proof fn flush_owned_aus_effect(
         CachedBranchBetree::State::flush(
             pre.branch,
             post_component.betree,
-            CachedBranchBetree::Label::InternalAlloc {
+            CachedBranchBetree::Label::InternalAllocAccess {
                 allocs,
                 deallocs,
+                access: CachedBranchBetreeAccess {
+                    betree_reads,
+                    betree_writes,
+                    ..CachedBranchBetreeAccess::empty()
+                },
             },
             path,
             child_idx,
@@ -4082,8 +3850,6 @@ proof fn flush_owned_aus_effect(
             == (pre.branch.owned_aus() + allocs) - deallocs,
         deallocs <= pre.branch.owned_aus(),
 {
-    reveal(CachedBranchBetree::State::flush);
-    reveal(CachedBranchBetree::State::owned_aus);
     let child_addr = path.child_addr(child_idx);
     let discarded =
         path_discard_likes(path).insert(child_addr);
@@ -4130,7 +3896,6 @@ proof fn flush_owned_aus_effect(
             post_component.betree.branch_summary,
         );
 
-    reveal(added_path_likes);
     path_addrs.to_multiset_ensures();
     assert(new_addrs.repr()
         == set![new_addrs.addr1, new_addrs.addr2]);
@@ -4167,8 +3932,6 @@ proof fn flush_owned_aus_effect(
     assert(deallocs
         == tree_deallocs + summary_deallocs);
 
-    reveal(UnifiedCacheBranchBetreeSource::
-        ephemeral_branch_i);
     assert(pre.i().ephemeral is Known);
     assert(pre.known_branch_i().refinement_inv());
     let pre_i = pre.known_branch_i().i();
@@ -4210,7 +3973,7 @@ proof fn flush_owned_aus_effect(
     let post_betree_aus =
         post_component.betree.betree_aus.dom();
     let wip_aus =
-        cached_branch_alloc_aus(pre.branch.wip_branches);
+        cached_bulk_branch_alloc_aus(pre.branch.wip_branches);
     let pre_owned = pre.branch.owned_aus();
     let post_owned = post_component.betree.owned_aus();
     assert(pre.branch.branch_aus.dom()
@@ -4282,24 +4045,23 @@ proof fn compact_abort_owned_aus_effect(
         CachedBranchBetree::State::compact_abort(
             pre.branch,
             post_component.betree,
-            CachedBranchBetree::Label::InternalAlloc {
+            CachedBranchBetree::Label::InternalAllocAccess {
                 allocs,
                 deallocs,
+                access: CachedBranchBetreeAccess::empty(),
             },
             input_idx,
         ),
     ensures
         post_component.betree.owned_aus()
             == pre.branch.owned_aus() - deallocs,
-        cached_branch_alloc_aus(
+        cached_bulk_branch_alloc_aus(
             post_component.betree.wip_branches,
-        ) == cached_branch_alloc_aus(
+        ) == cached_bulk_branch_alloc_aus(
             pre.branch.wip_branches,
         ) - deallocs,
         deallocs <= pre.branch.owned_aus(),
 {
-    reveal(CachedBranchBetree::State::compact_abort);
-    reveal(CachedBranchBetree::State::owned_aus);
     let new_compactors =
         pre.branch.compactors.remove(input_idx);
     let released =
@@ -4324,8 +4086,6 @@ proof fn compact_abort_owned_aus_effect(
             post_component.betree.branch_summary,
         );
 
-    reveal(UnifiedCacheBranchBetreeSource::
-        ephemeral_branch_i);
     assert(pre.i().ephemeral is Known);
     assert(pre.known_branch_i().refinement_inv());
     let pre_i = pre.known_branch_i().i();
@@ -4367,7 +4127,7 @@ proof fn compact_abort_owned_aus_effect(
 
     let betree_aus = pre.branch.betree_aus.dom();
     let wip_aus =
-        cached_branch_alloc_aus(pre.branch.wip_branches);
+        cached_bulk_branch_alloc_aus(pre.branch.wip_branches);
     let pre_owned = pre.branch.owned_aus();
     let post_owned = post_component.betree.owned_aus();
     assert(post_component.betree.betree_aus
@@ -4423,8 +4183,7 @@ proof fn flush_memtable_owned_aus_effect(
     betree_writes:
         Map<Address, crate::betree::LinkedBetree_v::BetreeNode>,
     branch_reads:
-        Map<Address, crate::allocation_layer::
-            AllocationBranch_v::BranchNode>,
+        Map<Address, crate::allocation_layer::BranchTypes_v::BranchNode>,
 )
     requires
         inv(pre),
@@ -4433,9 +4192,15 @@ proof fn flush_memtable_owned_aus_effect(
         CachedBranchBetree::State::flush_memtable(
             pre.branch,
             post_component.betree,
-            CachedBranchBetree::Label::InternalAlloc {
+            CachedBranchBetree::Label::InternalAllocAccess {
                 allocs,
                 deallocs,
+                access: CachedBranchBetreeAccess {
+                    betree_reads,
+                    branch_reads,
+                    betree_writes,
+                    branch_writes: Map::empty(),
+                },
             },
             branch_idx,
             new_root_addr,
@@ -4446,19 +4211,17 @@ proof fn flush_memtable_owned_aus_effect(
     ensures
         post_component.betree.owned_aus()
             == (pre.branch.owned_aus() + allocs) - deallocs,
-        cached_branch_alloc_aus(
+        cached_bulk_branch_alloc_aus(
             post_component.betree.wip_branches,
-        ) <= cached_branch_alloc_aus(
+        ) <= cached_bulk_branch_alloc_aus(
             pre.branch.wip_branches,
         ),
         deallocs <= pre.branch.owned_aus(),
 {
-    reveal(CachedBranchBetree::State::flush_memtable);
-    reveal(CachedBranchBetree::State::owned_aus);
     let cached_branch =
         pre.branch.wip_branches[branch_idx];
     let branch_root =
-        cached_branch.sealed_root().unwrap();
+        cached_branch.sealed_root();
     let branch_owned =
         cached_branch.mini_allocator.all_aus();
     let old_root_likes = if pre.branch.root is Some {
@@ -4490,8 +4253,6 @@ proof fn flush_memtable_owned_aus_effect(
         }
     }
 
-    reveal(UnifiedCacheBranchBetreeSource::
-        ephemeral_branch_i);
     assert(pre.i().ephemeral is Known);
     assert(pre.known_branch_i().refinement_inv());
     let pre_component = pre.known_branch_i();
@@ -4507,24 +4268,19 @@ proof fn flush_memtable_owned_aus_effect(
     assert(pre_i.wip_branches_disjoint());
     let model_branch =
         pre_i.wip_branches[branch_idx]
-            .branch.unwrap();
+            .sealed_branch();
     assert(pre_i.wip_branches[branch_idx]
         .mini_allocator
         == cached_branch.mini_allocator) by {
-        reveal(CachingDiskBranchBetree::State::
-            wip_branches_i);
-        reveal(CachingDiskBranchBetree::State::
-            wip_branch_i);
     }
-    crate::allocation_layer::AllocationBranch_v::
-        AllocationBranch::alloc_aus_ensures(
+    AllocationBulkBranch::alloc_aus_ensures(
             pre_i.wip_branches,
             branch_idx,
         );
     assert(branch_owned
         <= pre_i.branch_allocator_aus());
     assert(pre_i.wip_branches[branch_idx].inv());
-    assert(pre_i.wip_branches[branch_idx].sealed);
+    assert(pre_i.wip_branches[branch_idx].is_sealed());
     assert(model_branch.valid_sealed_branch());
     assert(model_branch.get_summary()
         == branch_owned);
@@ -4600,14 +4356,14 @@ proof fn flush_memtable_owned_aus_effect(
             == pre.branch.wip_branches[right]
                 .mini_allocator);
     }
-    cached_branch_alloc_aus_remove_exact(
+    cached_bulk_branch_alloc_aus_remove_exact(
         pre.branch.wip_branches,
         branch_idx,
     );
     let pre_wip_aus =
-        cached_branch_alloc_aus(pre.branch.wip_branches);
+        cached_bulk_branch_alloc_aus(pre.branch.wip_branches);
     let post_wip_aus =
-        cached_branch_alloc_aus(
+        cached_bulk_branch_alloc_aus(
             post_component.betree.wip_branches,
         );
     assert(post_component.betree.wip_branches
@@ -4694,9 +4450,6 @@ proof fn compact_complete_owned_aus_effect(
         Map<Address, crate::betree::LinkedBetree_v::BetreeNode>,
     betree_writes:
         Map<Address, crate::betree::LinkedBetree_v::BetreeNode>,
-    branch_reads:
-        Map<Address, crate::allocation_layer::
-            AllocationBranch_v::BranchNode>,
 )
     requires
         inv(pre),
@@ -4705,9 +4458,14 @@ proof fn compact_complete_owned_aus_effect(
         CachedBranchBetree::State::compact_complete(
             pre.branch,
             post_component.betree,
-            CachedBranchBetree::Label::InternalAlloc {
+            CachedBranchBetree::Label::InternalAllocAccess {
                 allocs,
                 deallocs,
+                access: CachedBranchBetreeAccess {
+                    betree_reads,
+                    betree_writes,
+                    ..CachedBranchBetreeAccess::empty()
+                },
             },
             input_idx,
             branch_idx,
@@ -4718,25 +4476,22 @@ proof fn compact_complete_owned_aus_effect(
             path_addrs,
             betree_reads,
             betree_writes,
-            branch_reads,
         ),
     ensures
         post_component.betree.owned_aus()
             == (pre.branch.owned_aus() + allocs)
                 - deallocs,
-        cached_branch_alloc_aus(
+        cached_bulk_branch_alloc_aus(
             post_component.betree.wip_branches,
-        ) <= cached_branch_alloc_aus(
+        ) <= cached_bulk_branch_alloc_aus(
             pre.branch.wip_branches,
         ),
         deallocs <= pre.branch.owned_aus(),
 {
-    reveal(CachedBranchBetree::State::compact_complete);
-    reveal(CachedBranchBetree::State::owned_aus);
     let cached_branch =
         pre.branch.wip_branches[branch_idx];
     let branch_root =
-        cached_branch.sealed_root().unwrap();
+        cached_branch.sealed_root();
     let branch_owned =
         cached_branch.mini_allocator.all_aus();
     let new_compactors =
@@ -4818,8 +4573,6 @@ proof fn compact_complete_owned_aus_effect(
     assert(deallocs
         == tree_deallocs + summary_deallocs);
 
-    reveal(UnifiedCacheBranchBetreeSource::
-        ephemeral_branch_i);
     assert(pre.i().ephemeral is Known);
     let pre_component = pre.known_branch_i();
     assert(pre_component.refinement_inv());
@@ -4835,22 +4588,17 @@ proof fn compact_complete_owned_aus_effect(
     assert(pre_i.wip_branches_disjoint());
     let model_branch =
         pre_i.wip_branches[branch_idx]
-            .branch.unwrap();
+            .sealed_branch();
     assert(pre_i.wip_branches[branch_idx]
         .mini_allocator == cached_branch.mini_allocator)
     by {
-        reveal(CachingDiskBranchBetree::State::
-            wip_branches_i);
-        reveal(CachingDiskBranchBetree::State::
-            wip_branch_i);
     }
-    crate::allocation_layer::AllocationBranch_v::
-        AllocationBranch::alloc_aus_ensures(
+    AllocationBulkBranch::alloc_aus_ensures(
             pre_i.wip_branches,
             branch_idx,
         );
     assert(pre_i.wip_branches[branch_idx].inv());
-    assert(pre_i.wip_branches[branch_idx].sealed);
+    assert(pre_i.wip_branches[branch_idx].is_sealed());
     assert(model_branch.valid_sealed_branch());
     assert(model_branch.root == branch_root);
     assert(model_branch.get_summary() == branch_owned);
@@ -4951,14 +4699,14 @@ proof fn compact_complete_owned_aus_effect(
             == pre.branch.wip_branches[right]
                 .mini_allocator);
     }
-    cached_branch_alloc_aus_remove_exact(
+    cached_bulk_branch_alloc_aus_remove_exact(
         pre.branch.wip_branches,
         branch_idx,
     );
     let pre_wip_aus =
-        cached_branch_alloc_aus(pre.branch.wip_branches);
+        cached_bulk_branch_alloc_aus(pre.branch.wip_branches);
     let post_wip_aus =
-        cached_branch_alloc_aus(
+        cached_bulk_branch_alloc_aus(
             post_component.betree.wip_branches,
         );
     assert(post_component.betree.wip_branches
@@ -5009,7 +4757,6 @@ proof fn compact_complete_owned_aus_effect(
         <= pre_betree_aus + pre_summary_aus);
     assert(deallocs <= pre_owned);
     assert(pre_owned.disjoint(allocs)) by {
-        reveal(CachedBranchBetree::State::is_fresh);
     }
     assert(deallocs.disjoint(allocs));
     assert(post_betree_aus
@@ -5095,7 +4842,7 @@ proof fn branch_build_owned_aus_effect(
     allocs: Set<AU>,
     deallocs: Set<AU>,
     idx: int,
-    post_branch: CachedAllocationBranch,
+    post_branch: CachedBulkBranch,
     event: BranchBuildEvent,
     access: PageAccess,
 )
@@ -5106,9 +4853,10 @@ proof fn branch_build_owned_aus_effect(
         CachedBranchBetree::State::branch_build(
             pre.branch,
             post_component.betree,
-            CachedBranchBetree::Label::InternalAlloc {
+            CachedBranchBetree::Label::InternalAllocAccess {
                 allocs,
                 deallocs,
+                access: access.cached_access(),
             },
             idx,
             post_branch,
@@ -5117,29 +4865,21 @@ proof fn branch_build_owned_aus_effect(
     ensures
         post_component.betree.owned_aus()
             == pre.branch.owned_aus() - deallocs,
-        cached_branch_alloc_aus(
+        cached_bulk_branch_alloc_aus(
             post_component.betree.wip_branches,
-        ) == cached_branch_alloc_aus(
+        ) == cached_bulk_branch_alloc_aus(
             pre.branch.wip_branches,
         ) - deallocs,
         deallocs <= pre.branch.owned_aus(),
 {
-    reveal(CachedBranchBetree::State::branch_build);
-    reveal(CachedBranchBetree::State::owned_aus);
     let pre_target = pre.branch.wip_branches[idx];
     let cached_event = event.cached_event(access);
     assert(allocs.is_empty()) by {
-        reveal(CachedAllocationBranch::build_next);
         match event {
-            BranchBuildEvent::Append{..} => {}
-            BranchBuildEvent::Initialize{..} => {}
-            BranchBuildEvent::Grow{..} => {}
-            BranchBuildEvent::Split{..} => {}
-            BranchBuildEvent::Seal{..} => {}
+            BranchBuildEvent::StagePage{..} => {}
+            BranchBuildEvent::BulkSeal{..} => {}
         }
     }
-    reveal(UnifiedCacheBranchBetreeSource::
-        ephemeral_branch_i);
     assert(pre.i().ephemeral is Known);
     assert(pre.known_branch_i().refinement_inv());
     let early_pre_i = pre.known_branch_i().i();
@@ -5147,13 +4887,10 @@ proof fn branch_build_owned_aus_effect(
     assert(early_pre_i.wip_branches_inv());
     assert(early_pre_i.wip_branches[idx]
         .mini_allocator == pre_target.mini_allocator) by {
-        reveal(CachingDiskBranchBetree::State::
-            wip_branches_i);
-        reveal(CachingDiskBranchBetree::State::
-            wip_branch_i);
     }
     assert(pre_target.mini_allocator.wf());
-    cached_allocation_branch_build_all_aus_subset(
+    crate::implementation::CachedBulkBranch_v::
+        cached_bulk_branch_build_all_aus(
         pre_target,
         post_branch,
         cached_event,
@@ -5165,23 +4902,38 @@ proof fn branch_build_owned_aus_effect(
             - deallocs);
     assert(deallocs
         <= pre_target.mini_allocator.all_aus()) by {
-        reveal(CachedAllocationBranch::build_next);
         match event {
-            BranchBuildEvent::Seal{..} => {
-                assert(deallocs
-                    == pre_target.mini_allocator
-                        .removable_aus());
+            BranchBuildEvent::BulkSeal{root, aux_ptr} => {
+                let with_root = pre_target.mini_allocator.allocate(root);
+                let allocator = if aux_ptr is Some {
+                    with_root.allocate(aux_ptr.unwrap())
+                } else {
+                    with_root
+                };
+                assert(allocator == pre_target.bulk_allocator(
+                    root,
+                    aux_ptr,
+                ));
+                assert(deallocs == allocator.removable_aus());
+                crate::implementation::BranchProofUtils_v::
+                    mini_allocator_allocate_preserves_all_aus(
+                        pre_target.mini_allocator,
+                        root,
+                    );
+                if aux_ptr is Some {
+                    crate::implementation::BranchProofUtils_v::
+                        mini_allocator_allocate_preserves_all_aus(
+                            with_root,
+                            aux_ptr.unwrap(),
+                        );
+                }
+                assert(allocator.all_aus()
+                    == pre_target.mini_allocator.all_aus());
                 assert forall |au: AU|
                     #[trigger] deallocs.contains(au)
                     implies pre_target.mini_allocator
                         .all_aus().contains(au)
                 by {
-                    reveal(crate::allocation_layer::
-                        MiniAllocator_v::MiniAllocator::
-                            removable_aus);
-                    reveal(crate::allocation_layer::
-                        MiniAllocator_v::MiniAllocator::
-                            can_remove);
                 }
             }
             _ => {
@@ -5210,31 +4962,23 @@ proof fn branch_build_owned_aus_effect(
             .mini_allocator
             == pre.branch.wip_branches[left]
                 .mini_allocator) by {
-            reveal(CachingDiskBranchBetree::State::
-                wip_branches_i);
-            reveal(CachingDiskBranchBetree::State::
-                wip_branch_i);
         }
         assert(pre_i.wip_branches[right]
             .mini_allocator
             == pre.branch.wip_branches[right]
                 .mini_allocator) by {
-            reveal(CachingDiskBranchBetree::State::
-                wip_branches_i);
-            reveal(CachingDiskBranchBetree::State::
-                wip_branch_i);
         }
     }
-    cached_branch_alloc_aus_update_remove_exact(
+    cached_bulk_branch_alloc_aus_update_remove_exact(
         pre.branch.wip_branches,
         idx,
         post_branch,
         deallocs,
     );
     let pre_wip_aus =
-        cached_branch_alloc_aus(pre.branch.wip_branches);
+        cached_bulk_branch_alloc_aus(pre.branch.wip_branches);
     let post_wip_aus =
-        cached_branch_alloc_aus(
+        cached_bulk_branch_alloc_aus(
             post_component.betree.wip_branches,
         );
     assert(post_component.betree.wip_branches
@@ -5287,19 +5031,13 @@ proof fn branch_build_owned_aus_effect(
             <= pre_wip_aus) by {
             assert(pre_i.branch_allocator_aus()
                 == pre_wip_aus);
-            crate::allocation_layer::
-                AllocationBranch_v::AllocationBranch::
-                    alloc_aus_ensures(
-                        pre_i.wip_branches,
-                        idx,
-                    );
+            AllocationBulkBranch::alloc_aus_ensures(
+                pre_i.wip_branches,
+                idx,
+            );
             assert(pre_i.wip_branches[idx]
                 .mini_allocator
                 == pre_target.mini_allocator) by {
-                reveal(CachingDiskBranchBetree::State::
-                    wip_branches_i);
-                reveal(CachingDiskBranchBetree::State::
-                    wip_branch_i);
             }
         }
     }
@@ -5323,11 +5061,10 @@ proof fn reclaimable_deallocs_subset_branch_projection(
         pre.control.reclaimable(deallocs)
             <= pre.branch_projection_aus(),
 {
-    reveal(AtomicBranchBetreeControl::reclaimable);
-    reveal(UnifiedCacheBranchBetreeSource::
-    branch_projection_aus);
 }
 
+/* Preserved with the mutable WIP proof path. Bulk-only construction never
+ * follows an in-progress branch path; it stages completed pages by address.
 proof fn wip_branch_addr_wf(
     allocation: AllocationBranch,
     addr: Address,
@@ -5336,21 +5073,19 @@ proof fn wip_branch_addr_wf(
         allocation.inv(),
         allocation.branch is Some,
         !allocation.sealed,
-        allocation.branch.unwrap().disk_view.entries
+        allocation.sealed_branch().disk_view.entries
             .contains_key(addr),
     ensures
         addr.wf(),
 {
-    reveal(AllocationBranch::inv);
     assert(allocation.addrs_closed_under_mini_allocator());
     assert(allocation.mini_allocator.page_is_allocated(addr));
-    reveal(crate::allocation_layer::MiniAllocator_v::
-        MiniAllocator::page_is_allocated);
     assert(allocation.mini_allocator.wf());
     assert(allocation.mini_allocator.allocs
         .contains_key(addr.au));
     assert(allocation.mini_allocator.allocs[addr.au].wf());
 }
+*/
 
 proof fn linked_branch_child_inv_internal(
     branch: LinkedBranch<Summary>,
@@ -5427,8 +5162,6 @@ proof fn branch_receipt_needed_addr_in_projection_internal(
     let root_reads =
         access.branch_reads.restrict(set![root]);
 
-    reveal(UnifiedCacheBranchBetreeSource::
-        ephemeral_branch_i);
     assert(src.i().ephemeral is Known);
     assert(component.refinement_inv());
     assert(component.i().inv());
@@ -5441,9 +5174,6 @@ proof fn branch_receipt_needed_addr_in_projection_internal(
     assert(branch.disk_view.entries.contains_key(root));
     assert(summary_aus(component.betree.branch_summary)
         .contains(root.au));
-    reveal(UnifiedCacheBranchBetreeSource::
-        branch_projection_aus);
-    reveal(CachedBranchBetree::State::owned_aus);
     assert(src.branch_projection_aus()
         .contains(root.au));
     assert(addresses_in_aus(
@@ -5482,14 +5212,6 @@ proof fn branch_receipt_needed_addr_in_projection_internal(
         root_reads,
     );
     assert(root_reads <= component.disk.cache) by {
-        reveal(UnifiedCacheBranchBetreeSource::
-            branch_caching_disk_i);
-        reveal(UnifiedCacheBranchBetreeSource::
-            known_branch_i);
-        reveal(crate::implementation::
-            CachingDiskAdapterRefinement_v::
-                project_cache_pages_by_addrs);
-        reveal(project_cache_pages);
     }
     assert(to_branch_nodes(
         component.disk.visible(),
@@ -5615,6 +5337,8 @@ proof fn branch_receipt_needed_addr_in_projection(
     );
 }
 
+/* Preserved with the mutable WIP proof path. The streaming bulk builder has
+ * no executable path receipt and therefore does not use these lemmas.
 proof fn wip_receipt_needed_addr_in_projection_internal(
     src: UnifiedCacheBranchBetreeSource,
     post_cache: Cache::State,
@@ -5649,7 +5373,7 @@ proof fn wip_receipt_needed_addr_in_projection_internal(
         allocation.inv(),
         !allocation.sealed,
         allocation.branch is Some,
-        full_branch == allocation.branch.unwrap(),
+        full_branch == allocation.sealed_branch(),
         branch.disk_view == full_branch.disk_view,
         branch.inv_internal(ranking),
         receipt.valid_for(
@@ -5681,24 +5405,14 @@ proof fn wip_receipt_needed_addr_in_projection_internal(
         .contains(root.au));
     assert(allocation.mini_allocator
         == cached.mini_allocator) by {
-        reveal(CachingDiskBranchBetree::State::
-            wip_branch_i);
     }
-    reveal(UnifiedCacheBranchBetreeSource::
-        branch_projection_aus);
-    reveal(CachedBranchBetree::State::owned_aus);
     component.wip_alloc_aus_agree();
-    crate::allocation_layer::AllocationBranch_v::
-        AllocationBranch::alloc_aus_ensures(
+    AllocationBulkBranch::alloc_aus_ensures(
             component.i().wip_branches,
             branch_idx,
         );
     assert(component.i().wip_branches[branch_idx]
         .mini_allocator == cached.mini_allocator) by {
-        reveal(CachingDiskBranchBetree::State::
-            wip_branches_i);
-        reveal(CachingDiskBranchBetree::State::
-            wip_branch_i);
     }
     assert(src.branch_projection_aus()
         .contains(root.au));
@@ -5737,19 +5451,9 @@ proof fn wip_receipt_needed_addr_in_projection_internal(
         root_reads,
     );
     assert(root_reads <= component.disk.cache) by {
-        reveal(UnifiedCacheBranchBetreeSource::
-            branch_caching_disk_i);
-        reveal(UnifiedCacheBranchBetreeSource::
-            known_branch_i);
-        reveal(crate::implementation::
-            CachingDiskAdapterRefinement_v::
-                project_cache_pages_by_addrs);
-        reveal(project_cache_pages);
     }
     assert(branch.disk_view.entries
         <= to_branch_nodes(component.disk.visible())) by {
-        reveal(CachingDiskBranchBetree::State::
-            wip_branch_i);
         assert forall |node_addr: Address|
             #[trigger] branch.disk_view.entries
                 .contains_key(node_addr)
@@ -5879,7 +5583,7 @@ proof fn wip_receipt_needed_addr_in_projection(
         receipt.valid_for(
             src.known_branch_i()
                 .wip_branch_i(branch_idx)
-                .branch.unwrap().root,
+                .sealed_branch().root,
             to_branch_nodes(access.branch_reads),
         ),
         receipt.needed_addrs().contains(addr),
@@ -5889,16 +5593,16 @@ proof fn wip_receipt_needed_addr_in_projection(
         ).contains(addr),
         src.known_branch_i()
             .wip_branch_i(branch_idx)
-            .branch.unwrap().disk_view.entries
+            .sealed_branch().disk_view.entries
             .contains_key(addr),
         src.known_branch_i()
             .wip_branch_i(branch_idx)
-            .branch.unwrap().disk_view.entries[addr]
+            .sealed_branch().disk_view.entries[addr]
             == to_branch_nodes(access.branch_reads)[addr],
 {
     let allocation =
         src.known_branch_i().wip_branch_i(branch_idx);
-    let branch = allocation.branch.unwrap();
+    let branch = allocation.sealed_branch();
     wip_receipt_needed_addr_in_projection_internal(
         src,
         post_cache,
@@ -5942,7 +5646,7 @@ proof fn wip_receipt_valid_on_projection(
         receipt.valid_for(
             src.known_branch_i()
                 .wip_branch_i(branch_idx)
-                .branch.unwrap().root,
+                .sealed_branch().root,
             to_branch_nodes(access.branch_reads),
         ),
     ensures ({
@@ -5955,7 +5659,7 @@ proof fn wip_receipt_valid_on_projection(
         receipt.valid_for(
             src.known_branch_i()
                 .wip_branch_i(branch_idx)
-                .branch.unwrap().root,
+                .sealed_branch().root,
             to_branch_nodes(tight_reads),
         )
     }),
@@ -6035,25 +5739,23 @@ proof fn wip_root_in_projection(
             src.known_branch_i().wip_branch_i(branch_idx);
         addresses_in_aus(
             src.branch_projection_aus(),
-        ).contains(allocation.branch.unwrap().root)
+        ).contains(allocation.sealed_branch().root)
     }),
 {
     let component = src.known_branch_i();
     let allocation = component.wip_branch_i(branch_idx);
     let cached = src.branch.wip_branches[branch_idx];
-    let root = allocation.branch.unwrap().root;
+    let root = allocation.sealed_branch().root;
     assert(allocation.mini_allocator
         == cached.mini_allocator) by {
-        reveal(CachingDiskBranchBetree::State::
-            wip_branch_i);
     }
-    assert(allocation.branch.unwrap().disk_view.entries
+    assert(allocation.sealed_branch().disk_view.entries
         .contains_key(root));
     if allocation.sealed {
-        assert(allocation.branch.unwrap()
+        assert(allocation.sealed_branch()
             .get_summary()
             == allocation.mini_allocator.all_aus());
-        assert(allocation.branch.unwrap()
+        assert(allocation.sealed_branch()
             .get_summary().contains(root.au));
     } else {
         assert(allocation.addrs_closed_under_mini_allocator());
@@ -6063,24 +5765,21 @@ proof fn wip_root_in_projection(
             .contains(root.au));
     }
     component.wip_alloc_aus_agree();
-    crate::allocation_layer::AllocationBranch_v::
-        AllocationBranch::alloc_aus_ensures(
+    AllocationBulkBranch::alloc_aus_ensures(
             component.i().wip_branches,
             branch_idx,
         );
     assert(component.i().wip_branches[branch_idx]
         .mini_allocator == cached.mini_allocator) by {
-        reveal(CachingDiskBranchBetree::State::
-            wip_branches_i);
-        reveal(CachingDiskBranchBetree::State::
-            wip_branch_i);
+
+
     }
-    reveal(UnifiedCacheBranchBetreeSource::
-        branch_projection_aus);
-    reveal(CachedBranchBetree::State::owned_aus);
+
+
     assert(src.branch_projection_aus()
         .contains(root.au));
 }
+*/
 
 pub open spec fn projected_branch_build_access(
     src: UnifiedCacheBranchBetreeSource,
@@ -6096,10 +5795,84 @@ pub open spec fn projected_branch_build_access(
     }
 }
 
+pub open spec fn projected_flush_memtable_access(
+    src: UnifiedCacheBranchBetreeSource,
+    branch_idx: int,
+    access: PageAccess,
+) -> PageAccess {
+    let old_root_addrs = if src.branch.root is Some {
+        set![src.branch.root.unwrap()]
+    } else {
+        Set::empty()
+    };
+    let branch_owned = src.branch.wip_branches[branch_idx]
+        .mini_allocator.all_aus();
+    PageAccess {
+        betree_reads: access.betree_reads.restrict(old_root_addrs),
+        branch_reads: access.branch_reads.restrict(
+            addresses_in_aus(branch_owned),
+        ),
+        betree_writes: access.betree_writes,
+        branch_writes: Map::empty(),
+    }
+}
+
+pub open spec fn projected_grow_access(access: PageAccess) -> PageAccess {
+    PageAccess {
+        betree_reads: Map::empty(),
+        branch_reads: Map::empty(),
+        betree_writes: access.betree_writes,
+        branch_writes: Map::empty(),
+    }
+}
+
+pub open spec fn projected_path_access(
+    path: LoadedBetreePath,
+    child_idx: nat,
+    access: PageAccess,
+) -> PageAccess {
+    PageAccess {
+        betree_reads: access.betree_reads.restrict(
+            betree_path_with_child_addrs(path, child_idx),
+        ),
+        branch_reads: Map::empty(),
+        betree_writes: access.betree_writes,
+        branch_writes: Map::empty(),
+    }
+}
+
+pub open spec fn projected_compact_begin_access(
+    src: UnifiedCacheBranchBetreeSource,
+    access: PageAccess,
+) -> PageAccess {
+    PageAccess {
+        betree_reads: access.betree_reads.restrict(
+            addresses_in_aus(src.branch_projection_aus()),
+        ),
+        branch_reads: Map::empty(),
+        betree_writes: Map::empty(),
+        branch_writes: Map::empty(),
+    }
+}
+
+pub open spec fn projected_compact_scan_access(
+    src: UnifiedCacheBranchBetreeSource,
+    access: PageAccess,
+) -> PageAccess {
+    PageAccess {
+        betree_reads: Map::empty(),
+        branch_reads: access.branch_reads.restrict(
+            addresses_in_aus(src.branch_projection_aus()),
+        ),
+        betree_writes: Map::empty(),
+        branch_writes: Map::empty(),
+    }
+}
+
 pub open spec fn branch_with_updated_wip(
     branch: CachedBranchBetree::State,
     idx: int,
-    post_branch: CachedAllocationBranch,
+    post_branch: CachedBulkBranch,
 ) -> CachedBranchBetree::State {
     CachedBranchBetree::State {
         wip_branches: branch.wip_branches.update(
@@ -6119,8 +5892,7 @@ pub open spec fn projected_compact_complete_access(
     PageAccess {
         betree_reads:
             access.betree_reads.restrict(owned_addrs),
-        branch_reads:
-            access.branch_reads.restrict(owned_addrs),
+        branch_reads: Map::empty(),
         betree_writes: access.betree_writes,
         branch_writes: access.branch_writes,
     }
@@ -6137,10 +5909,6 @@ proof fn branch_only_write_domains(access: PageAccess)
         access.writes().dom(),
         access.loaded_branch_writes().dom(),
         addr => {
-            reveal(PageAccess::writes);
-            reveal(PageAccess::only_branch);
-            reveal(PageAccess::loaded_branch_writes);
-            reveal(to_branch_nodes);
         }
     );
 }
@@ -6176,9 +5944,10 @@ proof fn compact_complete_access_on_projection(
         CachedBranchBetree::State::compact_complete(
             pre.branch,
             post_branch,
-            CachedBranchBetree::Label::InternalAlloc {
+            CachedBranchBetree::Label::InternalAllocAccess {
                 allocs,
                 deallocs,
+                access: access.cached_access(),
             },
             input_idx,
             branch_idx,
@@ -6189,7 +5958,6 @@ proof fn compact_complete_access_on_projection(
             path_addrs,
             access.loaded_betree_reads(),
             access.loaded_betree_writes(),
-            access.loaded_branch_reads(),
         ),
     ensures ({
         let tight =
@@ -6211,9 +5979,10 @@ proof fn compact_complete_access_on_projection(
         &&& CachedBranchBetree::State::compact_complete(
             pre.branch,
             post_branch,
-            CachedBranchBetree::Label::InternalAlloc {
+            CachedBranchBetree::Label::InternalAllocAccess {
                 allocs,
                 deallocs,
+                access: tight.cached_access(),
             },
             input_idx,
             branch_idx,
@@ -6224,7 +5993,6 @@ proof fn compact_complete_access_on_projection(
             path_addrs,
             tight.loaded_betree_reads(),
             tight.loaded_betree_writes(),
-            tight.loaded_branch_reads(),
         )
     }),
 {
@@ -6236,72 +6004,11 @@ proof fn compact_complete_access_on_projection(
         projected_compact_complete_access(pre, access);
     let tight_betree_reads =
         access.betree_reads.restrict(owned_addrs);
-    let tight_branch_reads =
-        access.branch_reads.restrict(owned_addrs);
-    let full_branch_reads =
-        access.loaded_branch_reads();
-    let tight_loaded_branch_reads =
-        tight.loaded_branch_reads();
-
-    reveal(CachedBranchBetree::State::compact_complete);
-    assert(0 <= input_idx
-        < pre.branch.compactors.len());
-    assert(0 <= branch_idx
-        < pre.branch.wip_branches.len());
-    let cached_branch =
-        pre.branch.wip_branches[branch_idx];
-    assert(cached_branch.sealed);
-    assert(cached_branch.sealed_root() is Some);
-    let branch_root =
-        cached_branch.sealed_root().unwrap();
-    let branch_owned =
-        cached_branch.mini_allocator.all_aus();
-    let input_roots =
-        pre.branch.compactors[input_idx]
-            .input_buffers.addrs.to_set();
-    let input_aus =
-        summary_aus(
-            pre.branch.branch_summary.restrict(
-                to_aus(input_roots),
-            ),
-        );
-    let full_input_reads =
-        loaded_branch_reads_for_roots(
-            input_roots,
-            pre.branch.branch_summary,
-            full_branch_reads,
-        );
-    let tight_input_reads =
-        loaded_branch_reads_for_roots(
-            input_roots,
-            pre.branch.branch_summary,
-            tight_loaded_branch_reads,
-        );
-    let full_output_reads =
-        full_branch_reads.restrict(
-            addresses_in_aus(branch_owned),
-        );
-    let tight_output_reads =
-        tight_loaded_branch_reads.restrict(
-            addresses_in_aus(branch_owned),
-        );
-
     assert(tight.wf());
     assert(tight.branch_writes.is_empty());
     assert(tight.writes() == access.writes());
     assert(tight.loaded_betree_writes()
         == access.loaded_betree_writes());
-    assert(tight_loaded_branch_reads
-        == full_branch_reads.restrict(owned_addrs))
-    by {
-        assert_maps_equal!(
-            tight_loaded_branch_reads,
-            full_branch_reads.restrict(owned_addrs),
-            addr => {
-                reveal(to_branch_nodes);
-            }
-        );
-    }
     assert(tight.reads() <= access.reads()) by {
         assert forall |addr: Address|
             #[trigger] tight.reads().contains_key(addr)
@@ -6311,19 +6018,8 @@ proof fn compact_complete_access_on_projection(
                     == access.reads()[addr]
             }
         by {
-            if tight_branch_reads.contains_key(addr) {
-                assert(access.branch_reads
-                    .contains_key(addr));
-                assert(!access.betree_reads
-                    .contains_key(addr));
-            } else {
-                assert(tight_betree_reads
-                    .contains_key(addr));
-                assert(access.betree_reads
-                    .contains_key(addr));
-                assert(!access.branch_reads
-                    .contains_key(addr));
-            }
+            assert(tight_betree_reads.contains_key(addr));
+            assert(access.betree_reads.contains_key(addr));
         }
     }
     assert(tight.reads().dom() <= owned_addrs);
@@ -6332,8 +6028,6 @@ proof fn compact_complete_access_on_projection(
             pre.branch_projection_aus() + allocs,
         ));
 
-    reveal(UnifiedCacheBranchBetreeSource::
-        ephemeral_branch_i);
     assert(pre.i().ephemeral is Known);
     assert(component.refinement_inv());
     component.linked_i_is_tight_candidate();
@@ -6359,8 +6053,6 @@ proof fn compact_complete_access_on_projection(
                     )[addr]
                 }
             by {
-                reveal(CachingDiskBranchBetree::State::
-                    visible_betree_entries);
             }
         }
         vstd::map_lib::lemma_submap_of_trans(
@@ -6430,94 +6122,8 @@ proof fn compact_complete_access_on_projection(
         }
     }
 
-    assert(pre.branch.branch_summary.dom().finite()) by {
-        let pre_i = component.i();
-        assert(pre_i.inv());
-        pre_i.inv_branch_summary_ensures();
-        let (_, branch_likes) =
-            pre_i.betree.linked.transitive_likes();
-        assert(branch_likes.dom().finite());
-        CompactorInput::input_roots_finite(
-            pre_i.compactors,
-        );
-        let roots =
-            branch_likes.dom()
-                + CompactorInput::input_roots(
-                    pre_i.compactors,
-                );
-        assert(roots.finite());
-        component.semantic_sealed_branch_disk()
-            .build_branch_summary_finite(roots);
-    }
-    summary_aus_restrict_subset(
-        pre.branch.branch_summary,
-        to_aus(input_roots),
-    );
-    reveal(UnifiedCacheBranchBetreeSource::
-        branch_projection_aus);
-    reveal(CachedBranchBetree::State::owned_aus);
-    assert(input_aus
-        <= pre.branch_projection_aus());
-    component.wip_alloc_aus_agree();
-    crate::allocation_layer::AllocationBranch_v::
-        AllocationBranch::alloc_aus_ensures(
-            component.i().wip_branches,
-            branch_idx,
-        );
-    assert(component.i().wip_branches[branch_idx]
-        .mini_allocator == cached_branch.mini_allocator)
-    by {
-        reveal(CachingDiskBranchBetree::State::
-            wip_branches_i);
-        reveal(CachingDiskBranchBetree::State::
-            wip_branch_i);
-    }
-    assert(branch_owned
-        <= pre.branch_projection_aus());
-    assert(addresses_in_aus(input_aus)
-        <= owned_addrs);
-    assert(addresses_in_aus(branch_owned)
-        <= owned_addrs);
-    assert(tight_input_reads
-        == full_input_reads) by {
-        reveal(loaded_branch_reads_for_roots);
-        assert_maps_equal!(
-            tight_input_reads,
-            full_input_reads,
-            addr => {
-                if addresses_in_aus(input_aus)
-                    .contains(addr)
-                {
-                    assert(owned_addrs.contains(addr));
-                }
-            }
-        );
-    }
-    assert(tight_output_reads
-        == full_output_reads) by {
-        assert_maps_equal!(
-            tight_output_reads,
-            full_output_reads,
-            addr => {
-                if addresses_in_aus(branch_owned)
-                    .contains(addr)
-                {
-                    assert(owned_addrs.contains(addr));
-                }
-            }
-        );
-    }
-    assert(valid_loaded_sealed_branches(
-        input_roots,
-        pre.branch.branch_summary,
-        tight_input_reads,
-    ));
-    assert(valid_loaded_sealed_branch(
-        branch_root,
-        cached_branch.summary(),
-        tight_output_reads,
-    ));
-
+    let branch = pre.branch.wip_branches[branch_idx];
+    let branch_root = branch.sealed_root();
     let new_addrs = TwoAddrs {
         addr1: new_node_addr,
         addr2: branch_root,
@@ -6568,12 +6174,14 @@ proof fn compact_complete_access_on_projection(
             pre.branch_projection_aus() + allocs,
         ));
 
+    tight.cached_only_betree_shape();
     assert(CachedBranchBetree::State::compact_complete(
         pre.branch,
         post_branch,
-        CachedBranchBetree::Label::InternalAlloc {
+        CachedBranchBetree::Label::InternalAllocAccess {
             allocs,
             deallocs,
+            access: tight.cached_access(),
         },
         input_idx,
         branch_idx,
@@ -6584,9 +6192,7 @@ proof fn compact_complete_access_on_projection(
         path_addrs,
         tight.loaded_betree_reads(),
         tight.loaded_betree_writes(),
-        tight.loaded_branch_reads(),
     )) by {
-        reveal(CachedBranchBetree::State::compact_complete);
     }
 }
 
@@ -6594,7 +6200,7 @@ proof fn branch_build_access_on_projection(
     pre: UnifiedCacheBranchBetreeSource,
     post_cache: Cache::State,
     idx: int,
-    post_branch: CachedAllocationBranch,
+    post_branch: CachedBulkBranch,
     event: BranchBuildEvent,
     access: PageAccess,
     allocs: Set<AU>,
@@ -6619,9 +6225,10 @@ proof fn branch_build_access_on_projection(
                 idx,
                 post_branch,
             ),
-            CachedBranchBetree::Label::InternalAlloc {
+            CachedBranchBetree::Label::InternalAllocAccess {
                 allocs,
                 deallocs,
+                access: access.cached_access(),
             },
             idx,
             post_branch,
@@ -6658,9 +6265,10 @@ proof fn branch_build_access_on_projection(
                 idx,
                 post_branch,
             ),
-            CachedBranchBetree::Label::InternalAlloc {
+            CachedBranchBetree::Label::InternalAllocAccess {
                 allocs,
                 deallocs,
+                access: tight.cached_access(),
             },
             idx,
             post_branch,
@@ -6673,17 +6281,16 @@ proof fn branch_build_access_on_projection(
     let component = pre.known_branch_i();
     let pre_target = pre.branch.wip_branches[idx];
     let allocation = component.wip_branch_i(idx);
-    let model_branch = allocation.branch.unwrap();
     let owned_addrs =
         addresses_in_aus(pre.branch_projection_aus());
     let tight_reads =
         access.branch_reads.restrict(owned_addrs);
 
-    reveal(CachedBranchBetree::State::branch_build);
-    reveal(CachedAllocationBranch::build_next);
-    reveal(BranchBuildEvent::cached_event);
-    reveal(branch_with_updated_wip);
-    assert(CachedAllocationBranch::build_next(
+
+
+
+
+    assert(CachedBulkBranch::build_next(
         pre_target,
         post_branch,
         event.cached_event(access),
@@ -6691,25 +6298,17 @@ proof fn branch_build_access_on_projection(
         deallocs,
     ));
     assert(0 <= idx < pre.branch.wip_branches.len());
-    assert(!pre_target.sealed);
+    assert(pre_target.is_building());
     assert(allocs.is_empty());
-    reveal(UnifiedCacheBranchBetreeSource::
-        ephemeral_branch_i);
     assert(pre.i().ephemeral is Known);
     assert(component.refinement_inv());
     assert(component.i().wip_branches_inv());
     assert(allocation == component.i().wip_branches[idx]);
     assert(allocation.inv());
-    assert(!allocation.sealed);
+    assert(allocation.is_building());
     assert(allocation.mini_allocator
         == pre_target.mini_allocator) by {
-        reveal(CachingDiskBranchBetree::State::
-            wip_branch_i);
-    }
-    assert(allocation.branch is Some
-        <==> pre_target.branch.root is Some) by {
-        reveal(CachingDiskBranchBetree::State::
-            wip_branch_i);
+
     }
     assert(tight.wf());
     assert(tight.only_branch());
@@ -6738,1015 +6337,26 @@ proof fn branch_build_access_on_projection(
         tight_reads,
     );
     assert(tight_reads <= component.disk.cache) by {
-        reveal(UnifiedCacheBranchBetreeSource::
-            branch_caching_disk_i);
-        reveal(UnifiedCacheBranchBetreeSource::
-            known_branch_i);
-        reveal(crate::implementation::
-            CachingDiskAdapterRefinement_v::
-                project_cache_pages_by_addrs);
-        reveal(project_cache_pages);
     }
 
     component.wip_alloc_aus_agree();
-    crate::allocation_layer::AllocationBranch_v::
-        AllocationBranch::alloc_aus_ensures(
+    AllocationBulkBranch::alloc_aus_ensures(
             component.i().wip_branches,
             idx,
         );
     assert(component.i().wip_branches[idx]
         .mini_allocator == pre_target.mini_allocator) by {
-        reveal(CachingDiskBranchBetree::State::
-            wip_branches_i);
-        reveal(CachingDiskBranchBetree::State::
-            wip_branch_i);
+
+
     }
-    reveal(UnifiedCacheBranchBetreeSource::
-        branch_projection_aus);
-    reveal(CachedBranchBetree::State::owned_aus);
+
+
     assert(pre_target.mini_allocator.all_aus()
         <= pre.branch_projection_aus());
 
     match event {
-        BranchBuildEvent::Append{
-            receipt,
-            keys,
-            msgs,
-        } => {
-            let source_event =
-                CachedAllocationBranchEvent::Append {
-                    receipt,
-                    keys,
-                    msgs,
-                    read_nodes:
-                        access.loaded_branch_reads(),
-                    write_nodes:
-                        access.loaded_branch_writes(),
-                };
-            assert(event.cached_event(access)
-                == source_event);
-            assert(CachedAllocationBranch::build_next(
-                pre_target,
-                post_branch,
-                source_event,
-                allocs,
-                deallocs,
-            ));
-            assert(source_event is Append);
-            let source_label = CachedBranch::Label::Append {
-                mini_allocator: pre_target.mini_allocator,
-                receipt,
-                keys,
-                msgs,
-                read_nodes: access.loaded_branch_reads(),
-                write_nodes: access.loaded_branch_writes(),
-            };
-            assert(CachedBranch::State::next(
-                pre_target.branch,
-                post_branch.branch,
-                source_label,
-            )) by {
-                reveal(CachedAllocationBranch::build_next);
-            }
-            reveal(CachedBranch::State::next);
-            reveal(CachedBranch::State::next_by);
-            let source_step = choose |step: CachedBranch::Step|
-                CachedBranch::State::next_by(
-                    pre_target.branch,
-                    post_branch.branch,
-                    source_label,
-                    step,
-                );
-            match source_step {
-                CachedBranch::Step::append_step() => {
-                    reveal(CachedBranch::State::append_step);
-                }
-                _ => {
-                    assert(false);
-                }
-            }
-            assert(pre_target.branch.can_append(
-                pre_target.mini_allocator,
-                receipt,
-                keys,
-                msgs,
-                access.loaded_branch_reads(),
-                access.loaded_branch_writes(),
-            ));
-            assert(allocation.branch is Some);
-            assert(receipt.valid_for(
-                model_branch.root,
-                to_branch_nodes(access.branch_reads),
-            )) by {
-                assert(model_branch.root
-                    == pre_target.branch.root.unwrap()) by {
-                    reveal(CachingDiskBranchBetree::State::
-                        wip_branch_i);
-                }
-            }
-            wip_receipt_valid_on_projection(
-                pre,
-                post_cache,
-                access,
-                idx,
-                receipt,
-            );
-            let target = receipt.target().addr;
-            wip_receipt_needed_addr_in_projection(
-                pre,
-                post_cache,
-                access,
-                idx,
-                receipt,
-                target,
-            );
-            wip_branch_addr_wf(allocation, target);
-            assert(tight.loaded_branch_writes().dom()
-                == set![target]);
-            assert(allocation.addrs_closed_under_mini_allocator());
-            assert(allocation.mini_allocator
-                .page_is_allocated(target));
-            assert(pre_target.mini_allocator.all_aus()
-                .contains(target.au));
-            assert(tight.writes().dom()
-                <= addresses_in_aus(
-                    pre_target.mini_allocator.all_aus(),
-                ));
-            assert(tight.writes().dom()
-                <= owned_addrs);
-            assert(tight.writes().dom()
-                <= Set::new(|addr: Address| addr.wf())) by {
-                assert forall |addr: Address|
-                    #[trigger] tight.writes().dom()
-                        .contains(addr)
-                    implies addr.wf()
-                by {
-                    assert(addr == target);
-                }
-            }
-            assert(pre_target.branch.can_append(
-                pre_target.mini_allocator,
-                receipt,
-                keys,
-                msgs,
-                tight.loaded_branch_reads(),
-                tight.loaded_branch_writes(),
-            )) by {
-                reveal(CachedBranch::State::can_append);
-                reveal(crate::implementation::
-                    CachedBranch_v::loaded_append_ready);
-            }
-            let tight_event =
-                CachedAllocationBranchEvent::Append {
-                    receipt,
-                    keys,
-                    msgs,
-                    read_nodes:
-                        tight.loaded_branch_reads(),
-                    write_nodes:
-                        tight.loaded_branch_writes(),
-                };
-            assert(event.cached_event(tight)
-                == tight_event);
-            assert(CachedBranch::State::next(
-                pre_target.branch,
-                post_branch.branch,
-                CachedBranch::Label::Append {
-                    mini_allocator:
-                        pre_target.mini_allocator,
-                    receipt,
-                    keys,
-                    msgs,
-                    read_nodes:
-                        tight.loaded_branch_reads(),
-                    write_nodes:
-                        tight.loaded_branch_writes(),
-                },
-            )) by {
-                assert(CachedBranch::State::next_by(
-                    pre_target.branch,
-                    post_branch.branch,
-                    CachedBranch::Label::Append {
-                        mini_allocator:
-                            pre_target.mini_allocator,
-                        receipt,
-                        keys,
-                        msgs,
-                        read_nodes:
-                            tight.loaded_branch_reads(),
-                        write_nodes:
-                            tight.loaded_branch_writes(),
-                    },
-                    CachedBranch::Step::append_step(),
-                )) by {
-                    reveal(CachedBranch::State::next_by);
-                    reveal(CachedBranch::State::append_step);
-                }
-                reveal(CachedBranch::State::next);
-            }
-            assert(CachedAllocationBranch::build_next(
-                pre_target,
-                post_branch,
-                tight_event,
-                allocs,
-                deallocs,
-            )) by {
-                reveal(CachedAllocationBranch::build_next);
-            }
-            assert(CachedBranchBetree::State::branch_build(
-                pre.branch,
-                branch_with_updated_wip(
-                    pre.branch,
-                    idx,
-                    post_branch,
-                ),
-                CachedBranchBetree::Label::InternalAlloc {
-                    allocs,
-                    deallocs,
-                },
-                idx,
-                post_branch,
-                event.cached_event(tight),
-            )) by {
-                reveal(CachedBranchBetree::State::
-                    branch_build);
-                reveal(CachedAllocationBranch::
-                    build_next);
-                reveal(CachedBranch::State::next);
-                reveal(CachedBranch::State::next_by);
-                reveal(CachedBranch::State::append_step);
-                reveal(CachedBranch::State::can_append);
-                reveal(crate::implementation::
-                    CachedBranch_v::loaded_append_ready);
-            }
-        }
-        BranchBuildEvent::Initialize{
-            init_root,
-            keys,
-            msgs,
-        } => {
-            let source_event =
-                CachedAllocationBranchEvent::Initialize {
-                    init_root,
-                    keys,
-                    msgs,
-                    write_nodes:
-                        access.loaded_branch_writes(),
-                };
-            assert(event.cached_event(access)
-                == source_event);
-            assert(CachedAllocationBranch::build_next(
-                pre_target,
-                post_branch,
-                source_event,
-                allocs,
-                deallocs,
-            ));
-            assert(source_event is Initialize);
-            let source_label = CachedBranch::Label::Initialize {
-                mini_allocator: pre_target.mini_allocator,
-                init_root,
-                keys,
-                msgs,
-                write_nodes: access.loaded_branch_writes(),
-            };
-            assert(CachedBranch::State::next(
-                pre_target.branch,
-                post_branch.branch,
-                source_label,
-            )) by {
-                reveal(CachedAllocationBranch::build_next);
-            }
-            reveal(CachedBranch::State::next);
-            reveal(CachedBranch::State::next_by);
-            let source_step = choose |step: CachedBranch::Step|
-                CachedBranch::State::next_by(
-                    pre_target.branch,
-                    post_branch.branch,
-                    source_label,
-                    step,
-                );
-            match source_step {
-                CachedBranch::Step::initialize_branch() => {
-                    reveal(CachedBranch::State::initialize_branch);
-                }
-                _ => {
-                    assert(false);
-                }
-            }
-            assert(pre_target.branch.can_initialize(
-                pre_target.mini_allocator,
-                init_root,
-                keys,
-                msgs,
-                access.loaded_branch_writes(),
-            ));
-            assert(pre_target.mini_allocator
-                .can_allocate(init_root));
-            assert(init_root.wf()) by {
-                reveal(crate::allocation_layer::
-                    MiniAllocator_v::MiniAllocator::
-                        can_allocate);
-                reveal(crate::allocation_layer::
-                    MiniAllocator_v::PageAllocator::
-                        is_free_addr);
-            }
-            assert(pre_target.mini_allocator.all_aus()
-                .contains(init_root.au));
-            assert(tight.loaded_branch_writes().dom()
-                == set![init_root]);
-            assert(tight.writes().dom()
-                <= addresses_in_aus(
-                    pre_target.mini_allocator.all_aus(),
-                ));
-            assert(tight.writes().dom()
-                <= owned_addrs);
-            assert(tight.writes().dom()
-                <= Set::new(|addr: Address| addr.wf())) by {
-                assert forall |addr: Address|
-                    #[trigger] tight.writes().dom()
-                        .contains(addr)
-                    implies addr.wf()
-                by {
-                    assert(addr == init_root);
-                }
-            }
-            assert(event.cached_event(tight)
-                == event.cached_event(access));
-        }
-        BranchBuildEvent::Grow{new_root_addr} => {
-            let source_event =
-                CachedAllocationBranchEvent::Grow {
-                    new_root_addr,
-                    read_nodes:
-                        access.loaded_branch_reads(),
-                    write_nodes:
-                        access.loaded_branch_writes(),
-                };
-            assert(event.cached_event(access)
-                == source_event);
-            assert(CachedAllocationBranch::build_next(
-                pre_target,
-                post_branch,
-                source_event,
-                allocs,
-                deallocs,
-            ));
-            assert(source_event is Grow);
-            let source_label = CachedBranch::Label::Grow {
-                mini_allocator: pre_target.mini_allocator,
-                new_root_addr,
-                read_nodes: access.loaded_branch_reads(),
-                write_nodes: access.loaded_branch_writes(),
-            };
-            assert(CachedBranch::State::next(
-                pre_target.branch,
-                post_branch.branch,
-                source_label,
-            )) by {
-                reveal(CachedAllocationBranch::build_next);
-            }
-            reveal(CachedBranch::State::next);
-            reveal(CachedBranch::State::next_by);
-            let source_step = choose |step: CachedBranch::Step|
-                CachedBranch::State::next_by(
-                    pre_target.branch,
-                    post_branch.branch,
-                    source_label,
-                    step,
-                );
-            match source_step {
-                CachedBranch::Step::grow_step() => {
-                    reveal(CachedBranch::State::grow_step);
-                }
-                _ => {
-                    assert(false);
-                }
-            }
-            assert(pre_target.branch.can_grow(
-                pre_target.mini_allocator,
-                new_root_addr,
-                access.loaded_branch_reads(),
-                access.loaded_branch_writes(),
-            ));
-            assert(allocation.branch is Some);
-            let root = model_branch.root;
-            wip_root_in_projection(pre, idx);
-            assert(pre_target.branch.root
-                == Some(root)) by {
-                reveal(CachingDiskBranchBetree::State::
-                    wip_branch_i);
-            }
-            assert(access.branch_reads.contains_key(root));
-            assert(tight_reads.contains_key(root));
-            assert(tight_reads[root]
-                == access.branch_reads[root]);
-            assert(pre_target.mini_allocator
-                .can_allocate(new_root_addr));
-            assert(new_root_addr.wf()) by {
-                reveal(crate::allocation_layer::
-                    MiniAllocator_v::MiniAllocator::
-                        can_allocate);
-                reveal(crate::allocation_layer::
-                    MiniAllocator_v::PageAllocator::
-                        is_free_addr);
-            }
-            assert(pre_target.mini_allocator.all_aus()
-                .contains(new_root_addr.au));
-            assert(tight.loaded_branch_writes().dom()
-                == set![new_root_addr]);
-            assert(tight.writes().dom()
-                <= addresses_in_aus(
-                    pre_target.mini_allocator.all_aus(),
-                ));
-            assert(tight.writes().dom()
-                <= owned_addrs);
-            assert(tight.writes().dom()
-                <= Set::new(|addr: Address| addr.wf())) by {
-                assert forall |addr: Address|
-                    #[trigger] tight.writes().dom()
-                        .contains(addr)
-                    implies addr.wf()
-                by {
-                    assert(addr == new_root_addr);
-                }
-            }
-            assert(crate::implementation::
-                CachedBranch_v::loaded_line_wf(
-                    tight.loaded_branch_reads(),
-                    root,
-                ));
-            assert(pre_target.branch.can_grow(
-                pre_target.mini_allocator,
-                new_root_addr,
-                tight.loaded_branch_reads(),
-                tight.loaded_branch_writes(),
-            )) by {
-                reveal(CachedBranch::State::can_grow);
-            }
-            let tight_event =
-                CachedAllocationBranchEvent::Grow {
-                    new_root_addr,
-                    read_nodes:
-                        tight.loaded_branch_reads(),
-                    write_nodes:
-                        tight.loaded_branch_writes(),
-                };
-            assert(event.cached_event(tight)
-                == tight_event);
-            assert(CachedBranch::State::next(
-                pre_target.branch,
-                post_branch.branch,
-                CachedBranch::Label::Grow {
-                    mini_allocator:
-                        pre_target.mini_allocator,
-                    new_root_addr,
-                    read_nodes:
-                        tight.loaded_branch_reads(),
-                    write_nodes:
-                        tight.loaded_branch_writes(),
-                },
-            )) by {
-                assert(CachedBranch::State::next_by(
-                    pre_target.branch,
-                    post_branch.branch,
-                    CachedBranch::Label::Grow {
-                        mini_allocator:
-                            pre_target.mini_allocator,
-                        new_root_addr,
-                        read_nodes:
-                            tight.loaded_branch_reads(),
-                        write_nodes:
-                            tight.loaded_branch_writes(),
-                    },
-                    CachedBranch::Step::grow_step(),
-                )) by {
-                    reveal(CachedBranch::State::next_by);
-                    reveal(CachedBranch::State::grow_step);
-                }
-                reveal(CachedBranch::State::next);
-            }
-            assert(CachedAllocationBranch::build_next(
-                pre_target,
-                post_branch,
-                tight_event,
-                allocs,
-                deallocs,
-            )) by {
-                reveal(CachedAllocationBranch::build_next);
-            }
-            assert(CachedBranchBetree::State::branch_build(
-                pre.branch,
-                branch_with_updated_wip(
-                    pre.branch,
-                    idx,
-                    post_branch,
-                ),
-                CachedBranchBetree::Label::InternalAlloc {
-                    allocs,
-                    deallocs,
-                },
-                idx,
-                post_branch,
-                event.cached_event(tight),
-            )) by {
-                reveal(CachedBranchBetree::State::
-                    branch_build);
-                reveal(CachedAllocationBranch::
-                    build_next);
-                reveal(CachedBranch::State::next);
-                reveal(CachedBranch::State::next_by);
-                reveal(CachedBranch::State::grow_step);
-                reveal(CachedBranch::State::can_grow);
-                reveal(crate::implementation::
-                    CachedBranch_v::loaded_line_wf);
-            }
-        }
-        BranchBuildEvent::Split{
-            new_child_addr,
-            receipt,
-            split_arg,
-        } => {
-            let source_event =
-                CachedAllocationBranchEvent::Split {
-                    new_child_addr,
-                    receipt,
-                    split_arg,
-                    read_nodes:
-                        access.loaded_branch_reads(),
-                    write_nodes:
-                        access.loaded_branch_writes(),
-                };
-            assert(event.cached_event(access)
-                == source_event);
-            assert(CachedAllocationBranch::build_next(
-                pre_target,
-                post_branch,
-                source_event,
-                allocs,
-                deallocs,
-            ));
-            assert(source_event is Split);
-            let source_label = CachedBranch::Label::Split {
-                mini_allocator: pre_target.mini_allocator,
-                new_child_addr,
-                receipt,
-                split_arg,
-                read_nodes: access.loaded_branch_reads(),
-                write_nodes: access.loaded_branch_writes(),
-            };
-            assert(CachedBranch::State::next(
-                pre_target.branch,
-                post_branch.branch,
-                source_label,
-            )) by {
-                reveal(CachedAllocationBranch::build_next);
-            }
-            reveal(CachedBranch::State::next);
-            reveal(CachedBranch::State::next_by);
-            let source_step = choose |step: CachedBranch::Step|
-                CachedBranch::State::next_by(
-                    pre_target.branch,
-                    post_branch.branch,
-                    source_label,
-                    step,
-                );
-            match source_step {
-                CachedBranch::Step::split_step() => {
-                    reveal(CachedBranch::State::split_step);
-                }
-                _ => {
-                    assert(false);
-                }
-            }
-            assert(pre_target.branch.can_split(
-                pre_target.mini_allocator,
-                new_child_addr,
-                receipt,
-                split_arg,
-                access.loaded_branch_reads(),
-                access.loaded_branch_writes(),
-            ));
-            assert(allocation.branch is Some);
-            assert(receipt.valid_for(
-                model_branch.root,
-                to_branch_nodes(access.branch_reads),
-            )) by {
-                assert(model_branch.root
-                    == pre_target.branch.root.unwrap()) by {
-                    reveal(CachingDiskBranchBetree::State::
-                        wip_branch_i);
-                }
-            }
-            wip_receipt_valid_on_projection(
-                pre,
-                post_cache,
-                access,
-                idx,
-                receipt,
-            );
-            let parent_addr = receipt.target().addr;
-            wip_receipt_needed_addr_in_projection(
-                pre,
-                post_cache,
-                access,
-                idx,
-                receipt,
-                parent_addr,
-            );
-            wip_branch_addr_wf(allocation, parent_addr);
-            let child_addr = receipt.child_addr();
-            assert(model_branch.disk_view.entries[
-                parent_addr
-            ] == receipt.target().node);
-            assert(model_branch.disk_view.entries
-                .contains_key(child_addr)) by {
-                let parent = receipt.target().node;
-                let child_idx =
-                    parent.route(receipt.key) + 1;
-                assert(receipt.target().wf());
-                assert(parent.wf());
-                broadcast use LinkedBranchRefinement::
-                    lemma_route_ensures;
-                assert(parent.valid_child_index(
-                    child_idx,
-                ));
-                assert(parent->children[child_idx]
-                    == child_addr);
-                assert(model_branch.disk_view
-                    .no_dangling_address());
-                assert(model_branch.disk_view
-                    .node_has_valid_child_address(parent));
-                assert(model_branch.disk_view
-                    .valid_address(child_addr));
-            }
-            assert(allocation.addrs_closed_under_mini_allocator());
-            assert(allocation.mini_allocator
-                .page_is_allocated(child_addr));
-            wip_branch_addr_wf(allocation, child_addr);
-            assert(pre_target.mini_allocator.all_aus()
-                .contains(child_addr.au));
-            assert(owned_addrs.contains(child_addr));
-            assert(access.branch_reads
-                .contains_key(child_addr));
-            assert(tight_reads.contains_key(child_addr));
-            assert(tight_reads[child_addr]
-                == access.branch_reads[child_addr]);
-            assert(crate::implementation::
-                CachedBranch_v::loaded_line_wf(
-                    tight.loaded_branch_reads(),
-                    child_addr,
-                )) by {
-                reveal(crate::implementation::
-                    CachedBranch_v::loaded_line_wf);
-            }
-            assert(pre_target.mini_allocator
-                .can_allocate(new_child_addr));
-            assert(new_child_addr.wf()) by {
-                reveal(crate::allocation_layer::
-                    MiniAllocator_v::MiniAllocator::
-                        can_allocate);
-                reveal(crate::allocation_layer::
-                    MiniAllocator_v::PageAllocator::
-                        is_free_addr);
-            }
-            assert(pre_target.mini_allocator.all_aus()
-                .contains(new_child_addr.au));
-            assert(allocation.mini_allocator
-                .page_is_allocated(parent_addr));
-            assert(pre_target.mini_allocator.all_aus()
-                .contains(parent_addr.au));
-            assert(tight.loaded_branch_writes().dom()
-                == set![
-                    parent_addr,
-                    child_addr,
-                    new_child_addr,
-                ]);
-            assert(tight.writes().dom()
-                <= addresses_in_aus(
-                    pre_target.mini_allocator.all_aus(),
-                ));
-            assert(tight.writes().dom()
-                <= owned_addrs);
-            assert(tight.writes().dom()
-                <= Set::new(|addr: Address| addr.wf())) by {
-                assert forall |addr: Address|
-                    #[trigger] tight.writes().dom()
-                        .contains(addr)
-                    implies addr.wf()
-                by {
-                    assert(addr == parent_addr
-                        || addr == child_addr
-                        || addr == new_child_addr);
-                }
-            }
-            assert(pre_target.branch.can_split(
-                pre_target.mini_allocator,
-                new_child_addr,
-                receipt,
-                split_arg,
-                tight.loaded_branch_reads(),
-                tight.loaded_branch_writes(),
-            )) by {
-                reveal(CachedBranch::State::can_split);
-                reveal(crate::implementation::
-                    CachedBranch_v::loaded_split_ready);
-                reveal(crate::implementation::
-                    CachedBranch_v::loaded_split_write_nodes);
-            }
-            let tight_event =
-                CachedAllocationBranchEvent::Split {
-                    new_child_addr,
-                    receipt,
-                    split_arg,
-                    read_nodes:
-                        tight.loaded_branch_reads(),
-                    write_nodes:
-                        tight.loaded_branch_writes(),
-                };
-            assert(event.cached_event(tight)
-                == tight_event);
-            assert(CachedBranch::State::next(
-                pre_target.branch,
-                post_branch.branch,
-                CachedBranch::Label::Split {
-                    mini_allocator:
-                        pre_target.mini_allocator,
-                    new_child_addr,
-                    receipt,
-                    split_arg,
-                    read_nodes:
-                        tight.loaded_branch_reads(),
-                    write_nodes:
-                        tight.loaded_branch_writes(),
-                },
-            )) by {
-                assert(CachedBranch::State::next_by(
-                    pre_target.branch,
-                    post_branch.branch,
-                    CachedBranch::Label::Split {
-                        mini_allocator:
-                            pre_target.mini_allocator,
-                        new_child_addr,
-                        receipt,
-                        split_arg,
-                        read_nodes:
-                            tight.loaded_branch_reads(),
-                        write_nodes:
-                            tight.loaded_branch_writes(),
-                    },
-                    CachedBranch::Step::split_step(),
-                )) by {
-                    reveal(CachedBranch::State::next_by);
-                    reveal(CachedBranch::State::split_step);
-                }
-                reveal(CachedBranch::State::next);
-            }
-            assert(CachedAllocationBranch::build_next(
-                pre_target,
-                post_branch,
-                tight_event,
-                allocs,
-                deallocs,
-            )) by {
-                reveal(CachedAllocationBranch::build_next);
-            }
-            assert(CachedBranchBetree::State::branch_build(
-                pre.branch,
-                branch_with_updated_wip(
-                    pre.branch,
-                    idx,
-                    post_branch,
-                ),
-                CachedBranchBetree::Label::InternalAlloc {
-                    allocs,
-                    deallocs,
-                },
-                idx,
-                post_branch,
-                event.cached_event(tight),
-            )) by {
-                reveal(CachedBranchBetree::State::
-                    branch_build);
-                reveal(CachedAllocationBranch::
-                    build_next);
-                reveal(CachedBranch::State::next);
-                reveal(CachedBranch::State::next_by);
-                reveal(CachedBranch::State::split_step);
-                reveal(CachedBranch::State::can_split);
-                reveal(crate::implementation::
-                    CachedBranch_v::loaded_split_ready);
-            }
-        }
-        BranchBuildEvent::Seal{aux_ptr} => {
-            let source_event =
-                CachedAllocationBranchEvent::Seal {
-                    aux_ptr,
-                    read_nodes:
-                        access.loaded_branch_reads(),
-                    write_nodes:
-                        access.loaded_branch_writes(),
-                };
-            assert(event.cached_event(access)
-                == source_event);
-            assert(CachedAllocationBranch::build_next(
-                pre_target,
-                post_branch,
-                source_event,
-                allocs,
-                deallocs,
-            ));
-            assert(source_event is Seal);
-            let source_label = CachedBranch::Label::Seal {
-                mini_allocator: pre_target.mini_allocator,
-                aux_ptr,
-                read_nodes: access.loaded_branch_reads(),
-                write_nodes: access.loaded_branch_writes(),
-            };
-            assert(CachedBranch::State::next(
-                pre_target.branch,
-                post_branch.branch,
-                source_label,
-            )) by {
-                reveal(CachedAllocationBranch::build_next);
-            }
-            reveal(CachedBranch::State::next);
-            reveal(CachedBranch::State::next_by);
-            let source_step = choose |step: CachedBranch::Step|
-                CachedBranch::State::next_by(
-                    pre_target.branch,
-                    post_branch.branch,
-                    source_label,
-                    step,
-                );
-            match source_step {
-                CachedBranch::Step::seal_step() => {
-                    reveal(CachedBranch::State::seal_step);
-                }
-                _ => {
-                    assert(false);
-                }
-            }
-            assert(pre_target.branch.can_seal(
-                pre_target.mini_allocator,
-                aux_ptr,
-                access.loaded_branch_reads(),
-                access.loaded_branch_writes(),
-            ));
-            assert(allocation.branch is Some);
-            let root = model_branch.root;
-            wip_root_in_projection(pre, idx);
-            assert(model_branch.disk_view.entries
-                .contains_key(root));
-            wip_branch_addr_wf(allocation, root);
-            assert(pre_target.branch.root
-                == Some(root)) by {
-                reveal(CachingDiskBranchBetree::State::
-                    wip_branch_i);
-            }
-            assert(access.branch_reads.contains_key(root));
-            assert(tight_reads.contains_key(root));
-            assert(tight_reads[root]
-                == access.branch_reads[root]);
-            if aux_ptr is Some {
-                assert(pre_target.mini_allocator
-                    .can_allocate(aux_ptr.unwrap()));
-                assert(aux_ptr.unwrap().wf()) by {
-                    reveal(crate::allocation_layer::
-                        MiniAllocator_v::MiniAllocator::
-                            can_allocate);
-                    reveal(crate::allocation_layer::
-                        MiniAllocator_v::PageAllocator::
-                            is_free_addr);
-                }
-                assert(pre_target.mini_allocator
-                    .all_aus().contains(
-                        aux_ptr.unwrap().au,
-                    ));
-                assert(tight.loaded_branch_writes().dom()
-                    == set![root, aux_ptr.unwrap()]);
-                assert(allocation.mini_allocator
-                    .page_is_allocated(root));
-                assert(pre_target.mini_allocator.all_aus()
-                    .contains(root.au));
-            } else {
-                assert(tight.loaded_branch_writes()
-                    .is_empty());
-            }
-            assert(tight.writes().dom()
-                <= addresses_in_aus(
-                    pre_target.mini_allocator.all_aus(),
-                ));
-            assert(tight.writes().dom()
-                <= owned_addrs);
-            assert(tight.writes().dom()
-                <= Set::new(|addr: Address| addr.wf())) by {
-                assert forall |addr: Address|
-                    #[trigger] tight.writes().dom()
-                        .contains(addr)
-                    implies addr.wf()
-                by {
-                    if aux_ptr is Some {
-                        assert(addr == root
-                            || addr == aux_ptr.unwrap());
-                    } else {
-                        assert(false);
-                    }
-                }
-            }
-            assert(crate::implementation::
-                CachedBranch_v::loaded_line_wf(
-                    tight.loaded_branch_reads(),
-                    root,
-                ));
-            assert(pre_target.branch.can_seal(
-                pre_target.mini_allocator,
-                aux_ptr,
-                tight.loaded_branch_reads(),
-                tight.loaded_branch_writes(),
-            )) by {
-                reveal(CachedBranch::State::can_seal);
-                reveal(crate::implementation::
-                    CachedBranch_v::loaded_seal_write_nodes);
-            }
-            let tight_event =
-                CachedAllocationBranchEvent::Seal {
-                    aux_ptr,
-                    read_nodes:
-                        tight.loaded_branch_reads(),
-                    write_nodes:
-                        tight.loaded_branch_writes(),
-                };
-            assert(event.cached_event(tight)
-                == tight_event);
-            assert(CachedBranch::State::next(
-                pre_target.branch,
-                post_branch.branch,
-                CachedBranch::Label::Seal {
-                    mini_allocator:
-                        pre_target.mini_allocator,
-                    aux_ptr,
-                    read_nodes:
-                        tight.loaded_branch_reads(),
-                    write_nodes:
-                        tight.loaded_branch_writes(),
-                },
-            )) by {
-                assert(CachedBranch::State::next_by(
-                    pre_target.branch,
-                    post_branch.branch,
-                    CachedBranch::Label::Seal {
-                        mini_allocator:
-                            pre_target.mini_allocator,
-                        aux_ptr,
-                        read_nodes:
-                            tight.loaded_branch_reads(),
-                        write_nodes:
-                            tight.loaded_branch_writes(),
-                    },
-                    CachedBranch::Step::seal_step(),
-                )) by {
-                    reveal(CachedBranch::State::next_by);
-                    reveal(CachedBranch::State::seal_step);
-                }
-                reveal(CachedBranch::State::next);
-            }
-            assert(CachedAllocationBranch::build_next(
-                pre_target,
-                post_branch,
-                tight_event,
-                allocs,
-                deallocs,
-            )) by {
-                reveal(CachedAllocationBranch::build_next);
-            }
-            assert(CachedBranchBetree::State::branch_build(
-                pre.branch,
-                branch_with_updated_wip(
-                    pre.branch,
-                    idx,
-                    post_branch,
-                ),
-                CachedBranchBetree::Label::InternalAlloc {
-                    allocs,
-                    deallocs,
-                },
-                idx,
-                post_branch,
-                event.cached_event(tight),
-            )) by {
-                reveal(CachedBranchBetree::State::
-                    branch_build);
-                reveal(CachedAllocationBranch::
-                    build_next);
-                reveal(CachedBranch::State::next);
-                reveal(CachedBranch::State::next_by);
-                reveal(CachedBranch::State::seal_step);
-                reveal(CachedBranch::State::can_seal);
-                reveal(crate::implementation::
-                    CachedBranch_v::loaded_line_wf);
-            }
-        }
+        BranchBuildEvent::StagePage{..} => {}
+        BranchBuildEvent::BulkSeal{..} => {}
     }
 }
 
@@ -7899,6 +6509,795 @@ proof fn branch_receipts_valid_on_projection(
     }
 }
 
+proof fn source_valid_read_matches_branch_visible(
+    src: UnifiedCacheBranchBetreeSource,
+    addr: Address,
+    raw: RawPage,
+)
+    requires
+        inv(src),
+        src.control.metadata_loaded,
+        addresses_in_aus(src.branch_projection_aus()).contains(addr),
+        src.cache.valid_read(addr, raw),
+        src.known_branch_i().disk.visible().contains_key(addr),
+    ensures
+        src.known_branch_i().disk.visible()[addr] == raw,
+{
+    let component = src.known_branch_i();
+    assert(component.disk == adapter_caching_disk_i(
+        src.cache,
+        src.disk,
+        src.branch_projection_aus(),
+    ));
+    valid_read_matches_caching_disk_i_visible(
+        src.cache,
+        src.disk,
+        src.branch_projection_aus(),
+        addr,
+        raw,
+    );
+}
+
+proof fn cached_branch_scan_valid_from_semantic(
+    src: UnifiedCacheBranchBetreeSource,
+    branch: LinkedBranch<Summary>,
+    summary: Summary,
+)
+    requires
+        inv(src),
+        src.control.metadata_loaded,
+        branch.disk_view.entries <= to_branch_nodes(
+            src.known_branch_i().disk.visible(),
+        ).restrict(addresses_in_aus(summary)),
+        summary <= src.branch_projection_aus(),
+    ensures cached_branch_scan_valid(src.cache, branch),
+{
+    let component = src.known_branch_i();
+    let bounded = to_branch_nodes(component.disk.visible()).restrict(
+        addresses_in_aus(summary),
+    );
+    assert forall |addr: Address, raw: RawPage|
+        branch.disk_view.entries.contains_key(addr)
+            && #[trigger] src.cache.valid_read(addr, raw)
+        implies raw_page_to_branch_node(raw)
+            == branch.disk_view.entries[addr] by {
+        assert(bounded.contains_key(addr));
+        assert(addresses_in_aus(summary).contains(addr));
+        assert(addresses_in_aus(src.branch_projection_aus())
+            .contains(addr));
+        assert(component.disk.visible().contains_key(addr));
+        source_valid_read_matches_branch_visible(src, addr, raw);
+        assert(to_branch_nodes(component.disk.visible())[addr]
+            == raw_page_to_branch_node(raw));
+        assert(bounded[addr]
+            == to_branch_nodes(component.disk.visible())[addr]);
+    }
+}
+
+pub proof fn ready_compaction_sources_exist(
+    src: UnifiedCacheBranchBetreeSource,
+    input_idx: int,
+)
+    requires
+        inv(src),
+        src.control.metadata_loaded,
+        0 <= input_idx < src.branch.compactors.len(),
+    ensures
+        set_addrs_disjoint_aus(
+            src.branch.compactors[input_idx]
+                .input_buffers.addrs.to_set(),
+        ),
+        exists |sources: Seq<LinkedBranch<Summary>>| {
+        let compactor = src.branch.compactors[input_idx];
+        let roots = compactor.input_buffers.addrs;
+        let selected_input_aus = summary_aus(
+            src.branch.branch_summary.restrict(
+                to_aus(roots.to_set()),
+            ),
+        );
+        &&& #[trigger] sources.len() == roots.len()
+        &&& forall |i: int| 0 <= i < sources.len() ==> {
+            let source = #[trigger] sources[i];
+            &&& source.valid_sealed_branch()
+            &&& source.tight_disk_view_with_summary()
+            &&& source.root == roots[i]
+            &&& source.get_summary() <= selected_input_aus
+            &&& src.branch.branch_summary.contains_key(source.root.au)
+            &&& source.get_summary()
+                == src.branch.branch_summary[source.root.au]
+            &&& cached_branch_scan_valid(src.cache, source)
+        }
+        &&& forall |left: int, right: int, addr: Address|
+            0 <= left < sources.len()
+            && 0 <= right < sources.len()
+            && #[trigger] sources[left].disk_view.entries.contains_key(addr)
+            && #[trigger] sources[right].disk_view.entries.contains_key(addr)
+            ==> sources[left].disk_view.entries[addr]
+                == sources[right].disk_view.entries[addr]
+        &&& forall |left: int, right: int|
+            0 <= left < sources.len()
+            && 0 <= right < sources.len()
+            && #[trigger] sources[left].root
+                == #[trigger] sources[right].root
+            ==> sources[left] == sources[right]
+    },
+{
+    let component = src.known_branch_i();
+    let compactor = src.branch.compactors[input_idx];
+    let roots = compactor.input_buffers.addrs;
+    let summaries = src.branch.branch_summary;
+    let selected_summary = summaries.restrict(to_aus(roots.to_set()));
+    let selected_input_aus = summary_aus(selected_summary);
+    let all_input_sets = Seq::new(
+        src.branch.compactors.len(),
+        |i: int| src.branch.compactors[i].input_buffers.addrs.to_set(),
+    );
+    lemma_subset_union_seq_of_sets(all_input_sets, input_idx);
+    assert(roots.to_set()
+        <= CompactorInput::input_roots(src.branch.compactors));
+    assert(roots.to_set() <= component.semantic_branch_roots()) by {
+        assert(CompactorInput::input_roots(src.branch.compactors)
+            <= component.semantic_branch_roots());
+    }
+    assert(component.i().inv());
+    let all_branch_roots = component.i().betree.linked
+        .transitive_likes().1.dom()
+        + CompactorInput::input_roots(component.i().compactors);
+    assert(set_addrs_disjoint_aus(all_branch_roots));
+    assert(roots.to_set() <= all_branch_roots);
+    assert(set_addrs_disjoint_aus(roots.to_set())) by {
+        assert forall |left: Address, right: Address|
+            roots.to_set().contains(left)
+            && roots.to_set().contains(right)
+            && left != right
+            implies crate::disk::GenericDisk_v::addrs_with_different_au(
+                left,
+                right,
+            ) by {
+            assert(all_branch_roots.contains(left));
+            assert(all_branch_roots.contains(right));
+        }
+    }
+    component.i().inv_branch_summary_finite();
+    assert(summaries.dom().finite());
+    crate::betree::Utils_v::lemma_subset_finite(
+        summaries.dom(), selected_summary.dom(),
+    );
+    vstd::map_lib::lemma_values_finite(selected_summary);
+    vstd::map_lib::lemma_values_finite(summaries);
+    assert(component.tight_branches_exist());
+    let sources = Seq::new(roots.len(), |i: int| {
+        let root = roots[i];
+        let summary = summaries[root.au];
+        tight_branch_of(
+            loose_disk_for_summary(
+                component.visible_sealed_branch_disk(),
+                summary,
+            ),
+            root,
+            summary,
+        )
+    });
+    assert forall |i: int| 0 <= i < sources.len()
+        implies {
+            let source = #[trigger] sources[i];
+            &&& source.valid_sealed_branch()
+            &&& source.tight_disk_view_with_summary()
+            &&& source.root == roots[i]
+            &&& source.get_summary() <= selected_input_aus
+            &&& summaries.contains_key(source.root.au)
+            &&& source.get_summary() == summaries[source.root.au]
+            &&& cached_branch_scan_valid(src.cache, source)
+        } by {
+        let root = roots[i];
+        assert(roots.to_set().contains(root));
+        assert(component.semantic_branch_roots().contains(root));
+        assert(summaries.contains_key(root.au));
+        let summary = summaries[root.au];
+        let loose = loose_disk_for_summary(
+            component.visible_sealed_branch_disk(),
+            summary,
+        );
+        assert(tight_branch_exists(loose, root, summary));
+        tight_branch_of_is_candidate(loose, root, summary);
+        let source = tight_branch_of(loose, root, summary);
+        assert(source.get_summary() == summary);
+        crate::disk::GenericDisk_v::to_aus_domain(roots.to_set());
+        assert(to_aus(roots.to_set()).contains(root.au));
+        assert(selected_summary.contains_key(root.au));
+        assert(selected_summary.values().contains(summary));
+        assert(selected_summary.values().finite());
+        lemma_union_set_of_sets_subset(
+            selected_summary.values(),
+            summary,
+        );
+        assert(summary <= selected_input_aus);
+        let bounded = to_branch_nodes(component.disk.visible()).restrict(
+            addresses_in_aus(summary),
+        );
+        assert(loose.entries <= bounded);
+        vstd::map_lib::lemma_submap_of_trans(
+            source.disk_view.entries,
+            loose.entries,
+            bounded,
+        );
+        assert(summary <= src.branch_projection_aus()) by {
+            assert(src.branch.branch_summary.values().finite());
+            assert(src.branch.branch_summary.values().contains(summary));
+            lemma_union_set_of_sets_subset(
+                src.branch.branch_summary.values(),
+                summary,
+            );
+            assert(summary <= summary_aus(src.branch.branch_summary));
+            assert(summary_aus(src.branch.branch_summary)
+                <= src.branch_projection_aus());
+        }
+        cached_branch_scan_valid_from_semantic(src, source, summary);
+    }
+    assert forall |left: int, right: int, addr: Address|
+        0 <= left < sources.len()
+        && 0 <= right < sources.len()
+        && #[trigger] sources[left].disk_view.entries.contains_key(addr)
+        && #[trigger] sources[right].disk_view.entries.contains_key(addr)
+        implies sources[left].disk_view.entries[addr]
+            == sources[right].disk_view.entries[addr] by {
+        let left_root = roots[left];
+        let right_root = roots[right];
+        let left_summary = summaries[left_root.au];
+        let right_summary = summaries[right_root.au];
+        let visible = component.visible_sealed_branch_disk();
+        let left_loose = loose_disk_for_summary(visible, left_summary);
+        let right_loose = loose_disk_for_summary(visible, right_summary);
+        assert(roots.to_set().contains(left_root));
+        assert(roots.to_set().contains(right_root));
+        assert(component.semantic_branch_roots().contains(left_root));
+        assert(component.semantic_branch_roots().contains(right_root));
+        assert(sources[left] == tight_branch_of(
+            left_loose, left_root, left_summary,
+        ));
+        assert(sources[right] == tight_branch_of(
+            right_loose, right_root, right_summary,
+        ));
+        assert(tight_branch_exists(left_loose, left_root, left_summary));
+        assert(tight_branch_exists(right_loose, right_root, right_summary));
+        tight_branch_of_is_candidate(left_loose, left_root, left_summary);
+        tight_branch_of_is_candidate(right_loose, right_root, right_summary);
+        assert(sources[left].disk_view.entries <= left_loose.entries);
+        assert(sources[right].disk_view.entries <= right_loose.entries);
+        assert(left_loose.entries.contains_key(addr));
+        assert(right_loose.entries.contains_key(addr));
+        assert(left_loose.entries[addr] == visible.entries[addr]);
+        assert(right_loose.entries[addr] == visible.entries[addr]);
+    }
+    assert forall |left: int, right: int|
+        0 <= left < sources.len()
+        && 0 <= right < sources.len()
+        && #[trigger] sources[left].root
+            == #[trigger] sources[right].root
+        implies sources[left] == sources[right] by {
+        assert(roots[left] == roots[right]);
+        assert(summaries[roots[left].au] == summaries[roots[right].au]);
+        let root = roots[left];
+        let summary = summaries[root.au];
+        let loose = loose_disk_for_summary(
+            component.visible_sealed_branch_disk(), summary,
+        );
+        assert(sources[left] == tight_branch_of(loose, root, summary));
+        assert(sources[right] == tight_branch_of(loose, root, summary));
+    }
+    assert(exists |witness: Seq<LinkedBranch<Summary>>| {
+        let witness_compactor = src.branch.compactors[input_idx];
+        let witness_roots = witness_compactor.input_buffers.addrs;
+        let witness_selected_input_aus = summary_aus(
+            src.branch.branch_summary.restrict(
+                to_aus(witness_roots.to_set()),
+            ),
+        );
+        &&& #[trigger] witness.len() == witness_roots.len()
+        &&& forall |i: int| 0 <= i < witness.len() ==> {
+            let source = #[trigger] witness[i];
+            &&& source.valid_sealed_branch()
+            &&& source.tight_disk_view_with_summary()
+            &&& source.root == witness_roots[i]
+            &&& source.get_summary() <= witness_selected_input_aus
+            &&& src.branch.branch_summary.contains_key(source.root.au)
+            &&& source.get_summary()
+                == src.branch.branch_summary[source.root.au]
+            &&& cached_branch_scan_valid(src.cache, source)
+        }
+        &&& forall |left: int, right: int, addr: Address|
+            0 <= left < witness.len()
+            && 0 <= right < witness.len()
+            && #[trigger] witness[left].disk_view.entries.contains_key(addr)
+            && #[trigger] witness[right].disk_view.entries.contains_key(addr)
+            ==> witness[left].disk_view.entries[addr]
+                == witness[right].disk_view.entries[addr]
+        &&& forall |left: int, right: int|
+            0 <= left < witness.len()
+            && 0 <= right < witness.len()
+            && #[trigger] witness[left].root == #[trigger] witness[right].root
+            ==> witness[left] == witness[right]
+    }) by {
+        let witness = sources;
+        let witness_compactor = src.branch.compactors[input_idx];
+        let witness_roots = witness_compactor.input_buffers.addrs;
+        let witness_selected_input_aus = summary_aus(
+            src.branch.branch_summary.restrict(
+                to_aus(witness_roots.to_set()),
+            ),
+        );
+        assert(witness_roots == roots);
+        assert(witness_selected_input_aus == selected_input_aus);
+        assert(witness.len() == witness_roots.len());
+        assert forall |i: int| 0 <= i < witness.len() implies {
+            let source = #[trigger] witness[i];
+            &&& source.valid_sealed_branch()
+            &&& source.tight_disk_view_with_summary()
+            &&& source.root == witness_roots[i]
+            &&& source.get_summary() <= witness_selected_input_aus
+            &&& src.branch.branch_summary.contains_key(source.root.au)
+            &&& source.get_summary()
+                == src.branch.branch_summary[source.root.au]
+            &&& cached_branch_scan_valid(src.cache, source)
+        } by {
+        }
+        assert forall |left: int, right: int, addr: Address|
+            0 <= left < witness.len()
+            && 0 <= right < witness.len()
+            && #[trigger] witness[left].disk_view.entries.contains_key(addr)
+            && #[trigger] witness[right].disk_view.entries.contains_key(addr)
+            implies witness[left].disk_view.entries[addr]
+                == witness[right].disk_view.entries[addr]
+        by {
+        }
+        assert forall |left: int, right: int|
+            0 <= left < witness.len()
+            && 0 <= right < witness.len()
+            && #[trigger] witness[left].root == #[trigger] witness[right].root
+            implies witness[left] == witness[right]
+        by {
+        }
+    }
+}
+
+proof fn cached_branch_path_valid_from_semantic(
+    src: UnifiedCacheBranchBetreeSource,
+    branch: LinkedBranch<Summary>,
+    ranking: Ranking,
+    key: Key,
+    fuel: nat,
+    summary: Summary,
+)
+    requires
+        inv(src),
+        src.control.metadata_loaded,
+        branch.wf(),
+        branch.valid_ranking(ranking),
+        branch.keys_strictly_sorted_internal(ranking),
+        branch.has_root(),
+        branch.disk_view.entries <= to_branch_nodes(
+            src.known_branch_i().disk.visible(),
+        ).restrict(addresses_in_aus(summary)),
+        summary <= src.branch_projection_aus(),
+    ensures
+        cached_branch_path_valid(
+            src.cache,
+            branch.root,
+            key,
+            fuel,
+            summary,
+        ),
+    decreases fuel,
+{
+    if fuel == 0 {
+        return;
+    }
+    let addr = branch.root;
+    let node = branch.root();
+    assert(branch.disk_view.entries.contains_key(addr));
+    assert(to_branch_nodes(
+        src.known_branch_i().disk.visible(),
+    ).restrict(addresses_in_aus(summary)).contains_key(addr));
+    assert(addresses_in_aus(summary).contains(addr));
+    assert(summary.contains(addr.au));
+    assert forall |raw: RawPage|
+        #[trigger] src.cache.valid_read(addr, raw)
+        implies {
+            let parsed = raw_page_to_branch_node(raw);
+            let line = crate::implementation::CachedBranch_v::
+                LoadedPathReceiptLine { addr, node: parsed };
+            &&& line.wf()
+            &&& match parsed {
+                BranchNode::Leaf { .. } => true,
+                BranchNode::Index { children, .. } => {
+                    let child_idx = parsed.route(key) + 1;
+                    &&& 0 <= child_idx < children.len()
+                    &&& cached_branch_path_valid(
+                        src.cache,
+                        children[child_idx],
+                        key,
+                        (fuel - 1) as nat,
+                        summary,
+                    )
+                },
+                BranchNode::Auxiliary(_) => false,
+            }
+    } by {
+        let component = src.known_branch_i();
+        let bounded = to_branch_nodes(
+            component.disk.visible(),
+        ).restrict(addresses_in_aus(summary));
+        assert(branch.disk_view.entries[addr] == bounded[addr]);
+        assert(bounded.contains_key(addr));
+        assert(to_branch_nodes(component.disk.visible())
+            .contains_key(addr));
+        assert(component.disk.visible().contains_key(addr));
+        source_valid_read_matches_branch_visible(src, addr, raw);
+        assert(to_branch_nodes(component.disk.visible())[addr]
+            == raw_page_to_branch_node(raw));
+        assert(bounded[addr]
+            == to_branch_nodes(component.disk.visible())[addr]);
+        assert(raw_page_to_branch_node(raw) == node);
+        assert(crate::implementation::CachedBranch_v::
+            LoadedPathReceiptLine {
+                addr,
+                node: raw_page_to_branch_node(raw),
+            }.wf());
+        match node {
+            BranchNode::Leaf { .. } => {},
+            BranchNode::Index { children, .. } => {
+                let child_idx = node.route(key) + 1;
+                Key::strictly_sorted_implies_sorted(node->pivots);
+                Key::largest_lte_ensures(
+                    node->pivots,
+                    key,
+                    node.route(key),
+                );
+                assert(node.valid_child_index(child_idx));
+                let child = branch.child_at_idx(child_idx);
+                assert(child.wf());
+                assert(child.valid_ranking(ranking));
+                assert(child.keys_strictly_sorted_internal(ranking));
+                assert(child.has_root());
+                assert(child.root == children[child_idx]);
+                assert(child.disk_view == branch.disk_view);
+                cached_branch_path_valid_from_semantic(
+                    src,
+                    child,
+                    ranking,
+                    key,
+                    (fuel - 1) as nat,
+                    summary,
+                );
+            },
+            BranchNode::Auxiliary(_) => {
+                assert(!branch.has_root());
+                assert(false);
+            },
+        }
+    }
+}
+
+proof fn cached_betree_query_valid_from_semantic(
+    src: UnifiedCacheBranchBetreeSource,
+    current: LinkedBetree<BranchNode>,
+    key: Key,
+    betree_fuel: nat,
+    branch_fuel: nat,
+)
+    requires
+        inv(src),
+        src.control.metadata_loaded,
+        branch_fuel > 0,
+        current.acyclic(),
+        current.has_root(),
+        current.root().key_in_domain(key),
+        current.dv == src.known_branch_i().linked_i().dv,
+        current.buffer_dv == src.known_branch_i().linked_i().buffer_dv,
+        current.reachable_betree_addrs()
+            <= src.known_branch_i().linked_i().reachable_betree_addrs(),
+        current.reachable_buffer_addrs()
+            <= src.known_branch_i().linked_i().reachable_buffer_addrs(),
+    ensures
+        cached_betree_query_valid(
+            src.cache,
+            current.root.unwrap(),
+            key,
+            betree_fuel,
+            branch_fuel,
+            src.branch.betree_aus.dom(),
+            src.branch.branch_summary,
+            summary_aus(src.branch.branch_summary),
+        ),
+    decreases betree_fuel,
+{
+    if betree_fuel == 0 {
+        return;
+    }
+    let component = src.known_branch_i();
+    let linked = component.linked_i();
+    let tight = component.tight_betree_i();
+    let addr = current.root.unwrap();
+    let node = current.root();
+    assert(component.refinement_inv());
+    component.linked_i_tight_tree_facts();
+    assert(tight.acyclic());
+    assert(linked.acyclic());
+    assert(linked.root == tight.root);
+    assert(linked.dv == tight.dv);
+    assert(linked.reachable_betree_addrs()
+        == tight.reachable_betree_addrs());
+    linked.same_reachable_betree_addrs_implies_same_buffer_addrs(
+        tight,
+    );
+    current.reachable_betree_addrs_using_ranking_closed(
+        current.the_ranking(),
+    );
+    assert(current.reachable_betree_addrs().contains(addr));
+    assert(linked.reachable_betree_addrs().contains(addr));
+    assert(linked.dv.entries.contains_key(addr));
+    assert(component.visible_betree_entries().contains_key(addr));
+    assert(linked.dv.entries[addr]
+        == component.visible_betree_entries()[addr]);
+    assert(current.dv.entries[addr] == node);
+    assert(component.visible_betree_entries()[addr] == node);
+    assert(addresses_in_aus(src.branch.betree_aus.dom())
+        .contains(addr));
+    assert(src.branch.betree_aus.dom().contains(addr.au));
+    assert(src.branch.betree_aus.dom()
+        <= src.branch_projection_aus());
+    assert forall |raw: RawPage|
+        #[trigger] src.cache.valid_read(addr, raw)
+        implies {
+            let parsed = raw_page_to_betree_node(raw);
+            &&& parsed.key_in_domain(key)
+            &&& forall |i: int|
+                parsed.flushed_ofs(key) <= i < parsed.buffers.len()
+                ==> {
+                    let root = #[trigger] parsed.buffers.addrs[i];
+                    &&& src.branch.branch_summary.contains_key(root.au)
+                    &&& src.branch.branch_summary[root.au]
+                        <= summary_aus(src.branch.branch_summary)
+                    &&& cached_branch_path_valid(
+                        src.cache,
+                        root,
+                        key,
+                        branch_fuel,
+                        src.branch.branch_summary[root.au],
+                    )
+                }
+            &&& match parsed.child_ptr(key) {
+                Some(child) => {
+                    cached_betree_query_valid(
+                        src.cache,
+                        child,
+                        key,
+                        (betree_fuel - 1) as nat,
+                        branch_fuel,
+                        src.branch.betree_aus.dom(),
+                        src.branch.branch_summary,
+                        summary_aus(src.branch.branch_summary),
+                    )
+                },
+                None => true,
+            }
+    } by {
+        assert(component.visible_betree_entries()
+            .contains_key(addr));
+        assert(component.visible_betree_entries()[addr]
+            == to_betree_nodes(component.disk.visible())[addr]);
+        assert(component.disk.visible().contains_key(addr));
+        assert(addresses_in_aus(src.branch_projection_aus())
+            .contains(addr));
+        source_valid_read_matches_branch_visible(src, addr, raw);
+        assert(to_betree_nodes(component.disk.visible())[addr]
+            == raw_page_to_betree_node(raw));
+        assert(component.visible_betree_entries()[addr]
+            == raw_page_to_betree_node(raw));
+        assert(raw_page_to_betree_node(raw) == node);
+        assert(node.key_in_domain(key));
+        assert forall |i: int|
+            node.flushed_ofs(key) <= i < node.buffers.len()
+            implies {
+                let root = #[trigger] node.buffers.addrs[i];
+                &&& src.branch.branch_summary.contains_key(root.au)
+                &&& src.branch.branch_summary[root.au]
+                    <= summary_aus(src.branch.branch_summary)
+                &&& cached_branch_path_valid(
+                    src.cache,
+                    root,
+                    key,
+                    branch_fuel,
+                    src.branch.branch_summary[root.au],
+                )
+            } by {
+            let root = node.buffers.addrs[i];
+            assert(current.reachable_betree_addrs().contains(addr));
+            assert(current.reachable_buffer(addr, root));
+            assert(current.reachable_buffer_addrs().contains(root));
+            assert(linked.reachable_buffer_addrs().contains(root));
+            assert(tight.reachable_buffer_addrs().contains(root));
+
+            assert(component.semantic_branch_roots().contains(root));
+            assert(component.tight_branches_exist());
+            let summary = src.branch.branch_summary[root.au];
+            let model = component.i();
+            model.inv_branch_summary_ensures();
+            let (_, model_branch_likes) =
+                model.betree.linked.transitive_likes();
+            let model_roots = model_branch_likes.dom()
+                + CompactorInput::input_roots(model.compactors);
+            assert(model_roots.finite());
+            model.betree.linked.buffer_dv
+                .build_branch_summary_finite(model_roots);
+            assert(model.branch_summary
+                == model.betree.linked.buffer_dv
+                    .build_branch_summary(model_roots));
+            assert(src.branch.branch_summary.values().finite());
+            assert(src.branch.branch_summary.contains_value(summary));
+            lemma_union_set_of_sets_subset(
+                src.branch.branch_summary.values(),
+                summary,
+            );
+            assert(summary <= summary_aus(
+                src.branch.branch_summary,
+            ));
+            assert(tight_branch_exists(
+                loose_disk_for_summary(
+                    component.visible_sealed_branch_disk(),
+                    summary,
+                ),
+                root,
+                summary,
+            ));
+            tight_branch_of_is_candidate(
+                loose_disk_for_summary(
+                    component.visible_sealed_branch_disk(),
+                    summary,
+                ),
+                root,
+                summary,
+            );
+            let branch = tight_branch_of(
+                loose_disk_for_summary(
+                    component.visible_sealed_branch_disk(),
+                    summary,
+                ),
+                root,
+                summary,
+            );
+            assert(branch.inv());
+            assert(branch.has_root());
+            let summary_disk = to_branch_nodes(
+                component.disk.visible(),
+            ).restrict(addresses_in_aus(summary));
+            let loose = loose_disk_for_summary(
+                component.visible_sealed_branch_disk(),
+                summary,
+            );
+            assert(loose.entries <= summary_disk) by {
+                assert forall |branch_addr: Address|
+                    #[trigger] loose.entries.contains_key(branch_addr)
+                    implies {
+                        &&& summary_disk.contains_key(branch_addr)
+                        &&& loose.entries[branch_addr]
+                            == summary_disk[branch_addr]
+                    } by {
+
+
+
+                }
+            }
+            vstd::map_lib::lemma_submap_of_trans(
+                branch.disk_view.entries,
+                loose.entries,
+                summary_disk,
+            );
+            assert(summary_aus(src.branch.branch_summary)
+                <= src.branch_projection_aus());
+            cached_branch_path_valid_from_semantic(
+                src,
+                branch,
+                branch.the_ranking(),
+                key,
+                branch_fuel,
+                summary,
+            );
+        }
+        match node.child_ptr(key) {
+            Some(child_addr) => {
+                let child_idx = node.pivots.route(key) as nat;
+                node.pivots.route_lemma(key);
+                assert(node.valid_child_index(child_idx));
+                let child = current.child_at_idx(child_idx);
+                assert(node.children[child_idx as int]
+                    == Some(child_addr));
+                assert(child.root == Some(child_addr));
+                current.child_at_idx_reachable_addrs_ensures(child_idx);
+                assert(current.dv.child_linked(node, child_idx));
+                assert(child.root().my_domain()
+                    == node.child_domain(child_idx));
+                assert(node.child_domain(child_idx).contains(key));
+                assert(child.root().key_in_domain(key));
+                cached_betree_query_valid_from_semantic(
+                    src,
+                    child,
+                    key,
+                    (betree_fuel - 1) as nat,
+                    branch_fuel,
+                );
+            },
+            None => {},
+        }
+    }
+}
+
+pub proof fn ready_query_cache_inv(
+    src: UnifiedCacheBranchBetreeSource,
+    betree_fuel: nat,
+    branch_fuel: nat,
+)
+    requires
+        inv(src),
+        src.control.metadata_loaded,
+        betree_fuel > 0,
+        branch_fuel > 0,
+    ensures
+        src.branch.root is Some ==> forall |key: Key|
+            cached_betree_query_valid(
+                src.cache,
+                src.branch.root.unwrap(),
+                key,
+                betree_fuel,
+                branch_fuel,
+                src.branch.betree_aus.dom(),
+                src.branch.branch_summary,
+                summary_aus(src.branch.branch_summary),
+            ),
+{
+    if src.branch.root is Some {
+        let component = src.known_branch_i();
+        let linked = component.linked_i();
+        component.linked_i_tight_tree_facts();
+        assert(linked.root == src.branch.root);
+        assert(linked.root().my_domain()
+            == crate::betree::Domain_v::total_domain());
+        assert forall |key: Key|
+            cached_betree_query_valid(
+                src.cache,
+                src.branch.root.unwrap(),
+                key,
+                betree_fuel,
+                branch_fuel,
+                src.branch.betree_aus.dom(),
+                src.branch.branch_summary,
+                summary_aus(src.branch.branch_summary),
+            ) by {
+            assert(linked.root().key_in_domain(key));
+            cached_betree_query_valid_from_semantic(
+                src,
+                linked,
+                key,
+                betree_fuel,
+                branch_fuel,
+            );
+        }
+    }
+}
+
+pub open spec fn projected_query_access(
+    pre: UnifiedCacheBranchBetreeSource,
+    access: PageAccess,
+) -> PageAccess {
+    let owned_addrs = addresses_in_aus(pre.branch_projection_aus());
+    PageAccess {
+        betree_reads: access.betree_reads.restrict(owned_addrs),
+        branch_reads: access.branch_reads.restrict(owned_addrs),
+        betree_writes: Map::empty(),
+        branch_writes: Map::empty(),
+    }
+}
+
 pub proof fn query_refines(
     pre: UnifiedCacheBranchBetreeSource,
     post: UnifiedCacheBranchBetreeSource,
@@ -7933,6 +7332,7 @@ pub proof fn query_refines(
                 end_lsn,
                 key,
                 value,
+                access: access.cached_access(),
             },
             receipt,
             access.loaded_betree_reads(),
@@ -7947,6 +7347,7 @@ pub proof fn query_refines(
                     end_lsn,
                     key,
                     value,
+                    access: projected_query_access(pre, access),
                 },
                 deallocs: Set::empty(),
             },
@@ -7964,17 +7365,13 @@ pub proof fn query_refines(
         access.betree_reads.restrict(owned_addrs);
     let tight_branch_reads =
         access.branch_reads.restrict(owned_addrs);
-    let tight_access = PageAccess {
-        betree_reads: tight_betree_reads,
-        branch_reads: tight_branch_reads,
-        betree_writes: Map::empty(),
-        branch_writes: Map::empty(),
-    };
+    let tight_access = projected_query_access(pre, access);
     let component_lbl =
         CachingDiskBranchBetree::Label::Query {
             end_lsn,
             key,
             value,
+            access: tight_access,
         };
     let target_lbl =
         CrashAwareCachingDiskBranchBetree::Label::
@@ -7983,15 +7380,12 @@ pub proof fn query_refines(
                 deallocs: Set::empty(),
             };
 
-    reveal(CachedBranchBetree::State::query);
     assert(receipt.valid_for(
         pre.branch.root,
         key,
         to_betree_nodes(access.betree_reads),
         to_branch_nodes(access.branch_reads),
     ));
-    reveal(UnifiedCacheBranchBetreeSource::
-        ephemeral_branch_i);
     assert(src.ephemeral is Known);
     assert(component_pre.refinement_inv());
     component_pre.linked_i_is_tight_candidate();
@@ -8016,8 +7410,6 @@ pub proof fn query_refines(
                         )[addr]
                 }
             by {
-                reveal(CachingDiskBranchBetree::State::
-                    visible_betree_entries);
             }
         }
         vstd::map_lib::lemma_submap_of_trans(
@@ -8030,12 +7422,6 @@ pub proof fn query_refines(
         == linked.reachable_betree_addrs());
     assert(linked.buffer_dv.entries
         <= to_branch_nodes(component_pre.disk.visible())) by {
-        reveal(crate::implementation::
-            CachingDiskBranchBetree_v::
-                tight_sealed_branch_disk);
-        reveal(crate::implementation::
-            CachingDiskBranchBetree_v::
-                visible_branch_disk);
     }
 
     assert forall |addr: Address|
@@ -8060,14 +7446,6 @@ pub proof fn query_refines(
     );
     assert(tight_betree_reads
         <= component_pre.disk.cache) by {
-        reveal(UnifiedCacheBranchBetreeSource::
-            branch_caching_disk_i);
-        reveal(UnifiedCacheBranchBetreeSource::
-            known_branch_i);
-        reveal(crate::implementation::
-            CachingDiskAdapterRefinement_v::
-                project_cache_pages_by_addrs);
-        reveal(project_cache_pages);
     }
     assert forall |addr: Address|
         #[trigger] tight_branch_reads.contains_key(addr)
@@ -8091,24 +7469,17 @@ pub proof fn query_refines(
     );
     assert(tight_branch_reads
         <= component_pre.disk.cache) by {
-        reveal(UnifiedCacheBranchBetreeSource::
-            branch_caching_disk_i);
-        reveal(UnifiedCacheBranchBetreeSource::
-            known_branch_i);
-        reveal(crate::implementation::
-            CachingDiskAdapterRefinement_v::
-                project_cache_pages_by_addrs);
-        reveal(project_cache_pages);
     }
 
-    assert(receipt.path.valid_for(
-        linked.root,
-        to_betree_nodes(tight_betree_reads),
-    )) by {
+    if linked.root is Some {
         assert(receipt.path.valid_for(
             linked.root,
-            to_betree_nodes(access.betree_reads),
-        ));
+            to_betree_nodes(tight_betree_reads),
+        )) by {
+            assert(receipt.path.valid_for(
+                linked.root,
+                to_betree_nodes(access.betree_reads),
+            ));
         assert(receipt.path.needed_addrs()
             <= to_betree_nodes(tight_betree_reads).dom())
         by {
@@ -8133,9 +7504,9 @@ pub proof fn query_refines(
                     .contains_key(addr));
             }
         }
-        assert forall |i: int|
-            0 <= i < receipt.path.lines.len()
-            implies {
+            assert forall |i: int|
+                0 <= i < receipt.path.lines.len()
+                implies {
                 &&& to_betree_nodes(tight_betree_reads)
                     .contains_key(
                         receipt.path.lines[i].addr,
@@ -8145,23 +7516,24 @@ pub proof fn query_refines(
                 )[receipt.path.lines[i].addr]
                     == receipt.path.lines[i].node
             }
-        by {
-            let addr = receipt.path.lines[i].addr;
-            assert(receipt.path.needed_addrs()
-                .contains(addr));
-            betree_receipt_needed_addr_in_projection(
-                pre,
-                post.cache,
-                access,
-                linked,
-                receipt.path,
-                addr,
-            );
-            assert(tight_betree_reads.contains_key(addr));
-            assert(tight_betree_reads[addr]
-                == access.betree_reads[addr]);
-            assert(to_betree_nodes(tight_betree_reads)[addr]
-                == to_betree_nodes(access.betree_reads)[addr]);
+            by {
+                let addr = receipt.path.lines[i].addr;
+                assert(receipt.path.needed_addrs()
+                    .contains(addr));
+                betree_receipt_needed_addr_in_projection(
+                    pre,
+                    post.cache,
+                    access,
+                    linked,
+                    receipt.path,
+                    addr,
+                );
+                assert(tight_betree_reads.contains_key(addr));
+                assert(tight_betree_reads[addr]
+                    == access.betree_reads[addr]);
+                assert(to_betree_nodes(tight_betree_reads)[addr]
+                    == to_betree_nodes(access.betree_reads)[addr]);
+            }
         }
     }
 
@@ -8311,7 +7683,6 @@ pub proof fn query_refines(
             writes: tight_access.writes(),
         },
     )) by {
-        reveal(CachingDisk::State::access);
         let empty_status = crate::implementation::
             CachingDisk_v::status_map(
                 tight_access.writes().dom(),
@@ -8343,6 +7714,7 @@ pub proof fn query_refines(
     }
     reveal(CachingDisk::State::next);
 
+    tight_access.cached_read_only_shape();
     assert(CachedBranchBetree::State::query(
         component_pre.betree,
         component_pre.betree,
@@ -8350,30 +7722,37 @@ pub proof fn query_refines(
             end_lsn,
             key,
             value,
+            access: tight_access.cached_access(),
         },
         receipt,
         tight_access.loaded_betree_reads(),
         tight_access.loaded_branch_reads(),
     )) by {
-        reveal(CachedBranchBetree::State::query);
     }
+    assert(CachedBranchBetree::State::next_by(
+        component_pre.betree,
+        component_pre.betree,
+        component_lbl.cached_i(),
+        CachedBranchBetree::Step::query(
+            receipt,
+            tight_access.loaded_betree_reads(),
+            tight_access.loaded_branch_reads(),
+        ),
+    )) by {
+        reveal(CachedBranchBetree::State::next_by);
+    }
+    reveal(CachedBranchBetree::State::next);
     assert(CachingDiskBranchBetree::State::query(
         component_pre,
         component_pre,
         component_lbl,
-        receipt,
-        tight_access,
     )) by {
-        reveal(CachingDiskBranchBetree::State::query);
     }
     assert(CachingDiskBranchBetree::State::next_by(
         component_pre,
         component_pre,
         component_lbl,
-        CachingDiskBranchBetree::Step::query(
-            receipt,
-            tight_access,
-        ),
+        CachingDiskBranchBetree::Step::query(),
     )) by {
         reveal(CachingDiskBranchBetree::State::next_by);
     }
@@ -8436,17 +7815,11 @@ pub proof fn query_refines(
         CrashAwareCachingDiskBranchBetree_v::
             logical_allocs(component_lbl)
         =~= Set::<AU>::empty()) by {
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_allocs);
     }
     assert(crate::implementation::
         CrashAwareCachingDiskBranchBetree_v::
             logical_deallocs(component_lbl)
         =~= Set::<AU>::empty()) by {
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_deallocs);
     }
     assert(crate::implementation::
         CrashAwareCachingDiskBranchBetree_v::
@@ -8475,17 +7848,6 @@ pub proof fn query_refines(
             target_lbl,
             component_post,
         )) by {
-        reveal(CrashAwareCachingDiskBranchBetree::State::
-            ephemeral_step);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_allocs);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_deallocs);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                protected_aus);
     }
     assert(CrashAwareCachingDiskBranchBetree::State::next_by(
         src,
@@ -8499,7 +7861,6 @@ pub proof fn query_refines(
     reveal(CrashAwareCachingDiskBranchBetree::State::next);
     src.next_refines(dst, target_lbl);
 
-    reveal(UnifiedCacheBranchBetreeSource::inv);
     assert(post.control_wf());
     assert(post.i().refinement_inv());
     assert(post.inv());
@@ -8522,9 +7883,10 @@ pub proof fn branch_begin_refines(
         CachedBranchBetree::State::branch_begin(
             pre.branch,
             post.branch,
-            CachedBranchBetree::Label::InternalAlloc {
+            CachedBranchBetree::Label::InternalAllocAccess {
                 allocs,
                 deallocs,
+                access: CachedBranchBetreeAccess::empty(),
             },
         ),
     ensures
@@ -8534,11 +7896,12 @@ pub proof fn branch_begin_refines(
             CrashAwareCachingDiskBranchBetree::Label::
                 Ephemeral {
                     op: CachingDiskBranchBetree::Label::
-                        InternalAlloc {
+                        InternalAllocAccess {
                             allocs,
                             deallocs,
                             guard_aus:
                                 pre.control.protected_aus(),
+                            access: PageAccess::empty(),
                         },
                     deallocs:
                         pre.control.reclaimable(deallocs),
@@ -8549,8 +7912,8 @@ pub proof fn branch_begin_refines(
                 - pre.control.reclaimable(deallocs),
         pre.control.reclaimable(deallocs)
             <= pre.branch_projection_aus(),
-        cached_branch_alloc_aus(post.branch.wip_branches)
-            == cached_branch_alloc_aus(
+        cached_bulk_branch_alloc_aus(post.branch.wip_branches)
+            == cached_bulk_branch_alloc_aus(
                 pre.branch.wip_branches,
             ),
         inv(post),
@@ -8560,10 +7923,11 @@ pub proof fn branch_begin_refines(
     let component_pre = pre.known_branch_i();
     let component_post = post.known_branch_i();
     let component_lbl =
-        CachingDiskBranchBetree::Label::InternalAlloc {
+        CachingDiskBranchBetree::Label::InternalAllocAccess {
             allocs,
             deallocs,
             guard_aus: pre.control.protected_aus(),
+            access: PageAccess::empty(),
         };
     let target_lbl =
         CrashAwareCachingDiskBranchBetree::Label::
@@ -8573,7 +7937,6 @@ pub proof fn branch_begin_refines(
                     pre.control.reclaimable(deallocs),
             };
 
-    reveal(CachedBranchBetree::State::branch_begin);
     assert(allocs.is_empty());
     assert(deallocs.is_empty());
     assert(post.branch.betree_aus
@@ -8586,48 +7949,34 @@ pub proof fn branch_begin_refines(
         == pre.branch.compactors);
     assert(post.branch.wip_branches
         == pre.branch.wip_branches.push(
-            crate::implementation::
-                CachedBranchBetree_v::
-                    CachedAllocationBranch::new(
-                        Set::empty(),
-                    ),
+            CachedBulkBranch::new(Set::empty()),
         ));
     assert(crate::implementation::
-        CachedBranchBetree_v::
-            cached_branch_alloc_aus(
+        CachedBulkBranch_v::cached_bulk_branch_alloc_aus(
                 post.branch.wip_branches,
             )
         == crate::implementation::
-            CachedBranchBetree_v::
-                cached_branch_alloc_aus(
+            CachedBulkBranch_v::cached_bulk_branch_alloc_aus(
                     pre.branch.wip_branches,
                 )) by {
         crate::implementation::
-            CachedBranchBetree_v::
-                cached_branch_alloc_aus_push_subset(
+            CachedBulkBranch_v::cached_bulk_branch_alloc_aus_push_subset(
                     pre.branch.wip_branches,
-                    crate::implementation::
-                        CachedBranchBetree_v::
-                            CachedAllocationBranch::new(
-                                Set::empty(),
-                            ),
+                    CachedBulkBranch::new(Set::empty()),
                     Set::empty(),
                 );
         assert forall |au: AU|
             #[trigger] crate::implementation::
-                CachedBranchBetree_v::
-                    cached_branch_alloc_aus(
+                CachedBulkBranch_v::cached_bulk_branch_alloc_aus(
                         pre.branch.wip_branches,
                     ).contains(au)
             implies crate::implementation::
-                CachedBranchBetree_v::
-                    cached_branch_alloc_aus(
+                CachedBulkBranch_v::cached_bulk_branch_alloc_aus(
                         post.branch.wip_branches,
                     ).contains(au)
         by {
             let idx = crate::implementation::
-                CachedBranchBetree_v::
-                    cached_branch_alloc_aus_contains(
+                CachedBulkBranch_v::cached_bulk_branch_alloc_aus_contains(
                         pre.branch.wip_branches,
                         au,
                     );
@@ -8646,35 +7995,71 @@ pub proof fn branch_begin_refines(
     }
     assert(post.branch.owned_aus()
         == pre.branch.owned_aus()) by {
-        reveal(CachedBranchBetree::State::owned_aus);
     }
     assert(post.branch_projection_aus()
         == pre.branch_projection_aus());
     assert(component_post.disk
         == component_pre.disk);
+    PageAccess::empty_cached_access_is_empty();
+    PageAccess::empty_effects_are_empty();
+    assert(disk_extend_for_alloc(
+        component_pre.disk,
+        component_post.disk,
+        allocs,
+    ));
+    crate::implementation::CachingDiskBranchBetree_v::
+        disk_extension_is_empty_alloc_access(
+            component_pre.disk,
+            component_post.disk,
+            allocs,
+            pre.control.protected_aus(),
+        );
+    assert(disk_access_for_alloc(
+        component_pre.disk,
+        component_post.disk,
+        allocs,
+        deallocs,
+        pre.control.protected_aus(),
+        PageAccess::empty().reads(),
+        PageAccess::empty().writes(),
+    ));
+    assert(CachedBranchBetree::State::branch_begin(
+        component_pre.betree,
+        post.branch,
+        component_lbl.cached_i(),
+    ));
 
-    assert(CachingDiskBranchBetree::State::branch_begin(
+    assert(CachedBranchBetree::State::next_by(
+        component_pre.betree,
+        post.branch,
+        component_lbl.cached_i(),
+        CachedBranchBetree::Step::branch_begin(),
+    )) by {
+        reveal(CachedBranchBetree::State::next_by);
+    }
+    reveal(CachedBranchBetree::State::next);
+
+    assert(CachingDiskBranchBetree::State::internal_alloc_access(
         component_pre,
         component_post,
         component_lbl,
         post.branch,
+        component_post.disk,
     )) by {
-        reveal(CachingDiskBranchBetree::State::branch_begin);
     }
     assert(CachingDiskBranchBetree::State::next_by(
         component_pre,
         component_post,
         component_lbl,
-        CachingDiskBranchBetree::Step::branch_begin(
+        CachingDiskBranchBetree::Step::internal_alloc_access(
             post.branch,
+            component_post.disk,
         ),
     )) by {
         reveal(CachingDiskBranchBetree::State::next_by);
     }
     reveal(CachingDiskBranchBetree::State::next);
 
-    reveal(UnifiedCacheBranchBetreeSource::
-        ephemeral_branch_i);
     assert(src.ephemeral is Known);
     assert(dst.ephemeral is Known);
     assert(src.ephemeral->persistent_aus
@@ -8703,17 +8088,6 @@ pub proof fn branch_begin_refines(
             target_lbl,
             component_post,
         )) by {
-        reveal(CrashAwareCachingDiskBranchBetree::State::
-            ephemeral_step);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_allocs);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_deallocs);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_guard_aus);
     }
     assert(CrashAwareCachingDiskBranchBetree::State::next_by(
         src,
@@ -8727,7 +8101,6 @@ pub proof fn branch_begin_refines(
     reveal(CrashAwareCachingDiskBranchBetree::State::next);
     src.next_refines(dst, target_lbl);
 
-    reveal(UnifiedCacheBranchBetreeSource::inv);
     assert(post.control_wf());
     assert(post.i().refinement_inv());
     assert(post.inv());
@@ -8739,8 +8112,7 @@ pub proof fn branch_fill_refines(
     allocs: Set<AU>,
     deallocs: Set<AU>,
     idx: int,
-    post_branch: crate::implementation::
-        CachedBranchBetree_v::CachedAllocationBranch,
+    post_branch: CachedBulkBranch,
 )
     requires
         inv(pre),
@@ -8756,18 +8128,16 @@ pub proof fn branch_fill_refines(
         post.persistent_image == pre.persistent_image,
         post.sync_phase == pre.sync_phase,
         post.control == pre.control,
-        CachedBranchBetree::State::branch_build(
+        CachedBranchBetree::State::branch_fill(
             pre.branch,
             post.branch,
-            CachedBranchBetree::Label::InternalAlloc {
+            CachedBranchBetree::Label::InternalAllocAccess {
                 allocs,
                 deallocs,
+                access: CachedBranchBetreeAccess::empty(),
             },
             idx,
             post_branch,
-            crate::implementation::
-                CachedBranchBetree_v::
-                    CachedAllocationBranchEvent::AllocFill{},
         ),
     ensures
         CrashAwareCachingDiskBranchBetree::State::next(
@@ -8776,11 +8146,12 @@ pub proof fn branch_fill_refines(
             CrashAwareCachingDiskBranchBetree::Label::
                 Ephemeral {
                     op: CachingDiskBranchBetree::Label::
-                        InternalAlloc {
+                        InternalAllocAccess {
                             allocs,
                             deallocs,
                             guard_aus:
                                 pre.control.protected_aus(),
+                            access: PageAccess::empty(),
                         },
                     deallocs:
                         pre.control.reclaimable(deallocs),
@@ -8791,8 +8162,8 @@ pub proof fn branch_fill_refines(
                 - pre.control.reclaimable(deallocs),
         pre.control.reclaimable(deallocs)
             <= pre.branch_projection_aus(),
-        cached_branch_alloc_aus(post.branch.wip_branches)
-            == cached_branch_alloc_aus(
+        cached_bulk_branch_alloc_aus(post.branch.wip_branches)
+            == cached_bulk_branch_alloc_aus(
                 pre.branch.wip_branches,
             ) + allocs,
         inv(post),
@@ -8802,10 +8173,11 @@ pub proof fn branch_fill_refines(
     let component_pre = pre.known_branch_i();
     let component_post = post.known_branch_i();
     let component_lbl =
-        CachingDiskBranchBetree::Label::InternalAlloc {
+        CachingDiskBranchBetree::Label::InternalAllocAccess {
             allocs,
             deallocs,
             guard_aus: pre.control.protected_aus(),
+            access: PageAccess::empty(),
         };
     let target_lbl =
         CrashAwareCachingDiskBranchBetree::Label::
@@ -8815,10 +8187,6 @@ pub proof fn branch_fill_refines(
                     pre.control.reclaimable(deallocs),
             };
 
-    reveal(CachedBranchBetree::State::branch_build);
-    reveal(crate::implementation::
-        CachedBranchBetree_v::
-            CachedAllocationBranch::build_next);
     assert(deallocs.is_empty());
     assert(0 <= idx < pre.branch.wip_branches.len());
     assert(post.branch.wip_branches
@@ -8829,8 +8197,6 @@ pub proof fn branch_fill_refines(
     assert(post_branch
         == pre.branch.wip_branches[idx]
             .fill_aus(allocs));
-    reveal(UnifiedCacheBranchBetreeSource::
-        ephemeral_branch_i);
     assert(src.ephemeral is Known);
     assert(component_pre.refinement_inv());
     assert(component_pre.i().inv());
@@ -8838,13 +8204,11 @@ pub proof fn branch_fill_refines(
         .mini_allocator
         == pre.branch.wip_branches[idx]
             .mini_allocator) by {
-        reveal(CachingDiskBranchBetree::State::wip_branches_i);
-        reveal(CachingDiskBranchBetree::State::wip_branch_i);
     }
     assert(component_pre.i().wip_branches[idx].inv());
     assert(pre.branch.wip_branches[idx]
         .mini_allocator.wf());
-    crate::implementation::AllocationBranchStack_v::
+    crate::implementation::BranchProofUtils_v::
         mini_allocator_add_aus_preserves_all_aus(
             pre.branch.wip_branches[idx]
                 .mini_allocator,
@@ -8855,15 +8219,14 @@ pub proof fn branch_fill_refines(
             .mini_allocator.all_aus() + allocs);
 
     let pre_wip_aus = crate::implementation::
-        CachedBranchBetree_v::cached_branch_alloc_aus(
+        CachedBulkBranch_v::cached_bulk_branch_alloc_aus(
             pre.branch.wip_branches,
         );
     let post_wip_aus = crate::implementation::
-        CachedBranchBetree_v::cached_branch_alloc_aus(
+        CachedBulkBranch_v::cached_bulk_branch_alloc_aus(
             post.branch.wip_branches,
         );
-    crate::implementation::CachedBranchBetree_v::
-        cached_branch_alloc_aus_update_subset(
+    crate::implementation::CachedBulkBranch_v::cached_bulk_branch_alloc_aus_update_subset(
             pre.branch.wip_branches,
             idx,
             post_branch,
@@ -8889,8 +8252,7 @@ pub proof fn branch_fill_refines(
                     );
             } else {
                 let source_idx = crate::implementation::
-                    CachedBranchBetree_v::
-                        cached_branch_alloc_aus_contains(
+                    CachedBulkBranch_v::cached_bulk_branch_alloc_aus_contains(
                             pre.branch.wip_branches,
                             au,
                         );
@@ -8912,12 +8274,9 @@ pub proof fn branch_fill_refines(
     }
     assert(post.branch.owned_aus()
         == pre.branch.owned_aus() + allocs) by {
-        reveal(CachedBranchBetree::State::owned_aus);
     }
     assert(post.branch_projection_aus()
         == pre.branch_projection_aus() + allocs) by {
-        reveal(UnifiedCacheBranchBetreeSource::
-            branch_projection_aus);
     }
     projected_disk_extend_for_alloc(
         pre.cache,
@@ -8930,27 +8289,50 @@ pub proof fn branch_fill_refines(
         component_post.disk,
         allocs,
     ));
+    PageAccess::empty_cached_access_is_empty();
+    PageAccess::empty_effects_are_empty();
+    crate::implementation::CachingDiskBranchBetree_v::
+        disk_extension_is_empty_alloc_access(
+            component_pre.disk,
+            component_post.disk,
+            allocs,
+            pre.control.protected_aus(),
+        );
+    assert(disk_access_for_alloc(
+        component_pre.disk,
+        component_post.disk,
+        allocs,
+        deallocs,
+        pre.control.protected_aus(),
+        PageAccess::empty().reads(),
+        PageAccess::empty().writes(),
+    ));
 
-    assert(CachingDiskBranchBetree::State::branch_fill(
+    assert(CachedBranchBetree::State::next_by(
+        component_pre.betree,
+        post.branch,
+        component_lbl.cached_i(),
+        CachedBranchBetree::Step::branch_fill(idx, post_branch),
+    )) by {
+        reveal(CachedBranchBetree::State::next_by);
+    }
+    reveal(CachedBranchBetree::State::next);
+
+    assert(CachingDiskBranchBetree::State::internal_alloc_access(
         component_pre,
         component_post,
         component_lbl,
         post.branch,
         component_post.disk,
-        idx,
-        post_branch,
     )) by {
-        reveal(CachingDiskBranchBetree::State::branch_fill);
     }
     assert(CachingDiskBranchBetree::State::next_by(
         component_pre,
         component_post,
         component_lbl,
-        CachingDiskBranchBetree::Step::branch_fill(
+        CachingDiskBranchBetree::Step::internal_alloc_access(
             post.branch,
             component_post.disk,
-            idx,
-            post_branch,
         ),
     )) by {
         reveal(CachingDiskBranchBetree::State::next_by);
@@ -8962,12 +8344,6 @@ pub proof fn branch_fill_refines(
         == dst.ephemeral->persistent_aus);
     assert(src.frozen == dst.frozen);
     assert(src.prepared == dst.prepared) by {
-        reveal(UnifiedCacheBranchBetreeSource::
-            prepared_branch_image_i);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                CachingDiskBranchBetreeImage::
-                    materialized_from_persistent);
     }
     assert(pre.control.protected_aus()
         == crate::implementation::
@@ -8991,17 +8367,6 @@ pub proof fn branch_fill_refines(
             target_lbl,
             component_post,
         )) by {
-        reveal(CrashAwareCachingDiskBranchBetree::State::
-            ephemeral_step);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_allocs);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_deallocs);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_guard_aus);
     }
     assert(CrashAwareCachingDiskBranchBetree::State::next_by(
         src,
@@ -9015,7 +8380,6 @@ pub proof fn branch_fill_refines(
     reveal(CrashAwareCachingDiskBranchBetree::State::next);
     src.next_refines(dst, target_lbl);
 
-    reveal(UnifiedCacheBranchBetreeSource::inv);
     assert(post.control_wf());
     assert(post.i().refinement_inv());
     assert(post.inv());
@@ -9027,7 +8391,7 @@ pub proof fn branch_build_refines(
     allocs: Set<AU>,
     deallocs: Set<AU>,
     idx: int,
-    post_branch: CachedAllocationBranch,
+    post_branch: CachedBulkBranch,
     event: BranchBuildEvent,
     access: PageAccess,
 )
@@ -9056,9 +8420,10 @@ pub proof fn branch_build_refines(
         CachedBranchBetree::State::branch_build(
             pre.branch,
             post.branch,
-            CachedBranchBetree::Label::InternalAlloc {
+            CachedBranchBetree::Label::InternalAllocAccess {
                 allocs,
                 deallocs,
+                access: access.cached_access(),
             },
             idx,
             post_branch,
@@ -9071,11 +8436,12 @@ pub proof fn branch_build_refines(
             CrashAwareCachingDiskBranchBetree::Label::
                 Ephemeral {
                     op: CachingDiskBranchBetree::Label::
-                        InternalAlloc {
+                        InternalAllocAccess {
                             allocs,
                             deallocs,
                             guard_aus:
                                 pre.control.protected_aus(),
+                            access: projected_branch_build_access(pre, access),
                         },
                     deallocs:
                         pre.control.reclaimable(deallocs),
@@ -9095,8 +8461,8 @@ pub proof fn branch_build_refines(
                 pre.branch.wip_branches[idx]
                     .mini_allocator.all_aus(),
             ),
-        cached_branch_alloc_aus(post.branch.wip_branches)
-            <= cached_branch_alloc_aus(
+        cached_bulk_branch_alloc_aus(post.branch.wip_branches)
+            <= cached_bulk_branch_alloc_aus(
                 pre.branch.wip_branches,
             ),
         access.writes().dom()
@@ -9124,10 +8490,11 @@ pub proof fn branch_build_refines(
             ),
         };
     let component_lbl =
-        CachingDiskBranchBetree::Label::InternalAlloc {
+        CachingDiskBranchBetree::Label::InternalAllocAccess {
             allocs,
             deallocs,
             guard_aus: guard,
+            access: tight,
         };
     let target_lbl =
         CrashAwareCachingDiskBranchBetree::Label::
@@ -9172,7 +8539,6 @@ pub proof fn branch_build_refines(
     assert(expected_aus
         == (pre.branch_projection_aus() + allocs)
             - (deallocs - guard)) by {
-        reveal(AtomicBranchBetreeControl::reclaimable);
     }
     projected_disk_access_for_alloc(
         pre.cache,
@@ -9195,30 +8561,32 @@ pub proof fn branch_build_refines(
         tight.reads(),
         tight.writes(),
     ));
-    assert(CachingDiskBranchBetree::State::branch_build(
+    assert(CachedBranchBetree::State::next_by(
+        component_pre.betree,
+        post.branch,
+        component_lbl.cached_i(),
+        CachedBranchBetree::Step::branch_build(
+            idx, post_branch, event.cached_event(tight),
+        ),
+    )) by {
+        reveal(CachedBranchBetree::State::next_by);
+    }
+    reveal(CachedBranchBetree::State::next);
+    assert(CachingDiskBranchBetree::State::internal_alloc_access(
         component_pre,
         candidate_post,
         component_lbl,
         post.branch,
         candidate_post.disk,
-        idx,
-        post_branch,
-        event,
-        tight,
     )) by {
-        reveal(CachingDiskBranchBetree::State::branch_build);
     }
     assert(CachingDiskBranchBetree::State::next_by(
         component_pre,
         candidate_post,
         component_lbl,
-        CachingDiskBranchBetree::Step::branch_build(
+        CachingDiskBranchBetree::Step::internal_alloc_access(
             post.branch,
             candidate_post.disk,
-            idx,
-            post_branch,
-            event,
-            tight,
         ),
     )) by {
         reveal(CachingDiskBranchBetree::State::next_by);
@@ -9240,30 +8608,24 @@ pub proof fn branch_build_refines(
         tight,
     );
     assert(candidate_post.betree == post.branch);
-    assert(cached_branch_alloc_aus(
+    assert(cached_bulk_branch_alloc_aus(
         candidate_post.betree.wip_branches,
-    ) == cached_branch_alloc_aus(
+    ) == cached_bulk_branch_alloc_aus(
         pre.branch.wip_branches,
     ) - deallocs);
-    assert(cached_branch_alloc_aus(
+    assert(cached_bulk_branch_alloc_aus(
         post.branch.wip_branches,
-    ) == cached_branch_alloc_aus(
+    ) == cached_bulk_branch_alloc_aus(
         pre.branch.wip_branches,
     ) - deallocs);
-    assert(cached_branch_alloc_aus(
+    assert(cached_bulk_branch_alloc_aus(
         post.branch.wip_branches,
-    ) <= cached_branch_alloc_aus(
+    ) <= cached_bulk_branch_alloc_aus(
         pre.branch.wip_branches,
     ));
 
     assert(post.branch_projection_aus()
         == expected_aus) by {
-        reveal(UnifiedCacheBranchBetreeSource::
-            branch_projection_aus);
-        reveal(AtomicBranchBetreeControl::
-            protected_aus);
-        reveal(AtomicBranchBetreeControl::
-            reclaimable);
         assert forall |au: AU|
             #[trigger] post.branch_projection_aus()
                 .contains(au)
@@ -9287,20 +8649,12 @@ pub proof fn branch_build_refines(
         component_lbl,
     ));
 
-    reveal(UnifiedCacheBranchBetreeSource::
-        ephemeral_branch_i);
     assert(src.ephemeral is Known);
     assert(dst.ephemeral is Known);
     assert(src.ephemeral->persistent_aus
         == dst.ephemeral->persistent_aus);
     assert(src.frozen == dst.frozen);
     assert(src.prepared == dst.prepared) by {
-        reveal(UnifiedCacheBranchBetreeSource::
-            prepared_branch_image_i);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                CachingDiskBranchBetreeImage::
-                    materialized_from_persistent);
     }
     assert(guard
         == crate::implementation::
@@ -9316,18 +8670,6 @@ pub proof fn branch_build_refines(
             target_lbl,
             component_post,
         )) by {
-        reveal(CrashAwareCachingDiskBranchBetree::State::
-            ephemeral_step);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_allocs);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_deallocs);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_guard_aus);
-        reveal(AtomicBranchBetreeControl::reclaimable);
     }
     assert(CrashAwareCachingDiskBranchBetree::State::
         next_by(
@@ -9351,7 +8693,6 @@ pub proof fn branch_build_refines(
             writes: access.writes(),
         },
     );
-    reveal(UnifiedCacheBranchBetreeSource::inv);
     assert(post.control_wf());
     assert(post.i().refinement_inv());
     assert(post.inv());
@@ -9381,8 +8722,7 @@ pub proof fn internal_noop_refines(
 {
     let src = pre.i();
     let component = pre.known_branch_i();
-    let component_lbl =
-        CachingDiskBranchBetree::Label::Internal;
+    let component_lbl = CachingDiskBranchBetree::Label::Internal;
     let target_lbl =
         CrashAwareCachingDiskBranchBetree::Label::
             Ephemeral {
@@ -9390,12 +8730,20 @@ pub proof fn internal_noop_refines(
                 deallocs: Set::empty(),
             };
 
+    assert(CachedBranchBetree::State::next_by(
+        component.betree,
+        component.betree,
+        CachedBranchBetree::Label::Internal,
+        CachedBranchBetree::Step::internal_noop(),
+    )) by {
+        reveal(CachedBranchBetree::State::next_by);
+    }
+    reveal(CachedBranchBetree::State::next);
     assert(CachingDiskBranchBetree::State::internal_noop(
         component,
         component,
         component_lbl,
     )) by {
-        reveal(CachingDiskBranchBetree::State::internal_noop);
     }
     assert(CachingDiskBranchBetree::State::next_by(
         component,
@@ -9407,16 +8755,11 @@ pub proof fn internal_noop_refines(
     }
     reveal(CachingDiskBranchBetree::State::next);
 
-    reveal(UnifiedCacheBranchBetreeSource::
-        ephemeral_branch_i);
     assert(src.ephemeral is Known);
     assert(crate::implementation::
         CrashAwareCachingDiskBranchBetree_v::
             logical_deallocs(component_lbl)
         =~= Set::<AU>::empty()) by {
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_deallocs);
     }
     assert(Set::<AU>::empty()
         == crate::implementation::
@@ -9435,14 +8778,9 @@ pub proof fn internal_noop_refines(
             target_lbl,
             component,
         )) by {
-        reveal(CrashAwareCachingDiskBranchBetree::State::
-            ephemeral_step);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_allocs);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_deallocs);
+
+
+
     }
     assert(CrashAwareCachingDiskBranchBetree::State::next_by(
         src,
@@ -9475,9 +8813,10 @@ pub proof fn branch_abort_refines(
         CachedBranchBetree::State::branch_abort(
             pre.branch,
             post.branch,
-            CachedBranchBetree::Label::InternalAlloc {
+            CachedBranchBetree::Label::InternalAllocAccess {
                 allocs,
                 deallocs,
+                access: CachedBranchBetreeAccess::empty(),
             },
             idx,
         ),
@@ -9488,11 +8827,12 @@ pub proof fn branch_abort_refines(
             CrashAwareCachingDiskBranchBetree::Label::
                 Ephemeral {
                     op: CachingDiskBranchBetree::Label::
-                        InternalAlloc {
+                        InternalAllocAccess {
                             allocs,
                             deallocs,
                             guard_aus:
                                 pre.control.protected_aus(),
+                            access: PageAccess::empty(),
                         },
                     deallocs:
                         pre.control.reclaimable(deallocs),
@@ -9503,8 +8843,8 @@ pub proof fn branch_abort_refines(
                 - pre.control.reclaimable(deallocs),
         pre.control.reclaimable(deallocs)
             <= pre.branch_projection_aus(),
-        cached_branch_alloc_aus(post.branch.wip_branches)
-            == cached_branch_alloc_aus(
+        cached_bulk_branch_alloc_aus(post.branch.wip_branches)
+            == cached_bulk_branch_alloc_aus(
                 pre.branch.wip_branches,
             ) - deallocs,
         inv(post),
@@ -9516,10 +8856,11 @@ pub proof fn branch_abort_refines(
     let guard = pre.control.protected_aus();
     let reclaimed = deallocs - guard;
     let component_lbl =
-        CachingDiskBranchBetree::Label::InternalAlloc {
+        CachingDiskBranchBetree::Label::InternalAllocAccess {
             allocs,
             deallocs,
             guard_aus: guard,
+            access: PageAccess::empty(),
         };
     let target_lbl =
         CrashAwareCachingDiskBranchBetree::Label::
@@ -9528,7 +8869,6 @@ pub proof fn branch_abort_refines(
                 deallocs: reclaimed,
             };
 
-    reveal(CachedBranchBetree::State::branch_abort);
     assert(allocs.is_empty());
     assert(0 <= idx < pre.branch.wip_branches.len());
     assert(deallocs
@@ -9536,23 +8876,20 @@ pub proof fn branch_abort_refines(
             .mini_allocator.all_aus());
     assert(post.branch.wip_branches
         == pre.branch.wip_branches.remove(idx));
-    reveal(UnifiedCacheBranchBetreeSource::
-        ephemeral_branch_i);
     assert(src.ephemeral is Known);
     assert(component_pre.refinement_inv());
     assert(component_pre.i().inv());
     assert(component_pre.i().wip_branches_disjoint());
 
     let pre_wip_aus = crate::implementation::
-        CachedBranchBetree_v::cached_branch_alloc_aus(
+        CachedBulkBranch_v::cached_bulk_branch_alloc_aus(
             pre.branch.wip_branches,
         );
     let post_wip_aus = crate::implementation::
-        CachedBranchBetree_v::cached_branch_alloc_aus(
+        CachedBulkBranch_v::cached_bulk_branch_alloc_aus(
             post.branch.wip_branches,
         );
-    crate::implementation::CachedBranchBetree_v::
-        cached_branch_alloc_aus_remove_subset(
+    crate::implementation::CachedBulkBranch_v::cached_bulk_branch_alloc_aus_remove_subset(
             pre.branch.wip_branches,
             idx,
         );
@@ -9562,8 +8899,7 @@ pub proof fn branch_abort_refines(
             implies !deallocs.contains(au)
         by {
             let post_idx = crate::implementation::
-                CachedBranchBetree_v::
-                    cached_branch_alloc_aus_contains(
+                CachedBulkBranch_v::cached_bulk_branch_alloc_aus_contains(
                         post.branch.wip_branches,
                         au,
                     );
@@ -9577,18 +8913,10 @@ pub proof fn branch_abort_refines(
                 == post.branch.wip_branches[post_idx]);
             assert(component_pre.i().wip_branches[source_idx]
                 .mini_allocator.all_aus().contains(au)) by {
-                reveal(CachingDiskBranchBetree::State::
-                    wip_branches_i);
-                reveal(CachingDiskBranchBetree::State::
-                    wip_branch_i);
             }
             assert(component_pre.i().wip_branches[idx]
                 .mini_allocator.all_aus()
                 == deallocs) by {
-                reveal(CachingDiskBranchBetree::State::
-                    wip_branches_i);
-                reveal(CachingDiskBranchBetree::State::
-                    wip_branch_i);
             }
         }
         assert forall |au: AU|
@@ -9597,8 +8925,7 @@ pub proof fn branch_abort_refines(
             implies post_wip_aus.contains(au)
         by {
             let source_idx = crate::implementation::
-                CachedBranchBetree_v::
-                    cached_branch_alloc_aus_contains(
+                CachedBulkBranch_v::cached_bulk_branch_alloc_aus_contains(
                         pre.branch.wip_branches,
                         au,
                     );
@@ -9626,8 +8953,7 @@ pub proof fn branch_abort_refines(
         }
     }
     component_pre.wip_alloc_aus_agree();
-    crate::allocation_layer::AllocationBranch_v::
-        AllocationBranch::alloc_aus_ensures(
+    AllocationBulkBranch::alloc_aus_ensures(
             component_pre.i().wip_branches,
             idx,
         );
@@ -9635,16 +8961,11 @@ pub proof fn branch_abort_refines(
         <= component_pre.i().branch_allocator_aus()) by {
         assert(component_pre.i().wip_branches[idx]
             .mini_allocator.all_aus() == deallocs) by {
-            reveal(CachingDiskBranchBetree::State::
-                wip_branches_i);
-            reveal(CachingDiskBranchBetree::State::
-                wip_branch_i);
         }
     }
     component_pre.i().inv_branch_summary_ensures();
     assert(post.branch.owned_aus()
         == pre.branch.owned_aus() - deallocs) by {
-        reveal(CachedBranchBetree::State::owned_aus);
         assert(component_pre.i().betree_aus.dom()
             .disjoint(deallocs));
         assert(summary_aus(
@@ -9659,8 +8980,6 @@ pub proof fn branch_abort_refines(
     }
     assert(post.branch_projection_aus()
         == pre.branch_projection_aus() - reclaimed) by {
-        reveal(UnifiedCacheBranchBetreeSource::
-            branch_projection_aus);
         assert forall |au: AU|
             #[trigger] post.branch_projection_aus()
                 .contains(au)
@@ -9680,25 +8999,50 @@ pub proof fn branch_abort_refines(
         component_post.disk,
         CachingDisk::Label::Forget{aus: reclaimed},
     ));
+    PageAccess::empty_cached_access_is_empty();
+    PageAccess::empty_effects_are_empty();
+    crate::implementation::CachingDiskBranchBetree_v::
+        disk_forget_is_empty_alloc_access(
+            component_pre.disk,
+            component_post.disk,
+            deallocs,
+            guard,
+        );
+    assert(disk_access_for_alloc(
+        component_pre.disk,
+        component_post.disk,
+        allocs,
+        deallocs,
+        guard,
+        PageAccess::empty().reads(),
+        PageAccess::empty().writes(),
+    ));
 
-    assert(CachingDiskBranchBetree::State::branch_abort(
+    assert(CachedBranchBetree::State::next_by(
+        component_pre.betree,
+        post.branch,
+        component_lbl.cached_i(),
+        CachedBranchBetree::Step::branch_abort(idx),
+    )) by {
+        reveal(CachedBranchBetree::State::next_by);
+    }
+    reveal(CachedBranchBetree::State::next);
+
+    assert(CachingDiskBranchBetree::State::internal_alloc_access(
         component_pre,
         component_post,
         component_lbl,
         post.branch,
         component_post.disk,
-        idx,
     )) by {
-        reveal(CachingDiskBranchBetree::State::branch_abort);
     }
     assert(CachingDiskBranchBetree::State::next_by(
         component_pre,
         component_post,
         component_lbl,
-        CachingDiskBranchBetree::Step::branch_abort(
+        CachingDiskBranchBetree::Step::internal_alloc_access(
             post.branch,
             component_post.disk,
-            idx,
         ),
     )) by {
         reveal(CachingDiskBranchBetree::State::next_by);
@@ -9710,12 +9054,6 @@ pub proof fn branch_abort_refines(
         == dst.ephemeral->persistent_aus);
     assert(src.frozen == dst.frozen);
     assert(src.prepared == dst.prepared) by {
-        reveal(UnifiedCacheBranchBetreeSource::
-            prepared_branch_image_i);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                CachingDiskBranchBetreeImage::
-                    materialized_from_persistent);
     }
     assert(guard
         == crate::implementation::
@@ -9731,18 +9069,6 @@ pub proof fn branch_abort_refines(
             target_lbl,
             component_post,
         )) by {
-        reveal(CrashAwareCachingDiskBranchBetree::State::
-            ephemeral_step);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_allocs);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_deallocs);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_guard_aus);
-        reveal(AtomicBranchBetreeControl::reclaimable);
     }
     assert(CrashAwareCachingDiskBranchBetree::State::next_by(
         src,
@@ -9756,7 +9082,6 @@ pub proof fn branch_abort_refines(
     reveal(CrashAwareCachingDiskBranchBetree::State::next);
     src.next_refines(dst, target_lbl);
 
-    reveal(UnifiedCacheBranchBetreeSource::inv);
     assert(post.control_wf());
     assert(post.i().refinement_inv());
     assert(post.inv());
@@ -9797,9 +9122,10 @@ pub proof fn flush_memtable_refines(
         CachedBranchBetree::State::flush_memtable(
             pre.branch,
             post.branch,
-            CachedBranchBetree::Label::InternalAlloc {
+            CachedBranchBetree::Label::InternalAllocAccess {
                 allocs,
                 deallocs,
+                access: access.cached_access(),
             },
             branch_idx,
             new_root_addr,
@@ -9814,11 +9140,14 @@ pub proof fn flush_memtable_refines(
             CrashAwareCachingDiskBranchBetree::Label::
                 Ephemeral {
                     op: CachingDiskBranchBetree::Label::
-                        InternalAlloc {
+                        InternalAllocAccess {
                             allocs,
                             deallocs,
                             guard_aus:
                                 pre.control.protected_aus(),
+                            access: projected_flush_memtable_access(
+                                pre, branch_idx, access,
+                            ),
                         },
                     deallocs:
                         pre.control.reclaimable(deallocs),
@@ -9835,8 +9164,8 @@ pub proof fn flush_memtable_refines(
             ),
         access.writes().dom()
             <= addresses_in_aus(allocs),
-        cached_branch_alloc_aus(post.branch.wip_branches)
-            <= cached_branch_alloc_aus(
+        cached_bulk_branch_alloc_aus(post.branch.wip_branches)
+            <= cached_bulk_branch_alloc_aus(
                 pre.branch.wip_branches,
             ),
         access.writes().dom()
@@ -9863,7 +9192,7 @@ pub proof fn flush_memtable_refines(
     let cached_branch =
         pre.branch.wip_branches[branch_idx];
     let branch_root =
-        cached_branch.sealed_root().unwrap();
+        cached_branch.sealed_root();
     let branch_owned =
         cached_branch.mini_allocator.all_aus();
     let old_root_addrs = if pre.branch.root is Some {
@@ -9871,23 +9200,17 @@ pub proof fn flush_memtable_refines(
     } else {
         Set::empty()
     };
-    let tight_betree_reads =
-        access.betree_reads.restrict(old_root_addrs);
-    let tight_branch_reads =
-        access.branch_reads.restrict(
-            addresses_in_aus(branch_owned),
-        );
-    let tight_access = PageAccess {
-        betree_reads: tight_betree_reads,
-        branch_reads: tight_branch_reads,
-        betree_writes: access.betree_writes,
-        branch_writes: Map::empty(),
-    };
+    let tight_access = projected_flush_memtable_access(
+        pre, branch_idx, access,
+    );
+    let tight_betree_reads = tight_access.betree_reads;
+    let tight_branch_reads = tight_access.branch_reads;
     let component_lbl =
-        CachingDiskBranchBetree::Label::InternalAlloc {
+        CachingDiskBranchBetree::Label::InternalAllocAccess {
             allocs,
             deallocs,
             guard_aus: guard,
+            access: tight_access,
         };
     let target_lbl =
         CrashAwareCachingDiskBranchBetree::Label::
@@ -9897,11 +9220,10 @@ pub proof fn flush_memtable_refines(
                     pre.control.reclaimable(deallocs),
             };
 
-    reveal(CachedBranchBetree::State::flush_memtable);
     assert(0 <= branch_idx
         < pre.branch.wip_branches.len());
-    assert(cached_branch.sealed);
-    assert(cached_branch.sealed_root() is Some);
+    assert(cached_branch.is_sealed());
+    assert(cached_branch.is_sealed());
     assert(allocs == set![new_root_addr.au]);
     assert(access.loaded_betree_writes()
         == crate::implementation::
@@ -9930,22 +9252,14 @@ pub proof fn flush_memtable_refines(
 
     assert(branch_owned
         <= pre.branch_projection_aus()) by {
-        reveal(UnifiedCacheBranchBetreeSource::
-            branch_projection_aus);
-        reveal(CachedBranchBetree::State::owned_aus);
         pre.known_branch_i().wip_alloc_aus_agree();
-        crate::allocation_layer::AllocationBranch_v::
-            AllocationBranch::alloc_aus_ensures(
+        AllocationBulkBranch::alloc_aus_ensures(
                 pre.known_branch_i().i().wip_branches,
                 branch_idx,
             );
         assert(pre.known_branch_i().i()
             .wip_branches[branch_idx].mini_allocator
             == cached_branch.mini_allocator) by {
-            reveal(CachingDiskBranchBetree::State::
-                wip_branches_i);
-            reveal(CachingDiskBranchBetree::State::
-                wip_branch_i);
         }
     }
     assert(tight_branch_reads.dom()
@@ -9958,8 +9272,6 @@ pub proof fn flush_memtable_refines(
         assert(access.betree_reads.contains_key(
             old_root,
         ));
-        reveal(UnifiedCacheBranchBetreeSource::
-            ephemeral_branch_i);
         assert(src.ephemeral is Known);
         assert(component_pre.refinement_inv());
         component_pre.linked_i_is_tight_candidate();
@@ -9974,9 +9286,6 @@ pub proof fn flush_memtable_refines(
         ));
         assert(pre.branch.betree_aus.dom()
             .contains(old_root.au));
-        reveal(UnifiedCacheBranchBetreeSource::
-            branch_projection_aus);
-        reveal(CachedBranchBetree::State::owned_aus);
         assert(pre.branch_projection_aus()
             .contains(old_root.au));
     }
@@ -10095,9 +9404,6 @@ pub proof fn flush_memtable_refines(
             cached_branch.summary(),
             tight_access.loaded_branch_reads(),
         )) by {
-        reveal(crate::implementation::
-            CachedBranchBetree_v::
-                valid_loaded_sealed_branch);
     }
     assert(crate::implementation::
         CachedBranchBetree_v::loaded_sealed_branch(
@@ -10125,12 +9431,14 @@ pub proof fn flush_memtable_refines(
             old_root
         ] == access.loaded_betree_reads()[old_root]);
     }
+    tight_access.cached_no_branch_writes_shape();
     assert(CachedBranchBetree::State::flush_memtable(
         pre.branch,
         post.branch,
-        CachedBranchBetree::Label::InternalAlloc {
+        CachedBranchBetree::Label::InternalAllocAccess {
             allocs,
             deallocs,
+            access: tight_access.cached_access(),
         },
         branch_idx,
         new_root_addr,
@@ -10138,33 +9446,38 @@ pub proof fn flush_memtable_refines(
         tight_access.loaded_betree_writes(),
         tight_access.loaded_branch_reads(),
     )) by {
-        reveal(CachedBranchBetree::State::
-            flush_memtable);
     }
+    assert(CachedBranchBetree::State::next_by(
+        component_pre.betree,
+        post.branch,
+        component_lbl.cached_i(),
+        CachedBranchBetree::Step::flush_memtable(
+            branch_idx,
+            new_root_addr,
+            tight_access.loaded_betree_reads(),
+            tight_access.loaded_betree_writes(),
+            tight_access.loaded_branch_reads(),
+        ),
+    )) by {
+        reveal(CachedBranchBetree::State::next_by);
+    }
+    reveal(CachedBranchBetree::State::next);
     assert(CachingDiskBranchBetree::State::
-        flush_memtable(
+        internal_alloc_access(
             component_pre,
             candidate_post,
             component_lbl,
             post.branch,
             candidate_post.disk,
-            branch_idx,
-            new_root_addr,
-            tight_access,
         )) by {
-        reveal(CachingDiskBranchBetree::State::
-            flush_memtable);
     }
     assert(CachingDiskBranchBetree::State::next_by(
         component_pre,
         candidate_post,
         component_lbl,
-        CachingDiskBranchBetree::Step::flush_memtable(
+        CachingDiskBranchBetree::Step::internal_alloc_access(
             post.branch,
             candidate_post.disk,
-            branch_idx,
-            new_root_addr,
-            tight_access,
         ),
     )) by {
         reveal(CachingDiskBranchBetree::State::next_by);
@@ -10187,25 +9500,19 @@ pub proof fn flush_memtable_refines(
         tight_access.loaded_branch_reads(),
     );
     assert(candidate_post.betree == post.branch);
-    assert(cached_branch_alloc_aus(
+    assert(cached_bulk_branch_alloc_aus(
         candidate_post.betree.wip_branches,
-    ) <= cached_branch_alloc_aus(
+    ) <= cached_bulk_branch_alloc_aus(
         pre.branch.wip_branches,
     ));
-    assert(cached_branch_alloc_aus(
+    assert(cached_bulk_branch_alloc_aus(
         post.branch.wip_branches,
-    ) <= cached_branch_alloc_aus(
+    ) <= cached_bulk_branch_alloc_aus(
         pre.branch.wip_branches,
     ));
 
     assert(post.branch_projection_aus()
         == expected_aus) by {
-        reveal(UnifiedCacheBranchBetreeSource::
-            branch_projection_aus);
-        reveal(AtomicBranchBetreeControl::
-            protected_aus);
-        reveal(AtomicBranchBetreeControl::
-            reclaimable);
         assert forall |au: AU|
             #[trigger] post.branch_projection_aus()
                 .contains(au)
@@ -10229,20 +9536,12 @@ pub proof fn flush_memtable_refines(
         component_lbl,
     ));
 
-    reveal(UnifiedCacheBranchBetreeSource::
-        ephemeral_branch_i);
     assert(src.ephemeral is Known);
     assert(dst.ephemeral is Known);
     assert(src.ephemeral->persistent_aus
         == dst.ephemeral->persistent_aus);
     assert(src.frozen == dst.frozen);
     assert(src.prepared == dst.prepared) by {
-        reveal(UnifiedCacheBranchBetreeSource::
-            prepared_branch_image_i);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                CachingDiskBranchBetreeImage::
-                    materialized_from_persistent);
         assert(allocs.disjoint(guard));
     }
     assert(guard
@@ -10259,18 +9558,6 @@ pub proof fn flush_memtable_refines(
             target_lbl,
             component_post,
         )) by {
-        reveal(CrashAwareCachingDiskBranchBetree::State::
-            ephemeral_step);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_allocs);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_deallocs);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_guard_aus);
-        reveal(AtomicBranchBetreeControl::reclaimable);
     }
     assert(CrashAwareCachingDiskBranchBetree::State::
         next_by(
@@ -10294,7 +9581,6 @@ pub proof fn flush_memtable_refines(
             writes: access.writes(),
         },
     );
-    reveal(UnifiedCacheBranchBetreeSource::inv);
     assert(post.control_wf());
     assert(post.i().refinement_inv());
     assert(post.inv());
@@ -10333,9 +9619,10 @@ pub proof fn grow_refines(
         CachedBranchBetree::State::grow(
             pre.branch,
             post.branch,
-            CachedBranchBetree::Label::InternalAlloc {
+            CachedBranchBetree::Label::InternalAllocAccess {
                 allocs,
                 deallocs,
+                access: access.cached_access(),
             },
             new_root_addr,
             access.loaded_betree_writes(),
@@ -10347,11 +9634,12 @@ pub proof fn grow_refines(
             CrashAwareCachingDiskBranchBetree::Label::
                 Ephemeral {
                     op: CachingDiskBranchBetree::Label::
-                        InternalAlloc {
+                        InternalAllocAccess {
                             allocs,
                             deallocs,
                             guard_aus:
                                 pre.control.protected_aus(),
+                            access: projected_grow_access(access),
                         },
                     deallocs:
                         pre.control.reclaimable(deallocs),
@@ -10368,8 +9656,8 @@ pub proof fn grow_refines(
             ),
         access.writes().dom()
             <= addresses_in_aus(allocs),
-        cached_branch_alloc_aus(post.branch.wip_branches)
-            <= cached_branch_alloc_aus(
+        cached_bulk_branch_alloc_aus(post.branch.wip_branches)
+            <= cached_bulk_branch_alloc_aus(
                 pre.branch.wip_branches,
             ),
         access.writes().dom()
@@ -10381,11 +9669,13 @@ pub proof fn grow_refines(
     let component_pre = pre.known_branch_i();
     let component_post = post.known_branch_i();
     let guard = pre.control.protected_aus();
+    let tight_access = projected_grow_access(access);
     let component_lbl =
-        CachingDiskBranchBetree::Label::InternalAlloc {
+        CachingDiskBranchBetree::Label::InternalAllocAccess {
             allocs,
             deallocs,
             guard_aus: guard,
+            access: tight_access,
         };
     let target_lbl =
         CrashAwareCachingDiskBranchBetree::Label::
@@ -10394,14 +9684,7 @@ pub proof fn grow_refines(
                 deallocs:
                     pre.control.reclaimable(deallocs),
             };
-    let tight_access = PageAccess {
-        betree_reads: Map::empty(),
-        branch_reads: Map::empty(),
-        betree_writes: access.betree_writes,
-        branch_writes: Map::empty(),
-    };
 
-    reveal(CachedBranchBetree::State::grow);
     assert(allocs == set![new_root_addr.au]);
     assert(deallocs.is_empty());
     assert(post.branch.betree_aus
@@ -10410,12 +9693,9 @@ pub proof fn grow_refines(
         ));
     assert(post.branch.owned_aus()
         == pre.branch.owned_aus() + allocs) by {
-        reveal(CachedBranchBetree::State::owned_aus);
     }
     assert(post.branch_projection_aus()
         == pre.branch_projection_aus() + allocs) by {
-        reveal(UnifiedCacheBranchBetreeSource::
-            branch_projection_aus);
     }
     assert(access.branch_reads.is_empty());
     assert(access.branch_writes.is_empty());
@@ -10495,56 +9775,57 @@ pub proof fn grow_refines(
         tight_access.writes(),
     ));
 
+    tight_access.cached_write_only_betree_shape();
     assert(CachedBranchBetree::State::grow(
         component_pre.betree,
         component_post.betree,
-        CachedBranchBetree::Label::InternalAlloc {
+        CachedBranchBetree::Label::InternalAllocAccess {
             allocs,
             deallocs,
+            access: tight_access.cached_access(),
         },
         new_root_addr,
         tight_access.loaded_betree_writes(),
     ));
-    assert(CachingDiskBranchBetree::State::grow(
+    assert(CachedBranchBetree::State::next_by(
+        component_pre.betree,
+        post.branch,
+        component_lbl.cached_i(),
+        CachedBranchBetree::Step::grow(
+            new_root_addr,
+            tight_access.loaded_betree_writes(),
+        ),
+    )) by {
+        reveal(CachedBranchBetree::State::next_by);
+    }
+    reveal(CachedBranchBetree::State::next);
+    assert(CachingDiskBranchBetree::State::internal_alloc_access(
         component_pre,
         component_post,
         component_lbl,
         post.branch,
         component_post.disk,
-        new_root_addr,
-        tight_access,
     )) by {
-        reveal(CachingDiskBranchBetree::State::grow);
     }
     assert(CachingDiskBranchBetree::State::next_by(
         component_pre,
         component_post,
         component_lbl,
-        CachingDiskBranchBetree::Step::grow(
+        CachingDiskBranchBetree::Step::internal_alloc_access(
             post.branch,
             component_post.disk,
-            new_root_addr,
-            tight_access,
         ),
     )) by {
         reveal(CachingDiskBranchBetree::State::next_by);
     }
     reveal(CachingDiskBranchBetree::State::next);
 
-    reveal(UnifiedCacheBranchBetreeSource::
-        ephemeral_branch_i);
     assert(src.ephemeral is Known);
     assert(dst.ephemeral is Known);
     assert(src.ephemeral->persistent_aus
         == dst.ephemeral->persistent_aus);
     assert(src.frozen == dst.frozen);
     assert(src.prepared == dst.prepared) by {
-        reveal(UnifiedCacheBranchBetreeSource::
-            prepared_branch_image_i);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                CachingDiskBranchBetreeImage::
-                    materialized_from_persistent);
         assert(allocs.disjoint(guard));
     }
     assert(guard
@@ -10561,18 +9842,6 @@ pub proof fn grow_refines(
             target_lbl,
             component_post,
         )) by {
-        reveal(CrashAwareCachingDiskBranchBetree::State::
-            ephemeral_step);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_allocs);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_deallocs);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_guard_aus);
-        reveal(AtomicBranchBetreeControl::reclaimable);
     }
     assert(CrashAwareCachingDiskBranchBetree::State::next_by(
         src,
@@ -10594,7 +9863,6 @@ pub proof fn grow_refines(
             writes: access.writes(),
         },
     );
-    reveal(UnifiedCacheBranchBetreeSource::inv);
     assert(post.control_wf());
     assert(post.i().refinement_inv());
     assert(post.inv());
@@ -10636,9 +9904,10 @@ pub proof fn split_refines(
         CachedBranchBetree::State::split(
             pre.branch,
             post.branch,
-            CachedBranchBetree::Label::InternalAlloc {
+            CachedBranchBetree::Label::InternalAllocAccess {
                 allocs,
                 deallocs,
+                access: access.cached_access(),
             },
             path,
             request,
@@ -10654,11 +9923,14 @@ pub proof fn split_refines(
             CrashAwareCachingDiskBranchBetree::Label::
                 Ephemeral {
                     op: CachingDiskBranchBetree::Label::
-                        InternalAlloc {
+                        InternalAllocAccess {
                             allocs,
                             deallocs,
                             guard_aus:
                                 pre.control.protected_aus(),
+                            access: projected_path_access(
+                                path, request.get_child_idx(), access,
+                            ),
                         },
                     deallocs:
                         pre.control.reclaimable(deallocs),
@@ -10700,19 +9972,14 @@ pub proof fn split_refines(
     let child_idx = request.get_child_idx();
     let required_addrs =
         betree_path_with_child_addrs(path, child_idx);
-    let tight_reads =
-        access.betree_reads.restrict(required_addrs);
-    let tight_access = PageAccess {
-        betree_reads: tight_reads,
-        branch_reads: Map::empty(),
-        betree_writes: access.betree_writes,
-        branch_writes: Map::empty(),
-    };
+    let tight_access = projected_path_access(path, child_idx, access);
+    let tight_reads = tight_access.betree_reads;
     let component_lbl =
-        CachingDiskBranchBetree::Label::InternalAlloc {
+        CachingDiskBranchBetree::Label::InternalAllocAccess {
             allocs,
             deallocs,
             guard_aus: guard,
+            access: tight_access,
         };
     let target_lbl =
         CrashAwareCachingDiskBranchBetree::Label::
@@ -10723,7 +9990,6 @@ pub proof fn split_refines(
                 ),
             };
 
-    reveal(CachedBranchBetree::State::split);
     assert(path.target().node.valid_child_index(
         child_idx,
     ));
@@ -10803,14 +10069,6 @@ pub proof fn split_refines(
             <= addresses_in_aus(
                 pre.branch_projection_aus(),
             )) by {
-            reveal(UnifiedCacheBranchBetreeSource::
-                branch_caching_disk_i);
-            reveal(UnifiedCacheBranchBetreeSource::
-                known_branch_i);
-            reveal(crate::implementation::
-                CachingDiskAdapterRefinement_v::
-                    project_cache_pages_by_addrs);
-            reveal(project_cache_pages);
         }
     }
     assert(tight_access.reads().dom()
@@ -10862,12 +10120,14 @@ pub proof fn split_refines(
         tight_access.writes(),
     ));
 
+    tight_access.cached_only_betree_shape();
     assert(CachedBranchBetree::State::split(
         pre.branch,
         post.branch,
-        CachedBranchBetree::Label::InternalAlloc {
+        CachedBranchBetree::Label::InternalAllocAccess {
             allocs,
             deallocs,
+            access: tight_access.cached_access(),
         },
         path,
         request,
@@ -10876,39 +10136,43 @@ pub proof fn split_refines(
         tight_access.loaded_betree_reads(),
         tight_access.loaded_betree_writes(),
     )) by {
-        reveal(CachedBranchBetree::State::split);
         assert(tight_reads[
             path.child_addr(child_idx)
         ] == access.betree_reads[
             path.child_addr(child_idx)
         ]);
     }
-    assert(CachingDiskBranchBetree::State::split(
+    assert(CachedBranchBetree::State::next_by(
+        component_pre.betree,
+        post.branch,
+        component_lbl.cached_i(),
+        CachedBranchBetree::Step::split(
+            path,
+            request,
+            new_addrs,
+            path_addrs,
+            tight_access.loaded_betree_reads(),
+            tight_access.loaded_betree_writes(),
+        ),
+    )) by {
+        reveal(CachedBranchBetree::State::next_by);
+    }
+    reveal(CachedBranchBetree::State::next);
+    assert(CachingDiskBranchBetree::State::internal_alloc_access(
         component_pre,
         candidate_post,
         component_lbl,
         post.branch,
         candidate_post.disk,
-        path,
-        request,
-        new_addrs,
-        path_addrs,
-        tight_access,
     )) by {
-        reveal(CachingDiskBranchBetree::State::split);
     }
     assert(CachingDiskBranchBetree::State::next_by(
         component_pre,
         candidate_post,
         component_lbl,
-        CachingDiskBranchBetree::Step::split(
+        CachingDiskBranchBetree::Step::internal_alloc_access(
             post.branch,
             candidate_post.disk,
-            path,
-            request,
-            new_addrs,
-            path_addrs,
-            tight_access,
         ),
     )) by {
         reveal(CachingDiskBranchBetree::State::next_by);
@@ -10934,12 +10198,6 @@ pub proof fn split_refines(
 
     assert(post.branch_projection_aus()
         == expected_aus) by {
-        reveal(UnifiedCacheBranchBetreeSource::
-            branch_projection_aus);
-        reveal(AtomicBranchBetreeControl::
-            protected_aus);
-        reveal(AtomicBranchBetreeControl::
-            reclaimable);
         assert forall |au: AU|
             #[trigger] post.branch_projection_aus()
                 .contains(au)
@@ -10963,20 +10221,12 @@ pub proof fn split_refines(
         component_lbl,
     ));
 
-    reveal(UnifiedCacheBranchBetreeSource::
-        ephemeral_branch_i);
     assert(src.ephemeral is Known);
     assert(dst.ephemeral is Known);
     assert(src.ephemeral->persistent_aus
         == dst.ephemeral->persistent_aus);
     assert(src.frozen == dst.frozen);
     assert(src.prepared == dst.prepared) by {
-        reveal(UnifiedCacheBranchBetreeSource::
-            prepared_branch_image_i);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                CachingDiskBranchBetreeImage::
-                    materialized_from_persistent);
         assert(allocs.disjoint(guard));
     }
     assert(guard
@@ -10993,18 +10243,6 @@ pub proof fn split_refines(
             target_lbl,
             component_post,
         )) by {
-        reveal(CrashAwareCachingDiskBranchBetree::State::
-            ephemeral_step);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_allocs);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_deallocs);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_guard_aus);
-        reveal(AtomicBranchBetreeControl::reclaimable);
     }
     assert(CrashAwareCachingDiskBranchBetree::State::
         next_by(
@@ -11028,7 +10266,6 @@ pub proof fn split_refines(
             writes: access.writes(),
         },
     );
-    reveal(UnifiedCacheBranchBetreeSource::inv);
     assert(post.control_wf());
     assert(post.i().refinement_inv());
     assert(post.inv());
@@ -11071,9 +10308,10 @@ pub proof fn flush_refines(
         CachedBranchBetree::State::flush(
             pre.branch,
             post.branch,
-            CachedBranchBetree::Label::InternalAlloc {
+            CachedBranchBetree::Label::InternalAllocAccess {
                 allocs,
                 deallocs,
+                access: access.cached_access(),
             },
             path,
             child_idx,
@@ -11090,11 +10328,14 @@ pub proof fn flush_refines(
             CrashAwareCachingDiskBranchBetree::Label::
                 Ephemeral {
                     op: CachingDiskBranchBetree::Label::
-                        InternalAlloc {
+                        InternalAllocAccess {
                             allocs,
                             deallocs,
                             guard_aus:
                                 pre.control.protected_aus(),
+                            access: projected_path_access(
+                                path, child_idx, access,
+                            ),
                         },
                     deallocs:
                         pre.control.reclaimable(deallocs),
@@ -11135,19 +10376,14 @@ pub proof fn flush_refines(
         };
     let required_addrs =
         betree_path_with_child_addrs(path, child_idx);
-    let tight_reads =
-        access.betree_reads.restrict(required_addrs);
-    let tight_access = PageAccess {
-        betree_reads: tight_reads,
-        branch_reads: Map::empty(),
-        betree_writes: access.betree_writes,
-        branch_writes: Map::empty(),
-    };
+    let tight_access = projected_path_access(path, child_idx, access);
+    let tight_reads = tight_access.betree_reads;
     let component_lbl =
-        CachingDiskBranchBetree::Label::InternalAlloc {
+        CachingDiskBranchBetree::Label::InternalAllocAccess {
             allocs,
             deallocs,
             guard_aus: guard,
+            access: tight_access,
         };
     let target_lbl =
         CrashAwareCachingDiskBranchBetree::Label::
@@ -11158,7 +10394,6 @@ pub proof fn flush_refines(
                 ),
             };
 
-    reveal(CachedBranchBetree::State::flush);
     assert(path.target().node.valid_child_index(
         child_idx,
     ));
@@ -11236,14 +10471,6 @@ pub proof fn flush_refines(
             <= addresses_in_aus(
                 pre.branch_projection_aus(),
             )) by {
-            reveal(UnifiedCacheBranchBetreeSource::
-                branch_caching_disk_i);
-            reveal(UnifiedCacheBranchBetreeSource::
-                known_branch_i);
-            reveal(crate::implementation::
-                CachingDiskAdapterRefinement_v::
-                    project_cache_pages_by_addrs);
-            reveal(project_cache_pages);
         }
     }
     assert(tight_access.reads().dom()
@@ -11295,12 +10522,14 @@ pub proof fn flush_refines(
         tight_access.writes(),
     ));
 
+    tight_access.cached_only_betree_shape();
     assert(CachedBranchBetree::State::flush(
         pre.branch,
         post.branch,
-        CachedBranchBetree::Label::InternalAlloc {
+        CachedBranchBetree::Label::InternalAllocAccess {
             allocs,
             deallocs,
+            access: tight_access.cached_access(),
         },
         path,
         child_idx,
@@ -11310,41 +10539,44 @@ pub proof fn flush_refines(
         tight_access.loaded_betree_reads(),
         tight_access.loaded_betree_writes(),
     )) by {
-        reveal(CachedBranchBetree::State::flush);
         assert(tight_reads[
             path.child_addr(child_idx)
         ] == access.betree_reads[
             path.child_addr(child_idx)
         ]);
     }
-    assert(CachingDiskBranchBetree::State::flush(
-        component_pre,
-        candidate_post,
-        component_lbl,
+    assert(CachedBranchBetree::State::next_by(
+        component_pre.betree,
         post.branch,
-        candidate_post.disk,
-        path,
-        child_idx,
-        buffer_gc,
-        new_addrs,
-        path_addrs,
-        tight_access,
-    )) by {
-        reveal(CachingDiskBranchBetree::State::flush);
-    }
-    assert(CachingDiskBranchBetree::State::next_by(
-        component_pre,
-        candidate_post,
-        component_lbl,
-        CachingDiskBranchBetree::Step::flush(
-            post.branch,
-            candidate_post.disk,
+        component_lbl.cached_i(),
+        CachedBranchBetree::Step::flush(
             path,
             child_idx,
             buffer_gc,
             new_addrs,
             path_addrs,
-            tight_access,
+            tight_access.loaded_betree_reads(),
+            tight_access.loaded_betree_writes(),
+        ),
+    )) by {
+        reveal(CachedBranchBetree::State::next_by);
+    }
+    reveal(CachedBranchBetree::State::next);
+    assert(CachingDiskBranchBetree::State::internal_alloc_access(
+        component_pre,
+        candidate_post,
+        component_lbl,
+        post.branch,
+        candidate_post.disk,
+    )) by {
+    }
+    assert(CachingDiskBranchBetree::State::next_by(
+        component_pre,
+        candidate_post,
+        component_lbl,
+        CachingDiskBranchBetree::Step::internal_alloc_access(
+            post.branch,
+            candidate_post.disk,
         ),
     )) by {
         reveal(CachingDiskBranchBetree::State::next_by);
@@ -11371,12 +10603,6 @@ pub proof fn flush_refines(
 
     assert(post.branch_projection_aus()
         == expected_aus) by {
-        reveal(UnifiedCacheBranchBetreeSource::
-            branch_projection_aus);
-        reveal(AtomicBranchBetreeControl::
-            protected_aus);
-        reveal(AtomicBranchBetreeControl::
-            reclaimable);
         assert forall |au: AU|
             #[trigger] post.branch_projection_aus()
                 .contains(au)
@@ -11400,20 +10626,12 @@ pub proof fn flush_refines(
         component_lbl,
     ));
 
-    reveal(UnifiedCacheBranchBetreeSource::
-        ephemeral_branch_i);
     assert(src.ephemeral is Known);
     assert(dst.ephemeral is Known);
     assert(src.ephemeral->persistent_aus
         == dst.ephemeral->persistent_aus);
     assert(src.frozen == dst.frozen);
     assert(src.prepared == dst.prepared) by {
-        reveal(UnifiedCacheBranchBetreeSource::
-            prepared_branch_image_i);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                CachingDiskBranchBetreeImage::
-                    materialized_from_persistent);
         assert(allocs.disjoint(guard));
     }
     assert(guard
@@ -11430,18 +10648,6 @@ pub proof fn flush_refines(
             target_lbl,
             component_post,
         )) by {
-        reveal(CrashAwareCachingDiskBranchBetree::State::
-            ephemeral_step);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_allocs);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_deallocs);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_guard_aus);
-        reveal(AtomicBranchBetreeControl::reclaimable);
     }
     assert(CrashAwareCachingDiskBranchBetree::State::
         next_by(
@@ -11465,7 +10671,6 @@ pub proof fn flush_refines(
             writes: access.writes(),
         },
     );
-    reveal(UnifiedCacheBranchBetreeSource::inv);
     assert(post.control_wf());
     assert(post.i().refinement_inv());
     assert(post.inv());
@@ -11499,7 +10704,9 @@ pub proof fn compact_begin_refines(
         CachedBranchBetree::State::compact_begin(
             pre.branch,
             post.branch,
-            CachedBranchBetree::Label::Internal,
+            CachedBranchBetree::Label::InternalAccess {
+                access: access.cached_access(),
+            },
             path,
             start,
             end,
@@ -11511,7 +10718,9 @@ pub proof fn compact_begin_refines(
             post.i(),
             CrashAwareCachingDiskBranchBetree::Label::
                 Ephemeral {
-                    op: CachingDiskBranchBetree::Label::Internal,
+                    op: CachingDiskBranchBetree::Label::InternalAccess {
+                        access: projected_compact_begin_access(pre, access),
+                    },
                     deallocs: Set::empty(),
                 },
         ),
@@ -11526,16 +10735,12 @@ pub proof fn compact_begin_refines(
     let linked = component_pre.linked_i();
     let owned_addrs =
         addresses_in_aus(pre.branch_projection_aus());
-    let tight_reads =
-        access.betree_reads.restrict(owned_addrs);
-    let tight_access = PageAccess {
-        betree_reads: tight_reads,
-        branch_reads: Map::empty(),
-        betree_writes: Map::empty(),
-        branch_writes: Map::empty(),
-    };
+    let tight_access = projected_compact_begin_access(pre, access);
+    let tight_reads = tight_access.betree_reads;
     let component_lbl =
-        CachingDiskBranchBetree::Label::Internal;
+        CachingDiskBranchBetree::Label::InternalAccess {
+            access: tight_access,
+        };
     let target_lbl =
         CrashAwareCachingDiskBranchBetree::Label::
             Ephemeral {
@@ -11543,9 +10748,6 @@ pub proof fn compact_begin_refines(
                 deallocs: Set::empty(),
             };
 
-    reveal(CachedBranchBetree::State::compact_begin);
-    reveal(UnifiedCacheBranchBetreeSource::
-        ephemeral_branch_i);
     assert(src.ephemeral is Known);
     assert(component_pre.refinement_inv());
     component_pre.linked_i_is_tight_candidate();
@@ -11572,8 +10774,6 @@ pub proof fn compact_begin_refines(
                         )[addr]
                 }
             by {
-                reveal(CachingDiskBranchBetree::State::
-                    visible_betree_entries);
             }
         }
         vstd::map_lib::lemma_submap_of_trans(
@@ -11603,14 +10803,6 @@ pub proof fn compact_begin_refines(
         tight_reads,
     );
     assert(tight_reads <= component_pre.disk.cache) by {
-        reveal(UnifiedCacheBranchBetreeSource::
-            branch_caching_disk_i);
-        reveal(UnifiedCacheBranchBetreeSource::
-            known_branch_i);
-        reveal(crate::implementation::
-            CachingDiskAdapterRefinement_v::
-                project_cache_pages_by_addrs);
-        reveal(project_cache_pages);
     }
     assert(path.valid_for(
         linked.root,
@@ -11682,7 +10874,6 @@ pub proof fn compact_begin_refines(
             writes: tight_access.writes(),
         },
     )) by {
-        reveal(CachingDisk::State::access);
         assert(component_pre.disk.cache
             .union_prefer_right(tight_access.writes())
             == component_pre.disk.cache) by {
@@ -11726,20 +10917,33 @@ pub proof fn compact_begin_refines(
     }
     reveal(CachingDisk::State::next);
 
+    tight_access.cached_betree_read_only_shape();
     assert(CachedBranchBetree::State::compact_begin(
         component_pre.betree,
         component_post.betree,
-        CachedBranchBetree::Label::Internal,
+        component_lbl.cached_i(),
         path,
         start,
         end,
         tight_access.loaded_betree_reads(),
     )) by {
-        reveal(CachedBranchBetree::State::compact_begin);
     }
+    assert(CachedBranchBetree::State::next_by(
+        component_pre.betree,
+        post.branch,
+        component_lbl.cached_i(),
+        CachedBranchBetree::Step::compact_begin(
+            path,
+            start,
+            end,
+            tight_access.loaded_betree_reads(),
+        ),
+    )) by {
+        reveal(CachedBranchBetree::State::next_by);
+    }
+    reveal(CachedBranchBetree::State::next);
     assert(post.branch.owned_aus()
         == pre.branch.owned_aus()) by {
-        reveal(CachedBranchBetree::State::owned_aus);
     }
     assert(post.branch_projection_aus()
         == pre.branch_projection_aus());
@@ -11766,28 +10970,21 @@ pub proof fn compact_begin_refines(
     );
     assert(post.cache == pre.cache);
     assert(component_post.disk == component_pre.disk);
-    assert(CachingDiskBranchBetree::State::compact_begin(
+    assert(CachingDiskBranchBetree::State::internal_access(
         component_pre,
         component_post,
         component_lbl,
         post.branch,
-        path,
-        start,
-        end,
-        tight_access,
+        component_post.disk,
     )) by {
-        reveal(CachingDiskBranchBetree::State::compact_begin);
     }
     assert(CachingDiskBranchBetree::State::next_by(
         component_pre,
         component_post,
         component_lbl,
-        CachingDiskBranchBetree::Step::compact_begin(
+        CachingDiskBranchBetree::Step::internal_access(
             post.branch,
-            path,
-            start,
-            end,
-            tight_access,
+            component_post.disk,
         ),
     )) by {
         reveal(CachingDiskBranchBetree::State::next_by);
@@ -11799,20 +10996,11 @@ pub proof fn compact_begin_refines(
         == dst.ephemeral->persistent_aus);
     assert(src.frozen == dst.frozen);
     assert(src.prepared == dst.prepared) by {
-        reveal(UnifiedCacheBranchBetreeSource::
-            prepared_branch_image_i);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                CachingDiskBranchBetreeImage::
-                    materialized_from_persistent);
     }
     assert(crate::implementation::
         CrashAwareCachingDiskBranchBetree_v::
             logical_deallocs(component_lbl)
         =~= Set::<AU>::empty()) by {
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_deallocs);
     }
     assert(Set::<AU>::empty()
         == crate::implementation::
@@ -11831,14 +11019,6 @@ pub proof fn compact_begin_refines(
             target_lbl,
             component_post,
         )) by {
-        reveal(CrashAwareCachingDiskBranchBetree::State::
-            ephemeral_step);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_allocs);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_deallocs);
     }
     assert(CrashAwareCachingDiskBranchBetree::State::next_by(
         src,
@@ -11852,7 +11032,277 @@ pub proof fn compact_begin_refines(
     reveal(CrashAwareCachingDiskBranchBetree::State::next);
     src.next_refines(dst, target_lbl);
 
-    reveal(UnifiedCacheBranchBetreeSource::inv);
+    assert(post.control_wf());
+    assert(post.i().refinement_inv());
+    assert(post.inv());
+}
+
+pub proof fn compact_scan_page_refines(
+    pre: UnifiedCacheBranchBetreeSource,
+    post: UnifiedCacheBranchBetreeSource,
+    input_idx: int,
+    access: PageAccess,
+)
+    requires
+        inv(pre),
+        pre.control.metadata_loaded,
+        post.disk == pre.disk,
+        post.persistent_image == pre.persistent_image,
+        post.sync_phase == pre.sync_phase,
+        post.control == pre.control,
+        access.only_branch(),
+        access.read_only(),
+        Cache::State::next(
+            pre.cache,
+            post.cache,
+            Cache::Label::Access {
+                reads: access.reads(),
+                writes: access.writes(),
+            },
+        ),
+        CachedBranchBetree::State::compact_scan_page(
+            pre.branch,
+            post.branch,
+            CachedBranchBetree::Label::InternalAccess {
+                access: access.cached_access(),
+            },
+            input_idx,
+            access.loaded_branch_reads(),
+        ),
+    ensures
+        CrashAwareCachingDiskBranchBetree::State::next(
+            pre.i(),
+            post.i(),
+            CrashAwareCachingDiskBranchBetree::Label::Ephemeral {
+                op: CachingDiskBranchBetree::Label::InternalAccess {
+                    access: projected_compact_scan_access(pre, access),
+                },
+                deallocs: Set::empty(),
+            },
+        ),
+        post.branch_projection_aus()
+            == pre.branch_projection_aus(),
+        inv(post),
+{
+    let src = pre.i();
+    let dst = post.i();
+    let component_pre = pre.known_branch_i();
+    let component_post = post.known_branch_i();
+    let owned_aus = pre.branch_projection_aus();
+    let owned_addrs = addresses_in_aus(owned_aus);
+    let tight_access = projected_compact_scan_access(pre, access);
+    let tight_reads = tight_access.branch_reads;
+    let component_lbl = CachingDiskBranchBetree::Label::InternalAccess {
+        access: tight_access,
+    };
+    let target_lbl =
+        CrashAwareCachingDiskBranchBetree::Label::Ephemeral {
+            op: component_lbl,
+            deallocs: Set::empty(),
+        };
+
+    assert(src.ephemeral is Known);
+    assert(component_pre.refinement_inv());
+    assert(component_pre.i().inv());
+    component_pre.i().inv_branch_summary_finite();
+    assert(pre.branch.branch_summary.dom().finite());
+    let input_aus = pre.branch.compactor_input_aus(input_idx);
+    let input_roots = pre.branch.compactors[input_idx]
+        .input_buffers.addrs.to_set();
+    summary_aus_restrict_subset(
+        pre.branch.branch_summary,
+        to_aus(input_roots),
+    );
+    assert(input_aus <= summary_aus(pre.branch.branch_summary));
+    assert(summary_aus(pre.branch.branch_summary)
+        <= pre.branch.owned_aus());
+    assert(pre.branch.owned_aus() <= owned_aus);
+    assert(input_aus <= owned_aus);
+
+    assert(access.loaded_branch_reads()
+        == tight_access.loaded_branch_reads()) by {
+        assert_maps_equal!(
+            access.loaded_branch_reads(),
+            tight_access.loaded_branch_reads(),
+            addr => {
+                if access.loaded_branch_reads().contains_key(addr) {
+                    assert(addresses_in_aus(input_aus).contains(addr));
+                    assert(input_aus.contains(addr.au));
+                    assert(owned_aus.contains(addr.au));
+                    assert(owned_addrs.contains(addr));
+                    assert(access.branch_reads.contains_key(addr));
+                    assert(tight_reads.contains_key(addr));
+                }
+                if tight_access.loaded_branch_reads().contains_key(addr) {
+                    assert(tight_reads.contains_key(addr));
+                    assert(access.branch_reads.contains_key(addr));
+                }
+            }
+        );
+    }
+    assert(tight_access.wf());
+    assert(tight_access.only_branch());
+    assert(tight_access.read_only());
+    assert(tight_access.reads() == tight_reads);
+    assert(tight_access.writes().is_empty());
+
+    assert forall |addr: Address|
+        #[trigger] tight_reads.contains_key(addr)
+        implies pre.cache.valid_read(addr, tight_reads[addr])
+    by {
+        assert(access.branch_reads.contains_key(addr));
+        page_access_branch_read_valid(
+            pre.cache,
+            post.cache,
+            access,
+            addr,
+        );
+    }
+    valid_reads_in_project_cache_by_addrs(
+        pre.cache,
+        owned_addrs,
+        tight_reads,
+    );
+    assert(tight_reads <= component_pre.disk.cache);
+    assert(CachingDisk::State::access(
+        component_pre.disk,
+        component_pre.disk,
+        CachingDisk::Label::Access {
+            reads: tight_access.reads(),
+            writes: tight_access.writes(),
+        },
+    )) by {
+        assert(component_pre.disk.cache
+            .union_prefer_right(tight_access.writes())
+            == component_pre.disk.cache) by {
+            assert_maps_equal!(
+                component_pre.disk.cache
+                    .union_prefer_right(tight_access.writes()),
+                component_pre.disk.cache,
+                addr => {}
+            );
+        }
+        let empty_status = crate::implementation::CachingDisk_v::status_map(
+            tight_access.writes().dom(),
+            PageStatus::Dirty,
+        );
+        assert(empty_status.is_empty());
+        assert(component_pre.disk.status
+            .union_prefer_right(empty_status)
+            == component_pre.disk.status) by {
+            assert_maps_equal!(
+                component_pre.disk.status
+                    .union_prefer_right(empty_status),
+                component_pre.disk.status,
+                addr => {}
+            );
+        }
+    }
+    assert(CachingDisk::State::next_by(
+        component_pre.disk,
+        component_pre.disk,
+        CachingDisk::Label::Access {
+            reads: tight_access.reads(),
+            writes: tight_access.writes(),
+        },
+        CachingDisk::Step::access(),
+    )) by {
+        reveal(CachingDisk::State::next_by);
+    }
+    reveal(CachingDisk::State::next);
+
+    assert(post.branch.owned_aus() == pre.branch.owned_aus());
+    assert(post.branch_projection_aus()
+        == pre.branch_projection_aus());
+    assert(access.writes().is_empty());
+    assert(access.writes() == Map::<Address, RawPage>::empty());
+    assert(Cache::State::next(
+        pre.cache,
+        post.cache,
+        Cache::Label::Access {
+            reads: access.reads(),
+            writes: Map::empty(),
+        },
+    ));
+    Cache::State::access_read_only_is_noop(
+        pre.cache,
+        post.cache,
+        access.reads(),
+    );
+    assert(post.cache == pre.cache);
+    assert(component_post.disk == component_pre.disk);
+    tight_access.cached_branch_read_only_shape();
+    assert(CachedBranchBetree::State::compact_scan_page(
+        component_pre.betree,
+        component_post.betree,
+        component_lbl.cached_i(),
+        input_idx,
+        tight_access.loaded_branch_reads(),
+    ));
+    assert(CachedBranchBetree::State::next_by(
+        component_pre.betree,
+        post.branch,
+        component_lbl.cached_i(),
+        CachedBranchBetree::Step::compact_scan_page(
+            input_idx,
+            tight_access.loaded_branch_reads(),
+        ),
+    )) by {
+        reveal(CachedBranchBetree::State::next_by);
+    }
+    reveal(CachedBranchBetree::State::next);
+    assert(CachingDiskBranchBetree::State::internal_access(
+        component_pre,
+        component_post,
+        component_lbl,
+        post.branch,
+        component_post.disk,
+    ));
+    assert(CachingDiskBranchBetree::State::next_by(
+        component_pre,
+        component_post,
+        component_lbl,
+        CachingDiskBranchBetree::Step::internal_access(
+            post.branch,
+            component_post.disk,
+        ),
+    )) by {
+        reveal(CachingDiskBranchBetree::State::next_by);
+    }
+    reveal(CachingDiskBranchBetree::State::next);
+
+    assert(dst.ephemeral is Known);
+    assert(src.ephemeral->persistent_aus
+        == dst.ephemeral->persistent_aus);
+    assert(src.frozen == dst.frozen);
+    assert(src.prepared == dst.prepared);
+    assert(Set::<AU>::empty()
+        == crate::implementation::CrashAwareCachingDiskBranchBetree_v::
+            logical_deallocs(component_lbl)
+            - crate::implementation::CrashAwareCachingDiskBranchBetree_v::
+                protected_aus(
+                    src.ephemeral->persistent_aus,
+                    src.frozen,
+                ));
+    assert(CrashAwareCachingDiskBranchBetree::State::ephemeral_step(
+        src,
+        dst,
+        target_lbl,
+        component_post,
+    ));
+    assert(CrashAwareCachingDiskBranchBetree::State::next_by(
+        src,
+        dst,
+        target_lbl,
+        CrashAwareCachingDiskBranchBetree::Step::ephemeral_step(
+            component_post,
+        ),
+    )) by {
+        reveal(CrashAwareCachingDiskBranchBetree::State::next_by);
+    }
+    reveal(CrashAwareCachingDiskBranchBetree::State::next);
+    src.next_refines(dst, target_lbl);
+
     assert(post.control_wf());
     assert(post.i().refinement_inv());
     assert(post.inv());
@@ -11877,9 +11327,10 @@ pub proof fn compact_abort_refines(
         CachedBranchBetree::State::compact_abort(
             pre.branch,
             post.branch,
-            CachedBranchBetree::Label::InternalAlloc {
+            CachedBranchBetree::Label::InternalAllocAccess {
                 allocs,
                 deallocs,
+                access: CachedBranchBetreeAccess::empty(),
             },
             input_idx,
         ),
@@ -11890,11 +11341,12 @@ pub proof fn compact_abort_refines(
             CrashAwareCachingDiskBranchBetree::Label::
                 Ephemeral {
                     op: CachingDiskBranchBetree::Label::
-                        InternalAlloc {
+                        InternalAllocAccess {
                             allocs,
                             deallocs,
                             guard_aus:
                                 pre.control.protected_aus(),
+                            access: PageAccess::empty(),
                         },
                     deallocs:
                         pre.control.reclaimable(deallocs),
@@ -11925,10 +11377,11 @@ pub proof fn compact_abort_refines(
             ),
         };
     let component_lbl =
-        CachingDiskBranchBetree::Label::InternalAlloc {
+        CachingDiskBranchBetree::Label::InternalAllocAccess {
             allocs,
             deallocs,
             guard_aus: guard,
+            access: PageAccess::empty(),
         };
     let target_lbl =
         CrashAwareCachingDiskBranchBetree::Label::
@@ -11937,7 +11390,6 @@ pub proof fn compact_abort_refines(
                 deallocs: reclaimed,
             };
 
-    reveal(CachedBranchBetree::State::compact_abort);
     assert(allocs.is_empty());
     ownership_projection_forget_refines(
         pre.cache,
@@ -11952,28 +11404,49 @@ pub proof fn compact_abort_refines(
             aus: reclaimed,
         },
     ));
+    PageAccess::empty_cached_access_is_empty();
+    PageAccess::empty_effects_are_empty();
+    crate::implementation::CachingDiskBranchBetree_v::
+        disk_forget_is_empty_alloc_access(
+            component_pre.disk,
+            candidate_post.disk,
+            deallocs,
+            guard,
+        );
+    assert(disk_access_for_alloc(
+        component_pre.disk,
+        candidate_post.disk,
+        allocs,
+        deallocs,
+        guard,
+        PageAccess::empty().reads(),
+        PageAccess::empty().writes(),
+    ));
+    assert(CachedBranchBetree::State::next_by(
+        component_pre.betree,
+        post.branch,
+        component_lbl.cached_i(),
+        CachedBranchBetree::Step::compact_abort(input_idx),
+    )) by {
+        reveal(CachedBranchBetree::State::next_by);
+    }
+    reveal(CachedBranchBetree::State::next);
     assert(CachingDiskBranchBetree::State::
-        compact_abort(
+        internal_alloc_access(
             component_pre,
             candidate_post,
             component_lbl,
             post.branch,
             candidate_post.disk,
-            input_idx,
         )) by {
-        reveal(CachingDiskBranchBetree::State::
-            compact_abort);
-        reveal(AtomicBranchBetreeControl::
-            reclaimable);
     }
     assert(CachingDiskBranchBetree::State::next_by(
         component_pre,
         candidate_post,
         component_lbl,
-        CachingDiskBranchBetree::Step::compact_abort(
+        CachingDiskBranchBetree::Step::internal_alloc_access(
             post.branch,
             candidate_post.disk,
-            input_idx,
         ),
     )) by {
         reveal(CachingDiskBranchBetree::State::next_by);
@@ -11994,12 +11467,6 @@ pub proof fn compact_abort_refines(
 
     assert(post.branch_projection_aus()
         == expected_aus) by {
-        reveal(UnifiedCacheBranchBetreeSource::
-            branch_projection_aus);
-        reveal(AtomicBranchBetreeControl::
-            protected_aus);
-        reveal(AtomicBranchBetreeControl::
-            reclaimable);
         assert forall |au: AU|
             #[trigger] post.branch_projection_aus()
                 .contains(au)
@@ -12023,20 +11490,12 @@ pub proof fn compact_abort_refines(
         component_lbl,
     ));
 
-    reveal(UnifiedCacheBranchBetreeSource::
-        ephemeral_branch_i);
     assert(src.ephemeral is Known);
     assert(dst.ephemeral is Known);
     assert(src.ephemeral->persistent_aus
         == dst.ephemeral->persistent_aus);
     assert(src.frozen == dst.frozen);
     assert(src.prepared == dst.prepared) by {
-        reveal(UnifiedCacheBranchBetreeSource::
-            prepared_branch_image_i);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                CachingDiskBranchBetreeImage::
-                    materialized_from_persistent);
     }
     assert(guard
         == crate::implementation::
@@ -12052,18 +11511,6 @@ pub proof fn compact_abort_refines(
             target_lbl,
             component_post,
         )) by {
-        reveal(CrashAwareCachingDiskBranchBetree::State::
-            ephemeral_step);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_allocs);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_deallocs);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_guard_aus);
-        reveal(AtomicBranchBetreeControl::reclaimable);
     }
     assert(CrashAwareCachingDiskBranchBetree::State::
         next_by(
@@ -12079,7 +11526,6 @@ pub proof fn compact_abort_refines(
     reveal(CrashAwareCachingDiskBranchBetree::State::next);
     src.next_refines(dst, target_lbl);
 
-    reveal(UnifiedCacheBranchBetreeSource::inv);
     assert(post.control_wf());
     assert(post.i().refinement_inv());
     assert(post.inv());
@@ -12125,9 +11571,10 @@ pub proof fn compact_complete_refines(
         CachedBranchBetree::State::compact_complete(
             pre.branch,
             post.branch,
-            CachedBranchBetree::Label::InternalAlloc {
+            CachedBranchBetree::Label::InternalAllocAccess {
                 allocs,
                 deallocs,
+                access: access.cached_access(),
             },
             input_idx,
             branch_idx,
@@ -12138,7 +11585,6 @@ pub proof fn compact_complete_refines(
             path_addrs,
             access.loaded_betree_reads(),
             access.loaded_betree_writes(),
-            access.loaded_branch_reads(),
         ),
     ensures
         CrashAwareCachingDiskBranchBetree::State::next(
@@ -12147,11 +11593,14 @@ pub proof fn compact_complete_refines(
             CrashAwareCachingDiskBranchBetree::Label::
                 Ephemeral {
                     op: CachingDiskBranchBetree::Label::
-                        InternalAlloc {
+                        InternalAllocAccess {
                             allocs,
                             deallocs,
                             guard_aus:
                                 pre.control.protected_aus(),
+                            access: projected_compact_complete_access(
+                                pre, access,
+                            ),
                         },
                     deallocs:
                         pre.control.reclaimable(deallocs),
@@ -12168,8 +11617,8 @@ pub proof fn compact_complete_refines(
             ),
         access.writes().dom()
             <= addresses_in_aus(allocs),
-        cached_branch_alloc_aus(post.branch.wip_branches)
-            <= cached_branch_alloc_aus(
+        cached_bulk_branch_alloc_aus(post.branch.wip_branches)
+            <= cached_bulk_branch_alloc_aus(
                 pre.branch.wip_branches,
             ),
         access.writes().dom()
@@ -12197,10 +11646,11 @@ pub proof fn compact_complete_refines(
             ),
         };
     let component_lbl =
-        CachingDiskBranchBetree::Label::InternalAlloc {
+        CachingDiskBranchBetree::Label::InternalAllocAccess {
             allocs,
             deallocs,
             guard_aus: guard,
+            access: tight,
         };
     let target_lbl =
         CrashAwareCachingDiskBranchBetree::Label::
@@ -12242,7 +11692,6 @@ pub proof fn compact_complete_refines(
     assert(expected_aus
         == (pre.branch_projection_aus() + allocs)
             - (deallocs - guard)) by {
-        reveal(AtomicBranchBetreeControl::reclaimable);
     }
     projected_disk_access_for_alloc(
         pre.cache,
@@ -12265,40 +11714,42 @@ pub proof fn compact_complete_refines(
         tight.reads(),
         tight.writes(),
     ));
+    tight.cached_only_betree_shape();
+    assert(CachedBranchBetree::State::next_by(
+        component_pre.betree,
+        post.branch,
+        component_lbl.cached_i(),
+        CachedBranchBetree::Step::compact_complete(
+            input_idx,
+            branch_idx,
+            path,
+            start,
+            end,
+            new_node_addr,
+            path_addrs,
+            tight.loaded_betree_reads(),
+            tight.loaded_betree_writes(),
+        ),
+    )) by {
+        reveal(CachedBranchBetree::State::next_by);
+    }
+    reveal(CachedBranchBetree::State::next);
     assert(CachingDiskBranchBetree::State::
-        compact_complete(
+        internal_alloc_access(
             component_pre,
             candidate_post,
             component_lbl,
             post.branch,
             candidate_post.disk,
-            input_idx,
-            branch_idx,
-            path,
-            start,
-            end,
-            new_node_addr,
-            path_addrs,
-            tight,
         )) by {
-        reveal(CachingDiskBranchBetree::State::
-            compact_complete);
     }
     assert(CachingDiskBranchBetree::State::next_by(
         component_pre,
         candidate_post,
         component_lbl,
-        CachingDiskBranchBetree::Step::compact_complete(
+        CachingDiskBranchBetree::Step::internal_alloc_access(
             post.branch,
             candidate_post.disk,
-            input_idx,
-            branch_idx,
-            path,
-            start,
-            end,
-            new_node_addr,
-            path_addrs,
-            tight,
         ),
     )) by {
         reveal(CachingDiskBranchBetree::State::next_by);
@@ -12323,28 +11774,21 @@ pub proof fn compact_complete_refines(
         path_addrs,
         tight.loaded_betree_reads(),
         tight.loaded_betree_writes(),
-        tight.loaded_branch_reads(),
     );
     assert(candidate_post.betree == post.branch);
-    assert(cached_branch_alloc_aus(
+    assert(cached_bulk_branch_alloc_aus(
         candidate_post.betree.wip_branches,
-    ) <= cached_branch_alloc_aus(
+    ) <= cached_bulk_branch_alloc_aus(
         pre.branch.wip_branches,
     ));
-    assert(cached_branch_alloc_aus(
+    assert(cached_bulk_branch_alloc_aus(
         post.branch.wip_branches,
-    ) <= cached_branch_alloc_aus(
+    ) <= cached_bulk_branch_alloc_aus(
         pre.branch.wip_branches,
     ));
 
     assert(post.branch_projection_aus()
         == expected_aus) by {
-        reveal(UnifiedCacheBranchBetreeSource::
-            branch_projection_aus);
-        reveal(AtomicBranchBetreeControl::
-            protected_aus);
-        reveal(AtomicBranchBetreeControl::
-            reclaimable);
         assert forall |au: AU|
             #[trigger] post.branch_projection_aus()
                 .contains(au)
@@ -12368,20 +11812,12 @@ pub proof fn compact_complete_refines(
         component_lbl,
     ));
 
-    reveal(UnifiedCacheBranchBetreeSource::
-        ephemeral_branch_i);
     assert(src.ephemeral is Known);
     assert(dst.ephemeral is Known);
     assert(src.ephemeral->persistent_aus
         == dst.ephemeral->persistent_aus);
     assert(src.frozen == dst.frozen);
     assert(src.prepared == dst.prepared) by {
-        reveal(UnifiedCacheBranchBetreeSource::
-            prepared_branch_image_i);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                CachingDiskBranchBetreeImage::
-                    materialized_from_persistent);
         assert(allocs.disjoint(guard));
     }
     assert(guard
@@ -12398,18 +11834,6 @@ pub proof fn compact_complete_refines(
             target_lbl,
             component_post,
         )) by {
-        reveal(CrashAwareCachingDiskBranchBetree::State::
-            ephemeral_step);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_allocs);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_deallocs);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_guard_aus);
-        reveal(AtomicBranchBetreeControl::reclaimable);
     }
     assert(CrashAwareCachingDiskBranchBetree::State::
         next_by(
@@ -12433,7 +11857,6 @@ pub proof fn compact_complete_refines(
             writes: access.writes(),
         },
     );
-    reveal(UnifiedCacheBranchBetreeSource::inv);
     assert(post.control_wf());
     assert(post.i().refinement_inv());
     assert(post.inv());
@@ -12547,15 +11970,9 @@ pub proof fn store_commit_start_refines(
     );
     assert(pre.branch.durable_aus()
         <= pre.branch.owned_aus()) by {
-        reveal(CachedBranchBetree::State::durable_aus);
-        reveal(CachedBranchBetree::State::owned_aus);
     }
     assert(post.branch_projection_aus()
         =~= pre.branch_projection_aus()) by {
-        reveal(UnifiedCacheBranchBetreeSource::
-            branch_projection_aus);
-        reveal(UnifiedCacheBranchBetreeSource::
-            frozen_aus_i);
     }
     projected_cache_read_only_access_unchanged(
         pre.cache,
@@ -12588,12 +12005,20 @@ pub proof fn store_commit_start_refines(
     let component_post = post.known_branch_i();
     assert(component_post == component_pre);
 
+    assert(CachedBranchBetree::State::next_by(
+        component_pre.betree,
+        component_pre.betree,
+        component_lbl.cached_i(),
+        CachedBranchBetree::Step::freeze_as(),
+    )) by {
+        reveal(CachedBranchBetree::State::next_by);
+    }
+    reveal(CachedBranchBetree::State::next);
     assert(CachingDiskBranchBetree::State::freeze_as(
         component_pre,
         component_pre,
         component_lbl,
     )) by {
-        reveal(CachingDiskBranchBetree::State::freeze_as);
     }
     assert(CachingDiskBranchBetree::State::next_by(
         component_pre,
@@ -12605,10 +12030,6 @@ pub proof fn store_commit_start_refines(
     }
     reveal(CachingDiskBranchBetree::State::next);
 
-    reveal(UnifiedCacheBranchBetreeSource::
-        ephemeral_branch_i);
-    reveal(UnifiedCacheBranchBetreeSource::
-        prepared_branch_image_i);
     assert(src.ephemeral is Known);
     assert(dst.ephemeral is Known);
     assert(src.ephemeral == dst.ephemeral);
@@ -12619,16 +12040,9 @@ pub proof fn store_commit_start_refines(
     assert(src.persistent == dst.persistent);
     assert(src.persistent.metadata.seq_end
         <= frozen_image.seq_end) by {
-        reveal(UnifiedCacheBranchBetreeSource::
-            control_wf);
-        reveal(UnifiedCacheBranchBetreeSource::
-            persistent_metadata_i);
-        reveal(CachedBranchBetree::State::freeze_as);
     }
     assert(CrashAwareCachingDiskBranchBetree::State::
         commit_start(src, dst, target_lbl)) by {
-        reveal(CrashAwareCachingDiskBranchBetree::State::
-            commit_start);
     }
     assert(CrashAwareCachingDiskBranchBetree::State::
         next_by(
@@ -12644,7 +12058,6 @@ pub proof fn store_commit_start_refines(
     reveal(CrashAwareCachingDiskBranchBetree::State::next);
     src.next_refines(dst, target_lbl);
 
-    reveal(UnifiedCacheBranchBetreeSource::inv);
     assert(post.control_wf());
     assert(post.i().refinement_inv());
     assert(post.inv());
@@ -12704,10 +12117,6 @@ pub proof fn store_commit_prepared_refines(
     assert(post.cache == pre.cache);
     assert(post.branch_projection_aus()
         =~= pre.branch_projection_aus()) by {
-        reveal(UnifiedCacheBranchBetreeSource::
-            branch_projection_aus);
-        reveal(UnifiedCacheBranchBetreeSource::
-            frozen_aus_i);
     }
     assert(project_persistent(
         post.disk,
@@ -12716,7 +12125,6 @@ pub proof fn store_commit_prepared_refines(
         pre.disk,
         pre.branch_projection_aus(),
     )) by {
-        reveal(project_persistent);
         assert_maps_equal!(
             project_persistent(
                 post.disk,
@@ -12759,13 +12167,6 @@ pub proof fn store_commit_prepared_refines(
                     == PageStatus::Clean
             }
         by {
-            reveal(UnifiedCacheBranchBetreeSource::
-                branch_caching_disk_i);
-            reveal(adapter_caching_disk_i);
-            reveal(project_cache_pages);
-            reveal(project_cache_status);
-            reveal(filled_cache_pages);
-            reveal(filled_cache_status);
             assert(filled_cache_pages(pre.cache)
                 .contains_key(addr));
             assert(crate::implementation::
@@ -12776,7 +12177,6 @@ pub proof fn store_commit_prepared_refines(
             assert(pre.cache.entries[slot] is Filled);
             assert(pre.cache.entries[slot].get_addr() == addr);
             assert(pre.cache.status_map[slot] is Clean);
-            reveal(cache_status_i);
         }
         component.disk.
             aus_clean_or_evictable_from_forall(
@@ -12810,10 +12210,6 @@ pub proof fn store_commit_prepared_refines(
         );
     }
 
-    reveal(UnifiedCacheBranchBetreeSource::
-        ephemeral_branch_i);
-    reveal(UnifiedCacheBranchBetreeSource::
-        prepared_branch_image_i);
     assert(src.ephemeral is Known);
     assert(dst.ephemeral is Known);
     assert(src.ephemeral == dst.ephemeral);
@@ -12833,8 +12229,6 @@ pub proof fn store_commit_prepared_refines(
             target_lbl,
             prepared,
         )) by {
-        reveal(CrashAwareCachingDiskBranchBetree::State::
-            commit_prepared);
     }
     assert(CrashAwareCachingDiskBranchBetree::State::
         next_by(
@@ -12868,7 +12262,6 @@ pub proof fn store_commit_prepared_refines(
         assert(pre.cache.status_map[slot] is Clean);
     }
 
-    reveal(UnifiedCacheBranchBetreeSource::inv);
     assert(post.control_wf());
     assert(post.i().refinement_inv());
     assert(post.inv());
@@ -12948,17 +12341,9 @@ pub proof fn store_commit_complete_refines(
     assert(pre_aus
         =~= pre.branch.owned_aus()
             + persistent_aus + frozen.aus) by {
-        reveal(UnifiedCacheBranchBetreeSource::
-            branch_projection_aus);
-        reveal(UnifiedCacheBranchBetreeSource::
-            frozen_aus_i);
     }
     assert(post_aus
         =~= pre.branch.owned_aus() + frozen.aus) by {
-        reveal(UnifiedCacheBranchBetreeSource::
-            branch_projection_aus);
-        reveal(UnifiedCacheBranchBetreeSource::
-            frozen_aus_i);
     }
     assert(pre_aus - deallocs =~= post_aus) by {
         assert forall |au: AU|
@@ -13003,7 +12388,6 @@ pub proof fn store_commit_complete_refines(
         persistent_aus,
         guard_aus,
     )) by {
-        reveal(reclaim_guarded_aus);
     }
     reclaim_guarded_aus_preserves_inv(
         current,
@@ -13018,10 +12402,6 @@ pub proof fn store_commit_complete_refines(
                 current,
                 frozen,
             );
-    reveal(UnifiedCacheBranchBetreeSource::
-        persistent_branch_image_i);
-    reveal(UnifiedCacheBranchBetreeSource::
-        prepared_branch_image_i);
     assert(src.ephemeral is Known);
     assert(dst.ephemeral is Known);
     assert(src.frozen == Some(frozen));
@@ -13032,8 +12412,6 @@ pub proof fn store_commit_complete_refines(
         == frozen.aus);
     assert(dst.ephemeral->v == candidate);
     assert(dst.persistent == prepared) by {
-        reveal(CachingDiskBranchBetreeImage::
-            materialized_from_persistent);
         assert_maps_equal!(
             dst.persistent.persistent,
             prepared.persistent,
@@ -13066,8 +12444,6 @@ pub proof fn store_commit_complete_refines(
             target_lbl,
             candidate,
         )) by {
-        reveal(CrashAwareCachingDiskBranchBetree::State::
-            commit_complete);
     }
     assert(CrashAwareCachingDiskBranchBetree::State::
         next_by(
@@ -13092,12 +12468,6 @@ pub proof fn store_commit_complete_refines(
     let tree = initial_tight_tree(
         witness.initial_betree,
     );
-    reveal(crate::implementation::
-        CrashAwareCachingDiskBranchBetreeRefinement_v::
-            RecoveredCachingDiskBranchBetreeMetadata::
-                valid_for);
-    reveal(initial_refinement_witness_valid);
-    reveal(tight_betree_candidate);
     assert(prepared.persistent
         <= post.disk.content) by {
         assert forall |addr: Address|
@@ -13129,9 +12499,6 @@ pub proof fn store_commit_complete_refines(
         by {
             assert(prepared.disk().visible()
                 == prepared.persistent) by {
-                reveal(CachingDiskBranchBetreeImage::disk);
-                reveal(CachingDisk::State::visible);
-                reveal(CachingDisk::State::visible_cache);
             }
             let bounded = to_betree_nodes(
                 prepared.disk().visible(),
@@ -13160,11 +12527,8 @@ pub proof fn store_commit_complete_refines(
         post.persistent_metadata_i().root,
         to_betree_nodes(post.disk.content),
     )) by {
-        reveal(tight_betree_exists);
     }
 
-    reveal(UnifiedCacheBranchBetreeSource::inv);
-    reveal(UnifiedCacheBranchBetreeSource::control_wf);
     assert(post.control_wf());
     assert(post.persistent_superblock_image_i()
         == image);
@@ -13216,7 +12580,6 @@ pub proof fn put_refines(
             deallocs: Set::empty(),
         };
 
-    reveal(CachedBranchBetree::State::put);
     assert(post.branch.root == pre.branch.root);
     assert(post.branch.betree_aus == pre.branch.betree_aus);
     assert(post.branch.branch_aus == pre.branch.branch_aus);
@@ -13240,13 +12603,22 @@ pub proof fn put_refines(
     assert(post.branch_caching_disk_i()
         == pre.branch_caching_disk_i());
 
+    assert(CachedBranchBetree::State::next_by(
+        cpre.betree,
+        post.branch,
+        component_lbl.cached_i(),
+        CachedBranchBetree::Step::put(),
+    )) by {
+        reveal(CachedBranchBetree::State::next_by);
+    }
+    reveal(CachedBranchBetree::State::next);
+
     assert(CachingDiskBranchBetree::State::put(
         cpre,
         cpost,
         component_lbl,
         post.branch,
     )) by {
-        reveal(CachingDiskBranchBetree::State::put);
     }
     assert(CachingDiskBranchBetree::State::next_by(
         cpre,
@@ -13264,9 +12636,6 @@ pub proof fn put_refines(
         CrashAwareCachingDiskBranchBetree_v::
             logical_deallocs(component_lbl)
         =~= Set::<AU>::empty()) by {
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_deallocs);
     }
     assert(Set::<AU>::empty()
         - crate::implementation::
@@ -13283,14 +12652,6 @@ pub proof fn put_refines(
             target_lbl,
             cpost,
         )) by {
-        reveal(CrashAwareCachingDiskBranchBetree::State::
-            ephemeral_step);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_allocs);
-        reveal(crate::implementation::
-            CrashAwareCachingDiskBranchBetree_v::
-                logical_deallocs);
     }
     assert(CrashAwareCachingDiskBranchBetree::State::next_by(
         src,
@@ -13304,7 +12665,6 @@ pub proof fn put_refines(
     reveal(CrashAwareCachingDiskBranchBetree::State::next);
     src.next_refines(dst, target_lbl);
 
-    reveal(UnifiedCacheBranchBetreeSource::inv);
     pre.branch.memtable.apply_puts_end(puts);
     assert(pre.branch.memtable.seq_end
         <= post.branch.memtable.seq_end);

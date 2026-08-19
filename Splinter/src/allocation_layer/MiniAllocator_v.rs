@@ -3,6 +3,7 @@
 //
 #![allow(unused_imports)]
 use vstd::prelude::*;
+use vstd::assert_sets_equal;
 use crate::disk::GenericDisk_v::{AU, Address, page_count};
 
 verus! {
@@ -160,6 +161,42 @@ impl MiniAllocator {
         assert(self.can_allocate(addr));
     }
 
+    pub proof fn allocate_preserves_allocated_page(
+        self,
+        allocated: Address,
+        existing: Address,
+    )
+        requires
+            self.wf(),
+            self.can_allocate(allocated),
+            self.page_is_allocated(existing),
+        ensures
+            self.allocate(allocated).page_is_allocated(existing),
+    {
+        let post = self.allocate(allocated);
+        if existing.au == allocated.au {
+            assert(post.allocs[existing.au]
+                == self.allocs[existing.au].reserve(set![allocated]));
+            assert(post.allocs[existing.au].allocated
+                == self.allocs[existing.au].allocated.insert(allocated));
+        } else {
+            assert(post.allocs[existing.au] == self.allocs[existing.au]);
+        }
+    }
+
+    pub proof fn allocated_page_not_removable(
+        self,
+        addr: Address,
+    )
+        requires
+            self.page_is_allocated(addr),
+        ensures
+            !self.removable_aus().contains(addr.au),
+            self.allocated_aus().contains(addr.au),
+    {
+        assert(!self.allocs[addr.au].has_no_allocated_pages());
+    }
+
     pub open spec/*(checked)*/ fn prune(self, aus: Set<AU>) -> Self
     recommends
         self.wf(),
@@ -218,6 +255,56 @@ impl MiniAllocator {
             assert(post.allocs.contains_key(post.curr.unwrap()));
         }
         assert(post.wf());
+    }
+
+    pub proof fn prune_removable_preserves_allocated_page(
+        self,
+        addr: Address,
+    )
+        requires
+            self.wf(),
+            self.page_is_allocated(addr),
+        ensures
+            self.prune(self.removable_aus())
+                .page_is_allocated(addr),
+            self.prune(self.removable_aus())
+                .all_aus().contains(addr.au),
+    {
+        self.allocated_page_not_removable(addr);
+        let removed = self.removable_aus();
+        let post = self.prune(removed);
+        assert(post.allocs.contains_key(addr.au));
+        assert(post.allocs[addr.au] == self.allocs[addr.au]);
+        assert(post.page_is_allocated(addr));
+        assert(post.all_aus().contains(addr.au));
+    }
+
+    pub proof fn prune_removable_all_aus(self)
+        requires
+            self.wf(),
+        ensures
+            self.prune(self.removable_aus()).all_aus()
+                =~= self.allocated_aus(),
+    {
+        self.prune_preserves_wf(self.removable_aus());
+        assert_sets_equal!(
+            self.prune(self.removable_aus()).all_aus(),
+            self.allocated_aus(),
+            au => {
+                if self.prune(self.removable_aus())
+                    .all_aus().contains(au)
+                {
+                    assert(self.allocs.contains_key(au));
+                    assert(!self.removable_aus().contains(au));
+                    assert(!self.allocs[au].has_no_allocated_pages());
+                }
+                if self.allocated_aus().contains(au) {
+                    assert(!self.removable_aus().contains(au));
+                    assert(self.prune(self.removable_aus())
+                        .allocs.contains_key(au));
+                }
+            }
+        );
     }
 
     pub open spec fn page_is_allocated(self, addr: Address) -> bool

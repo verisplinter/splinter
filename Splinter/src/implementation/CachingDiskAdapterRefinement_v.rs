@@ -496,6 +496,50 @@ pub proof fn valid_reads_in_project_cache_by_addrs(
     }
 }
 
+pub proof fn valid_read_matches_caching_disk_i_visible(
+    cache: Cache::State,
+    disk: AsyncDisk::State,
+    owned_aus: Set<AU>,
+    addr: Address,
+    raw: RawPage,
+)
+    requires
+        cache.inv(),
+        cache.valid_read(addr, raw),
+        addresses_in_aus(owned_aus).contains(addr),
+        caching_disk_i(cache, disk, owned_aus).inv(),
+        caching_disk_i(cache, disk, owned_aus)
+            .visible().contains_key(addr),
+    ensures
+        caching_disk_i(cache, disk, owned_aus).visible()[addr] == raw,
+{
+    let reads = map![addr => raw];
+    let addrs = addresses_in_aus(owned_aus);
+    assert(reads.dom() <= addrs);
+    assert forall |read_addr: Address|
+        #[trigger] reads.contains_key(read_addr)
+        implies cache.valid_read(read_addr, reads[read_addr]) by {
+        assert(read_addr == addr);
+    }
+    valid_reads_in_project_cache_by_addrs(cache, addrs, reads);
+    let cd = caching_disk_i(cache, disk, owned_aus);
+    assert(reads <= project_cache_pages_by_addrs(cache, addrs));
+    assert(project_cache_pages_by_addrs(cache, addrs)
+        == project_cache_pages(cache, owned_aus));
+    assert(reads.contains_key(addr));
+    assert(project_cache_pages_by_addrs(cache, addrs)
+        .contains_key(addr));
+    assert(project_cache_pages(cache, owned_aus)
+        .contains_key(addr));
+    assert(cd.cache == project_cache_pages(cache, owned_aus));
+    assert(cd.cache.contains_key(addr));
+    assert(cd.cache[addr] == raw);
+    cd.visible_submap_readable();
+    assert(cd.readable().contains_key(addr));
+    assert(cd.readable()[addr] == raw);
+    assert(cd.visible()[addr] == cd.readable()[addr]);
+}
+
 pub proof fn cache_access_reads_in_project_cache_by_addrs(
     pre: Cache::State,
     post: Cache::State,
@@ -588,7 +632,6 @@ pub proof fn projected_cache_access_effect(
     reveal(Cache::State::next);
     reveal(Cache::State::next_by);
     assert(Cache::State::next_by(pre, post, lbl, Cache::Step::access()));
-    reveal(Cache::State::access);
     let updated_entries = pre.write_updated_entries(writes);
     let updated_status = pre.write_updated_status(writes);
     assert(post.lookup_map == pre.lookup_map);
@@ -1172,7 +1215,6 @@ pub proof fn cache_internal_refines_caching_disk_internal_by_domains(
     match step {
         Cache::Step::reserve(new_slots_mapping) => {
             assert(Cache::State::reserve(pre_cache, post_cache, Cache::Label::Internal{}, new_slots_mapping)) by {
-                reveal(Cache::State::reserve);
             }
             let updated_entries = Map::new(
                 |slot| new_slots_mapping.contains_key(slot),
@@ -1293,7 +1335,6 @@ pub proof fn cache_internal_refines_caching_disk_internal_by_domains(
         },
         Cache::Step::evict(evicted_slots) => {
             assert(Cache::State::evict(pre_cache, post_cache, Cache::Label::Internal{}, evicted_slots)) by {
-                reveal(Cache::State::evict);
             }
             let evicted_map = Map::new(
                 |slot: Slot| evicted_slots.contains(slot),
@@ -1439,7 +1480,6 @@ pub proof fn cache_internal_refines_caching_disk_internal_by_domains(
                 CachingDisk::Label::Internal{},
                 projected_evicted,
             )) by {
-                reveal(CachingDisk::State::evict_clean);
             }
             assert(CachingDisk::State::next_by(
                 pre_cd,
@@ -1454,7 +1494,6 @@ pub proof fn cache_internal_refines_caching_disk_internal_by_domains(
         Cache::Step::noop() => {
             assert(post_cache == pre_cache) by {
                 assert(Cache::State::noop(pre_cache, post_cache, Cache::Label::Internal{})) by {
-                    reveal(Cache::State::noop);
                 }
             }
             assert(pre_cd == post_cd);
@@ -1549,7 +1588,6 @@ pub proof fn cache_internal_preserves_protected_entries(
                     Cache::Label::Internal{},
                     new_slots_mapping,
                 )) by {
-                    reveal(Cache::State::reserve);
                 }
                 let updated_entries = Map::new(
                     |slot| new_slots_mapping.contains_key(slot),
@@ -1598,7 +1636,6 @@ pub proof fn cache_internal_preserves_protected_entries(
                     Cache::Label::Internal{},
                     evicted_slots,
                 )) by {
-                    reveal(Cache::State::evict);
                 }
                 let evicted_addrs = Map::new(
                     |slot: Slot| evicted_slots.contains(slot),
@@ -1662,7 +1699,6 @@ pub proof fn cache_internal_preserves_protected_entries(
             },
             Cache::Step::noop() => {
                 assert(Cache::State::noop(pre_cache, post_cache, Cache::Label::Internal{})) by {
-                    reveal(Cache::State::noop);
                 }
                 assert(post_cache == pre_cache);
             },
@@ -1717,7 +1753,6 @@ pub proof fn cache_internal_post_filled_addr_was_pre_filled(
                 Cache::Label::Internal{},
                 new_slots_mapping,
             )) by {
-                reveal(Cache::State::reserve);
             }
             let updated_entries = Map::new(
                 |slot| new_slots_mapping.contains_key(slot),
@@ -1756,7 +1791,6 @@ pub proof fn cache_internal_post_filled_addr_was_pre_filled(
                 Cache::Label::Internal{},
                 evicted_slots,
             )) by {
-                reveal(Cache::State::evict);
             }
             let evicted_addrs = Map::new(
                 |slot: Slot| evicted_slots.contains(slot),
@@ -1782,7 +1816,6 @@ pub proof fn cache_internal_post_filled_addr_was_pre_filled(
         },
         Cache::Step::noop() => {
             assert(Cache::State::noop(pre_cache, post_cache, Cache::Label::Internal{})) by {
-                reveal(Cache::State::noop);
             }
             assert(post_cache == pre_cache);
         },
@@ -1831,7 +1864,6 @@ pub proof fn cache_internal_preserves_clean_filled_addr(
                 Cache::Label::Internal{},
                 new_slots_mapping,
             )) by {
-                reveal(Cache::State::reserve);
             }
             let updated_entries = Map::new(
                 |slot| new_slots_mapping.contains_key(slot),
@@ -1862,7 +1894,6 @@ pub proof fn cache_internal_preserves_clean_filled_addr(
                 Cache::Label::Internal{},
                 evicted_slots,
             )) by {
-                reveal(Cache::State::evict);
             }
             let evicted_addrs = Map::new(
                 |slot: Slot| evicted_slots.contains(slot),
@@ -1906,7 +1937,6 @@ pub proof fn cache_internal_preserves_clean_filled_addr(
         },
         Cache::Step::noop() => {
             assert(Cache::State::noop(pre_cache, post_cache, Cache::Label::Internal{})) by {
-                reveal(Cache::State::noop);
             }
             assert(post_cache == pre_cache);
         },
@@ -1973,7 +2003,6 @@ pub proof fn cache_internal_preserves_readable_on_preserved_filled_addrs(
                     Cache::Label::Internal{},
                     new_slots_mapping,
                 )) by {
-                    reveal(Cache::State::reserve);
                 }
                 let updated_entries = Map::new(
                     |slot| new_slots_mapping.contains_key(slot),
@@ -2029,7 +2058,6 @@ pub proof fn cache_internal_preserves_readable_on_preserved_filled_addrs(
                     Cache::Label::Internal{},
                     evicted_slots,
                 )) by {
-                    reveal(Cache::State::evict);
                 }
                 let evicted_addrs = Map::new(
                     |slot: Slot| evicted_slots.contains(slot),
@@ -2096,7 +2124,6 @@ pub proof fn cache_internal_preserves_readable_on_preserved_filled_addrs(
             },
             Cache::Step::noop() => {
                 assert(Cache::State::noop(pre_cache, post_cache, Cache::Label::Internal{})) by {
-                    reveal(Cache::State::noop);
                 }
                 assert(post_cache == pre_cache);
             },
@@ -2214,7 +2241,6 @@ pub proof fn cache_disk_ops_begin_refines_caching_disk_internal(
                 lbl,
                 new_slots_mapping,
             )) by {
-                reveal(Cache::State::load_initiate);
             }
             let updated_entries = Map::new(
                 |slot| new_slots_mapping.contains_key(slot),
@@ -2336,7 +2362,6 @@ pub proof fn cache_disk_ops_begin_refines_caching_disk_internal(
         },
         Cache::Step::writeback_initiate() => {
             assert(Cache::State::writeback_initiate(pre_cache, post_cache, lbl)) by {
-                reveal(Cache::State::writeback_initiate);
             }
             let writeback_addrs = Set::new(|addr: Address| {
                 &&& addresses_in_aus(owned_aus).contains(addr)
@@ -2495,7 +2520,6 @@ pub proof fn cache_disk_ops_begin_refines_caching_disk_internal(
                 CachingDisk::Label::Internal{},
                 writeback_addrs,
             )) by {
-                reveal(CachingDisk::State::begin_writeback);
             }
             assert(post_cd.readable() == pre_cd.readable()) by {
                 assert(post_cd.cache == pre_cd.cache);
@@ -2550,7 +2574,6 @@ pub proof fn cache_disk_ops_begin_preserves_filled_page(
                 lbl,
                 new_slots_mapping,
             )) by {
-                reveal(Cache::State::load_initiate);
             }
             let slot = pre_cache.lookup_map[addr];
             assert(!new_slots_mapping.contains_key(slot)) by {
@@ -2583,7 +2606,6 @@ pub proof fn cache_disk_ops_begin_preserves_filled_page(
         },
         Cache::Step::writeback_initiate() => {
             assert(Cache::State::writeback_initiate(pre_cache, post_cache, lbl)) by {
-                reveal(Cache::State::writeback_initiate);
             }
             assert(post_cache.entries == pre_cache.entries);
             assert(post_cache.lookup_map == pre_cache.lookup_map);
@@ -2641,7 +2663,6 @@ pub proof fn cache_disk_ops_end_refines_caching_disk_internal(
     match step {
         Cache::Step::load_complete() => {
             assert(Cache::State::load_complete(pre_cache, post_cache, lbl)) by {
-                reveal(Cache::State::load_complete);
             }
             let slot_addr_map = pre_cache.lookup_map.restrict(responses.dom()).invert();
             let updated_entries = Map::new(
@@ -2875,7 +2896,6 @@ pub proof fn cache_disk_ops_end_refines_caching_disk_internal(
                 CachingDisk::Label::Internal{},
                 loaded,
             )) by {
-                reveal(CachingDisk::State::load);
             }
             assert(CachingDisk::State::next_by(
                 pre_cd,
@@ -2889,7 +2909,6 @@ pub proof fn cache_disk_ops_end_refines_caching_disk_internal(
         },
         Cache::Step::writeback_complete() => {
             assert(Cache::State::writeback_complete(pre_cache, post_cache, lbl)) by {
-                reveal(Cache::State::writeback_complete);
             }
             let resp_slots = pre_cache.lookup_map.restrict(responses.dom()).values();
             let updated_status = Map::new(
@@ -3065,7 +3084,6 @@ pub proof fn cache_disk_ops_end_refines_caching_disk_internal(
                 CachingDisk::Label::Internal{},
                 addrs,
             )) by {
-                reveal(CachingDisk::State::mark_clean);
             }
             assert(CachingDisk::State::next_by(
                 pre_cd,
@@ -3131,7 +3149,6 @@ pub proof fn cache_disk_ops_end_preserves_readable_on_addrs(
         match step {
             Cache::Step::load_complete() => {
                 assert(Cache::State::load_complete(pre_cache, post_cache, lbl)) by {
-                    reveal(Cache::State::load_complete);
                 }
                 let slot_addr_map = pre_cache.lookup_map.restrict(responses.dom()).invert();
                 let updated_entries = Map::new(
@@ -3229,7 +3246,6 @@ pub proof fn cache_disk_ops_end_preserves_readable_on_addrs(
             },
             Cache::Step::writeback_complete() => {
                 assert(Cache::State::writeback_complete(pre_cache, post_cache, lbl)) by {
-                    reveal(Cache::State::writeback_complete);
                 }
                 assert(post_cache.entries == pre_cache.entries);
                 assert(post_cache.lookup_map == pre_cache.lookup_map);
@@ -3284,7 +3300,6 @@ pub proof fn cache_disk_ops_end_preserves_filled_page(
     match step {
         Cache::Step::load_complete() => {
             assert(Cache::State::load_complete(pre_cache, post_cache, lbl)) by {
-                reveal(Cache::State::load_complete);
             }
             assert(!responses.contains_key(addr)) by {
                 if responses.contains_key(addr) {
@@ -3329,7 +3344,6 @@ pub proof fn cache_disk_ops_end_preserves_filled_page(
         },
         Cache::Step::writeback_complete() => {
             assert(Cache::State::writeback_complete(pre_cache, post_cache, lbl)) by {
-                reveal(Cache::State::writeback_complete);
             }
             assert(post_cache.entries == pre_cache.entries);
             assert(post_cache.lookup_map == pre_cache.lookup_map);
@@ -3374,7 +3388,6 @@ pub proof fn cache_evictable_refines_observe_clean_aus(
             Cache::Label::EvictableCheck{aus},
             Cache::Step::evictable(),
         ));
-        reveal(Cache::State::evictable);
         assert(cache.entries[cache.lookup_map[addr]] is Filled);
         assert(cache.status_map[cache.lookup_map[addr]] is Clean);
         assert(cache.status_map[cache.lookup_map[addr]] == CacheStatus::Clean);
@@ -3562,7 +3575,6 @@ pub proof fn async_disk_process_write_refines_persist_writeback(
         CachingDisk::Label::Internal{},
         addrs,
     )) by {
-        reveal(CachingDisk::State::persist_writeback);
     }
     assert(CachingDisk::State::next_by(
         pre_cd,
@@ -3678,7 +3690,6 @@ pub proof fn async_disk_process_write_refines_projected_internal(
             CachingDisk::Label::Internal{},
             Set::<Address>::empty(),
         )) by {
-            reveal(CachingDisk::State::persist_writeback);
         }
         assert(CachingDisk::State::next_by(
             pre_cd,

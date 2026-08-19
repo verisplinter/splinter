@@ -10,15 +10,18 @@ use vstd::prelude::*;
 use verus_state_machines_macros::state_machine;
 
 use crate::abstract_system::MsgHistory_v::MsgHistory;
+use crate::abstract_system::StampedMap_v::LSN;
 use crate::betree::LinkedBetree_v::{
     PathAddrs, SplitAddrs, TwoAddrs,
 };
 use crate::betree::SplitRequest_v::SplitRequest;
 use crate::disk::GenericDisk_v::{AU, Address};
 use crate::implementation::CachedBranchBetree_v::{
-    CachedAllocationBranch, CachedAllocationBranchEvent,
     CachedBranchBetree, FrozenBranchBetree, LoadedBetree,
     LoadedBetreePath, LoadedBetreeQueryReceipt,
+};
+use crate::implementation::CachedBulkBranch_v::{
+    CachedBulkBranch, CachedBulkBranchEvent,
 };
 use crate::implementation::CachedBranch_v::LoadedBranch;
 use crate::implementation::CrashAwareCachingDiskBranchBetree_v::{
@@ -27,7 +30,7 @@ use crate::implementation::CrashAwareCachingDiskBranchBetree_v::{
     FrozenCachingDiskBranchBetree,
 };
 use crate::implementation::CachingDiskBranchBetree_v::{
-    BranchBuildEvent, PageAccess, to_betree_nodes,
+    BranchBuildEvent, PageAccess, to_betree_nodes, to_branch_nodes,
 };
 use crate::spec::AsyncDisk_t::RawPage;
 
@@ -96,6 +99,29 @@ pub open spec fn empty_cached_betree()
         .loaded_betree(metadata)
 }
 
+pub open spec fn recovery_page_access(
+    recovery_op: BetreeMetadataRecoveryLabel,
+) -> PageAccess {
+    match recovery_op {
+        BetreeMetadataRecoveryLabel::ReadBetree { reads, .. } =>
+            PageAccess {
+                betree_reads: reads,
+                branch_reads: Map::empty(),
+                betree_writes: Map::empty(),
+                branch_writes: Map::empty(),
+            },
+        BetreeMetadataRecoveryLabel::ReadBranchRoot { reads, .. }
+        | BetreeMetadataRecoveryLabel::ReadBranchAux { reads, .. } =>
+            PageAccess {
+                betree_reads: Map::empty(),
+                branch_reads: reads,
+                betree_writes: Map::empty(),
+                branch_writes: Map::empty(),
+            },
+        BetreeMetadataRecoveryLabel::DiskInternal => PageAccess::empty(),
+    }
+}
+
 state_machine! { AtomicBranchBetreeState {
     fields {
         pub betree: CachedBranchBetree::State,
@@ -104,13 +130,29 @@ state_machine! { AtomicBranchBetreeState {
 
     pub enum Label {
         Internal,
-        Betree {
-            cached_op: CachedBranchBetree::Label,
+        Query {
+            end_lsn: LSN,
+            key: crate::spec::KeyType_t::Key,
+            value: crate::spec::Messages_t::Value,
+            access: PageAccess,
         },
-        Recover {
-            recovery_op: BetreeMetadataRecoveryLabel,
+        Put {
+            puts: MsgHistory,
         },
-        RecoveryComplete,
+        InternalAccess {
+            access: PageAccess,
+        },
+        InternalAllocAccess {
+            allocs: Set<AU>,
+            deallocs: Set<AU>,
+            access: PageAccess,
+        },
+        RecoveryAccess {
+            access: PageAccess,
+        },
+        RecoveryComplete {
+            discovered_aus: Set<AU>,
+        },
         CommitStart {
             image: FrozenBranchBetree,
         },
@@ -131,14 +173,18 @@ state_machine! { AtomicBranchBetreeState {
         betree_reads: LoadedBetree,
         branch_reads: LoadedBranch,
     ) {
-        require let Label::Betree{cached_op} = lbl;
-        require CachedBranchBetree::State::query(
+        require let Label::Query{
+            end_lsn, key, value, access,
+        } = lbl;
+        require CachedBranchBetree::State::next(
             pre.betree,
             pre.betree,
-            cached_op,
-            receipt,
-            betree_reads,
-            branch_reads,
+            CachedBranchBetree::Label::Query {
+                end_lsn,
+                key,
+                value,
+                access: access.cached_access(),
+            },
         );
     }}
 
@@ -146,11 +192,11 @@ state_machine! { AtomicBranchBetreeState {
         lbl: Label,
         new_betree: CachedBranchBetree::State,
     ) {
-        require let Label::Betree{cached_op} = lbl;
-        require CachedBranchBetree::State::put(
+        require let Label::Put{puts} = lbl;
+        require CachedBranchBetree::State::next(
             pre.betree,
             new_betree,
-            cached_op,
+            CachedBranchBetree::Label::Put{puts},
         );
         update betree = new_betree;
     }}
@@ -159,11 +205,17 @@ state_machine! { AtomicBranchBetreeState {
         lbl: Label,
         new_betree: CachedBranchBetree::State,
     ) {
-        require let Label::Betree{cached_op} = lbl;
-        require CachedBranchBetree::State::branch_begin(
+        require let Label::InternalAllocAccess{
+            allocs, deallocs, access,
+        } = lbl;
+        require CachedBranchBetree::State::next(
             pre.betree,
             new_betree,
-            cached_op,
+            CachedBranchBetree::Label::InternalAllocAccess {
+                allocs,
+                deallocs,
+                access: access.cached_access(),
+            },
         );
         update betree = new_betree;
     }}
@@ -172,17 +224,41 @@ state_machine! { AtomicBranchBetreeState {
         lbl: Label,
         new_betree: CachedBranchBetree::State,
         idx: int,
-        post_branch: CachedAllocationBranch,
-        event: CachedAllocationBranchEvent,
+        post_branch: CachedBulkBranch,
+        event: CachedBulkBranchEvent,
     ) {
-        require let Label::Betree{cached_op} = lbl;
-        require CachedBranchBetree::State::branch_build(
+        require let Label::InternalAllocAccess{
+            allocs, deallocs, access,
+        } = lbl;
+        require CachedBranchBetree::State::next(
             pre.betree,
             new_betree,
-            cached_op,
-            idx,
-            post_branch,
-            event,
+            CachedBranchBetree::Label::InternalAllocAccess {
+                allocs,
+                deallocs,
+                access: access.cached_access(),
+            },
+        );
+        update betree = new_betree;
+    }}
+
+    transition! { branch_fill(
+        lbl: Label,
+        new_betree: CachedBranchBetree::State,
+        idx: int,
+        post_branch: CachedBulkBranch,
+    ) {
+        require let Label::InternalAllocAccess{
+            allocs, deallocs, access,
+        } = lbl;
+        require CachedBranchBetree::State::next(
+            pre.betree,
+            new_betree,
+            CachedBranchBetree::Label::InternalAllocAccess {
+                allocs,
+                deallocs,
+                access: access.cached_access(),
+            },
         );
         update betree = new_betree;
     }}
@@ -192,12 +268,17 @@ state_machine! { AtomicBranchBetreeState {
         new_betree: CachedBranchBetree::State,
         idx: int,
     ) {
-        require let Label::Betree{cached_op} = lbl;
-        require CachedBranchBetree::State::branch_abort(
+        require let Label::InternalAllocAccess{
+            allocs, deallocs, access,
+        } = lbl;
+        require CachedBranchBetree::State::next(
             pre.betree,
             new_betree,
-            cached_op,
-            idx,
+            CachedBranchBetree::Label::InternalAllocAccess {
+                allocs,
+                deallocs,
+                access: access.cached_access(),
+            },
         );
         update betree = new_betree;
     }}
@@ -211,16 +292,17 @@ state_machine! { AtomicBranchBetreeState {
         betree_writes: LoadedBetree,
         branch_reads: LoadedBranch,
     ) {
-        require let Label::Betree{cached_op} = lbl;
-        require CachedBranchBetree::State::flush_memtable(
+        require let Label::InternalAllocAccess{
+            allocs, deallocs, access,
+        } = lbl;
+        require CachedBranchBetree::State::next(
             pre.betree,
             new_betree,
-            cached_op,
-            branch_idx,
-            new_root_addr,
-            betree_reads,
-            betree_writes,
-            branch_reads,
+            CachedBranchBetree::Label::InternalAllocAccess {
+                allocs,
+                deallocs,
+                access: access.cached_access(),
+            },
         );
         update betree = new_betree;
     }}
@@ -231,13 +313,17 @@ state_machine! { AtomicBranchBetreeState {
         new_root_addr: Address,
         betree_writes: LoadedBetree,
     ) {
-        require let Label::Betree{cached_op} = lbl;
-        require CachedBranchBetree::State::grow(
+        require let Label::InternalAllocAccess{
+            allocs, deallocs, access,
+        } = lbl;
+        require CachedBranchBetree::State::next(
             pre.betree,
             new_betree,
-            cached_op,
-            new_root_addr,
-            betree_writes,
+            CachedBranchBetree::Label::InternalAllocAccess {
+                allocs,
+                deallocs,
+                access: access.cached_access(),
+            },
         );
         update betree = new_betree;
     }}
@@ -252,17 +338,17 @@ state_machine! { AtomicBranchBetreeState {
         betree_reads: LoadedBetree,
         betree_writes: LoadedBetree,
     ) {
-        require let Label::Betree{cached_op} = lbl;
-        require CachedBranchBetree::State::split(
+        require let Label::InternalAllocAccess{
+            allocs, deallocs, access,
+        } = lbl;
+        require CachedBranchBetree::State::next(
             pre.betree,
             new_betree,
-            cached_op,
-            path,
-            request,
-            new_addrs,
-            path_addrs,
-            betree_reads,
-            betree_writes,
+            CachedBranchBetree::Label::InternalAllocAccess {
+                allocs,
+                deallocs,
+                access: access.cached_access(),
+            },
         );
         update betree = new_betree;
     }}
@@ -278,18 +364,17 @@ state_machine! { AtomicBranchBetreeState {
         betree_reads: LoadedBetree,
         betree_writes: LoadedBetree,
     ) {
-        require let Label::Betree{cached_op} = lbl;
-        require CachedBranchBetree::State::flush(
+        require let Label::InternalAllocAccess{
+            allocs, deallocs, access,
+        } = lbl;
+        require CachedBranchBetree::State::next(
             pre.betree,
             new_betree,
-            cached_op,
-            path,
-            child_idx,
-            buffer_gc,
-            new_addrs,
-            path_addrs,
-            betree_reads,
-            betree_writes,
+            CachedBranchBetree::Label::InternalAllocAccess {
+                allocs,
+                deallocs,
+                access: access.cached_access(),
+            },
         );
         update betree = new_betree;
     }}
@@ -302,15 +387,30 @@ state_machine! { AtomicBranchBetreeState {
         end: nat,
         betree_reads: LoadedBetree,
     ) {
-        require let Label::Betree{cached_op} = lbl;
-        require CachedBranchBetree::State::compact_begin(
+        require let Label::InternalAccess{access} = lbl;
+        require CachedBranchBetree::State::next(
             pre.betree,
             new_betree,
-            cached_op,
-            path,
-            start,
-            end,
-            betree_reads,
+            CachedBranchBetree::Label::InternalAccess {
+                access: access.cached_access(),
+            },
+        );
+        update betree = new_betree;
+    }}
+
+    transition! { compact_scan_page(
+        lbl: Label,
+        new_betree: CachedBranchBetree::State,
+        input_idx: int,
+        branch_reads: LoadedBranch,
+    ) {
+        require let Label::InternalAccess{access} = lbl;
+        require CachedBranchBetree::State::next(
+            pre.betree,
+            new_betree,
+            CachedBranchBetree::Label::InternalAccess {
+                access: access.cached_access(),
+            },
         );
         update betree = new_betree;
     }}
@@ -320,12 +420,17 @@ state_machine! { AtomicBranchBetreeState {
         new_betree: CachedBranchBetree::State,
         input_idx: int,
     ) {
-        require let Label::Betree{cached_op} = lbl;
-        require CachedBranchBetree::State::compact_abort(
+        require let Label::InternalAllocAccess{
+            allocs, deallocs, access,
+        } = lbl;
+        require CachedBranchBetree::State::next(
             pre.betree,
             new_betree,
-            cached_op,
-            input_idx,
+            CachedBranchBetree::Label::InternalAllocAccess {
+                allocs,
+                deallocs,
+                access: access.cached_access(),
+            },
         );
         update betree = new_betree;
     }}
@@ -342,30 +447,25 @@ state_machine! { AtomicBranchBetreeState {
         path_addrs: PathAddrs,
         betree_reads: LoadedBetree,
         betree_writes: LoadedBetree,
-        branch_reads: LoadedBranch,
     ) {
-        require let Label::Betree{cached_op} = lbl;
-        require CachedBranchBetree::State::compact_complete(
+        require let Label::InternalAllocAccess{
+            allocs, deallocs, access,
+        } = lbl;
+        require CachedBranchBetree::State::next(
             pre.betree,
             new_betree,
-            cached_op,
-            input_idx,
-            branch_idx,
-            path,
-            start,
-            end,
-            new_node_addr,
-            path_addrs,
-            betree_reads,
-            betree_writes,
-            branch_reads,
+            CachedBranchBetree::Label::InternalAllocAccess {
+                allocs,
+                deallocs,
+                access: access.cached_access(),
+            },
         );
         update betree = new_betree;
     }}
 
     transition! { internal_noop(lbl: Label) {
         require lbl is Internal;
-        require CachedBranchBetree::State::internal_noop(
+        require CachedBranchBetree::State::next(
             pre.betree,
             pre.betree,
             CachedBranchBetree::Label::Internal,
@@ -390,8 +490,32 @@ state_machine! { AtomicBranchBetreeState {
     transition! { recover(
         lbl: Label,
         new_recovery: BetreeMetadataRecoveryCore,
+        recovery_op: BetreeMetadataRecoveryLabel,
     ) {
-        require let Label::Recover{recovery_op} = lbl;
+        require let Label::RecoveryAccess{access} = lbl;
+        require !(recovery_op is DiskInternal);
+        require access == recovery_page_access(recovery_op);
+        require pre.control.loading;
+        require !pre.control.metadata_loaded;
+        require BetreeMetadataRecoveryCore::next(
+            pre.control.recovery,
+            new_recovery,
+            recovery_op,
+        );
+
+        update control = AtomicBranchBetreeControl {
+            recovery: new_recovery,
+            ..pre.control
+        };
+    }}
+
+    transition! { recover_internal(
+        lbl: Label,
+        new_recovery: BetreeMetadataRecoveryCore,
+        recovery_op: BetreeMetadataRecoveryLabel,
+    ) {
+        require lbl is Internal;
+        require recovery_op is DiskInternal;
         require pre.control.loading;
         require !pre.control.metadata_loaded;
         require BetreeMetadataRecoveryCore::next(
@@ -407,14 +531,14 @@ state_machine! { AtomicBranchBetreeState {
     }}
 
     transition! { recovery_complete(lbl: Label) {
-        require lbl is RecoveryComplete;
+        require let Label::RecoveryComplete{discovered_aus} = lbl;
         require pre.control.loading;
         require !pre.control.metadata_loaded;
         require pre.control.recovery.complete();
         let loaded = pre.control.recovery.loaded_betree(
             pre.control.metadata,
         );
-        let discovered_aus = loaded.durable_aus();
+        require discovered_aus == loaded.durable_aus();
 
         update betree = loaded;
         update control = AtomicBranchBetreeControl {
@@ -430,7 +554,7 @@ state_machine! { AtomicBranchBetreeState {
         require pre.control.frozen is None;
         require pre.betree.compactors.len() == 0;
         require pre.betree.wip_branches.len() == 0;
-        require CachedBranchBetree::State::freeze_as(
+        require CachedBranchBetree::State::next(
             pre.betree,
             pre.betree,
             CachedBranchBetree::Label::FreezeAs{image},
@@ -490,219 +614,57 @@ impl AtomicBranchBetreeState::State {
         self.control.reclaimable(deallocs)
     }
 
-    pub open spec fn internal_access_next(
-        pre: Self,
-        post: Self,
-        lbl: AtomicBranchBetreeState::Label,
-        reads: Map<Address, RawPage>,
-        writes: Map<Address, RawPage>,
-    ) -> bool {
-        match lbl {
-            AtomicBranchBetreeState::Label::Recover{
-                recovery_op,
-            } => {
-                &&& writes.is_empty()
-                &&& match recovery_op {
-                    BetreeMetadataRecoveryLabel::ReadBetree{
-                        reads: recovery_reads,
-                        ..
-                    }
-                    | BetreeMetadataRecoveryLabel::ReadBranchRoot{
-                        reads: recovery_reads,
-                        ..
-                    }
-                    | BetreeMetadataRecoveryLabel::ReadBranchAux{
-                        reads: recovery_reads,
-                        ..
-                    } => recovery_reads == reads,
-                    BetreeMetadataRecoveryLabel::DiskInternal =>
-                        false,
-                }
-                &&& AtomicBranchBetreeState::State::recover(
-                    pre,
-                    post,
-                    lbl,
-                    post.control.recovery,
-                )
-            },
-            AtomicBranchBetreeState::Label::Betree{
-                cached_op,
-            } => {
-                &&& cached_op is Internal
-                &&& pre.control.metadata_loaded
-                &&& writes.is_empty()
-                &&& exists |
-                    path: LoadedBetreePath,
-                    start: nat,
-                    end: nat,
-                | AtomicBranchBetreeState::State::compact_begin(
-                    pre,
-                    post,
-                    lbl,
-                    post.betree,
-                    path,
-                    start,
-                    end,
-                    to_betree_nodes(reads),
-                )
-            },
-            _ => false,
-        }
-    }
-
-    pub open spec fn internal_alloc_access_next_by(
-        pre: Self,
-        post: Self,
-        allocs: Set<AU>,
-        deallocs: Set<AU>,
-        reads: Map<Address, RawPage>,
-        writes: Map<Address, RawPage>,
-        step: AtomicBranchBetreeState::Step,
-        access: PageAccess,
-    ) -> bool {
-        let lbl = AtomicBranchBetreeState::Label::Betree {
-            cached_op: CachedBranchBetree::Label::InternalAlloc {
-                allocs,
-                deallocs,
-            },
-        };
-        &&& pre.control.metadata_loaded
-        &&& AtomicBranchBetreeState::State::next_by(
-            pre,
-            post,
-            lbl,
-            step,
-        )
-        &&& access.reads() == reads
-        &&& access.writes() == writes
-        &&& match step {
-                AtomicBranchBetreeState::Step::branch_begin(
-                    _,
-                ) => {
-                    &&& allocs.is_empty()
-                    &&& deallocs.is_empty()
-                    &&& access == PageAccess::empty()
-                },
-                AtomicBranchBetreeState::Step::branch_build(
-                    _,
-                    _,
-                    _,
-                    cached_event,
-                ) => {
-                    &&& access.only_branch()
-                    &&& exists |event: BranchBuildEvent|
-                        event.cached_event(access) == cached_event
-                },
-                AtomicBranchBetreeState::Step::flush_memtable(
-                    _,
-                    _,
-                    _,
-                    betree_reads,
-                    betree_writes,
-                    branch_reads,
-                ) => {
-                    &&& access.wf()
-                    &&& access.branch_writes.is_empty()
-                    &&& access.loaded_betree_reads()
-                        == betree_reads
-                    &&& access.loaded_betree_writes()
-                        == betree_writes
-                    &&& access.loaded_branch_reads()
-                        == branch_reads
-                },
-                AtomicBranchBetreeState::Step::grow(
-                    _,
-                    _,
-                    betree_writes,
-                ) => {
-                    &&& access.only_betree()
-                    &&& access.loaded_betree_writes()
-                        == betree_writes
-                },
-                AtomicBranchBetreeState::Step::split(
-                    _,
-                    _,
-                    _,
-                    _,
-                    _,
-                    betree_reads,
-                    betree_writes,
-                ) => {
-                    &&& access.only_betree()
-                    &&& access.loaded_betree_reads()
-                        == betree_reads
-                    &&& access.loaded_betree_writes()
-                        == betree_writes
-                },
-                AtomicBranchBetreeState::Step::flush(
-                    _,
-                    _,
-                    _,
-                    _,
-                    _,
-                    _,
-                    betree_reads,
-                    betree_writes,
-                ) => {
-                    &&& access.only_betree()
-                    &&& access.loaded_betree_reads()
-                        == betree_reads
-                    &&& access.loaded_betree_writes()
-                        == betree_writes
-                },
-                AtomicBranchBetreeState::Step::compact_complete(
-                    _,
-                    _,
-                    _,
-                    _,
-                    _,
-                    _,
-                    _,
-                    _,
-                    betree_reads,
-                    betree_writes,
-                    branch_reads,
-                ) => {
-                    &&& access.wf()
-                    &&& access.branch_writes.is_empty()
-                    &&& access.loaded_betree_reads()
-                        == betree_reads
-                    &&& access.loaded_betree_writes()
-                        == betree_writes
-                    &&& access.loaded_branch_reads()
-                        == branch_reads
-                },
-            _ => false,
-        }
-    }
-
-    pub open spec fn internal_alloc_access_next(
-        pre: Self,
-        post: Self,
-        allocs: Set<AU>,
-        deallocs: Set<AU>,
-        reads: Map<Address, RawPage>,
-        writes: Map<Address, RawPage>,
-    ) -> bool {
-        exists |
-            step: AtomicBranchBetreeState::Step,
-            access: PageAccess,
-        | AtomicBranchBetreeState::State::
-            internal_alloc_access_next_by(
-                pre,
-                post,
-                allocs,
-                deallocs,
-                reads,
-                writes,
-                step,
-                access,
-            )
-    }
-
     ////////////////////////////////////////////////////////////////////////////
     // Utility proofs
     ////////////////////////////////////////////////////////////////////////////
+
+    pub proof fn query_effect(
+        pre: Self,
+        end_lsn: LSN,
+        key: crate::spec::KeyType_t::Key,
+        value: crate::spec::Messages_t::Value,
+        access: PageAccess,
+    )
+        requires AtomicBranchBetreeState::State::next(
+            pre,
+            pre,
+            AtomicBranchBetreeState::Label::Query {
+                end_lsn,
+                key,
+                value,
+                access,
+            },
+        )
+        ensures CachedBranchBetree::State::next(
+            pre.betree,
+            pre.betree,
+            CachedBranchBetree::Label::Query {
+                end_lsn,
+                key,
+                value,
+                access: access.cached_access(),
+            },
+        ),
+    {
+        let lbl = AtomicBranchBetreeState::Label::Query {
+            end_lsn,
+            key,
+            value,
+            access,
+        };
+        reveal(AtomicBranchBetreeState::State::next);
+        reveal(AtomicBranchBetreeState::State::next_by);
+        let step = choose |step| AtomicBranchBetreeState::State::next_by(
+            pre,
+            pre,
+            lbl,
+            step,
+        );
+        match step {
+            AtomicBranchBetreeState::Step::query(..) => {},
+            _ => { assert(false); },
+        }
+    }
 
     pub proof fn put_effect(
         pre: Self,
@@ -713,21 +675,17 @@ impl AtomicBranchBetreeState::State {
             AtomicBranchBetreeState::State::next(
                 pre,
                 post,
-                AtomicBranchBetreeState::Label::Betree {
-                    cached_op: CachedBranchBetree::Label::Put{puts},
-                },
+                AtomicBranchBetreeState::Label::Put{puts},
             ),
         ensures
             post.control == pre.control,
-            CachedBranchBetree::State::put(
+            CachedBranchBetree::State::next(
                 pre.betree,
                 post.betree,
                 CachedBranchBetree::Label::Put{puts},
             ),
     {
-        let lbl = AtomicBranchBetreeState::Label::Betree {
-            cached_op: CachedBranchBetree::Label::Put{puts},
-        };
+        let lbl = AtomicBranchBetreeState::Label::Put{puts};
         reveal(AtomicBranchBetreeState::State::next);
         reveal(AtomicBranchBetreeState::State::next_by);
         let step = choose |step| AtomicBranchBetreeState::State::next_by(
@@ -744,12 +702,110 @@ impl AtomicBranchBetreeState::State {
                     lbl,
                     new_betree,
                 )) by {
-                    reveal(AtomicBranchBetreeState::State::put);
                 }
             },
             _ => {
                 assert(false);
             },
+        }
+    }
+
+    pub proof fn internal_access_effect(
+        pre: Self,
+        post: Self,
+        access: PageAccess,
+    )
+        requires AtomicBranchBetreeState::State::next(
+            pre,
+            post,
+            AtomicBranchBetreeState::Label::InternalAccess{access},
+        )
+        ensures
+            post.control == pre.control,
+            CachedBranchBetree::State::next(
+                pre.betree,
+                post.betree,
+                CachedBranchBetree::Label::InternalAccess{
+                    access: access.cached_access(),
+                },
+            ),
+    {
+        reveal(AtomicBranchBetreeState::State::next);
+        reveal(AtomicBranchBetreeState::State::next_by);
+        let step = choose |step: AtomicBranchBetreeState::Step|
+            AtomicBranchBetreeState::State::next_by(
+                pre,
+                post,
+                AtomicBranchBetreeState::Label::InternalAccess{access},
+                step,
+            );
+        match step {
+            AtomicBranchBetreeState::Step::compact_begin(..)
+            | AtomicBranchBetreeState::Step::compact_scan_page(..) => {},
+            _ => { assert(false); },
+        }
+    }
+
+    pub proof fn internal_alloc_access_effect(
+        pre: Self,
+        post: Self,
+        allocs: Set<AU>,
+        deallocs: Set<AU>,
+        access: PageAccess,
+    )
+        requires AtomicBranchBetreeState::State::next(
+            pre,
+            post,
+            AtomicBranchBetreeState::Label::InternalAllocAccess{
+                allocs, deallocs, access,
+            },
+        )
+        ensures
+            post.control == pre.control,
+            CachedBranchBetree::State::next(
+                pre.betree,
+                post.betree,
+                CachedBranchBetree::Label::InternalAllocAccess{
+                    allocs,
+                    deallocs,
+                    access: access.cached_access(),
+                },
+            ),
+    {
+        reveal(AtomicBranchBetreeState::State::next);
+        reveal(AtomicBranchBetreeState::State::next_by);
+        let step = choose |step: AtomicBranchBetreeState::Step|
+            AtomicBranchBetreeState::State::next_by(
+                pre,
+                post,
+                AtomicBranchBetreeState::Label::InternalAllocAccess{
+                    allocs, deallocs, access,
+                },
+                step,
+            );
+        match step {
+            AtomicBranchBetreeState::Step::branch_begin(..)
+            | AtomicBranchBetreeState::Step::branch_build(..)
+            | AtomicBranchBetreeState::Step::branch_fill(..)
+            | AtomicBranchBetreeState::Step::branch_abort(..)
+            | AtomicBranchBetreeState::Step::flush_memtable(..)
+            | AtomicBranchBetreeState::Step::grow(..)
+            | AtomicBranchBetreeState::Step::split(..)
+            | AtomicBranchBetreeState::Step::flush(..)
+            | AtomicBranchBetreeState::Step::compact_abort(..)
+            | AtomicBranchBetreeState::Step::compact_complete(..) => {},
+            _ => { assert(false); },
+        }
+    }
+
+}
+
+impl AtomicBranchBetreeState::Label {
+    pub open spec fn internal_access(self) -> Option<PageAccess> {
+        match self {
+            AtomicBranchBetreeState::Label::InternalAccess{access}
+            | AtomicBranchBetreeState::Label::RecoveryAccess{access} => Some(access),
+            _ => None,
         }
     }
 }

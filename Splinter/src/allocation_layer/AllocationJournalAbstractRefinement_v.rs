@@ -15,7 +15,7 @@ use crate::allocation_layer::LikesJournal_v::LikesJournal;
 use crate::allocation_layer::LikesJournalRefinement_v::*;
 use crate::journal::LinkedJournal_v::{LinkedJournal, TruncatedJournal};
 use crate::journal::LinkedJournalRefinement_v::*;
-use crate::journal::PagedJournal_v::JournalRecord;
+use crate::journal::PagedJournal_v::{JournalRecord, PagedJournal};
 use crate::journal::PagedJournalRefinement_v::*;
 
 verus!{
@@ -91,6 +91,25 @@ impl AllocationJournal::State {
 
     pub open spec fn i_abstract(self) -> AbstractJournal::State {
         self.i().i().i().i()
+    }
+
+    pub proof fn i_abstract_seq_bounds(self)
+        requires self.refinement_inv(),
+        ensures
+            self.i_abstract().journal.seq_start == self.tj().seq_start(),
+            self.i_abstract().journal.seq_end == self.seq_end(),
+    {
+        self.i_inv();
+        self.i().i_inv();
+        self.i().i().i_wf();
+        JournalRecord::i_lemma_forall();
+        let linked = self.i().i();
+        let paged = linked.i();
+        let base = paged.truncated_journal.i();
+        assert(linked.truncated_journal == self.tj());
+        assert(paged.truncated_journal == self.tj().i());
+        assert(base.seq_start == self.tj().seq_start());
+        assert(base.can_concat(paged.unmarshalled_tail));
     }
 
     pub proof fn init_refines_abstract(self, image: JournalImage)

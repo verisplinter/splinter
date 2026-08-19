@@ -15,7 +15,7 @@ use verus_state_machines_macros::state_machine;
 use crate::abstract_system::MsgHistory_v::{KeyedMessage, MsgHistory};
 use crate::abstract_system::StampedMap_v::LSN;
 use crate::allocation_layer::AllocationJournal_v::lsn_au_index_discard_up_to;
-use crate::allocation_layer::AllocationBranch_v::{BranchNode, Summary};
+use crate::allocation_layer::BranchTypes_v::{BranchNode, Summary};
 use crate::allocation_layer::AllocationBranchBetree_v::summary_aus;
 use crate::allocation_layer::MiniAllocator_v::MiniAllocator;
 use crate::betree::LinkedBranch_v::SplitArg;
@@ -1046,7 +1046,6 @@ impl AtomicBranchState::State {
                     lbl,
                     new_active_branch,
                 )) by {
-                    reveal(AtomicBranchState::State::append_nonempty);
                 }
                 assert(post.branch_summary == pre.branch_summary);
                 assert(post.mini_allocator == pre.mini_allocator);
@@ -1054,7 +1053,6 @@ impl AtomicBranchState::State {
             },
             AtomicBranchState::Step::append_empty(new_active_branch) => {
                 assert(AtomicBranchState::State::append_empty(pre, post, lbl, new_active_branch)) by {
-                    reveal(AtomicBranchState::State::append_empty);
                 }
                 let (keys, msgs, init_root, write_nodes) = match lbl {
                     AtomicBranchState::Label::Append{keys, msgs, init_root, write_nodes, ..} =>
@@ -1085,9 +1083,7 @@ impl AtomicBranchState::State {
                     new_active_branch,
                     branch_lbl,
                 )) by {
-                    reveal(CachedBranch::State::initialize_branch);
                 }
-                reveal(CachedBranch::State::initialize_branch);
                 assert(pre.mini_allocator.wf());
                 assert(pre.mini_allocator.can_allocate(init_addr));
                 crate::implementation::AllocationBranchStack_v::mini_allocator_allocate_preserves_all_aus(
@@ -1119,7 +1115,6 @@ impl AtomicBranchState::State {
         match step {
             AtomicBranchState::Step::grow(new_active_branch) => {
                 assert(AtomicBranchState::State::grow(pre, post, lbl, new_active_branch)) by {
-                    reveal(AtomicBranchState::State::grow);
                 }
             },
             _ => {
@@ -1150,7 +1145,6 @@ impl AtomicBranchState::State {
         match step {
             AtomicBranchState::Step::fill_aus() => {
                 assert(AtomicBranchState::State::fill_aus(pre, post, lbl)) by {
-                    reveal(AtomicBranchState::State::fill_aus);
                 }
             },
             _ => {
@@ -1185,7 +1179,6 @@ impl AtomicBranchState::State {
         match step {
             AtomicBranchState::Step::seal() => {
                 assert(AtomicBranchState::State::seal(pre, post, lbl)) by {
-                    reveal(AtomicBranchState::State::seal);
                 }
             },
             _ => assert(false),
@@ -1251,7 +1244,6 @@ impl AtomicBranchState::State {
         match step {
             AtomicBranchState::Step::observe_persisted_roots() => {
                 assert(AtomicBranchState::State::observe_persisted_roots(pre, post, lbl)) by {
-                    reveal(AtomicBranchState::State::observe_persisted_roots);
                 }
             },
             _ => assert(false),

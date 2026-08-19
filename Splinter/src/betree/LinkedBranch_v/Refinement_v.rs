@@ -212,6 +212,74 @@ pub proof fn query_refines<T>(pre: LinkedBranch<T>, key: Key, msg: Message)
     query_internal_refines(pre, pre.the_ranking(), key, msg);
 }
 
+proof fn subdisk_same_query_and_contains_internal<T>(
+    small: LinkedBranch<T>,
+    small_ranking: Ranking,
+    big: LinkedBranch<T>,
+    big_ranking: Ranking,
+    key: Key,
+)
+    requires
+        inv_internal(small, small_ranking),
+        big.wf(),
+        big.valid_ranking(big_ranking),
+        small.root == big.root,
+        small.disk_view.entries <= big.disk_view.entries,
+    ensures
+        small.contains_internal(small_ranking, key)
+            == big.contains_internal(big_ranking, key),
+        small.query_internal(key, small_ranking)
+            == big.query_internal(key, big_ranking),
+    decreases small.get_rank(small_ranking),
+{
+    assert(small.root() == big.root());
+    if small.root() is Index {
+        broadcast use lemma_route_ensures;
+        let route = small.root().route(key);
+        assert(small.root().valid_child_index(route + 1));
+        assert(big.root().valid_child_index(route + 1));
+        let small_child = small.child_at_idx(route + 1);
+        let big_child = big.child_at_idx(route + 1);
+        assert(small_child.root == big_child.root);
+        assert(small_child.disk_view.entries <= big_child.disk_view.entries);
+        assert(small_child.inv_internal(small_ranking));
+        assert(big_child.wf());
+        assert(big_child.valid_ranking(big_ranking));
+        subdisk_same_query_and_contains_internal(
+            small_child,
+            small_ranking,
+            big_child,
+            big_ranking,
+            key,
+        );
+    }
+}
+
+pub proof fn subdisk_same_query_and_contains<T>(
+    small: LinkedBranch<T>,
+    big: LinkedBranch<T>,
+    key: Key,
+)
+    requires
+        inv(small),
+        big.wf(),
+        big.acyclic(),
+        small.root == big.root,
+        small.disk_view.entries <= big.disk_view.entries,
+    ensures
+        small.contains_internal(small.the_ranking(), key)
+            == big.contains_internal(big.the_ranking(), key),
+        small.query(key) == big.query(key),
+{
+    subdisk_same_query_and_contains_internal(
+        small,
+        small.the_ranking(),
+        big,
+        big.the_ranking(),
+        key,
+    );
+}
+
 pub proof fn query_internal_refines<T>(pre: LinkedBranch<T>, ranking: Ranking, key: Key, msg: Message)
     requires
         inv_internal(pre, ranking),
@@ -1307,6 +1375,7 @@ pub proof fn lemma_append_via_insert_equiv<T>(branch: LinkedBranch<T>, keys: Seq
 
     if keys.len() == 1 {
         reveal_with_fuel(vstd::prelude::Seq::fold_left_alt, 2);
+
         assert(keys.take(1) == keys); // trigger
         assert(msgs.take(1) == msgs); // trigger
     } else {
@@ -1347,6 +1416,7 @@ pub proof fn lemma_append_via_insert_preserves_ranking_and_wf<T>(pre: LinkedBran
     lemma_insert_preserves_ranking(pre, ranking, keys[0], msgs[0], path);
     if keys_msgs.len() == 1 {
         reveal_with_fuel(vstd::prelude::Seq::fold_left_alt, 2);
+
         lemma_insert_preserves_wf(pre, ranking, keys[0], msgs[0], path);
     } else {
         let path1 = Path{branch: insert0, key: keys[1], depth: path.depth};
@@ -1394,6 +1464,7 @@ pub proof fn lemma_append_via_insert_refines<T>(pre: LinkedBranch<T>, ranking: R
 
     if keys_msgs.len() == 1 {
         reveal_with_fuel(vstd::prelude::Seq::fold_left_alt, 2);
+
         insert_refines_internal(pre, ranking, post_ranking, keys[0], msgs[0], path);
     } else {
         let path1 = Path{branch: insert0, key: keys[1], depth: path.depth};

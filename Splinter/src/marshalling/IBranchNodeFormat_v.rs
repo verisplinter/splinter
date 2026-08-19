@@ -3,7 +3,7 @@
 
 use vstd::prelude::*;
 
-use crate::allocation_layer::AllocationBranch_v::BranchNode as AllocationBranchNode;
+use crate::allocation_layer::BranchTypes_v::BranchNode as AllocationBranchNode;
 use crate::disk::GenericDisk_v::{Address, IAddress, Pointer};
 use crate::implementation::IBranchNode_v::{BranchNodeImage, IBranchNode, iaddr_seq, iopt_addr};
 use crate::marshalling::IAddressFormat_v::IAddressFormat;

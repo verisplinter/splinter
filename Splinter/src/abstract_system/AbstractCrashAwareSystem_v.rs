@@ -132,7 +132,7 @@ state_machine!{ CoordinationSystem {
       new_mapadt: AbstractCrashAwareMap::State,
     ) {
       require let Label::Label{ ctam_label: CrashTolerantAsyncMap::Label::Noop } = label;
-      
+
       require AbstractCrashAwareJournal::State::next(
         pre.journal,
         new_journal,
@@ -367,7 +367,7 @@ state_machine!{ CoordinationSystem {
       let ctam_label = label->ctam_label;
 
       require ctam_label is OperateOp;
-      
+
       let base_op = ctam_label->base_op;
       require base_op is ReplyOp;
 
@@ -455,7 +455,7 @@ state_machine!{ CoordinationSystem {
 
       let sync_req_id = ctam_label.arrow_ReqSyncOp_sync_req_id();
       require !pre.sync_reqs.dom().contains(sync_req_id);
-      
+
       require AbstractCrashAwareJournal::State::next(
         pre.journal,
         new_journal,

@@ -192,7 +192,7 @@ state_machine!{ AbstractCrashAwareJournal {
                     require_end: lbl->require_end
                 },
             );
-            
+
             // Watch the `update` keyword!
             update persistent = pre.frozen.unwrap();
             update ephemeral = Ephemeral::Known{ v: new_journal };

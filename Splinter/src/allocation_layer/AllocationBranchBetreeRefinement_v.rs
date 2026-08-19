@@ -20,7 +20,8 @@ use crate::betree::PivotBranchRefinement_v;
 use crate::allocation_layer::Likes_v::{Likes, restrict_domain_au, restrict_domain_au_ensures, to_au_likes, to_au_likes_domain, to_au_likes_singleton};
 use crate::allocation_layer::LikesBetree_v::{Likeable, LikesBetree, compact_add_buffers, split_add_buffers, split_discard_betree};
 use crate::allocation_layer::AllocationBetree_v::AllocationBetree;
-use crate::allocation_layer::AllocationBranch_v::{AllocationBranch, BranchNode};
+use crate::allocation_layer::BranchTypes_v::BranchNode;
+use crate::allocation_layer::AllocationBulkBranch_v::AllocationBulkBranch;
 use crate::allocation_layer::AllocationBranchBetree_v::{AllocationBranchBetree, CompactorInput, Internal, read_ref_aus, summary_aus};
 
 verus! {
@@ -364,7 +365,7 @@ impl QueryReceipt<BranchNode> {
             let linked = self.lines[i].linked;
             let i_linked = self.i().lines[i].linked;
             let ranking = linked.the_ranking();
-    
+
             assert(self.lines[i].wf()); // trigger
             assert(linked.acyclic()); // trigger
             assert(i_linked.valid_ranking(ranking)); // witness
@@ -386,7 +387,7 @@ impl QueryReceipt<BranchNode> {
             assert(self.result_linked_at(i)); // trigger
 
             let linked = self.lines[i].linked;
-             
+
             assert forall |idx| 0 <= idx < self.node(i).buffers.len()
             implies self.linked.buffer_dv.get_branch(#[trigger] self.node(i).buffers[idx]).inv()
             by {
@@ -483,12 +484,12 @@ impl AllocationBranchBetree::State {
         post.inv(),
         AllocationBranchBetree::State::internal_flush_memtable(pre, post, lbl, new_betree, branch_idx, new_root_addr),
     ensures ({
-        let new_branch = pre.wip_branches[branch_idx].branch.unwrap();
+        let new_branch = pre.wip_branches[branch_idx].sealed_branch();
         let new_addrs = TwoAddrs{addr1: new_root_addr, addr2: new_branch.root};
         &&& AllocationBetree::State::next_by(pre.i(), post.i(), lbl.i(), 
             AllocationBetree::Step::internal_flush_memtable(new_betree.i(), new_addrs))}) 
     {
-        let new_branch = pre.wip_branches[branch_idx].branch.unwrap();
+        let new_branch = pre.wip_branches[branch_idx].sealed_branch();
         let new_addrs = TwoAddrs{addr1: new_root_addr, addr2: new_branch.root};
         let step = AllocationBetree::Step::internal_flush_memtable(new_betree.i(), new_addrs);
 
@@ -498,7 +499,7 @@ impl AllocationBranchBetree::State {
 
         assert(pushed.valid_view(new_betree.linked));
         assert(pre.betree.linked.is_fresh(new_addrs.repr())) by {
-            AllocationBranch::alloc_aus_ensures(pre.wip_branches, branch_idx);
+            AllocationBulkBranch::alloc_aus_ensures(pre.wip_branches, branch_idx);
         }
         pre.inv_implies_wf_branch_dv();
         post.inv_implies_wf_branch_dv();
@@ -538,7 +539,7 @@ impl AllocationBranchBetree::State {
 
         assert(LinkedBetreeVars::State::internal_split(pre.i().betree, new_betree.i(), 
             lbl.i()->linked_lbl, new_betree.i().linked, path.i(), request, new_addrs, path_addrs));
-    
+
         let old_child = path.target().child_at_idx(request.get_child_idx());
         let i_child = path.i().target().child_at_idx(request.get_child_idx());
 
@@ -595,19 +596,19 @@ impl AllocationBranchBetree::State {
         AllocationBranchBetree::State::internal_compact_complete(pre, post, lbl, new_betree,
             path, start, end, input_idx, branch_idx, new_node_addr, path_addrs),
     ensures ({
-        let new_branch = pre.wip_branches[branch_idx].branch.unwrap();
+        let new_branch = pre.wip_branches[branch_idx].sealed_branch();
         let new_addrs = TwoAddrs{addr1: new_node_addr, addr2: new_branch.root};
 
         &&& AllocationBetree::State::next_by(pre.i(), post.i(), lbl.i(), 
             AllocationBetree::Step::internal_compact_complete(new_betree.i(), path.i(), start, end, new_branch.i().i(), new_addrs, path_addrs))
     }) {
-        let new_branch = pre.wip_branches[branch_idx].branch.unwrap();
+        let new_branch = pre.wip_branches[branch_idx].sealed_branch();
         let buffer = new_branch.i().i();
 
         let linked_new_addrs = TwoAddrs{addr1: new_node_addr, addr2: new_branch.root};
         assert(pre.betree.linked.is_fresh(linked_new_addrs.repr() + path_addrs.to_set())) by {
             to_aus_domain(path_addrs.to_set());
-            AllocationBranch::alloc_aus_ensures(pre.wip_branches, branch_idx);
+            AllocationBulkBranch::alloc_aus_ensures(pre.wip_branches, branch_idx);
         }
 
         path.i_ensures();
@@ -639,7 +640,7 @@ impl AllocationBranchBetree::State {
 
             // Sealed branch summary contains all entries' AUs.
             assert(pre.wip_branches[branch_idx].inv());
-            assert(pre.wip_branches[branch_idx].branch_sealed());
+            assert(pre.wip_branches[branch_idx].is_sealed());
             assert(new_branch.valid_sealed_branch());
             assert(new_branch.tight_disk_view_with_summary());
 
@@ -713,7 +714,7 @@ impl AllocationBranchBetree::State {
                 assert(pre_summary_aus.contains(addr.au));
 
                 assert(new_summary <= pre.wip_branches[branch_idx].mini_allocator.all_aus());
-                AllocationBranch::alloc_aus_ensures(pre.wip_branches, branch_idx);
+                AllocationBulkBranch::alloc_aus_ensures(pre.wip_branches, branch_idx);
                 assert(pre.wip_branches[branch_idx].mini_allocator.all_aus()
                     <= pre.branch_allocator_aus());
                 assert(pre_summary_aus.disjoint(pre.branch_allocator_aus()));
@@ -726,7 +727,7 @@ impl AllocationBranchBetree::State {
         );
         assert(embedded_branch.inv());
         assert(embedded_branch.i() == new_branch.i());
-        
+
         assert forall |k| true 
         implies (buffer.linked_contains(bdv.i(), new_branch.root, k) <==> 
             #[trigger] pre_bdv.i().valid_compact_key_domain(path.i().target().root(), start, end, k))
@@ -943,7 +944,7 @@ impl AllocationBranchBetree::State {
                 assert(pre_bdv.entries.contains_key(addr));
                 assert(pre_summary_aus.contains(addr.au));
                 assert(new_summary <= pre.wip_branches[branch_idx].mini_allocator.all_aus());
-                AllocationBranch::alloc_aus_ensures(pre.wip_branches, branch_idx);
+                AllocationBulkBranch::alloc_aus_ensures(pre.wip_branches, branch_idx);
                 assert(pre.wip_branches[branch_idx].mini_allocator.all_aus()
                     <= pre.branch_allocator_aus());
                 assert(pre_summary_aus.disjoint(pre.branch_allocator_aus()));
@@ -1092,15 +1093,15 @@ impl AllocationBranchBetree::State {
         reveal(AllocationBetree::State::next_by);
         reveal(AllocationBranchBetree::State::next);
         reveal(AllocationBranchBetree::State::next_by);
-        
+
         match choose |step| Self::next_by(pre, post, lbl, step) {
             AllocationBranchBetree::Step::au_likes_noop(new_betree) => { 
                 Self::au_likes_noop_refines(pre, post, lbl, new_betree);
             }
             AllocationBranchBetree::Step::internal_noop() => {
-                reveal(AllocationBranchBetree::State::internal_noop);
-                reveal(AllocationBetree::State::internal_noop);
-                reveal(LinkedBetreeVars::State::internal_noop);
+
+
+
                 assert(post == pre);
                 assert(AllocationBetree::State::next_by(
                     pre.i(),
@@ -1117,7 +1118,24 @@ impl AllocationBranchBetree::State {
             AllocationBranchBetree::Step::branch_begin() => { 
                 assert(AllocationBetree::State::next_by(pre.i(), post.i(), lbl.i(), AllocationBetree::Step::internal_noop())); // trigger
             }
-            AllocationBranchBetree::Step::branch_build(idx, post_branch, event) => { 
+            AllocationBranchBetree::Step::branch_fill(
+                idx,
+                post_branch,
+                allocs,
+                deallocs,
+            ) => {
+                assert(AllocationBetree::State::next_by(
+                    pre.i(), post.i(), lbl.i(),
+                    AllocationBetree::Step::internal_noop(),
+                ));
+            }
+            AllocationBranchBetree::Step::branch_build(
+                idx,
+                post_branch,
+                event,
+                allocs,
+                deallocs,
+            ) => {
                 assert(AllocationBetree::State::next_by(
                     pre.i(), post.i(), lbl.i(), AllocationBetree::Step::internal_noop(),
                 ));

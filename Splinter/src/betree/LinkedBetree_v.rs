@@ -1531,6 +1531,227 @@ pub proof fn path_addrs_to_set_additive(path_addrs: PathAddrs)
 // proofs used by invariant
 
 impl<T> LinkedBetree<T> {
+    proof fn child_domain_included_in_root(self, idx: nat)
+        requires
+            self.wf(),
+            self.has_root(),
+            self.root().valid_child_index(idx),
+        ensures
+            self.root().my_domain().includes(
+                self.root().child_domain(idx),
+            ),
+    {
+        let node = self.root();
+        Element::strictly_sorted_implies_sorted(
+            node.pivots.pivots,
+        );
+        assert(0 <= idx < node.children.len());
+        assert(node.children.len() == node.pivots.num_ranges());
+        assert(node.pivots.pivots.len() == node.children.len() + 1);
+        assert(Element::lte(
+            node.pivots.pivots[0],
+            node.pivots.pivots[idx as int],
+        ));
+        assert(Element::lte(
+            node.pivots.pivots[idx as int + 1],
+            node.pivots.pivots.last(),
+        ));
+    }
+
+    pub proof fn reachable_addr_domain_included(
+        self,
+        ranking: Ranking,
+        addr: Address,
+    )
+        requires
+            self.valid_ranking(ranking),
+            self.reachable_betree_addrs_using_ranking(
+                ranking,
+            ).contains(addr),
+        ensures
+            self.has_root(),
+            self.root().my_domain().includes(
+                self.dv.entries[addr].my_domain(),
+            ),
+        decreases self.get_rank(ranking),
+    {
+        self.reachable_betree_addrs_using_ranking_closed(ranking);
+        if addr == self.root.unwrap() {
+            assert(self.dv.entries[addr] == self.root());
+        } else {
+            let idx = self.child_containing_reachable_addr(
+                ranking,
+                addr,
+                0,
+            );
+            let child = self.child_at_idx(idx);
+            assert(self.root().valid_child_index(idx));
+            assert(child.get_rank(ranking) < self.get_rank(ranking));
+            child.reachable_addr_domain_included(ranking, addr);
+            self.child_domain_included_in_root(idx);
+            assert(self.dv.child_linked(self.root(), idx));
+            assert(child.has_root());
+            assert(child.root().my_domain()
+                == self.root().child_domain(idx));
+            let parent_domain = self.root().my_domain();
+            let child_domain = child.root().my_domain();
+            let addr_domain = self.dv.entries[addr].my_domain();
+            Element::lte_transitive(
+                parent_domain->start,
+                child_domain->start,
+                addr_domain->start,
+            );
+            Element::lte_transitive(
+                addr_domain->end,
+                child_domain->end,
+                parent_domain->end,
+            );
+        }
+    }
+
+    pub proof fn reachable_addr_rank_bounded(
+        self,
+        ranking: Ranking,
+        addr: Address,
+    )
+        requires
+            self.valid_ranking(ranking),
+            self.reachable_betree_addrs_using_ranking(
+                ranking,
+            ).contains(addr),
+        ensures
+            self.has_root(),
+            ranking.contains_key(addr),
+            ranking[addr] <= ranking[self.root.unwrap()],
+        decreases self.get_rank(ranking),
+    {
+        self.reachable_betree_addrs_using_ranking_closed(ranking);
+        self.reachable_betree_addrs_using_ranking_subset_ranking(
+            ranking,
+        );
+        if addr != self.root.unwrap() {
+            let idx = self.child_containing_reachable_addr(
+                ranking,
+                addr,
+                0,
+            );
+            let child = self.child_at_idx(idx);
+            assert(self.root().valid_child_index(idx));
+            assert(child.has_root());
+            assert(child.get_rank(ranking) < self.get_rank(ranking));
+            child.reachable_addr_rank_bounded(ranking, addr);
+            assert(self.dv.node_children_respects_rank(
+                ranking,
+                self.root.unwrap(),
+            ));
+            assert(ranking[child.root.unwrap()]
+                < ranking[self.root.unwrap()]);
+        }
+    }
+
+    pub proof fn child_subtrees_disjoint(
+        self,
+        ranking: Ranking,
+        left: nat,
+        right: nat,
+    )
+        requires
+            self.valid_ranking(ranking),
+            self.has_root(),
+            self.root().valid_child_index(left),
+            self.root().valid_child_index(right),
+            left != right,
+        ensures
+            self.child_at_idx(left)
+                .reachable_betree_addrs_using_ranking(ranking)
+                .disjoint(
+                    self.child_at_idx(right)
+                        .reachable_betree_addrs_using_ranking(ranking),
+                ),
+    {
+        let left_tree = self.child_at_idx(left);
+        let right_tree = self.child_at_idx(right);
+        assert forall |addr: Address|
+            #[trigger] left_tree
+                .reachable_betree_addrs_using_ranking(ranking)
+                .contains(addr)
+            implies !right_tree
+                .reachable_betree_addrs_using_ranking(ranking)
+                .contains(addr) by {
+            if right_tree
+                .reachable_betree_addrs_using_ranking(ranking)
+                .contains(addr)
+            {
+                left_tree.reachable_addr_domain_included(
+                    ranking,
+                    addr,
+                );
+                right_tree.reachable_addr_domain_included(
+                    ranking,
+                    addr,
+                );
+                left_tree.reachable_betree_addrs_using_ranking_closed(
+                    ranking,
+                );
+                assert(self.dv.entries.contains_key(addr));
+                assert(self.dv.child_linked(self.root(), left));
+                assert(self.dv.child_linked(self.root(), right));
+                let node = self.root();
+                let addr_domain = self.dv.entries[addr].my_domain();
+                let addr_node = self.dv.entries[addr];
+                assert(addr_node.wf());
+                assert(addr_node.pivots.num_ranges() > 0);
+                assert(addr_node.pivots.pivots.len() > 1);
+                assert(Element::lt(
+                    addr_node.pivots.pivots[0],
+                    addr_node.pivots.pivots.last(),
+                ));
+                assert(addr_node.pivots.pivots[0] is Elem);
+                assert(addr_domain.wf());
+                Element::strictly_sorted_implies_sorted(
+                    node.pivots.pivots,
+                );
+                if left < right {
+                    assert(Element::lte(
+                        node.pivots.pivots[left as int + 1],
+                        node.pivots.pivots[right as int],
+                    ));
+                    Element::lte_transitive(
+                        addr_domain->end,
+                        node.pivots.pivots[left as int + 1],
+                        node.pivots.pivots[right as int],
+                    );
+                    Element::lte_transitive(
+                        addr_domain->end,
+                        node.pivots.pivots[right as int],
+                        addr_domain->start,
+                    );
+                } else {
+                    assert(right < left);
+                    assert(Element::lte(
+                        node.pivots.pivots[right as int + 1],
+                        node.pivots.pivots[left as int],
+                    ));
+                    Element::lte_transitive(
+                        addr_domain->end,
+                        node.pivots.pivots[right as int + 1],
+                        node.pivots.pivots[left as int],
+                    );
+                    Element::lte_transitive(
+                        addr_domain->end,
+                        node.pivots.pivots[left as int],
+                        addr_domain->start,
+                    );
+                }
+                assert(Element::lt(
+                    addr_domain->start,
+                    addr_domain->end,
+                ));
+                assert(false);
+            }
+        }
+    }
+
     pub proof fn child_at_idx_acyclic(self, idx: nat)
         requires 
             self.acyclic(), 

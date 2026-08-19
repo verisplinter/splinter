@@ -559,7 +559,6 @@ state_machine!{ CrashAwareCachingDiskJournal {
             pre.frozen is None,
             !pre.prepared,
     {
-        reveal(CrashAwareCachingDiskJournal::State::load_index);
         CachingDiskJournal::State::load_index_requires_unloaded(
             pre.ephemeral->v,
             new_ephemeral,
@@ -854,7 +853,6 @@ state_machine!{ CrashAwareCachingDiskJournal {
                     <= caching_disk_journal_accessible_aus(pre.ephemeral->v),
             pre.ephemeral is Unknown ==> post.persistent == pre.persistent,
     {
-        reveal(CrashAwareCachingDiskJournal::State::crash);
         let keep_in_flight = lbl.arrow_Crash_keep_in_flight();
         let prepared_image = if keep_in_flight {
             CachingDiskJournalImage::materialized_from_loaded_index(

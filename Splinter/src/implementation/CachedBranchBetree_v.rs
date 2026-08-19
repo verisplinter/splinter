@@ -11,7 +11,7 @@ use crate::abstract_system::StampedMap_v::LSN;
 use crate::allocation_layer::AllocationBranchBetree_v::{
     CompactorInput, read_ref_aus, seq_addrs_to_aus, summary_aus,
 };
-use crate::allocation_layer::AllocationBranch_v::{BranchNode, Summary};
+use crate::allocation_layer::BranchTypes_v::{BranchNode, Summary};
 use crate::allocation_layer::Likes_v::{AULikes, Likes, to_au_likes};
 use crate::allocation_layer::MiniAllocator_v::MiniAllocator;
 use crate::betree::BufferOffsets_v::BufferOffsets;
@@ -35,6 +35,14 @@ use crate::disk::GenericDisk_v::{
 use crate::implementation::CachingDisk_v::addresses_in_aus;
 use crate::implementation::CachedBranch_v::{
     CachedBranch, LoadedBranch, LoadedPathReceipt,
+};
+use crate::implementation::CachedBulkBranch_v::{
+    CachedBulkBranch, CachedBulkBranchEvent,
+    cached_bulk_branch_alloc_aus,
+    cached_bulk_branch_alloc_aus_push_subset,
+    cached_bulk_branch_alloc_aus_remove_subset,
+    cached_bulk_branch_alloc_aus_update_subset,
+    cached_bulk_branch_build_all_aus, cached_bulk_branch_fill_all_aus,
 };
 use crate::spec::KeyType_t::{Key, to_element};
 use crate::spec::Messages_t::{Message, Value, default_value, nop_delta};
@@ -222,6 +230,17 @@ pub open spec fn branch_receipts_result(
 }
 
 impl LoadedBetreeQueryReceipt {
+    pub open spec fn empty_for(key: Key) -> LoadedBetreeQueryReceipt {
+        LoadedBetreeQueryReceipt {
+            path: LoadedBetreePath {
+                key,
+                root: Address { au: 0, page: 0 },
+                lines: Seq::empty(),
+            },
+            buffer_receipts: Seq::empty(),
+        }
+    }
+
     pub open spec fn valid_for(
         self,
         root: Pointer,
@@ -230,18 +249,26 @@ impl LoadedBetreeQueryReceipt {
         branch_reads: LoadedBranch,
     ) -> bool {
         &&& self.path.key == key
-        &&& self.path.valid_for(root, betree_reads)
-        &&& self.path.target().node.child_ptr(key) is None
-        &&& self.buffer_receipts.len() == self.path.lines.len()
-        &&& forall |i: int| 0 <= i < self.path.lines.len() ==> {
-            let node = (#[trigger] self.path.lines[i]).node;
-            &&& branch_receipts_valid(
-                node.buffers,
-                node.flushed_ofs(key),
-                self.buffer_receipts[i],
-                key,
-                branch_reads,
-            )
+        &&& match root {
+            None => {
+                &&& self.path.lines.len() == 0
+                &&& self.buffer_receipts.len() == 0
+            },
+            Some(_) => {
+                &&& self.path.valid_for(root, betree_reads)
+                &&& self.path.target().node.child_ptr(key) is None
+                &&& self.buffer_receipts.len() == self.path.lines.len()
+                &&& forall |i: int| 0 <= i < self.path.lines.len() ==> {
+                    let node = (#[trigger] self.path.lines[i]).node;
+                    &&& branch_receipts_valid(
+                        node.buffers,
+                        node.flushed_ofs(key),
+                        self.buffer_receipts[i],
+                        key,
+                        branch_reads,
+                    )
+                }
+            },
         }
     }
 
@@ -260,10 +287,12 @@ impl LoadedBetreeQueryReceipt {
         }
     }
 
-    pub open spec fn result(self) -> Message
-        recommends self.path.lines.len() > 0
-    {
-        self.result_at(0)
+    pub open spec fn result(self) -> Message {
+        if self.path.lines.len() == 0 {
+            Message::Define { value: default_value() }
+        } else {
+            self.result_at(0)
+        }
     }
 }
 
@@ -469,6 +498,7 @@ pub open spec fn compact_replacement(
 
 pub struct CachedAllocationBranch {
     pub branch: CachedBranch::State,
+    pub staged_nodes: LoadedBranch,
     pub mini_allocator: MiniAllocator,
     pub sealed: bool,
 }
@@ -485,6 +515,15 @@ pub enum CachedAllocationBranchEvent {
         init_root: Address,
         keys: Seq<Key>,
         msgs: Seq<Message>,
+        write_nodes: LoadedBranch,
+    },
+    StagePage{
+        addr: Address,
+        write_nodes: LoadedBranch,
+    },
+    BulkSeal{
+        root: Address,
+        aux_ptr: Pointer,
         write_nodes: LoadedBranch,
     },
     Grow{
@@ -511,6 +550,7 @@ impl CachedAllocationBranch {
     pub open spec fn new(aus: Set<AU>) -> Self {
         CachedAllocationBranch {
             branch: CachedBranch::State::empty_active(),
+            staged_nodes: Map::empty(),
             mini_allocator: MiniAllocator::empty().add_aus(aus),
             sealed: false,
         }
@@ -530,6 +570,32 @@ impl CachedAllocationBranch {
         }
     }
 
+    pub open spec fn staged_branch(
+        self,
+        root: Address,
+        write_nodes: LoadedBranch,
+    ) -> LinkedBranch<Summary> {
+        LinkedBranch {
+            root,
+            disk_view: BranchDiskView {
+                entries: self.staged_nodes.union_prefer_right(write_nodes),
+            },
+        }
+    }
+
+    pub open spec fn bulk_allocator(
+        self,
+        root: Address,
+        aux_ptr: Pointer,
+    ) -> MiniAllocator {
+        let with_root = self.mini_allocator.allocate(root);
+        if aux_ptr is Some {
+            with_root.allocate(aux_ptr.unwrap())
+        } else {
+            with_root
+        }
+    }
+
     pub open spec fn build_next(
         pre: Self,
         post: Self,
@@ -543,11 +609,66 @@ impl CachedAllocationBranch {
                 &&& pre.can_fill(allocs)
                 &&& post == pre.fill_aus(allocs)
             }
+            CachedAllocationBranchEvent::StagePage{addr, write_nodes} => {
+                &&& !pre.sealed
+                &&& pre.branch.root is None
+                &&& allocs.is_empty()
+                &&& deallocs.is_empty()
+                &&& pre.mini_allocator.can_allocate(addr)
+                &&& !pre.staged_nodes.contains_key(addr)
+                &&& write_nodes.dom() == set![addr]
+                &&& write_nodes[addr].wf()
+                &&& write_nodes[addr].keys_strictly_sorted()
+                &&& !(write_nodes[addr] is Auxiliary)
+                &&& post == CachedAllocationBranch {
+                    branch: pre.branch,
+                    staged_nodes: pre.staged_nodes.insert(
+                        addr,
+                        write_nodes[addr],
+                    ),
+                    mini_allocator: pre.mini_allocator.allocate(addr),
+                    sealed: false,
+                }
+            }
+            CachedAllocationBranchEvent::BulkSeal{
+                root,
+                aux_ptr,
+                write_nodes,
+            } => {
+                let allocator = pre.bulk_allocator(root, aux_ptr);
+                let branch = pre.staged_branch(root, write_nodes);
+                &&& !pre.sealed
+                &&& pre.branch.root is None
+                &&& allocs.is_empty()
+                &&& pre.mini_allocator.can_allocate(root)
+                &&& !pre.staged_nodes.contains_key(root)
+                &&& if aux_ptr is Some {
+                    &&& root != aux_ptr.unwrap()
+                    &&& pre.mini_allocator.allocate(root)
+                        .can_allocate(aux_ptr.unwrap())
+                    &&& !pre.staged_nodes.contains_key(aux_ptr.unwrap())
+                    &&& write_nodes.dom() == set![root, aux_ptr.unwrap()]
+                } else {
+                    write_nodes.dom() == set![root]
+                }
+                &&& deallocs == allocator.removable_aus()
+                &&& branch.valid_sealed_branch()
+                &&& branch.tight_disk_view_with_summary()
+                &&& branch.get_summary()
+                    == allocator.all_aus() - deallocs
+                &&& post == CachedAllocationBranch {
+                    branch: CachedBranch::State { root: Some(root) },
+                    staged_nodes: Map::empty(),
+                    mini_allocator: allocator.prune(deallocs),
+                    sealed: true,
+                }
+            }
             _ => {
                 &&& !pre.sealed
                 &&& allocs.is_empty()
                 &&& (!(event is Seal) ==> deallocs.is_empty())
                 &&& (!(event is Seal) ==> post.sealed == pre.sealed)
+                &&& post.staged_nodes == pre.staged_nodes
                 &&& match event {
                     CachedAllocationBranchEvent::Append{receipt, keys, msgs, read_nodes, write_nodes} => {
                         let branch_lbl = CachedBranch::Label::Append{
@@ -995,14 +1116,39 @@ pub proof fn cached_allocation_branch_build_all_aus_subset(
         post.mini_allocator.all_aus()
             == (pre.mini_allocator.all_aus() + allocs) - deallocs,
 {
-    reveal(CachedAllocationBranch::build_next);
     match event {
         CachedAllocationBranchEvent::AllocFill{} => {
-            crate::implementation::AllocationBranchStack_v::
+            crate::implementation::BranchProofUtils_v::
                 mini_allocator_add_aus_preserves_all_aus(
                     pre.mini_allocator,
                     allocs,
                 );
+        }
+        CachedAllocationBranchEvent::StagePage{addr, ..} => {
+            crate::implementation::BranchProofUtils_v::
+                mini_allocator_allocate_preserves_all_aus(
+                    pre.mini_allocator,
+                    addr,
+                );
+        }
+        CachedAllocationBranchEvent::BulkSeal{root, aux_ptr, ..} => {
+            let with_root = pre.mini_allocator.allocate(root);
+            crate::implementation::BranchProofUtils_v::
+                mini_allocator_allocate_preserves_all_aus(
+                    pre.mini_allocator,
+                    root,
+                );
+            let allocator = if aux_ptr is Some {
+                crate::implementation::BranchProofUtils_v::
+                    mini_allocator_allocate_preserves_all_aus(
+                        with_root,
+                        aux_ptr.unwrap(),
+                    );
+                with_root.allocate(aux_ptr.unwrap())
+            } else {
+                with_root
+            };
+            allocator.prune_preserves_wf(deallocs);
         }
         CachedAllocationBranchEvent::Append{..} => {}
         CachedAllocationBranchEvent::Initialize{init_root, ..} => {
@@ -1023,14 +1169,12 @@ pub proof fn cached_allocation_branch_build_all_aus_subset(
                 );
             match step {
                 CachedBranch::Step::initialize_branch() => {
-                    reveal(CachedBranch::State::initialize_branch);
-                    reveal(CachedBranch::State::can_initialize);
                 }
                 _ => {
                     assert(false);
                 }
             }
-            crate::implementation::AllocationBranchStack_v::
+            crate::implementation::BranchProofUtils_v::
                 mini_allocator_allocate_preserves_all_aus(
                     pre.mini_allocator,
                     init_root,
@@ -1053,14 +1197,12 @@ pub proof fn cached_allocation_branch_build_all_aus_subset(
                 );
             match step {
                 CachedBranch::Step::grow_step() => {
-                    reveal(CachedBranch::State::grow_step);
-                    reveal(CachedBranch::State::can_grow);
                 }
                 _ => {
                     assert(false);
                 }
             }
-            crate::implementation::AllocationBranchStack_v::
+            crate::implementation::BranchProofUtils_v::
                 mini_allocator_allocate_preserves_all_aus(
                     pre.mini_allocator,
                     new_root_addr,
@@ -1085,14 +1227,12 @@ pub proof fn cached_allocation_branch_build_all_aus_subset(
                 );
             match step {
                 CachedBranch::Step::split_step() => {
-                    reveal(CachedBranch::State::split_step);
-                    reveal(CachedBranch::State::can_split);
                 }
                 _ => {
                     assert(false);
                 }
             }
-            crate::implementation::AllocationBranchStack_v::
+            crate::implementation::BranchProofUtils_v::
                 mini_allocator_allocate_preserves_all_aus(
                     pre.mini_allocator,
                     new_child_addr,
@@ -1121,14 +1261,12 @@ pub proof fn cached_allocation_branch_build_all_aus_subset(
                     );
                 match step {
                     CachedBranch::Step::seal_step() => {
-                        reveal(CachedBranch::State::seal_step);
-                        reveal(CachedBranch::State::can_seal);
                     }
                     _ => {
                         assert(false);
                     }
                 }
-                crate::implementation::AllocationBranchStack_v::
+                crate::implementation::BranchProofUtils_v::
                     mini_allocator_allocate_preserves_all_aus(
                         pre.mini_allocator,
                         aux_ptr.unwrap(),
@@ -1146,6 +1284,61 @@ pub struct FrozenBranchBetree {
     pub seq_end: LSN,
 }
 
+pub struct CachedBranchBetreeAccess {
+    pub betree_reads: LoadedBetree,
+    pub branch_reads: LoadedBranch,
+    pub betree_writes: LoadedBetree,
+    pub branch_writes: LoadedBranch,
+}
+
+impl CachedBranchBetreeAccess {
+    pub open spec fn empty() -> Self {
+        Self {
+            betree_reads: Map::empty(),
+            branch_reads: Map::empty(),
+            betree_writes: Map::empty(),
+            branch_writes: Map::empty(),
+        }
+    }
+
+    pub open spec fn from_bulk_event(
+        event: CachedBulkBranchEvent,
+    ) -> Self {
+        let branch_writes = event.write_nodes();
+        Self {
+            branch_writes,
+            ..Self::empty()
+        }
+    }
+
+    pub open spec fn wf(self) -> bool {
+        &&& self.betree_reads.dom().disjoint(self.branch_reads.dom())
+        &&& self.betree_writes.dom().disjoint(self.branch_writes.dom())
+    }
+
+    pub open spec fn read_only(self) -> bool {
+        self.betree_writes.is_empty() && self.branch_writes.is_empty()
+    }
+
+    pub open spec fn only_betree(self) -> bool {
+        self.branch_reads.is_empty() && self.branch_writes.is_empty()
+    }
+
+    pub open spec fn only_branch(self) -> bool {
+        self.betree_reads.is_empty() && self.betree_writes.is_empty()
+    }
+}
+
+impl CachedBulkBranchEvent {
+    pub open spec fn write_nodes(self) -> LoadedBranch {
+        match self {
+            CachedBulkBranchEvent::StagePage { write_nodes, .. }
+            | CachedBulkBranchEvent::BulkSeal { write_nodes, .. } =>
+                write_nodes,
+        }
+    }
+}
+
 state_machine! { CachedBranchBetree {
     fields {
         pub root: Pointer,
@@ -1154,34 +1347,52 @@ state_machine! { CachedBranchBetree {
         pub branch_aus: AULikes,
         pub branch_summary: Map<AU, Summary>,
         pub compactors: Seq<CompactorInput>,
-        pub wip_branches: Seq<CachedAllocationBranch>,
+        pub compactor_receipts: Seq<LoadedBranch>,
+        pub wip_branches: Seq<CachedBulkBranch>,
     }
 
     pub enum Label {
-        Query{end_lsn: LSN, key: Key, value: Value},
+        Query{
+            end_lsn: LSN,
+            key: Key,
+            value: Value,
+            access: CachedBranchBetreeAccess,
+        },
         Put{puts: MsgHistory},
         FreezeAs{image: FrozenBranchBetree},
         Internal,
-        InternalAlloc{allocs: Set<AU>, deallocs: Set<AU>},
+        InternalAccess{access: CachedBranchBetreeAccess},
+        InternalAllocAccess{
+            allocs: Set<AU>,
+            deallocs: Set<AU>,
+            access: CachedBranchBetreeAccess,
+        },
     }
 
     pub open spec fn is_fresh(self, aus: Set<AU>) -> bool {
         &&& self.betree_aus.dom().disjoint(aus)
         &&& summary_aus(self.branch_summary).disjoint(aus)
-        &&& cached_branch_alloc_aus(self.wip_branches).disjoint(aus)
+        &&& cached_bulk_branch_alloc_aus(self.wip_branches).disjoint(aus)
     }
 
     pub open spec fn owned_aus(self) -> Set<AU> {
         self.betree_aus.dom()
             + self.branch_aus.dom()
             + summary_aus(self.branch_summary)
-            + cached_branch_alloc_aus(self.wip_branches)
+            + cached_bulk_branch_alloc_aus(self.wip_branches)
     }
 
     pub open spec fn durable_aus(self) -> Set<AU> {
         self.betree_aus.dom()
             + self.branch_aus.dom()
             + summary_aus(self.branch_summary)
+    }
+
+    pub open spec fn compactor_input_aus(self, input_idx: int) -> Set<AU>
+        recommends 0 <= input_idx < self.compactors.len()
+    {
+        let roots = self.compactors[input_idx].input_buffers.addrs.to_set();
+        summary_aus(self.branch_summary.restrict(to_aus(roots)))
     }
 
     init! { initialize(
@@ -1197,6 +1408,7 @@ state_machine! { CachedBranchBetree {
         init branch_aus = branch_aus;
         init branch_summary = branch_summary;
         init compactors = Seq::empty();
+        init compactor_receipts = Seq::empty();
         init wip_branches = Seq::empty();
     }}
 
@@ -1206,7 +1418,14 @@ state_machine! { CachedBranchBetree {
         betree_reads: LoadedBetree,
         branch_reads: LoadedBranch,
     ) {
-        require let Label::Query{end_lsn, key, value} = lbl;
+        require let Label::Query{end_lsn, key, value, access} = lbl;
+        require access == CachedBranchBetreeAccess {
+            betree_reads,
+            branch_reads,
+            betree_writes: Map::empty(),
+            branch_writes: Map::empty(),
+        };
+        require access.wf();
         require end_lsn == pre.memtable.seq_end;
         require receipt.valid_for(pre.root, key, betree_reads, branch_reads);
         require Message::Define{value}
@@ -1227,32 +1446,51 @@ state_machine! { CachedBranchBetree {
     }}
 
     transition! { branch_begin(lbl: Label) {
-        require let Label::InternalAlloc{allocs, deallocs} = lbl;
+        require let Label::InternalAllocAccess{allocs, deallocs, access} = lbl;
         require allocs.is_empty();
         require deallocs.is_empty();
+        require access == CachedBranchBetreeAccess::empty();
         update wip_branches = pre.wip_branches.push(
-            CachedAllocationBranch::new(Set::empty()),
+            CachedBulkBranch::new(Set::empty()),
         );
+    }}
+
+    transition! { branch_fill(
+        lbl: Label,
+        idx: int,
+        post_branch: CachedBulkBranch,
+    ) {
+        require let Label::InternalAllocAccess{allocs, deallocs, access} = lbl;
+        require access == CachedBranchBetreeAccess::empty();
+        require pre.is_fresh(allocs);
+        require 0 <= idx < pre.wip_branches.len();
+        require CachedBulkBranch::fill_next(
+            pre.wip_branches[idx], post_branch, allocs, deallocs,
+        );
+        update wip_branches = pre.wip_branches.update(idx, post_branch);
     }}
 
     transition! { branch_build(
         lbl: Label,
         idx: int,
-        post_branch: CachedAllocationBranch,
-        event: CachedAllocationBranchEvent,
+        post_branch: CachedBulkBranch,
+        event: CachedBulkBranchEvent,
     ) {
-        require let Label::InternalAlloc{allocs, deallocs} = lbl;
+        require let Label::InternalAllocAccess{allocs, deallocs, access} = lbl;
+        require access.only_branch();
+        require access.branch_writes == event.write_nodes();
         require pre.is_fresh(allocs);
         require 0 <= idx < pre.wip_branches.len();
-        require CachedAllocationBranch::build_next(
+        require CachedBulkBranch::build_next(
             pre.wip_branches[idx], post_branch, event, allocs, deallocs,
         );
         update wip_branches = pre.wip_branches.update(idx, post_branch);
     }}
 
     transition! { branch_abort(lbl: Label, idx: int) {
-        require let Label::InternalAlloc{allocs, deallocs} = lbl;
+        require let Label::InternalAllocAccess{allocs, deallocs, access} = lbl;
         require allocs.is_empty();
+        require access == CachedBranchBetreeAccess::empty();
         require 0 <= idx < pre.wip_branches.len();
         require deallocs == pre.wip_branches[idx].mini_allocator.all_aus();
         update wip_branches = pre.wip_branches.remove(idx);
@@ -1266,12 +1504,18 @@ state_machine! { CachedBranchBetree {
         betree_writes: LoadedBetree,
         branch_reads: LoadedBranch,
     ) {
-        require let Label::InternalAlloc{allocs, deallocs} = lbl;
+        require let Label::InternalAllocAccess{allocs, deallocs, access} = lbl;
+        require access == CachedBranchBetreeAccess {
+            betree_reads,
+            branch_reads,
+            betree_writes,
+            branch_writes: Map::empty(),
+        };
+        require access.wf();
         require 0 <= branch_idx < pre.wip_branches.len();
         let branch = pre.wip_branches[branch_idx];
-        require branch.sealed;
-        require branch.sealed_root() is Some;
-        let branch_root = branch.sealed_root().unwrap();
+        require branch.is_sealed();
+        let branch_root = branch.sealed_root();
         require valid_loaded_sealed_branch(
             branch_root, branch.summary(), branch_reads,
         );
@@ -1307,7 +1551,11 @@ state_machine! { CachedBranchBetree {
     }}
 
     transition! { grow(lbl: Label, new_root_addr: Address, betree_writes: LoadedBetree) {
-        require let Label::InternalAlloc{allocs, deallocs} = lbl;
+        require let Label::InternalAllocAccess{allocs, deallocs, access} = lbl;
+        require access == CachedBranchBetreeAccess {
+            betree_writes,
+            ..CachedBranchBetreeAccess::empty()
+        };
         require allocs == Set::empty().insert(new_root_addr.au);
         require deallocs.is_empty();
         require pre.is_fresh(allocs);
@@ -1326,7 +1574,12 @@ state_machine! { CachedBranchBetree {
         betree_reads: LoadedBetree,
         betree_writes: LoadedBetree,
     ) {
-        require let Label::InternalAlloc{allocs, deallocs} = lbl;
+        require let Label::InternalAllocAccess{allocs, deallocs, access} = lbl;
+        require access == CachedBranchBetreeAccess {
+            betree_reads,
+            betree_writes,
+            ..CachedBranchBetreeAccess::empty()
+        };
         require pre.is_fresh(allocs);
         require new_addrs.addrs_in_disjoint_aus();
         require to_aus(new_addrs.repr()).disjoint(seq_addrs_to_aus(path_addrs));
@@ -1366,7 +1619,12 @@ state_machine! { CachedBranchBetree {
         betree_reads: LoadedBetree,
         betree_writes: LoadedBetree,
     ) {
-        require let Label::InternalAlloc{allocs, deallocs} = lbl;
+        require let Label::InternalAllocAccess{allocs, deallocs, access} = lbl;
+        require access == CachedBranchBetreeAccess {
+            betree_reads,
+            betree_writes,
+            ..CachedBranchBetreeAccess::empty()
+        };
         require pre.is_fresh(allocs);
         require new_addrs.addrs_in_disjoint_aus();
         require to_aus(new_addrs.repr()).disjoint(seq_addrs_to_aus(path_addrs));
@@ -1412,7 +1670,11 @@ state_machine! { CachedBranchBetree {
         end: nat,
         betree_reads: LoadedBetree,
     ) {
-        require lbl is Internal;
+        require let Label::InternalAccess{access} = lbl;
+        require access == CachedBranchBetreeAccess {
+            betree_reads,
+            ..CachedBranchBetreeAccess::empty()
+        };
         require path.valid_for(pre.root, betree_reads);
         require start < end <= path.target().node.buffers.len();
         let input = CompactorInput {
@@ -1420,18 +1682,44 @@ state_machine! { CachedBranchBetree {
             offset_map: path.target().node.make_offset_map().decrement(start),
         };
         update compactors = pre.compactors.push(input);
+        update compactor_receipts = pre.compactor_receipts.push(Map::empty());
+    }}
+
+    transition! { compact_scan_page(
+        lbl: Label,
+        input_idx: int,
+        reads: LoadedBranch,
+    ) {
+        require let Label::InternalAccess{access} = lbl;
+        require access == CachedBranchBetreeAccess {
+            branch_reads: reads,
+            ..CachedBranchBetreeAccess::empty()
+        };
+        require 0 <= input_idx < pre.compactors.len();
+        require 0 <= input_idx < pre.compactor_receipts.len();
+        require reads.len() == 1;
+        require reads.dom() <= addresses_in_aus(
+            pre.compactor_input_aus(input_idx),
+        );
+        update compactor_receipts = pre.compactor_receipts.update(
+            input_idx,
+            pre.compactor_receipts[input_idx].union_prefer_right(reads),
+        );
     }}
 
     transition! { compact_abort(lbl: Label, input_idx: int) {
-        require let Label::InternalAlloc{allocs, deallocs} = lbl;
+        require let Label::InternalAllocAccess{allocs, deallocs, access} = lbl;
         require allocs.is_empty();
+        require access == CachedBranchBetreeAccess::empty();
         require 0 <= input_idx < pre.compactors.len();
         let new_compactors = pre.compactors.remove(input_idx);
+        let new_compactor_receipts = pre.compactor_receipts.remove(input_idx);
         let released = read_ref_aus(pre.compactors) - read_ref_aus(new_compactors);
         let branch_deallocs = released - pre.branch_aus.dom();
         let deallocated_summary = pre.branch_summary.restrict(branch_deallocs);
         require deallocs == summary_aus(deallocated_summary);
         update compactors = new_compactors;
+        update compactor_receipts = new_compactor_receipts;
         update branch_summary = pre.branch_summary.remove_keys(branch_deallocs);
     }}
 
@@ -1446,18 +1734,21 @@ state_machine! { CachedBranchBetree {
         path_addrs: PathAddrs,
         betree_reads: LoadedBetree,
         betree_writes: LoadedBetree,
-        branch_reads: LoadedBranch,
     ) {
-        require let Label::InternalAlloc{allocs, deallocs} = lbl;
+        require let Label::InternalAllocAccess{allocs, deallocs, access} = lbl;
+        require access == CachedBranchBetreeAccess {
+            betree_reads,
+            betree_writes,
+            ..CachedBranchBetreeAccess::empty()
+        };
         require pre.is_fresh(allocs);
         require !seq_addrs_to_aus(path_addrs).contains(new_node_addr.au);
         require seq_addrs_disjoint_aus(path_addrs);
         require 0 <= input_idx < pre.compactors.len();
         require 0 <= branch_idx < pre.wip_branches.len();
         let branch = pre.wip_branches[branch_idx];
-        require branch.sealed;
-        require branch.sealed_root() is Some;
-        let branch_root = branch.sealed_root().unwrap();
+        require branch.is_sealed();
+        let branch_root = branch.sealed_root();
         require path.valid_for(pre.root, betree_reads);
         require path_addrs.len() == path.depth();
         require start < end <= path.target().node.buffers.len();
@@ -1469,27 +1760,17 @@ state_machine! { CachedBranchBetree {
             offset_map: path.target().node.make_offset_map().decrement(start),
         };
         let input_roots = pre.compactors[input_idx].input_buffers.addrs.to_set();
-        let input_branch_reads = loaded_branch_reads_for_roots(
-            input_roots, pre.branch_summary, branch_reads,
-        );
-        let output_branch_reads = branch_reads.restrict(
-            addresses_in_aus(branch.summary()),
-        );
         require valid_loaded_sealed_branches(
-            input_roots, pre.branch_summary, input_branch_reads,
+            input_roots,
+            pre.branch_summary,
+            pre.compactor_receipts[input_idx],
         );
-        require valid_loaded_sealed_branch(
-            branch_root, branch.summary(), output_branch_reads,
-        );
-        let input_buffer_dv = BufferDisk { entries: input_branch_reads };
-        let compacted_branch = loaded_sealed_branch(
-            branch_root,
-            output_branch_reads.restrict(addresses_in_aus(branch.summary())),
-        );
+        let input_buffer_dv = BufferDisk {
+            entries: pre.compactor_receipts[input_idx],
+        };
+        let compacted_branch = branch.sealed_branch();
         let compacted_buffer_dv = BufferDisk {
-            entries: output_branch_reads.restrict(
-                addresses_in_aus(branch.summary()),
-            ),
+            entries: compacted_branch.disk_view.entries,
         };
         let target = path.target().node;
         require forall |key: Key|
@@ -1513,6 +1794,7 @@ state_machine! { CachedBranchBetree {
         require betree_writes == substitute_writes(path, new_node_addr, replacement, path_addrs);
         require betree_writes.dom() <= Set::new(|addr: Address| addr.wf());
         let new_compactors = pre.compactors.remove(input_idx);
+        let new_compactor_receipts = pre.compactor_receipts.remove(input_idx);
         let discarded = path_discard_likes(path);
         let added = path_addrs.to_multiset().insert(new_node_addr);
         let new_betree_aus = pre.betree_aus.sub(to_au_likes(discarded)).add(to_au_likes(added));
@@ -1535,6 +1817,7 @@ state_machine! { CachedBranchBetree {
         update branch_aus = new_branch_aus;
         update branch_summary = new_branch_summary;
         update compactors = new_compactors;
+        update compactor_receipts = new_compactor_receipts;
         update wip_branches = pre.wip_branches.remove(branch_idx);
     }}
 
@@ -1546,7 +1829,7 @@ state_machine! { CachedBranchBetree {
 impl CachedBranchBetree::Label {
     pub open spec fn allocs(self) -> Set<AU> {
         match self {
-            CachedBranchBetree::Label::InternalAlloc{allocs, ..} =>
+            CachedBranchBetree::Label::InternalAllocAccess{allocs, ..} =>
                 allocs,
             _ => Set::empty(),
         }
@@ -1554,6 +1837,66 @@ impl CachedBranchBetree::Label {
 }
 
 impl CachedBranchBetree::State {
+    pub proof fn initialize_is_init_by(
+        post: Self,
+        root: Pointer,
+        seq_end: LSN,
+        betree_aus: AULikes,
+        branch_aus: AULikes,
+        branch_summary: Map<AU, Summary>,
+    )
+        requires CachedBranchBetree::State::initialize(
+            post,
+            root,
+            seq_end,
+            betree_aus,
+            branch_aus,
+            branch_summary,
+        ),
+        ensures CachedBranchBetree::State::init_by(
+            post,
+            CachedBranchBetree::Config::initialize(
+                root,
+                seq_end,
+                betree_aus,
+                branch_aus,
+                branch_summary,
+            ),
+        ),
+    {
+        reveal(CachedBranchBetree::State::init_by);
+    }
+
+    pub proof fn put_effect(
+        pre: Self,
+        post: Self,
+        puts: MsgHistory,
+    )
+        requires CachedBranchBetree::State::next(
+            pre,
+            post,
+            CachedBranchBetree::Label::Put { puts },
+        ),
+        ensures post == (Self {
+            memtable: pre.memtable.apply_puts(puts),
+            ..pre
+        }),
+    {
+        reveal(CachedBranchBetree::State::next);
+        reveal(CachedBranchBetree::State::next_by);
+        let step = choose |step: CachedBranchBetree::Step|
+            CachedBranchBetree::State::next_by(
+                pre,
+                post,
+                CachedBranchBetree::Label::Put { puts },
+                step,
+            );
+        match step {
+            CachedBranchBetree::Step::put() => {},
+            _ => { assert(false); },
+        }
+    }
+
     pub proof fn next_wip_alloc_aus_subset(
         pre: Self,
         post: Self,
@@ -1564,8 +1907,8 @@ impl CachedBranchBetree::State {
             forall |idx: int| 0 <= idx < pre.wip_branches.len() ==>
                 (#[trigger] pre.wip_branches[idx]).mini_allocator.wf(),
         ensures
-            cached_branch_alloc_aus(post.wip_branches)
-                <= cached_branch_alloc_aus(pre.wip_branches)
+            cached_bulk_branch_alloc_aus(post.wip_branches)
+                <= cached_bulk_branch_alloc_aus(pre.wip_branches)
                     + lbl.allocs(),
     {
         reveal(CachedBranchBetree::State::next);
@@ -1579,10 +1922,9 @@ impl CachedBranchBetree::State {
             );
         match step {
             CachedBranchBetree::Step::branch_begin() => {
-                reveal(CachedBranchBetree::State::branch_begin);
-                let appended = CachedAllocationBranch::new(Set::empty());
+                let appended = CachedBulkBranch::new(Set::empty());
                 assert(appended.mini_allocator.all_aus().is_empty());
-                cached_branch_alloc_aus_push_subset(
+                cached_bulk_branch_alloc_aus_push_subset(
                     pre.wip_branches,
                     appended,
                     lbl.allocs(),
@@ -1593,15 +1935,28 @@ impl CachedBranchBetree::State {
                 post_branch,
                 event,
             ) => {
-                reveal(CachedBranchBetree::State::branch_build);
-                cached_allocation_branch_build_all_aus_subset(
+                cached_bulk_branch_build_all_aus(
                     pre.wip_branches[idx],
                     post_branch,
                     event,
                     lbl.allocs(),
-                    lbl.arrow_InternalAlloc_deallocs(),
+                    lbl.arrow_InternalAllocAccess_deallocs(),
                 );
-                cached_branch_alloc_aus_update_subset(
+                cached_bulk_branch_alloc_aus_update_subset(
+                    pre.wip_branches,
+                    idx,
+                    post_branch,
+                    lbl.allocs(),
+                );
+            }
+            CachedBranchBetree::Step::branch_fill(idx, post_branch) => {
+                cached_bulk_branch_fill_all_aus(
+                    pre.wip_branches[idx],
+                    post_branch,
+                    lbl.allocs(),
+                    lbl.arrow_InternalAllocAccess_deallocs(),
+                );
+                cached_bulk_branch_alloc_aus_update_subset(
                     pre.wip_branches,
                     idx,
                     post_branch,
@@ -1609,8 +1964,7 @@ impl CachedBranchBetree::State {
                 );
             }
             CachedBranchBetree::Step::branch_abort(idx) => {
-                reveal(CachedBranchBetree::State::branch_abort);
-                cached_branch_alloc_aus_remove_subset(
+                cached_bulk_branch_alloc_aus_remove_subset(
                     pre.wip_branches,
                     idx,
                 );
@@ -1622,8 +1976,7 @@ impl CachedBranchBetree::State {
                 betree_writes,
                 branch_reads,
             ) => {
-                reveal(CachedBranchBetree::State::flush_memtable);
-                cached_branch_alloc_aus_remove_subset(
+                cached_bulk_branch_alloc_aus_remove_subset(
                     pre.wip_branches,
                     branch_idx,
                 );
@@ -1638,10 +1991,8 @@ impl CachedBranchBetree::State {
                 path_addrs,
                 betree_reads,
                 betree_writes,
-                branch_reads,
             ) => {
-                reveal(CachedBranchBetree::State::compact_complete);
-                cached_branch_alloc_aus_remove_subset(
+                cached_bulk_branch_alloc_aus_remove_subset(
                     pre.wip_branches,
                     branch_idx,
                 );

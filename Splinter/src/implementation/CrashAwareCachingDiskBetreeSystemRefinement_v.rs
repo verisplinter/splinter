@@ -20,8 +20,9 @@ use crate::abstract_system::AbstractCrashAwareSystemRefinement_v::*;
 use crate::abstract_system::AbstractJournal_v::AbstractJournal;
 use crate::abstract_system::AbstractMap_v::AbstractMap;
 use crate::abstract_system::MsgHistory_v::MsgHistory;
-use crate::implementation::CachingDiskBranchBetree_v::
-    CachingDiskBranchBetree;
+use crate::implementation::CachingDiskBranchBetree_v::{
+    CachingDiskBranchBetree, PageAccess,
+};
 use crate::implementation::CrashAwareCachingDiskBetreeSystem_v::
     CrashAwareCachingDiskBetreeSystem;
 use crate::implementation::SuperblockStore_v::
@@ -152,7 +153,6 @@ proof fn journal_non_commit_preserves_protocol(
         post.frozen == pre.frozen,
         post.prepared == pre.prepared,
 {
-    reveal(journal_non_commit_label);
     reveal(CrashAwareCachingDiskJournal::State::next);
     reveal(CrashAwareCachingDiskJournal::State::next_by);
     let step = choose |step: CrashAwareCachingDiskJournal::Step|
@@ -164,43 +164,31 @@ proof fn journal_non_commit_preserves_protocol(
         );
     match step {
         CrashAwareCachingDiskJournal::Step::load_ephemeral() => {
-            reveal(CrashAwareCachingDiskJournal::State::load_ephemeral);
         }
         CrashAwareCachingDiskJournal::Step::read_for_recovery() => {
-            reveal(CrashAwareCachingDiskJournal::State::
-                read_for_recovery);
         }
         CrashAwareCachingDiskJournal::Step::query_end_lsn() => {
-            reveal(CrashAwareCachingDiskJournal::State::query_end_lsn);
         }
         CrashAwareCachingDiskJournal::Step::put(new_ephemeral) => {
-            reveal(CrashAwareCachingDiskJournal::State::put);
         }
         CrashAwareCachingDiskJournal::Step::
             query_lsn_persistence() => {
-            reveal(CrashAwareCachingDiskJournal::State::
-                query_lsn_persistence);
         }
         CrashAwareCachingDiskJournal::Step::load_index(
             new_ephemeral,
         ) => {
-            reveal(CrashAwareCachingDiskJournal::State::load_index);
         }
         CrashAwareCachingDiskJournal::Step::observe_clean_aus(
             new_ephemeral,
         ) => {
-            reveal(CrashAwareCachingDiskJournal::State::
-                observe_clean_aus);
         }
         CrashAwareCachingDiskJournal::Step::internal(
             new_ephemeral,
         ) => {
-            reveal(CrashAwareCachingDiskJournal::State::internal);
         }
         CrashAwareCachingDiskJournal::Step::internal_alloc(
             new_ephemeral,
         ) => {
-            reveal(CrashAwareCachingDiskJournal::State::internal_alloc);
         }
         CrashAwareCachingDiskJournal::Step::commit_start()
         | CrashAwareCachingDiskJournal::Step::commit_prepared()
@@ -240,7 +228,6 @@ proof fn branch_non_commit_preserves_protocol(
         post.frozen == pre.frozen,
         post.prepared == pre.prepared,
 {
-    reveal(branch_non_commit_label);
     reveal(CrashAwareCachingDiskBranchBetree::State::next);
     reveal(CrashAwareCachingDiskBranchBetree::State::next_by);
     let step = choose |step:
@@ -255,24 +242,16 @@ proof fn branch_non_commit_preserves_protocol(
         CrashAwareCachingDiskBranchBetree::Step::load_ephemeral(
             initial_disk,
         ) => {
-            reveal(CrashAwareCachingDiskBranchBetree::State::
-                load_ephemeral);
         }
         CrashAwareCachingDiskBranchBetree::Step::recover_metadata(
             new_recovery,
         ) => {
-            reveal(CrashAwareCachingDiskBranchBetree::State::
-                recover_metadata);
         }
         CrashAwareCachingDiskBranchBetree::Step::load_metadata() => {
-            reveal(CrashAwareCachingDiskBranchBetree::State::
-                load_metadata);
         }
         CrashAwareCachingDiskBranchBetree::Step::ephemeral_step(
             new_ephemeral,
         ) => {
-            reveal(CrashAwareCachingDiskBranchBetree::State::
-                ephemeral_step);
         }
         CrashAwareCachingDiskBranchBetree::Step::commit_start()
         | CrashAwareCachingDiskBranchBetree::Step::
@@ -313,7 +292,6 @@ proof fn abstract_journal_internal_stutters(
         );
     match step {
         AbstractCrashAwareJournal::Step::internal(new_journal) => {
-            reveal(AbstractCrashAwareJournal::State::internal);
             reveal(AbstractJournal::State::next);
             reveal(AbstractJournal::State::next_by);
             let journal_step = choose |journal_step: AbstractJournal::Step|
@@ -325,7 +303,6 @@ proof fn abstract_journal_internal_stutters(
                 );
             match journal_step {
                 AbstractJournal::Step::internal() => {
-                    reveal(AbstractJournal::State::internal);
                 }
                 _ => {
                     assert(false);
@@ -365,10 +342,8 @@ proof fn abstract_map_internal_stutters(
             frozen_map,
             new_map,
         ) => {
-            reveal(AbstractCrashAwareMap::State::freeze_map_internal);
         }
         AbstractCrashAwareMap::Step::ephemeral_internal(new_map) => {
-            reveal(AbstractCrashAwareMap::State::ephemeral_internal);
             abstract_internal_stutters(pre.ephemeral->v, new_map);
         }
         _ => {
@@ -407,10 +382,7 @@ proof fn abstract_journal_load_facts(
     match step {
         AbstractCrashAwareJournal::Step::
             load_ephemeral_from_persistent(new_journal) => {
-            reveal(AbstractCrashAwareJournal::State::
-                load_ephemeral_from_persistent);
             reveal(AbstractJournal::State::init_by);
-            reveal(AbstractJournal::State::initialize);
         }
         _ => {
             assert(false);
@@ -449,8 +421,6 @@ proof fn abstract_map_load_facts(
     match step {
         AbstractCrashAwareMap::Step::
             load_ephemeral_from_persistent() => {
-            reveal(AbstractCrashAwareMap::State::
-                load_ephemeral_from_persistent);
         }
         _ => {
             assert(false);
@@ -480,7 +450,6 @@ proof fn abstract_crashaware_query_stutters(
         );
     match step {
         AbstractCrashAwareMap::Step::query(new_map) => {
-            reveal(AbstractCrashAwareMap::State::query);
             abstract_query_stutters(
                 pre.ephemeral->v,
                 new_map,
@@ -527,7 +496,6 @@ proof fn abstract_crashaware_query_exposes_map_step(
         );
     match step {
         AbstractCrashAwareMap::Step::query(new_map) => {
-            reveal(AbstractCrashAwareMap::State::query);
             abstract_query_stutters(
                 pre.ephemeral->v,
                 new_map,
@@ -578,7 +546,6 @@ proof fn abstract_crashaware_put_exposes_map_step(
         );
     match step {
         AbstractCrashAwareMap::Step::put_records(new_map) => {
-            reveal(AbstractCrashAwareMap::State::put_records);
         }
         _ => {
             assert(false);
@@ -599,7 +566,6 @@ proof fn coordination_noop(
 {
     reveal(CoordinationSystem::State::next);
     reveal(CoordinationSystem::State::next_by);
-    reveal(CoordinationSystem::State::noop);
     assert(CoordinationSystem::State::next_by(
         pre,
         post,
@@ -691,7 +657,6 @@ proof fn journal_load_ephemeral_facts(
         );
     match step {
         CrashAwareCachingDiskJournal::Step::load_ephemeral() => {
-            reveal(CrashAwareCachingDiskJournal::State::load_ephemeral);
         }
         _ => {
             assert(false);
@@ -729,7 +694,6 @@ proof fn branch_load_ephemeral_facts(
         CrashAwareCachingDiskBranchBetree::Step::load_ephemeral(
             initial_disk,
         ) => {
-            reveal(CrashAwareCachingDiskBranchBetree::State::load_ephemeral);
         }
         _ => {
             assert(false);
@@ -769,8 +733,6 @@ proof fn branch_ephemeral_step_facts(
         CrashAwareCachingDiskBranchBetree::Step::ephemeral_step(
             new_ephemeral,
         ) => {
-            reveal(CrashAwareCachingDiskBranchBetree::State::
-                ephemeral_step);
         }
         _ => {
             assert(false);
@@ -811,7 +773,6 @@ proof fn journal_query_end_self(
     )) by {
         reveal(CachedJournal::State::next);
         reveal(CachedJournal::State::next_by);
-        reveal(CachedJournal::State::query_end_lsn);
         assert(CachedJournal::State::next_by(
             cached,
             cached,
@@ -826,7 +787,6 @@ proof fn journal_query_end_self(
     )) by {
         reveal(CachingDiskJournal::State::next);
         reveal(CachingDiskJournal::State::next_by);
-        reveal(CachingDiskJournal::State::query_end_lsn);
         assert(CachingDiskJournal::State::next_by(
             journal.ephemeral->v,
             journal.ephemeral->v,
@@ -843,7 +803,6 @@ proof fn journal_query_end_self(
     )) by {
         reveal(CrashAwareCachingDiskJournal::State::next);
         reveal(CrashAwareCachingDiskJournal::State::next_by);
-        reveal(CrashAwareCachingDiskJournal::State::query_end_lsn);
         assert(CrashAwareCachingDiskJournal::State::next_by(
             journal,
             journal,
@@ -890,7 +849,6 @@ proof fn journal_put_step_facts(
         );
     match step {
         CrashAwareCachingDiskJournal::Step::put(new_ephemeral) => {
-            reveal(CrashAwareCachingDiskJournal::State::put);
         }
         _ => {
             assert(false);
@@ -927,8 +885,6 @@ proof fn journal_recovery_read_facts(
     match step {
         CrashAwareCachingDiskJournal::Step::
             read_for_recovery() => {
-            reveal(CrashAwareCachingDiskJournal::State::
-                read_for_recovery);
         }
         _ => {
             assert(false);
@@ -963,8 +919,6 @@ proof fn journal_commit_prepared_facts(
         );
     match step {
         CrashAwareCachingDiskJournal::Step::commit_prepared() => {
-            reveal(CrashAwareCachingDiskJournal::State::
-                commit_prepared);
         }
         _ => {
             assert(false);
@@ -1008,12 +962,6 @@ proof fn journal_commit_start_facts(
         );
     match step {
         CrashAwareCachingDiskJournal::Step::commit_start() => {
-            reveal(CrashAwareCachingDiskJournal::State::
-                commit_start);
-            reveal(CrashAwareCachingDiskJournal::State::
-                label_i_abstract);
-            reveal(CrashAwareCachingDiskJournal::State::i_abstract);
-            reveal(CrashAwareCachingDiskJournal::State::frozen_i);
         }
         _ => {
             assert(false);
@@ -1052,8 +1000,6 @@ proof fn branch_commit_start_facts(
         );
     match step {
         CrashAwareCachingDiskBranchBetree::Step::commit_start() => {
-            reveal(CrashAwareCachingDiskBranchBetree::State::
-                commit_start);
         }
         _ => {
             assert(false);
@@ -1090,8 +1036,6 @@ proof fn branch_commit_prepared_facts(
         CrashAwareCachingDiskBranchBetree::Step::commit_prepared(
             image,
         ) => {
-            reveal(CrashAwareCachingDiskBranchBetree::State::
-                commit_prepared);
         }
         _ => {
             assert(false);
@@ -1126,8 +1070,6 @@ proof fn journal_commit_complete_facts(
         CrashAwareCachingDiskJournal::Step::commit_complete(
             new_ephemeral,
         ) => {
-            reveal(CrashAwareCachingDiskJournal::State::
-                commit_complete);
         }
         _ => {
             assert(false);
@@ -1167,8 +1109,6 @@ proof fn branch_commit_complete_facts(
         CrashAwareCachingDiskBranchBetree::Step::commit_complete(
             discarded,
         ) => {
-            reveal(CrashAwareCachingDiskBranchBetree::State::
-                commit_complete);
         }
         _ => {
             assert(false);
@@ -1203,7 +1143,6 @@ proof fn superblock_write_facts(
         );
     match step {
         SuperblockStore::Step::write() => {
-            reveal(SuperblockStore::State::write);
         }
         _ => {
             assert(false);
@@ -1237,7 +1176,6 @@ proof fn superblock_land_facts(
         );
     match step {
         SuperblockStore::Step::land() => {
-            reveal(SuperblockStore::State::land);
         }
         _ => {
             assert(false);
@@ -1269,7 +1207,6 @@ proof fn superblock_crash_facts(
         );
     match step {
         SuperblockStore::Step::crash() => {
-            reveal(SuperblockStore::State::crash);
         }
         _ => {
             assert(false);
@@ -1308,7 +1245,6 @@ proof fn journal_crash_facts(
         );
     match step {
         CrashAwareCachingDiskJournal::Step::crash() => {
-            reveal(CrashAwareCachingDiskJournal::State::crash);
         }
         _ => {
             assert(false);
@@ -1353,7 +1289,6 @@ proof fn branch_crash_facts(
         );
     match step {
         CrashAwareCachingDiskBranchBetree::Step::crash() => {
-            reveal(CrashAwareCachingDiskBranchBetree::State::crash);
         }
         _ => {
             assert(false);
@@ -1371,10 +1306,6 @@ proof fn branch_lsn_matches_map_i(
         model.coordination_i().mapadt.i().seq_end
             == model.branch_lsn(),
 {
-    reveal(CrashAwareCachingDiskBetreeSystem::State::coordination_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::map_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::components_loaded);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::branch_lsn);
     if model.branch.ephemeral is Known {
         assert(model.branch.ephemeral->v.refinement_inv());
         model.branch.ephemeral->v.i_abstract_seq_end();
@@ -1404,10 +1335,8 @@ proof fn accept_request_refines(
             },
         ),
 {
-    reveal(CrashAwareCachingDiskBetreeSystem::State::accept_request);
     reveal(CoordinationSystem::State::next);
     reveal(CoordinationSystem::State::next_by);
-    reveal(CoordinationSystem::State::accept_request);
     assert(CoordinationSystem::State::next_by(
         pre.coordination_i(),
         post.coordination_i(),
@@ -1438,10 +1367,8 @@ proof fn deliver_reply_refines(
             },
         ),
 {
-    reveal(CrashAwareCachingDiskBetreeSystem::State::deliver_reply);
     reveal(CoordinationSystem::State::next);
     reveal(CoordinationSystem::State::next_by);
-    reveal(CoordinationSystem::State::deliver_reply);
     assert(CoordinationSystem::State::next_by(
         pre.coordination_i(),
         post.coordination_i(),
@@ -1472,10 +1399,8 @@ proof fn execute_noop_refines(
             },
         ),
 {
-    reveal(CrashAwareCachingDiskBetreeSystem::State::execute_noop);
     reveal(CoordinationSystem::State::next);
     reveal(CoordinationSystem::State::next_by);
-    reveal(CoordinationSystem::State::execute_noop);
     assert(CoordinationSystem::State::next_by(
         pre.coordination_i(),
         post.coordination_i(),
@@ -1506,7 +1431,6 @@ proof fn noop_refines(
             },
         ),
 {
-    reveal(CrashAwareCachingDiskBetreeSystem::State::noop);
     coordination_noop(
         pre.coordination_i(),
         post.coordination_i(),
@@ -1545,16 +1469,6 @@ proof fn journal_commit_complete_refines(
             },
         ),
 {
-    reveal(refinement_inv);
-    reveal(partial_components_match_persistent);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::coordination_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::journal_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::map_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::components_loaded);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::commit_started);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_inflight);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_landed);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::journal_commit_complete);
     let journal_lbl =
         CrashAwareCachingDiskJournal::Label::CommitComplete {
             require_end: pre.branch_lsn(),
@@ -1573,7 +1487,6 @@ proof fn journal_commit_complete_refines(
     );
     reveal(SuperblockStore::State::next);
     reveal(SuperblockStore::State::next_by);
-    reveal(SuperblockStore::State::complete);
     let cpre = pre.coordination_i();
     let cpost = post.coordination_i();
     let clbl = CoordinationSystem::Label::Label {
@@ -1590,7 +1503,6 @@ proof fn journal_commit_complete_refines(
     )) by {
         reveal(AbstractCrashAwareMap::State::next);
         reveal(AbstractCrashAwareMap::State::next_by);
-        reveal(AbstractCrashAwareMap::State::commit_complete);
         assert(AbstractCrashAwareMap::State::next_by(
             cpre.mapadt,
             cpost.mapadt,
@@ -1600,7 +1512,6 @@ proof fn journal_commit_complete_refines(
     }
     reveal(CoordinationSystem::State::next);
     reveal(CoordinationSystem::State::next_by);
-    reveal(CoordinationSystem::State::commit_complete);
     assert(CoordinationSystem::State::next_by(
         cpre,
         cpost,
@@ -1645,16 +1556,6 @@ proof fn store_commit_complete_refines(
             },
         ),
 {
-    reveal(refinement_inv);
-    reveal(partial_components_match_persistent);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::coordination_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::journal_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::map_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::components_loaded);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::commit_started);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_inflight);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_landed);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::store_commit_complete);
     let journal_lbl =
         CrashAwareCachingDiskJournal::Label::CommitComplete {
             require_end: pre.branch_lsn(),
@@ -1683,7 +1584,6 @@ proof fn store_commit_complete_refines(
     );
     reveal(SuperblockStore::State::next);
     reveal(SuperblockStore::State::next_by);
-    reveal(SuperblockStore::State::complete);
     let cpre = pre.coordination_i();
     let cpost = post.coordination_i();
     let clbl = CoordinationSystem::Label::Label {
@@ -1706,7 +1606,6 @@ proof fn store_commit_complete_refines(
     ) == AbstractCrashAwareMap::Label::CommitCompleteLabel);
     reveal(CoordinationSystem::State::next);
     reveal(CoordinationSystem::State::next_by);
-    reveal(CoordinationSystem::State::commit_complete);
     assert(CoordinationSystem::State::next_by(
         cpre,
         cpost,
@@ -1745,16 +1644,6 @@ proof fn journal_commit_start_refines(
             },
         ),
 {
-    reveal(refinement_inv);
-    reveal(partial_components_match_persistent);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::coordination_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::journal_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::map_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::components_loaded);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::commit_started);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_inflight);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_landed);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::journal_commit_start);
     let journal_lbl =
         CrashAwareCachingDiskJournal::Label::CommitStart {
             new_boundary_lsn:
@@ -1805,8 +1694,6 @@ proof fn journal_commit_start_refines(
     )) by {
         reveal(AbstractCrashAwareMap::State::next);
         reveal(AbstractCrashAwareMap::State::next_by);
-        reveal(AbstractCrashAwareMap::State::
-            commit_start_persistent);
         assert(AbstractCrashAwareMap::State::next_by(
             cpre.mapadt,
             cpost.mapadt,
@@ -1817,7 +1704,6 @@ proof fn journal_commit_start_refines(
     }
     reveal(CoordinationSystem::State::next);
     reveal(CoordinationSystem::State::next_by);
-    reveal(CoordinationSystem::State::commit_start);
     assert(CoordinationSystem::State::next_by(
         cpre,
         cpost,
@@ -1861,16 +1747,6 @@ proof fn store_commit_start_refines(
             },
         ),
 {
-    reveal(refinement_inv);
-    reveal(partial_components_match_persistent);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::coordination_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::journal_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::map_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::components_loaded);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::commit_started);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_inflight);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_landed);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::store_commit_start);
     let metadata =
         crate::implementation::UnifiedCacheBetreeSystem_v::
             betree_metadata_from_superblock(superblock_image);
@@ -1927,7 +1803,6 @@ proof fn store_commit_start_refines(
     }));
     reveal(CoordinationSystem::State::next);
     reveal(CoordinationSystem::State::next_by);
-    reveal(CoordinationSystem::State::commit_start);
     assert(CoordinationSystem::State::next_by(
         cpre,
         cpost,
@@ -1975,16 +1850,6 @@ proof fn crash_refines(
             },
         ),
 {
-    reveal(refinement_inv);
-    reveal(partial_components_match_persistent);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::coordination_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::journal_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::map_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::components_loaded);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::commit_started);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_inflight);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_landed);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::crash);
     let journal_lbl =
         CrashAwareCachingDiskJournal::Label::Crash {
             keep_in_flight,
@@ -2045,7 +1910,6 @@ proof fn crash_refines(
     )) by {
         reveal(AbstractCrashAwareJournal::State::next);
         reveal(AbstractCrashAwareJournal::State::next_by);
-        reveal(AbstractCrashAwareJournal::State::crash);
         assert(AbstractCrashAwareJournal::State::next_by(
             cpre.journal,
             cpost.journal,
@@ -2064,7 +1928,6 @@ proof fn crash_refines(
     )) by {
         reveal(AbstractCrashAwareMap::State::next);
         reveal(AbstractCrashAwareMap::State::next_by);
-        reveal(AbstractCrashAwareMap::State::crash);
         assert(AbstractCrashAwareMap::State::next_by(
             cpre.mapadt,
             cpost.mapadt,
@@ -2076,7 +1939,6 @@ proof fn crash_refines(
     }
     reveal(SuperblockStore::State::next);
     reveal(SuperblockStore::State::next_by);
-    reveal(SuperblockStore::State::crash);
     superblock_crash_facts(
         pre.superblockstore,
         new_superblock,
@@ -2088,7 +1950,6 @@ proof fn crash_refines(
     );
     reveal(CoordinationSystem::State::next);
     reveal(CoordinationSystem::State::next_by);
-    reveal(CoordinationSystem::State::crash);
     assert(CoordinationSystem::State::next_by(
         cpre,
         cpost,
@@ -2106,6 +1967,7 @@ proof fn query_refines(
     post: CrashAwareCachingDiskBetreeSystem::State,
     lbl: CrashAwareCachingDiskBetreeSystem::Label,
     new_branch: CrashAwareCachingDiskBranchBetree::State,
+    access: PageAccess,
 )
     requires
         refinement_inv(pre),
@@ -2114,6 +1976,7 @@ proof fn query_refines(
             post,
             lbl,
             new_branch,
+            access,
         ),
     ensures
         refinement_inv(post),
@@ -2125,16 +1988,6 @@ proof fn query_refines(
             },
         ),
 {
-    reveal(refinement_inv);
-    reveal(partial_components_match_persistent);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::coordination_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::journal_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::map_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::components_loaded);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::commit_started);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_inflight);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_landed);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::query);
     assert(lbl is Execute);
     let req = lbl.arrow_Execute_req();
     let reply = lbl.arrow_Execute_reply();
@@ -2146,6 +1999,7 @@ proof fn query_refines(
                 end_lsn: pre.branch_lsn(),
                 key,
                 value,
+                access,
             },
             deallocs: Set::empty(),
         };
@@ -2201,7 +2055,6 @@ proof fn query_refines(
     )) by {
         reveal(AbstractCrashAwareMap::State::next);
         reveal(AbstractCrashAwareMap::State::next_by);
-        reveal(AbstractCrashAwareMap::State::query);
         assert(AbstractMap::State::next(
             cpre.mapadt.ephemeral->v,
             cpre.mapadt.ephemeral->v,
@@ -2222,7 +2075,6 @@ proof fn query_refines(
     }
     reveal(CoordinationSystem::State::next);
     reveal(CoordinationSystem::State::next_by);
-    reveal(CoordinationSystem::State::query);
     assert(CoordinationSystem::State::next_by(
         cpre,
         cpost,
@@ -2262,16 +2114,6 @@ proof fn put_refines(
             },
         ),
 {
-    reveal(refinement_inv);
-    reveal(partial_components_match_persistent);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::coordination_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::journal_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::map_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::components_loaded);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::commit_started);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_inflight);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_landed);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::put);
     assert(lbl is Execute);
     let req = lbl.arrow_Execute_req();
     let records = MsgHistory::singleton_at(
@@ -2334,7 +2176,6 @@ proof fn put_refines(
     )) by {
         reveal(AbstractCrashAwareMap::State::next);
         reveal(AbstractCrashAwareMap::State::next_by);
-        reveal(AbstractCrashAwareMap::State::put_records);
         assert(cpre.mapadt.ephemeral
             == pre.branch.i_abstract().ephemeral);
         assert(cpost.mapadt.ephemeral
@@ -2350,7 +2191,6 @@ proof fn put_refines(
     }
     reveal(CoordinationSystem::State::next);
     reveal(CoordinationSystem::State::next_by);
-    reveal(CoordinationSystem::State::put);
     assert(CoordinationSystem::State::next_by(
         cpre,
         cpost,
@@ -2389,17 +2229,6 @@ proof fn journal_load_ephemeral_refines(
             },
         ),
 {
-    reveal(refinement_inv);
-    reveal(partial_components_match_persistent);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::coordination_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::journal_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::map_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::components_loaded);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::commit_started);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_inflight);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_landed);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::
-        journal_load_ephemeral);
     let journal_lbl =
         CrashAwareCachingDiskJournal::Label::LoadEphemeral;
     pre.journal.next_refines_abstract(
@@ -2430,7 +2259,6 @@ proof fn journal_load_ephemeral_refines(
             ),
         )) by {
             reveal(AbstractMap::State::init_by);
-            reveal(AbstractMap::State::initialize);
         }
         assert(AbstractCrashAwareMap::State::next(
             cpre.mapadt,
@@ -2442,8 +2270,6 @@ proof fn journal_load_ephemeral_refines(
         )) by {
             reveal(AbstractCrashAwareMap::State::next);
             reveal(AbstractCrashAwareMap::State::next_by);
-            reveal(AbstractCrashAwareMap::State::
-                load_ephemeral_from_persistent);
             assert(AbstractCrashAwareMap::State::next_by(
                 cpre.mapadt,
                 cpost.mapadt,
@@ -2457,8 +2283,6 @@ proof fn journal_load_ephemeral_refines(
         }
         reveal(CoordinationSystem::State::next);
         reveal(CoordinationSystem::State::next_by);
-        reveal(CoordinationSystem::State::
-            load_ephemeral_from_persistent);
         assert(CoordinationSystem::State::next_by(
             cpre,
             cpost,
@@ -2508,17 +2332,6 @@ proof fn branch_load_ephemeral_refines(
             },
         ),
 {
-    reveal(refinement_inv);
-    reveal(partial_components_match_persistent);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::coordination_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::journal_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::map_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::components_loaded);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::commit_started);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_inflight);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_landed);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::
-        branch_load_ephemeral);
     let branch_lbl =
         CrashAwareCachingDiskBranchBetree::Label::LoadEphemeral;
     pre.branch.next_refines(new_branch, branch_lbl);
@@ -2548,7 +2361,6 @@ proof fn branch_load_ephemeral_refines(
             ),
         )) by {
             reveal(AbstractJournal::State::init_by);
-            reveal(AbstractJournal::State::initialize);
         }
         assert(AbstractCrashAwareJournal::State::next(
             cpre.journal,
@@ -2558,8 +2370,6 @@ proof fn branch_load_ephemeral_refines(
         )) by {
             reveal(AbstractCrashAwareJournal::State::next);
             reveal(AbstractCrashAwareJournal::State::next_by);
-            reveal(AbstractCrashAwareJournal::State::
-                load_ephemeral_from_persistent);
             assert(AbstractCrashAwareJournal::State::next_by(
                 cpre.journal,
                 cpost.journal,
@@ -2573,8 +2383,6 @@ proof fn branch_load_ephemeral_refines(
         }
         reveal(CoordinationSystem::State::next);
         reveal(CoordinationSystem::State::next_by);
-        reveal(CoordinationSystem::State::
-            load_ephemeral_from_persistent);
         assert(CoordinationSystem::State::next_by(
             cpre,
             cpost,
@@ -2630,16 +2438,6 @@ proof fn recover_refines(
             },
         ),
 {
-    reveal(refinement_inv);
-    reveal(partial_components_match_persistent);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::coordination_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::journal_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::map_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::components_loaded);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::commit_started);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_inflight);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_landed);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::recover);
     let journal_lbl =
         CrashAwareCachingDiskJournal::Label::ReadForRecovery {
             records: journal_records,
@@ -2701,8 +2499,6 @@ proof fn recover_refines(
         match journal_step {
             AbstractCrashAwareJournal::Step::
                 read_for_recovery() => {
-                reveal(AbstractCrashAwareJournal::State::
-                    read_for_recovery);
                 reveal(AbstractJournal::State::next);
                 reveal(AbstractJournal::State::next_by);
                 let inner = choose |inner: AbstractJournal::Step|
@@ -2717,8 +2513,6 @@ proof fn recover_refines(
                     );
                 match inner {
                     AbstractJournal::Step::read_for_recovery() => {
-                        reveal(AbstractJournal::State::
-                            read_for_recovery);
                     }
                     _ => {
                         assert(false);
@@ -2742,11 +2536,8 @@ proof fn recover_refines(
     )) by {
         reveal(AbstractCrashAwareJournal::State::next);
         reveal(AbstractCrashAwareJournal::State::next_by);
-        reveal(AbstractCrashAwareJournal::State::
-            read_for_recovery);
         reveal(AbstractJournal::State::next);
         reveal(AbstractJournal::State::next_by);
-        reveal(AbstractJournal::State::read_for_recovery);
         assert(AbstractJournal::State::next_by(
             cpre.journal.ephemeral->v,
             cpre.journal.ephemeral->v,
@@ -2775,7 +2566,6 @@ proof fn recover_refines(
     )) by {
         reveal(AbstractCrashAwareMap::State::next);
         reveal(AbstractCrashAwareMap::State::next_by);
-        reveal(AbstractCrashAwareMap::State::put_records);
         assert(AbstractCrashAwareMap::State::next_by(
             cpre.mapadt,
             cpost.mapadt,
@@ -2789,7 +2579,6 @@ proof fn recover_refines(
     }
     reveal(CoordinationSystem::State::next);
     reveal(CoordinationSystem::State::next_by);
-    reveal(CoordinationSystem::State::recover);
     assert(CoordinationSystem::State::next_by(
         cpre,
         cpost,
@@ -2826,16 +2615,6 @@ proof fn req_sync_refines(
             },
         ),
 {
-    reveal(refinement_inv);
-    reveal(partial_components_match_persistent);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::coordination_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::journal_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::map_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::components_loaded);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::commit_started);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_inflight);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_landed);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::req_sync);
     let journal_lbl =
         CrashAwareCachingDiskJournal::Label::QueryEndLsn {
             end_lsn: pre.branch_lsn(),
@@ -2852,7 +2631,6 @@ proof fn req_sync_refines(
     };
     reveal(CoordinationSystem::State::next);
     reveal(CoordinationSystem::State::next_by);
-    reveal(CoordinationSystem::State::req_sync);
     assert(CoordinationSystem::State::next_by(
         cpre,
         cpost,
@@ -2887,16 +2665,6 @@ proof fn reply_sync_refines(
             },
         ),
 {
-    reveal(refinement_inv);
-    reveal(partial_components_match_persistent);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::coordination_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::journal_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::map_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::components_loaded);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::commit_started);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_inflight);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_landed);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::reply_sync);
     assert(lbl is ReplySync);
     let sync_req_id = lbl.arrow_ReplySync_sync_req_id();
     let journal_lbl =
@@ -2914,7 +2682,6 @@ proof fn reply_sync_refines(
     };
     reveal(CoordinationSystem::State::next);
     reveal(CoordinationSystem::State::next_by);
-    reveal(CoordinationSystem::State::reply_sync);
     assert(CoordinationSystem::State::next_by(
         cpre,
         cpost,
@@ -2958,17 +2725,6 @@ proof fn journal_commit_prepared_refines(
             },
         ),
 {
-    reveal(refinement_inv);
-    reveal(partial_components_match_persistent);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::coordination_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::journal_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::map_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::components_loaded);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::commit_started);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_inflight);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_landed);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::
-        journal_commit_prepared);
     journal_internal_step_stutters(
         pre.journal,
         new_journal,
@@ -3033,17 +2789,6 @@ proof fn store_commit_prepared_refines(
             },
         ),
 {
-    reveal(refinement_inv);
-    reveal(partial_components_match_persistent);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::coordination_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::journal_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::map_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::components_loaded);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::commit_started);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_inflight);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_landed);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::
-        store_commit_prepared);
     journal_internal_step_stutters(
         pre.journal,
         new_journal,
@@ -3109,17 +2854,6 @@ proof fn superblock_write_lands_refines(
             },
         ),
 {
-    reveal(refinement_inv);
-    reveal(partial_components_match_persistent);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::coordination_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::journal_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::map_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::components_loaded);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::commit_started);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_inflight);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_landed);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::
-        superblock_write_lands);
     let cpre = pre.coordination_i();
     let cpost = post.coordination_i();
     let clbl = CoordinationSystem::Label::Label {
@@ -3127,7 +2861,6 @@ proof fn superblock_write_lands_refines(
     };
     reveal(SuperblockStore::State::next);
     reveal(SuperblockStore::State::next_by);
-    reveal(SuperblockStore::State::land);
     superblock_land_facts(
         pre.superblockstore,
         new_superblock,
@@ -3139,7 +2872,6 @@ proof fn superblock_write_lands_refines(
     );
     reveal(CoordinationSystem::State::next);
     reveal(CoordinationSystem::State::next_by);
-    reveal(CoordinationSystem::State::superblock_write_lands);
     assert(CoordinationSystem::State::next_by(
         cpre,
         cpost,
@@ -3174,16 +2906,6 @@ proof fn journal_internal_refines(
             },
         ),
 {
-    reveal(refinement_inv);
-    reveal(partial_components_match_persistent);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::coordination_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::journal_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::map_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::components_loaded);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::commit_started);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_inflight);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_landed);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::journal_internal);
     journal_internal_step_stutters(
         pre.journal,
         new_journal,
@@ -3228,17 +2950,6 @@ proof fn journal_observe_clean_aus_refines(
             },
         ),
 {
-    reveal(refinement_inv);
-    reveal(partial_components_match_persistent);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::coordination_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::journal_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::map_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::components_loaded);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::commit_started);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_inflight);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_landed);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::
-        journal_observe_clean_aus);
     journal_internal_step_stutters(
         pre.journal,
         new_journal,
@@ -3282,17 +2993,6 @@ proof fn journal_load_index_refines(
             },
         ),
 {
-    reveal(refinement_inv);
-    reveal(partial_components_match_persistent);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::coordination_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::journal_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::map_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::components_loaded);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::commit_started);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_inflight);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_landed);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::
-        journal_load_index);
     journal_internal_step_stutters(
         pre.journal,
         new_journal,
@@ -3343,17 +3043,6 @@ proof fn journal_internal_alloc_refines(
             },
         ),
 {
-    reveal(refinement_inv);
-    reveal(partial_components_match_persistent);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::coordination_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::journal_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::map_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::components_loaded);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::commit_started);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_inflight);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_landed);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::
-        journal_internal_alloc);
     journal_internal_step_stutters(
         pre.journal,
         new_journal,
@@ -3402,17 +3091,6 @@ proof fn branch_recover_metadata_refines(
             },
         ),
 {
-    reveal(refinement_inv);
-    reveal(partial_components_match_persistent);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::coordination_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::journal_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::map_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::components_loaded);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::commit_started);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_inflight);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_landed);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::
-        branch_recover_metadata);
     branch_internal_step_stutters(
         pre.branch,
         new_branch,
@@ -3458,17 +3136,6 @@ proof fn branch_load_metadata_refines(
             },
         ),
 {
-    reveal(refinement_inv);
-    reveal(partial_components_match_persistent);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::coordination_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::journal_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::map_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::components_loaded);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::commit_started);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_inflight);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_landed);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::
-        branch_load_metadata);
     branch_internal_step_stutters(
         pre.branch,
         new_branch,
@@ -3512,16 +3179,6 @@ proof fn branch_internal_refines(
             },
         ),
 {
-    reveal(refinement_inv);
-    reveal(partial_components_match_persistent);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::coordination_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::journal_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::map_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::components_loaded);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::commit_started);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_inflight);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_landed);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::branch_internal);
     branch_internal_step_stutters(
         pre.branch,
         new_branch,
@@ -3568,17 +3225,6 @@ proof fn component_internals_refines(
             },
         ),
 {
-    reveal(refinement_inv);
-    reveal(partial_components_match_persistent);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::coordination_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::journal_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::map_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::components_loaded);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::commit_started);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_inflight);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_landed);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::
-        component_internals);
     journal_internal_step_stutters(
         pre.journal,
         new_journal,
@@ -3632,17 +3278,6 @@ proof fn branch_internal_alloc_refines(
             },
         ),
 {
-    reveal(refinement_inv);
-    reveal(partial_components_match_persistent);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::coordination_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::journal_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::map_i);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::components_loaded);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::commit_started);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_inflight);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_landed);
-    reveal(CrashAwareCachingDiskBetreeSystem::State::
-        branch_internal_alloc);
     let branch_lbl =
         CrashAwareCachingDiskBranchBetree::Label::Ephemeral {
             op,
@@ -3698,29 +3333,24 @@ pub proof fn next_refines_coordination(
         );
     match step {
         CrashAwareCachingDiskBetreeSystem::Step::accept_request() => {
-            reveal(CrashAwareCachingDiskBetreeSystem::State::accept_request);
             accept_request_refines(pre, post, lbl);
             assert(refinement_inv(post));
         }
         CrashAwareCachingDiskBetreeSystem::Step::deliver_reply() => {
-            reveal(CrashAwareCachingDiskBetreeSystem::State::deliver_reply);
             deliver_reply_refines(pre, post, lbl);
             assert(refinement_inv(post));
         }
         CrashAwareCachingDiskBetreeSystem::Step::execute_noop() => {
-            reveal(CrashAwareCachingDiskBetreeSystem::State::execute_noop);
             execute_noop_refines(pre, post, lbl);
             assert(refinement_inv(post));
         }
         CrashAwareCachingDiskBetreeSystem::Step::noop() => {
-            reveal(CrashAwareCachingDiskBetreeSystem::State::noop);
             noop_refines(pre, post, lbl);
             assert(refinement_inv(post));
         }
         CrashAwareCachingDiskBetreeSystem::Step::journal_internal(
             new_journal,
         ) => {
-            reveal(CrashAwareCachingDiskBetreeSystem::State::journal_internal);
             journal_internal_refines(
                 pre,
                 post,
@@ -3732,7 +3362,6 @@ pub proof fn next_refines_coordination(
             new_journal,
             aus,
         ) => {
-            reveal(CrashAwareCachingDiskBetreeSystem::State::journal_observe_clean_aus);
             journal_observe_clean_aus_refines(
                 pre,
                 post,
@@ -3745,7 +3374,6 @@ pub proof fn next_refines_coordination(
             new_journal,
             discovered_aus,
         ) => {
-            reveal(CrashAwareCachingDiskBetreeSystem::State::journal_load_index);
             journal_load_index_refines(
                 pre,
                 post,
@@ -3760,7 +3388,6 @@ pub proof fn next_refines_coordination(
             deallocs,
             prune_aus,
         ) => {
-            reveal(CrashAwareCachingDiskBetreeSystem::State::journal_internal_alloc);
             journal_internal_alloc_refines(
                 pre,
                 post,
@@ -3775,7 +3402,6 @@ pub proof fn next_refines_coordination(
             new_branch,
             recovery_op,
         ) => {
-            reveal(CrashAwareCachingDiskBetreeSystem::State::branch_recover_metadata);
             branch_recover_metadata_refines(
                 pre,
                 post,
@@ -3788,7 +3414,6 @@ pub proof fn next_refines_coordination(
             new_branch,
             discovered_aus,
         ) => {
-            reveal(CrashAwareCachingDiskBetreeSystem::State::branch_load_metadata);
             branch_load_metadata_refines(
                 pre,
                 post,
@@ -3801,7 +3426,6 @@ pub proof fn next_refines_coordination(
             new_branch,
             branch_lbl,
         ) => {
-            reveal(CrashAwareCachingDiskBetreeSystem::State::branch_internal);
             branch_internal_refines(
                 pre,
                 post,
@@ -3815,7 +3439,6 @@ pub proof fn next_refines_coordination(
             new_branch,
             branch_lbl,
         ) => {
-            reveal(CrashAwareCachingDiskBetreeSystem::State::component_internals);
             component_internals_refines(
                 pre,
                 post,
@@ -3831,7 +3454,6 @@ pub proof fn next_refines_coordination(
             allocs,
             deallocs,
         ) => {
-            reveal(CrashAwareCachingDiskBetreeSystem::State::branch_internal_alloc);
             branch_internal_alloc_refines(
                 pre,
                 post,
@@ -3845,7 +3467,6 @@ pub proof fn next_refines_coordination(
         CrashAwareCachingDiskBetreeSystem::Step::journal_load_ephemeral(
             new_journal,
         ) => {
-            reveal(CrashAwareCachingDiskBetreeSystem::State::journal_load_ephemeral);
             journal_load_ephemeral_refines(
                 pre,
                 post,
@@ -3856,7 +3477,6 @@ pub proof fn next_refines_coordination(
         CrashAwareCachingDiskBetreeSystem::Step::branch_load_ephemeral(
             new_branch,
         ) => {
-            reveal(CrashAwareCachingDiskBetreeSystem::State::branch_load_ephemeral);
             branch_load_ephemeral_refines(
                 pre,
                 post,
@@ -3866,15 +3486,14 @@ pub proof fn next_refines_coordination(
         }
         CrashAwareCachingDiskBetreeSystem::Step::query(
             new_branch,
+            access,
         ) => {
-            reveal(CrashAwareCachingDiskBetreeSystem::State::query);
-            query_refines(pre, post, lbl, new_branch);
+            query_refines(pre, post, lbl, new_branch, access);
         }
         CrashAwareCachingDiskBetreeSystem::Step::put(
             new_journal,
             new_branch,
         ) => {
-            reveal(CrashAwareCachingDiskBetreeSystem::State::put);
             put_refines(
                 pre,
                 post,
@@ -3884,11 +3503,9 @@ pub proof fn next_refines_coordination(
             );
         }
         CrashAwareCachingDiskBetreeSystem::Step::req_sync() => {
-            reveal(CrashAwareCachingDiskBetreeSystem::State::req_sync);
             req_sync_refines(pre, post, lbl);
         }
         CrashAwareCachingDiskBetreeSystem::Step::reply_sync() => {
-            reveal(CrashAwareCachingDiskBetreeSystem::State::reply_sync);
             reply_sync_refines(pre, post, lbl);
         }
         CrashAwareCachingDiskBetreeSystem::Step::recover(
@@ -3897,7 +3514,6 @@ pub proof fn next_refines_coordination(
             journal_records,
             branch_records,
         ) => {
-            reveal(CrashAwareCachingDiskBetreeSystem::State::recover);
             recover_refines(
                 pre,
                 post,
@@ -3942,7 +3558,6 @@ pub proof fn next_refines_coordination(
             raw_page,
             superblock_image,
         ) => {
-            reveal(CrashAwareCachingDiskBetreeSystem::State::journal_commit_prepared);
             journal_commit_prepared_refines(
                 pre,
                 post,
@@ -3960,7 +3575,6 @@ pub proof fn next_refines_coordination(
             raw_page,
             superblock_image,
         ) => {
-            reveal(CrashAwareCachingDiskBetreeSystem::State::store_commit_prepared);
             store_commit_prepared_refines(
                 pre,
                 post,
@@ -3975,7 +3589,6 @@ pub proof fn next_refines_coordination(
         CrashAwareCachingDiskBetreeSystem::Step::superblock_write_lands(
             new_superblock,
         ) => {
-            reveal(CrashAwareCachingDiskBetreeSystem::State::superblock_write_lands);
             superblock_write_lands_refines(
                 pre,
                 post,
@@ -4056,6 +3669,8 @@ pub proof fn init_refines_ctam(
 {
     reveal(CrashAwareCachingDiskBetreeSystem::State::init);
     reveal(CrashAwareCachingDiskBetreeSystem::State::init_by);
+
+
     let config = choose |config:
         CrashAwareCachingDiskBetreeSystem::Config|
         CrashAwareCachingDiskBetreeSystem::State::init_by(
@@ -4069,28 +3684,10 @@ pub proof fn init_refines_ctam(
             journal,
             branch,
         ) => {
-            reveal(CrashAwareCachingDiskBetreeSystem::State::
-                initialize);
             journal.init_refines();
             branch.init_refines();
-            reveal(refinement_inv);
-            reveal(partial_components_match_persistent);
-            reveal(CrashAwareCachingDiskBetreeSystem::State::
-                components_loaded);
-            reveal(CrashAwareCachingDiskBetreeSystem::State::
-                commit_started);
-            reveal(SuperblockStore::State::inv);
             assert(refinement_inv(model));
             let c = model.coordination_i();
-            reveal(CrashAwareCachingDiskBetreeSystem::State::
-                coordination_i);
-            reveal(CrashAwareCachingDiskBetreeSystem::State::
-                journal_i);
-            reveal(CrashAwareCachingDiskBetreeSystem::State::map_i);
-            reveal(CrashAwareCachingDiskBetreeSystem::State::
-                superblock_inflight);
-            reveal(CrashAwareCachingDiskBetreeSystem::State::
-                superblock_landed);
             AbstractCrashAwareJournal::show::initialize(
                 journal.i_abstract(),
             );
@@ -4098,16 +3695,17 @@ pub proof fn init_refines_ctam(
                 branch.i_abstract(),
             );
             assert(CoordinationSystem::State::initialize(c, c)) by {
-                reveal(CoordinationSystem::State::initialize);
             }
             assert(CoordinationSystem::State::init_by(
                 c,
                 CoordinationSystem::Config::initialize(c),
             )) by {
                 reveal(CoordinationSystem::State::init_by);
+
             }
             assert(CoordinationSystem::State::init(c)) by {
                 reveal(CoordinationSystem::State::init);
+
             }
             lemma_init_refines(c);
         }

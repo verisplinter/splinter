@@ -119,6 +119,33 @@ impl MiniAllocatorImpl {
         Self::allocators_bounded(self.allocators@, total_aus)
     }
 
+    pub proof fn owned_au_bounded(&self, total_aus: IAU, au: AU)
+        requires
+            self.bounded(total_aus),
+            self.i().all_aus().contains(au),
+        ensures
+            0 < au,
+            au < total_aus as nat,
+    {
+        Self::allocators_i_dom(self.allocators@);
+        assert(Self::allocators_au_set(self.allocators@).contains(au));
+        let idx = choose |idx: int|
+            0 <= idx < self.allocators@.len()
+                && #[trigger] self.allocators@[idx].alloc_au_nat() == au;
+        assert(Self::allocators_bounded(
+            self.allocators@,
+            total_aus,
+        ));
+    }
+
+    pub proof fn all_aus_match(&self)
+        ensures
+            Self::allocators_au_set(self.allocators@)
+                =~= self.i().all_aus(),
+    {
+        Self::allocators_i_dom(self.allocators@);
+    }
+
     pub proof fn active_allocator_bounded(&self, total_aus: IAU)
         requires
             self.allocation_ready(),
@@ -581,6 +608,51 @@ impl MiniAllocatorImpl {
         out
     }
 
+    pub fn clone_checked(&self) -> (out: Self)
+        requires
+            self.wf(),
+        ensures
+            out.wf(),
+            out.allocators@ == self.allocators@,
+            out.curr == self.curr,
+            out.threshold() == self.threshold(),
+            out.i() == self.i(),
+            out.allocation_ready() == self.allocation_ready(),
+            Self::allocators_unique(out.allocators@)
+                == Self::allocators_unique(self.allocators@),
+            forall |total_aus: IAU| out.bounded(total_aus)
+                == self.bounded(total_aus),
+    {
+        let mut allocators = Vec::<PageAllocator>::new();
+        let mut idx = 0usize;
+        while idx < self.allocators.len()
+            invariant
+                idx <= self.allocators.len(),
+                allocators@ == self.allocators@.take(idx as int),
+            decreases self.allocators.len() - idx,
+        {
+            let allocator = PageAllocator::new(
+                self.allocators[idx].au,
+                self.allocators[idx].next_page,
+            );
+            proof {
+                assert(allocator == self.allocators@[idx as int]);
+            }
+            allocators.push(allocator);
+            idx += 1;
+        }
+        let out = Self {
+            allocators,
+            curr: self.curr,
+            free_au_threshold: self.free_au_threshold,
+        };
+        proof {
+            assert(out.allocators@ == self.allocators@);
+            assert(out.wf());
+        }
+        out
+    }
+
     pub fn reset_threshold(&mut self, free_au_threshold: IAU)
         requires
             old(self).wf(),
@@ -628,6 +700,67 @@ impl MiniAllocatorImpl {
         self.free_au_count() < self.free_au_threshold
     }
 
+    pub fn all_aus_vec(&self) -> (out: Vec<IAU>)
+        requires
+            self.wf(),
+            Self::allocators_unique(self.allocators@),
+        ensures
+            Self::iau_seq_unique(out@),
+            iau_vec_set(out@) =~= self.i().all_aus(),
+            out@.len() == self.allocators@.len(),
+    {
+        let mut out = Vec::new();
+        let mut idx = 0usize;
+        while idx < self.allocators.len()
+            invariant
+                idx <= self.allocators.len(),
+                out@.len() == idx,
+                forall |i: int| 0 <= i < idx ==> {
+                    &&& out@[i] == self.allocators@[i].au
+                    &&& out@[i] as nat
+                        == self.allocators@[i].alloc_au_nat()
+                },
+                Self::iau_seq_unique(out@),
+            decreases self.allocators.len() - idx,
+        {
+            let au = self.allocators[idx].au;
+            proof {
+                assert forall |i: int| 0 <= i < out@.len()
+                    implies #[trigger] out@[i] != au by {
+                    assert(self.allocators@[i].alloc_au_nat()
+                        != self.allocators@[idx as int].alloc_au_nat());
+                }
+            }
+            out.push(au);
+            idx += 1;
+        }
+        proof {
+            assert(Self::iau_seq_unique(out@));
+            Self::allocators_i_dom(self.allocators@);
+            assert(iau_vec_set(out@) =~= self.i().all_aus()) by {
+                assert forall |au: AU|
+                    #[trigger] iau_vec_set(out@).contains(au)
+                    == self.i().all_aus().contains(au) by {
+                    if iau_vec_set(out@).contains(au) {
+                        let i = choose |i: int| 0 <= i < out@.len()
+                            && #[trigger] out@[i] as nat == au;
+                        assert(self.allocators@[i].alloc_au_nat() == au);
+                        assert(self.i().allocs.contains_key(au));
+                    }
+                    if self.i().all_aus().contains(au) {
+                        assert(self.i().allocs.contains_key(au));
+                        let i = choose |i: int|
+                            0 <= i < self.allocators@.len()
+                            && #[trigger] self.allocators@[i].alloc_au_nat()
+                                == au;
+                        assert(out@[i] as nat == au);
+                    }
+                }
+            }
+        }
+        out
+    }
+
     pub open spec fn retained_prefix(
         allocators: Seq<PageAllocator>,
         count: nat,
@@ -661,6 +794,52 @@ impl MiniAllocatorImpl {
             let prefix = Self::allocated_aus_prefix(allocators, (count - 1) as nat);
             let allocator = allocators[(count - 1) as int];
             if allocator.next_page() > 0 {
+                prefix.push(allocator.alloc_au())
+            } else {
+                prefix
+            }
+        }
+    }
+
+    pub open spec fn retained_allocated_prefix(
+        allocators: Seq<PageAllocator>,
+        count: nat,
+    ) -> Seq<PageAllocator>
+        recommends count <= allocators.len(),
+        decreases count,
+    {
+        if count == 0 {
+            seq![]
+        } else {
+            let prefix = Self::retained_allocated_prefix(
+                allocators,
+                (count - 1) as nat,
+            );
+            let allocator = allocators[(count - 1) as int];
+            if allocator.next_page() > 0 {
+                prefix.push(allocator)
+            } else {
+                prefix
+            }
+        }
+    }
+
+    pub open spec fn removable_aus_prefix(
+        allocators: Seq<PageAllocator>,
+        count: nat,
+    ) -> Seq<IAU>
+        recommends count <= allocators.len(),
+        decreases count,
+    {
+        if count == 0 {
+            seq![]
+        } else {
+            let prefix = Self::removable_aus_prefix(
+                allocators,
+                (count - 1) as nat,
+            );
+            let allocator = allocators[(count - 1) as int];
+            if allocator.next_page() == 0 {
                 prefix.push(allocator.alloc_au())
             } else {
                 prefix
@@ -777,7 +956,6 @@ impl MiniAllocatorImpl {
                     }
                     assert(before[au]
                         == Self::page_allocator_i(allocators[before_value_idx])) by {
-                        reveal(MiniAllocatorImpl::allocators_i);
                     }
                     assert(before[au] == Self::page_allocator_i(allocators[before_value_idx]));
                     assert(after[au] == before[au]);
@@ -994,6 +1172,409 @@ impl MiniAllocatorImpl {
         }
     }
 
+    proof fn removable_partition_prefix_properties(
+        allocators: Seq<PageAllocator>,
+        count: nat,
+        disk_au_count: IAU,
+    )
+        requires
+            count <= allocators.len(),
+            Self::allocators_wf(allocators),
+            Self::allocators_unique(allocators),
+            Self::allocators_bounded(allocators, disk_au_count),
+            0 < page_count(),
+        ensures
+            Self::allocators_wf(
+                Self::retained_allocated_prefix(allocators, count),
+            ),
+            Self::allocators_unique(
+                Self::retained_allocated_prefix(allocators, count),
+            ),
+            Self::allocators_bounded(
+                Self::retained_allocated_prefix(allocators, count),
+                disk_au_count,
+            ),
+            Self::iau_seq_unique(
+                Self::removable_aus_prefix(allocators, count),
+            ),
+            Self::retained_allocated_prefix(allocators, count).len()
+                <= count,
+            Self::removable_aus_prefix(allocators, count).len() <= count,
+            iau_vec_set(Self::removable_aus_prefix(allocators, count))
+                =~= (SpecMiniAllocator {
+                    allocs: Self::allocators_i(
+                        allocators.take(count as int),
+                    ),
+                    curr: None,
+                }).removable_aus(),
+            Self::allocators_i(
+                Self::retained_allocated_prefix(allocators, count),
+            ) == Self::allocators_i(
+                allocators.take(count as int),
+            ).remove_keys(iau_vec_set(
+                Self::removable_aus_prefix(allocators, count),
+            )),
+        decreases count,
+    {
+        if count > 0 {
+            let prior_count: nat = (count - 1) as nat;
+            let source_before = allocators.take(prior_count as int);
+            let source = allocators.take(count as int);
+            let allocator = allocators[prior_count as int];
+            let kept_before = Self::retained_allocated_prefix(
+                allocators,
+                prior_count,
+            );
+            let kept = Self::retained_allocated_prefix(
+                allocators,
+                count,
+            );
+            let out_before = Self::removable_aus_prefix(
+                allocators,
+                prior_count,
+            );
+            let out = Self::removable_aus_prefix(allocators, count);
+            let removed_before = iau_vec_set(out_before);
+            let removed = iau_vec_set(out);
+            let source_before_i = Self::allocators_i(source_before);
+            let source_i = Self::allocators_i(source);
+            let kept_before_i = Self::allocators_i(kept_before);
+            let kept_i = Self::allocators_i(kept);
+
+            Self::removable_partition_prefix_properties(
+                allocators,
+                prior_count,
+                disk_au_count,
+            );
+            assert(source == source_before.push(allocator));
+            assert(Self::allocators_unique(source));
+            Self::allocators_i_push(source_before, allocator);
+            Self::page_allocator_empty_iff_zero(allocator);
+
+            if allocator.next_page() == 0 {
+                assert(kept == kept_before);
+                assert(out == out_before.push(allocator.alloc_au()));
+                Self::iau_vec_set_push(out_before, allocator.alloc_au());
+                assert(removed =~= removed_before.insert(
+                    allocator.alloc_au_nat(),
+                ));
+                assert(Self::iau_seq_unique(out)) by {
+                    assert forall |i: int, j: int|
+                        0 <= i < out.len()
+                        && 0 <= j < out.len()
+                        && #[trigger] out[i] == #[trigger] out[j]
+                        implies i == j by {
+                        if i < out_before.len() && j < out_before.len() {
+                            assert(Self::iau_seq_unique(out_before));
+                        } else if i == out_before.len()
+                            && j < out_before.len()
+                        {
+                            assert(removed_before.contains(
+                                allocator.alloc_au_nat(),
+                            ));
+                            assert(source_before_i.contains_key(
+                                allocator.alloc_au_nat(),
+                            ));
+                            let old_idx = choose |k: int|
+                                0 <= k < source_before.len()
+                                && #[trigger] source_before[k]
+                                    .alloc_au_nat()
+                                    == allocator.alloc_au_nat();
+                            assert(source[old_idx]
+                                == source_before[old_idx]);
+                            assert(source[source_before.len() as int]
+                                == allocator);
+                            assert(false) by {
+                                assert(Self::allocators_unique(source));
+                            }
+                        } else if j == out_before.len()
+                            && i < out_before.len()
+                        {
+                            assert(removed_before.contains(
+                                allocator.alloc_au_nat(),
+                            ));
+                            assert(source_before_i.contains_key(
+                                allocator.alloc_au_nat(),
+                            ));
+                            let old_idx = choose |k: int|
+                                0 <= k < source_before.len()
+                                && #[trigger] source_before[k]
+                                    .alloc_au_nat()
+                                    == allocator.alloc_au_nat();
+                            assert(source[old_idx]
+                                == source_before[old_idx]);
+                            assert(source[source_before.len() as int]
+                                == allocator);
+                            assert(false) by {
+                                assert(Self::allocators_unique(source));
+                            }
+                        }
+                    }
+                }
+                assert(kept_i
+                    == source_i.remove_keys(removed)) by {
+                    assert_maps_equal!(
+                        kept_i,
+                        source_i.remove_keys(removed),
+                        au => {}
+                    );
+                }
+                assert(removed =~= (SpecMiniAllocator {
+                    allocs: source_i,
+                    curr: None,
+                }).removable_aus()) by {
+                    assert_sets_equal!(
+                        removed,
+                        (SpecMiniAllocator {
+                            allocs: source_i,
+                            curr: None,
+                        }).removable_aus(),
+                        au => {
+                            if au == allocator.alloc_au_nat() {
+                                assert(Self::page_allocator_i(allocator)
+                                    .has_no_allocated_pages());
+                            }
+                        }
+                    );
+                }
+            } else {
+                assert(kept == kept_before.push(allocator));
+                assert(out == out_before);
+                assert(removed == removed_before);
+                assert(Self::allocators_unique(kept)) by {
+                    assert forall |i: int, j: int|
+                        0 <= i < kept.len()
+                        && 0 <= j < kept.len()
+                        && #[trigger] kept[i].alloc_au_nat()
+                            == #[trigger] kept[j].alloc_au_nat()
+                        implies i == j by {
+                        if i < kept_before.len() && j < kept_before.len() {
+                            assert(Self::allocators_unique(kept_before));
+                        } else if i == kept_before.len()
+                            && j < kept_before.len()
+                        {
+                            assert(kept_before_i.contains_key(
+                                allocator.alloc_au_nat(),
+                            ));
+                            assert(source_before_i.contains_key(
+                                allocator.alloc_au_nat(),
+                            ));
+                            let old_idx = choose |k: int|
+                                0 <= k < source_before.len()
+                                && #[trigger] source_before[k]
+                                    .alloc_au_nat()
+                                    == allocator.alloc_au_nat();
+                            assert(source[old_idx]
+                                == source_before[old_idx]);
+                            assert(source[source_before.len() as int]
+                                == allocator);
+                            assert(false) by {
+                                assert(Self::allocators_unique(source));
+                            }
+                        } else if j == kept_before.len()
+                            && i < kept_before.len()
+                        {
+                            assert(kept_before_i.contains_key(
+                                allocator.alloc_au_nat(),
+                            ));
+                            assert(source_before_i.contains_key(
+                                allocator.alloc_au_nat(),
+                            ));
+                            let old_idx = choose |k: int|
+                                0 <= k < source_before.len()
+                                && #[trigger] source_before[k]
+                                    .alloc_au_nat()
+                                    == allocator.alloc_au_nat();
+                            assert(source[old_idx]
+                                == source_before[old_idx]);
+                            assert(source[source_before.len() as int]
+                                == allocator);
+                            assert(false) by {
+                                assert(Self::allocators_unique(source));
+                            }
+                        }
+                    }
+                }
+                Self::allocators_i_push(kept_before, allocator);
+                assert(kept_i
+                    == source_i.remove_keys(removed)) by {
+                    assert_maps_equal!(
+                        kept_i,
+                        source_i.remove_keys(removed),
+                        au => {}
+                    );
+                }
+                assert(removed =~= (SpecMiniAllocator {
+                    allocs: source_i,
+                    curr: None,
+                }).removable_aus()) by {
+                    assert_sets_equal!(
+                        removed,
+                        (SpecMiniAllocator {
+                            allocs: source_i,
+                            curr: None,
+                        }).removable_aus(),
+                        au => {
+                            if au == allocator.alloc_au_nat() {
+                                assert(!Self::page_allocator_i(allocator)
+                                    .has_no_allocated_pages());
+                            }
+                        }
+                    );
+                }
+            }
+
+            assert(Self::allocators_wf(kept));
+            assert(Self::allocators_bounded(kept, disk_au_count));
+            assert(kept.len() <= count);
+            assert(out.len() <= count);
+        }
+    }
+
+    pub fn prune_removable_aus(
+        &mut self,
+        disk_au_count: IAU,
+    ) -> (out: Vec<IAU>)
+        requires
+            old(self).wf(),
+            Self::allocators_unique(old(self).allocators@),
+            old(self).bounded(disk_au_count),
+            0 < page_count(),
+        ensures
+            self.wf(),
+            Self::allocators_unique(self.allocators@),
+            self.bounded(disk_au_count),
+            self.threshold() == old(self).threshold(),
+            out.len() <= old(self).allocators.len(),
+            iau_vec_set(out@) =~= old(self).i().removable_aus(),
+            Self::iau_seq_unique(out@),
+            self.i() == old(self).i().prune(iau_vec_set(out@)),
+            Self::allocators_au_set(self.allocators@) =~=
+                Self::allocators_au_set(old(self).allocators@)
+                    - iau_vec_set(out@),
+    {
+        let ghost pre = *self;
+        let saved_curr = self.curr;
+        let saved_threshold = self.free_au_threshold;
+        let mut kept = Vec::<PageAllocator>::new();
+        let mut out = Vec::<IAU>::new();
+        let mut idx: usize = 0;
+        while idx < self.allocators.len()
+            invariant
+                idx <= self.allocators.len(),
+                *self == pre,
+                kept@ == Self::retained_allocated_prefix(
+                    self.allocators@,
+                    idx as nat,
+                ),
+                out@ == Self::removable_aus_prefix(
+                    self.allocators@,
+                    idx as nat,
+                ),
+            decreases self.allocators.len() - idx,
+        {
+            let allocator = PageAllocator::new(
+                self.allocators[idx].au,
+                self.allocators[idx].next_page,
+            );
+            proof {
+                assert(allocator == self.allocators@[idx as int]);
+            }
+            if allocator.next_page == 0 {
+                out.push(allocator.au);
+            } else {
+                kept.push(allocator);
+            }
+            proof {
+                assert(Self::retained_allocated_prefix(
+                    self.allocators@,
+                    (idx + 1) as nat,
+                ) == if allocator.next_page() > 0 {
+                    Self::retained_allocated_prefix(
+                        self.allocators@,
+                        idx as nat,
+                    ).push(allocator)
+                } else {
+                    Self::retained_allocated_prefix(
+                        self.allocators@,
+                        idx as nat,
+                    )
+                });
+                assert(Self::removable_aus_prefix(
+                    self.allocators@,
+                    (idx + 1) as nat,
+                ) == if allocator.next_page() == 0 {
+                    Self::removable_aus_prefix(
+                        self.allocators@,
+                        idx as nat,
+                    ).push(allocator.alloc_au())
+                } else {
+                    Self::removable_aus_prefix(
+                        self.allocators@,
+                        idx as nat,
+                    )
+                });
+            }
+            idx += 1;
+        }
+
+        proof {
+            Self::removable_partition_prefix_properties(
+                pre.allocators@,
+                idx as nat,
+                disk_au_count,
+            );
+            assert(pre.allocators@.take(idx as int) == pre.allocators@);
+        }
+        self.allocators = kept;
+        let ghost removed = iau_vec_set(out@);
+        let removed_curr = match saved_curr {
+            Some(curr) => iau_vec_contains(&out, curr),
+            None => false,
+        };
+        if removed_curr {
+            self.curr = None;
+        }
+        self.free_au_threshold = saved_threshold;
+
+        proof {
+            assert(removed_curr == (pre.curr is Some
+                && removed.contains(pre.curr.unwrap() as nat)));
+            assert(self.curr == if pre.curr is Some
+                    && removed.contains(pre.curr.unwrap() as nat)
+                { None } else { pre.curr });
+            assert(removed =~= pre.i().removable_aus());
+            assert(Self::allocators_i(self.allocators@)
+                == Self::allocators_i(pre.allocators@)
+                    .remove_keys(removed));
+            assert(self.i().allocs
+                == pre.i().allocs.remove_keys(removed));
+            pre.i().prune_preserves_wf(removed);
+            assert(self.i() == pre.i().prune(removed));
+            assert(Self::allocators_wf(self.allocators@));
+            assert(Self::allocators_unique(self.allocators@));
+            assert(Self::iau_seq_unique(out@));
+            assert(self.bounded(disk_au_count));
+            if self.curr is Some {
+                assert(self.i().allocs.contains_key(
+                    self.curr.unwrap() as nat,
+                ));
+            }
+            assert(self.wf());
+            Self::allocators_i_dom(pre.allocators@);
+            Self::allocators_i_dom(self.allocators@);
+            assert(Self::allocators_au_set(self.allocators@) =~=
+                Self::allocators_au_set(pre.allocators@) - removed) by {
+                assert_sets_equal!(
+                    Self::allocators_au_set(self.allocators@),
+                    Self::allocators_au_set(pre.allocators@) - removed,
+                    au => {}
+                );
+            }
+        }
+        out
+    }
+
     pub fn prune_allocated_aus(
         &mut self,
         disk_au_count: IAU,
@@ -1133,6 +1714,188 @@ impl MiniAllocatorImpl {
             }
         }
         out
+    }
+
+    pub fn prune_aus(
+        &mut self,
+        aus: &Vec<IAU>,
+        disk_au_count: IAU,
+    )
+        requires
+            old(self).wf(),
+            Self::allocators_unique(old(self).allocators@),
+            old(self).bounded(disk_au_count),
+            0 < page_count(),
+        ensures
+            self.wf(),
+            Self::allocators_unique(self.allocators@),
+            self.bounded(disk_au_count),
+            self.threshold() == old(self).threshold(),
+            self.i() == old(self).i().prune(iau_vec_set(aus@)),
+            Self::allocators_au_set(self.allocators@)
+                =~= Self::allocators_au_set(old(self).allocators@)
+                    - iau_vec_set(aus@),
+    {
+        let ghost pre = *self;
+        let ghost removed = iau_vec_set(aus@);
+        let saved_curr = self.curr;
+        let saved_threshold = self.free_au_threshold;
+        let mut kept = Vec::<PageAllocator>::new();
+        let mut idx: usize = 0;
+        while idx < self.allocators.len()
+            invariant
+                *self == pre,
+                idx <= self.allocators.len(),
+                Self::allocators_wf(kept@),
+                Self::allocators_unique(kept@),
+                Self::allocators_bounded(kept@, disk_au_count),
+                kept@.len() <= idx,
+                Self::allocators_i(kept@)
+                    == Self::allocators_i(
+                        self.allocators@.take(idx as int),
+                    ).remove_keys(removed),
+            decreases self.allocators.len() - idx,
+        {
+            let allocator = PageAllocator::new(
+                self.allocators[idx].au,
+                self.allocators[idx].next_page,
+            );
+            let remove = iau_vec_contains(aus, allocator.au);
+            let ghost prior_kept = kept@;
+            let ghost source_before = self.allocators@.take(idx as int);
+            let ghost source = self.allocators@.take((idx + 1) as int);
+            proof {
+                assert(allocator == self.allocators@[idx as int]);
+                assert(source == source_before.push(allocator));
+                Self::allocators_i_push(source_before, allocator);
+                assert(remove == removed.contains(
+                    allocator.alloc_au_nat(),
+                ));
+            }
+            if !remove {
+                kept.push(allocator);
+                proof {
+                    assert(Self::allocators_wf(kept@));
+                    assert(Self::allocators_bounded(
+                        kept@,
+                        disk_au_count,
+                    ));
+                    assert(Self::allocators_unique(kept@)) by {
+                        assert forall |i: int, j: int| {
+                            &&& 0 <= i < kept@.len()
+                            &&& 0 <= j < kept@.len()
+                            &&& #[trigger] kept@[i].alloc_au_nat()
+                                == #[trigger] kept@[j].alloc_au_nat()
+                        } implies i == j by {
+                            if i < prior_kept.len()
+                                && j < prior_kept.len()
+                            {
+                                assert(Self::allocators_unique(prior_kept));
+                            } else if i == prior_kept.len()
+                                && j < prior_kept.len()
+                            {
+                                assert(Self::allocators_i(prior_kept)
+                                    .contains_key(
+                                        allocator.alloc_au_nat(),
+                                    ));
+                                assert(Self::allocators_i(source_before)
+                                    .contains_key(
+                                        allocator.alloc_au_nat(),
+                                    ));
+                                let old_idx = choose |k: int|
+                                    0 <= k < idx as int
+                                    && #[trigger] self.allocators@[k]
+                                        .alloc_au_nat()
+                                        == allocator.alloc_au_nat();
+                                assert(false) by {
+                                    assert(Self::allocators_unique(
+                                        self.allocators@,
+                                    ));
+                                }
+                            } else if j == prior_kept.len()
+                                && i < prior_kept.len()
+                            {
+                                assert(Self::allocators_i(prior_kept)
+                                    .contains_key(
+                                        allocator.alloc_au_nat(),
+                                    ));
+                                assert(Self::allocators_i(source_before)
+                                    .contains_key(
+                                        allocator.alloc_au_nat(),
+                                    ));
+                                let old_idx = choose |k: int|
+                                    0 <= k < idx as int
+                                    && #[trigger] self.allocators@[k]
+                                        .alloc_au_nat()
+                                        == allocator.alloc_au_nat();
+                                assert(false) by {
+                                    assert(Self::allocators_unique(
+                                        self.allocators@,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    Self::allocators_i_push(prior_kept, allocator);
+                    assert(Self::allocators_i(kept@)
+                        == Self::allocators_i(source)
+                            .remove_keys(removed)) by {
+                        assert_maps_equal!(
+                            Self::allocators_i(kept@),
+                            Self::allocators_i(source)
+                                .remove_keys(removed),
+                            au => {}
+                        );
+                    }
+                }
+            } else {
+                proof {
+                    assert(Self::allocators_i(kept@)
+                        == Self::allocators_i(source)
+                            .remove_keys(removed)) by {
+                        assert_maps_equal!(
+                            Self::allocators_i(kept@),
+                            Self::allocators_i(source)
+                                .remove_keys(removed),
+                            au => {}
+                        );
+                    }
+                }
+            }
+            idx += 1;
+        }
+
+        proof {
+            assert(self.allocators@.take(idx as int)
+                == self.allocators@);
+        }
+        self.allocators = kept;
+        let removed_curr = match saved_curr {
+            Some(curr) => iau_vec_contains(aus, curr),
+            None => false,
+        };
+        if removed_curr {
+            self.curr = None;
+        }
+        self.free_au_threshold = saved_threshold;
+
+        proof {
+            assert(removed_curr == (pre.curr is Some
+                && removed.contains(pre.curr.unwrap() as nat)));
+            assert(self.curr == if pre.curr is Some
+                    && removed.contains(pre.curr.unwrap() as nat)
+                { None } else { pre.curr });
+            assert(Self::allocators_i(self.allocators@)
+                == Self::allocators_i(pre.allocators@)
+                    .remove_keys(removed));
+            assert(self.i().allocs
+                == pre.i().allocs.remove_keys(removed));
+            pre.i().prune_preserves_wf(removed);
+            assert(self.i() == pre.i().prune(removed));
+            assert(self.wf());
+            Self::allocators_i_dom(pre.allocators@);
+            Self::allocators_i_dom(self.allocators@);
+        }
     }
 
     pub fn peek_next_addr(&self) -> (out: IAddress)

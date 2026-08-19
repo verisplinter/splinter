@@ -6,7 +6,7 @@ use vstd::{map::*, set::*};
 
 use verus_state_machines_macros::state_machine;
 
-use crate::allocation_layer::AllocationBranch_v::{BranchNode as AllocationBranchNode, Summary};
+use crate::allocation_layer::BranchTypes_v::{BranchNode as AllocationBranchNode, Summary};
 use crate::allocation_layer::MiniAllocator_v::MiniAllocator;
 use crate::betree::LinkedBranch_v::SplitArg;
 use crate::disk::GenericDisk_v::{AU, Address, Pointer};

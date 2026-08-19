@@ -14,7 +14,7 @@ use vstd::assert_maps_equal;
 use verus_state_machines_macros::state_machine;
 
 use crate::abstract_system::StampedMap_v::LSN;
-use crate::allocation_layer::AllocationBranch_v::{BranchNode, Summary};
+use crate::allocation_layer::BranchTypes_v::{BranchNode, Summary};
 use crate::allocation_layer::AllocationBranchBetree_v::summary_aus;
 use crate::allocation_layer::Likes_v::{to_au_likes, AULikes};
 use crate::betree::BufferDisk_v::BufferDisk;
@@ -315,6 +315,7 @@ impl BetreeMetadataRecoveryCore {
             branch_aus: self.branch_aus(metadata),
             branch_summary: self.branch_summary,
             compactors: Seq::empty(),
+            compactor_receipts: Seq::empty(),
             wip_branches: Seq::empty(),
         }
     }
@@ -616,6 +617,7 @@ impl CachingDiskBranchBetreeImage {
             branch_aus,
             branch_summary,
             compactors: Seq::empty(),
+            compactor_receipts: Seq::empty(),
             wip_branches: Seq::empty(),
         }
     }
@@ -684,7 +686,7 @@ pub open spec fn logical_allocs(
     op: CachingDiskBranchBetree::Label,
 ) -> Set<AU> {
     match op {
-        CachingDiskBranchBetree::Label::InternalAlloc{allocs, ..} =>
+        CachingDiskBranchBetree::Label::InternalAllocAccess{allocs, ..} =>
             allocs,
         _ => Set::empty(),
     }
@@ -694,7 +696,7 @@ pub open spec fn logical_deallocs(
     op: CachingDiskBranchBetree::Label,
 ) -> Set<AU> {
     match op {
-        CachingDiskBranchBetree::Label::InternalAlloc{deallocs, ..} =>
+        CachingDiskBranchBetree::Label::InternalAllocAccess{deallocs, ..} =>
             deallocs,
         _ => Set::empty(),
     }
@@ -704,7 +706,7 @@ pub open spec fn logical_guard_aus(
     op: CachingDiskBranchBetree::Label,
 ) -> Set<AU> {
     match op {
-        CachingDiskBranchBetree::Label::InternalAlloc{guard_aus, ..} =>
+        CachingDiskBranchBetree::Label::InternalAllocAccess{guard_aus, ..} =>
             guard_aus,
         _ => Set::empty(),
     }
@@ -740,21 +742,6 @@ pub proof fn empty_image_valid()
     let image = CachingDiskBranchBetreeImage::empty();
     let initial = empty_initial_betree();
     CachingDisk::State::persistent_only_inv(image.persistent);
-    reveal(initial_refinement_witness_valid);
-    reveal(LinkedBetree::transitive_likes);
-    reveal(LinkedBetree::tree_likes);
-    reveal(LinkedBetree::buffer_likes);
-    reveal(LinkedBetree::acyclic);
-    reveal(LinkedBetree::valid_ranking);
-    reveal(LinkedBetree::wf);
-    reveal(LinkedBetree::has_root);
-    reveal(LinkedBetree::reachable_betree_addrs);
-    reveal(LinkedBetree::reachable_betree_addrs_using_ranking);
-    reveal(LinkedBetree::reachable_buffer_addrs);
-    reveal(LinkedBetree::reachable_buffer);
-    reveal(crate::implementation::CachingDiskBranchBetreeRefinement_v::tight_betree_candidate);
-    reveal(crate::allocation_layer::AllocationBranchBetree_v::AllocationBranchBetree::State::initialize);
-    reveal(LinkedBetreeVars::State::initialize);
     assert(initial.linked.valid_ranking(Map::empty()));
     assert(initial.linked.acyclic());
     assert(initial.linked.transitive_likes()
@@ -826,8 +813,6 @@ pub proof fn empty_image_valid()
             }
         );
     }
-    reveal(crate::implementation::CachingDiskBranchBetree_v::tight_sealed_branch_disk);
-    reveal(crate::implementation::CachingDiskBranchBetree_v::tight_branch_addrs);
     assert(crate::implementation::CachingDiskBranchBetree_v::tight_sealed_branch_disk(
         branch_disk,
         Set::<Address>::empty(),
@@ -971,7 +956,7 @@ state_machine! { CrashAwareCachingDiskBranchBetree {
         let old_ephemeral = pre.ephemeral->v;
         let persistent_aus = pre.ephemeral->persistent_aus;
         let protected = protected_aus(persistent_aus, pre.frozen);
-        require op is InternalAlloc
+        require op is InternalAllocAccess
             ==> logical_guard_aus(op) == protected;
         require logical_allocs(op).disjoint(protected);
         require deallocs == logical_deallocs(op) - protected;

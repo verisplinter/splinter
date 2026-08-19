@@ -17,50 +17,32 @@ use crate::betree::LinkedBranch_v::{DiskView, LinkedBranch, Node, Path, SplitArg
 use crate::betree::LinkedBranch_v::Refinement_v;
 use crate::allocation_layer::MiniAllocator_v::MiniAllocator;
 use crate::allocation_layer::Likes_v::restrict_domain_au;
+pub use crate::allocation_layer::BranchTypes_v::{BranchNode, Summary};
 
 verus!{
 
-// Allocation Branch 
-// first need a summary type 
-pub type Summary = Set<AU>; // describe the set of AUs occupied by the rest of the b+tree
-pub type BranchNode = Node<Summary>;
+// This mutable linked-branch model is intentionally retained as an alternative
+// for a future branch-as-memtable design. Incremental, unsorted puts cannot use
+// the active Betree bulk loader's immutable sorted cursor and may instead need
+// Initialize/Append/Grow/Split/Seal. The active Betree WIP path uses
+// AllocationBulkBranch_v.
 
-impl BufferDisk<BranchNode> {
-    pub open spec fn to_branch_disk(self) -> DiskView::<Summary>
-    {
-       DiskView{entries: self.entries}
-    }
-
-    pub open spec fn get_branch(self, root: Address) -> LinkedBranch<Summary>
-    {
-        LinkedBranch{root, disk_view: self.to_branch_disk()}
-    }
-}
-
-impl Buffer for BranchNode {
-    open spec fn linked_contains(self, dv: BufferDisk<Self>, addr: Address, key: Key) -> bool 
-    {
-        let branch = dv.get_branch(addr);
-        if branch.acyclic() {
-            branch.contains_internal(branch.the_ranking(), key)
-        } else {
-            false
-        }
-    }
-
-    open spec fn linked_query(self, dv: BufferDisk<Self>, addr: Address, key: Key) -> Message 
-    {
-        LinkedBranch{root: addr, disk_view: DiskView{entries: dv.entries}}.query(key)
-    }
-
-    open spec fn i(self, dv: BufferDisk<Self>, addr: Address) -> SimpleBuffer 
-    {
-        LinkedBranch{root: addr, disk_view: DiskView{entries: dv.entries}}.i().i()
-    }
-}
+/*
+ * BranchNode, Summary, and their BufferDisk/Buffer implementations moved to
+ * BranchTypes_v so the active bulk path does not depend on this mutable model.
+ * The old definitions were:
+ *
+ * pub type Summary = Set<AU>;
+ * pub type BranchNode = Node<Summary>;
+ *
+ * impl BufferDisk<BranchNode> { ... }
+ * impl Buffer for BranchNode { ... }
+ */
 
 pub enum BuildEvent {
     Initialize{addr: Address, keys: Seq<Key>, msgs: Seq<Message>},
+    StagePage{addr: Address},
+    BulkSeal{root: Address, aux_ptr: Pointer, branch: LinkedBranch<Summary>},
     // Insert{key: Key, msg: Message, path: Path<Summary>},
     Append{keys: Seq<Key>, msgs: Seq<Message>, path: Path<Summary>},
     Grow{addr: Address},
@@ -107,6 +89,72 @@ impl AllocationBranch {
             branch: Some(branch),
             mini_allocator: self.mini_allocator.allocate(addr),
             ..self
+        }
+    }
+
+    pub open spec fn can_stage_page(self, addr: Address) -> bool {
+        &&& !self.sealed
+        &&& self.branch is None
+        &&& self.mini_allocator.can_allocate(addr)
+    }
+
+    pub open spec fn stage_page(self, addr: Address) -> Self
+        recommends self.can_stage_page(addr)
+    {
+        Self {
+            mini_allocator: self.mini_allocator.allocate(addr),
+            ..self
+        }
+    }
+
+    pub open spec fn bulk_allocator(
+        self,
+        root: Address,
+        aux_ptr: Pointer,
+    ) -> MiniAllocator {
+        let with_root = self.mini_allocator.allocate(root);
+        if aux_ptr is Some {
+            with_root.allocate(aux_ptr.unwrap())
+        } else {
+            with_root
+        }
+    }
+
+    pub open spec fn can_bulk_seal(
+        self,
+        root: Address,
+        aux_ptr: Pointer,
+        branch: LinkedBranch<Summary>,
+        deallocs: Set<AU>,
+    ) -> bool {
+        let allocator = self.bulk_allocator(root, aux_ptr);
+        &&& !self.sealed
+        &&& self.branch is None
+        &&& self.mini_allocator.can_allocate(root)
+        &&& if aux_ptr is Some {
+            &&& root != aux_ptr.unwrap()
+            &&& self.mini_allocator.allocate(root).can_allocate(aux_ptr.unwrap())
+        } else { true }
+        &&& allocator.removable_aus() == deallocs
+        &&& branch.root == root
+        &&& branch.valid_sealed_branch()
+        &&& branch.tight_disk_view_with_summary()
+        &&& branch.get_summary() == allocator.all_aus() - deallocs
+    }
+
+    pub open spec fn bulk_seal(
+        self,
+        root: Address,
+        aux_ptr: Pointer,
+        branch: LinkedBranch<Summary>,
+        deallocs: Set<AU>,
+    ) -> Self
+        recommends self.can_bulk_seal(root, aux_ptr, branch, deallocs)
+    {
+        Self {
+            sealed: true,
+            branch: Some(branch),
+            mini_allocator: self.bulk_allocator(root, aux_ptr).prune(deallocs),
         }
     }
 
@@ -223,7 +271,7 @@ impl AllocationBranch {
         let alloc_checks = 
             if event is AllocFill {
                 deallocs.is_empty()
-            } else if event is Seal {
+            } else if event is Seal || event is BulkSeal {
                 allocs.is_empty()
             } else {
                 allocs.is_empty() && deallocs.is_empty()
@@ -233,6 +281,24 @@ impl AllocationBranch {
             BuildEvent::Initialize{addr, keys, msgs} => {
                 &&& pre.can_initialize(addr, keys, msgs)
                 &&& pre.branch_initialize(addr, keys, msgs) == post
+            },
+            BuildEvent::StagePage{addr} => {
+                &&& pre.can_stage_page(addr)
+                &&& pre.stage_page(addr) == post
+            },
+            BuildEvent::BulkSeal{root, aux_ptr, branch} => {
+                &&& pre.can_bulk_seal(
+                    root,
+                    aux_ptr,
+                    branch,
+                    deallocs,
+                )
+                &&& pre.bulk_seal(
+                    root,
+                    aux_ptr,
+                    branch,
+                    deallocs,
+                ) == post
             },
             BuildEvent::Append{keys, msgs, path} => {
                 &&& pre.can_append(keys, msgs, path)
@@ -349,7 +415,7 @@ impl AllocationBranch {
         } else {
             Self::alloc_aus_update(branches.drop_last(), idx, update);
             assert(branches.drop_last().update(idx, update) == branches.update(idx, update).drop_last()); // trigger
-                
+
             Self::alloc_aus_append(branches.update(idx, update).drop_last(), branches.last());
             Self::alloc_aus_append(branches.drop_last(), branches.last());
 
@@ -388,65 +454,11 @@ impl AllocationBranch {
     }
 } // end of impl AllocationBranch
 
-impl LinkedBranch<Summary> {
-    pub open spec fn get_summary(self) -> Summary
-        recommends self.has_root() 
-    {
-        if self.root() is Index {
-            self.disk_view.get(self.root()->aux_ptr.unwrap())->0
-        } else {
-            set![self.root.au]
-        }
-    }
-
-    pub open spec(checked) fn seal(self, addr: Address, summary: Summary) -> Self
-        recommends self.has_root() && self.root() is Index
-    {
-        let new_aux_node = Node::Auxiliary(summary);
-        let new_root_node = Node::Index{
-            pivots: self.root()->pivots,
-            children: self.root()->children,
-            aux_ptr: Some(addr),
-        };
-        LinkedBranch{
-            disk_view: self.disk_view.modify_disk(addr, new_aux_node).modify_disk(self.root, new_root_node),
-            ..self
-        }
-    }
-
-    pub open spec fn sealed_root(self) -> bool
-    {
-        &&& self.has_root()
-        &&& self.root() is Index ==> {
-            &&& self.root()->aux_ptr is Some
-            &&& self.disk_view.valid_address(self.root()->aux_ptr.unwrap())
-            &&& self.disk_view.entries[self.root()->aux_ptr.unwrap()] is Auxiliary
-        }
-    }
-
-    pub open spec fn full_repr(self) -> Set<Address>
-    {
-        if self.root() is Index {
-            self.representation() + set!{self.root()->aux_ptr.unwrap()}
-        } else {
-            self.representation()
-        }
-    }
-
-    pub open spec fn tight_disk_view_with_summary(self) -> bool
-    {
-        self.disk_view.representation() == self.full_repr()
-    }
-
-    pub open spec fn valid_sealed_branch(self) -> bool
-    {
-        &&& self.inv()
-        &&& self.sealed_root()
-
-        &&& addrs_closed(self.full_repr(), self.get_summary())
-        &&& restrict_domain_au(self.disk_view.entries, self.get_summary()) =~= self.full_repr()
-    }
-} // end of impl LinkedBranch<Summary>
+/*
+ * The LinkedBranch<Summary> extension methods get_summary, seal,
+ * sealed_root, full_repr, tight_disk_view_with_summary, and
+ * valid_sealed_branch moved to BranchTypes_v with the shared types.
+ */
 
 impl AllocationBranch {
     pub open spec fn inv(self) -> bool
@@ -488,6 +500,16 @@ impl AllocationBranch {
                         assert(pre.mini_allocator.allocated_aus().contains(address.au)); // trigger
                     }
                 }
+            },
+            BuildEvent::StagePage{addr} => {
+            },
+            BuildEvent::BulkSeal{root, aux_ptr, branch} => {
+                let allocator = pre.bulk_allocator(root, aux_ptr);
+                allocator.prune_preserves_wf(deallocs);
+                assert(post.branch == Some(branch));
+                assert(branch.valid_sealed_branch());
+                assert(branch.tight_disk_view_with_summary());
+                assert(branch.get_summary() == post.mini_allocator.all_aus());
             },
             BuildEvent::Append{keys, msgs, path} => {
                 let pre_branch = pre.branch.unwrap();

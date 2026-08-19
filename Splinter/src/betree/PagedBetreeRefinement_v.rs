@@ -78,8 +78,6 @@ impl BetreeNode {
         ensures Self::empty_root().i() == TotalKMMap::empty()
     {
         let root = Self::empty_root();
-        reveal(BetreeNode::wf);
-        reveal(ChildMap::wf);
         assert(total_keys(root->children.map.dom()));
         assert forall |key: Key|
             (#[trigger] root->children.map[key]).wf() by {

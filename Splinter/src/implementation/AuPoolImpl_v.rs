@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-2-Clause
 
 use vstd::prelude::*;
+use vstd::assert_sets_equal;
 
 use crate::disk::GenericDisk_v::AU;
 use crate::spec::ImplDisk_t::IAU;
@@ -81,6 +82,30 @@ impl AuAllocation {
     pub open spec fn as_set(&self) -> Set<AU>
     {
         self.run.as_set()
+    }
+
+    pub proof fn vec_set_matches(&self, total_aus: IAU)
+        requires self.wf(total_aus),
+        ensures iau_vec_set(self.aus@) =~= self.as_set(),
+    {
+        assert_sets_equal!(iau_vec_set(self.aus@), self.as_set(), au => {
+            if iau_vec_set(self.aus@).contains(au) {
+                let i = choose |i: int| 0 <= i < self.aus@.len()
+                    && self.aus@[i] as nat == au;
+                assert(self.aus@[i] as nat
+                    == self.run.start as nat + i as nat);
+                assert(self.run.start as nat <= au);
+                assert(au < self.run.end as nat);
+            }
+            if self.as_set().contains(au) {
+                let i = (au - self.run.start as nat) as int;
+                assert(0 <= i);
+                assert(i < self.aus@.len());
+                assert(self.aus@[i] as nat
+                    == self.run.start as nat + i as nat);
+                assert(self.aus@[i] as nat == au);
+            }
+        });
     }
 
 }
@@ -402,6 +427,8 @@ impl AuPoolImpl {
             match out {
                 Some(alloc) => {
                     &&& alloc.wf(total_aus)
+                    &&& alloc.run.len() == count as nat
+                    &&& alloc.aus@.len() == count as nat
                     &&& alloc.as_set() <= old(self)@
                     &&& self@ =~= old(self)@ - alloc.as_set()
                 },
